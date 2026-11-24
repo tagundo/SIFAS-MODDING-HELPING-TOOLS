@@ -3,7 +3,8 @@
    node tests/mv_runtime_capture.js --dump GAME.json.gz|job.log --manifest M.json --out DIR
         [--library DIR] [--server-root DIR] [--url URL] [--phases -1,0,1] [--preroll 3]
         [--software true] [--chromium PATH] [--keys FILE] [--batch 100] [--physics-order game|same-frame]
-        [--physics-grid game|clock|rule] [--suits dump|POSITION:SUIT,...]
+        [--physics-grid game|clock|rule] [--frame-history game|none] [--physics-read-point update|none]
+        [--suits dump|POSITION:SUIT,...]
 
    The game dump (schema sifas-mv-runtime-dump/1, side "game") is read as a gzip
    or plain JSON document, or extracted from a GitHub job log (@@RTDUMP blobs;
@@ -17,9 +18,22 @@
    member mapping's: "dump" pins the suit each game slot wore (frame
    members[].suitId), or list POSITION:SUIT pairs; the import fails unless the
    editor dresses every pinned slot so. Every game record is then evaluated at
-   t = clock.directorTime + phase * clock.deltaTime for each phase: a plain
-   deferred seek for pure parts, a fixed-step physics preroll ending exactly at
-   t for members and springs. The game steps its springs once per rendered
+   each phase: at the director time the dump recorded for frame
+   clock.frameCount + phase whenever a record of that frame exists (the
+   director follows the millisecond music clock, so t - deltaTime can miss the
+   previous frame by a few milliseconds, and a director pinned at the song end
+   does not move), else at t = clock.directorTime + phase * clock.deltaTime: a
+   plain deferred seek for pure parts, a fixed-step physics preroll ending
+   exactly at t for members and springs. The sampler reads every record in the
+   frame after the evaluation its transforms show (see PHYSICS_READ_POINT), so
+   with --physics-read-point update (default) a members or springs record also
+   takes that frame's pre-timeline spring step after the preroll; none leaves
+   it out. With --frame-history
+   game (default) every seek also hands the editor the game's rendered frame
+   times before t (gameFrameTimes), which the client state that changes only on
+   rendered frames reads (the director's beat origin, the ambient components'
+   last written colors, the cheek floats a finished clip leaves). The game
+   steps its springs once per rendered
    frame, so the preroll steps on the game's own frame times (gameFrameTimes:
    record frameCount, directorTime and deltaTime); --physics-grid clock uses
    the frame rate the game achieved (frames per director second, capped by the
@@ -43,6 +57,35 @@ const MODTOOLS = path.resolve(__dirname, '..');
 const FRAME_SECTIONS = ['clock', 'directors', 'cameras', 'correctors', 'cameraWork', 'globals', 'renderSettings', 'lights',
   'memberIdentity', 'anchors'];
 const PHYSICS_PARTS = new Set(['members', 'springs']);
+// Where the game's sampler reads a record of frame N (PHYSICS_READ_POINT):
+// - qa-mvdump runs every read in a SendOrPostCallback posted to the
+//   UnitySynchronizationContext (the observer's cached main dispatcher:
+//   CachedMainThreadDispatcher createIl2CppAdapter postCached -> deliver), so
+//   it runs in UnitySynchronizationContext.ExecuteTasks. libunity calls that
+//   from a player-loop callback (0x3e9838 -> 0x66ccf4, which invokes the
+//   method looked up as UnitySynchronizationContext.ExecuteTasks at 0x66f544),
+//   never inside a script's Update.
+// - LiveDirectorBase.Update (0x2926e74) writes _MusicTime from the millisecond
+//   music clock, and LiveTimeSynchronizer.SyncMusicPlayingTime (0x20f7bd8) sets
+//   director.time and calls PlayableDirector.DeferredEvaluate: the timeline
+//   animates after every Update script.
+// - LiveCoreMemberManager.Update (0x2f6a708 -> UpdateMultiThread 0x2f6a7b8)
+//   runs this frame's SwingBoneGroupJob on the pose frame N-1 ended with.
+// - In the FOVMOD client both Update methods start with a patched branch into
+//   libfovmod. Its member hook (amv_game_member_update 0x33f28) completes the
+//   jobs around the original only in an MP4 export session and otherwise
+//   tail-calls the original; the dump never exports.
+// - The dumps agree: _MusicTime equals clock.directorTime (phase 0), the
+//   transforms show the previous evaluation (phase -1), and the spring
+//   rotations carry frame N's step on that pose (12035 dump3b and dump4).
+// So a members or springs record of frame N is frame N-1's evaluation plus
+// frame N's pre-timeline spring step (MVStudioScene.stepPhysicsUpdate).
+// Unevidenced, resting on the dump values above: which player-loop subsystem
+// runs ExecuteTasks (not mapped in libunity), that it runs after the Update
+// scripts and before the deferred evaluation, and that the sampler's
+// main-thread Transform reads wait for the TransformAccess job UpdateMultiThread
+// scheduled (job sync on Transform access), so they see the job's write-back.
+const PHYSICS_READ_POINTS = ['update', 'none'];
 const KNOWN_PARTS = new Set(['census', 'quality', 'fovmodNative', 'renderers', 'materials', 'lightingRefs', 'members',
   'springs', 'stageNodes', 'particles', 'post', 'propertyBlocks', 'tracks']);
 const TIMESTAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z /;
@@ -288,8 +331,36 @@ function filterFor(record, renderers) {
   return null;
 }
 
-function planRequests(doc, phases) {
+// Director time of every frame a record was taken in (frameCount -> seconds):
+// the frames whose time the dump knows exactly. Pre-start records (director 0)
+// are left out, as in gameFrames. planRequests evaluates phase -1/+1 at the
+// time recorded for frame frameCount -/+ 1 whenever the dump holds that frame,
+// whatever its distance from t +/- deltaTime: it is the director time of the
+// evaluation the game ran in that frame (a jittered, clamped or pinned frame
+// interval included). Without such a record the estimate t + phase * deltaTime
+// is rounded to the millisecond when every recorded director time is a whole
+// millisecond: LiveDirectorBase.Update (0x2926e74) reads
+// LiveMusicMachine.MusicPlayingTime, an int of milliseconds, and the director
+// follows it.
+function recordedFrameTimes(doc) {
+  const frames = new Map();
+  for (const record of doc.records || []) {
+    const clock = record.clock;
+    if (!Number.isInteger(clock?.frameCount) || !Number.isFinite(clock?.directorTime) || !(clock.directorTime > 0)) continue;
+    if (!frames.has(clock.frameCount)) frames.set(clock.frameCount, clock.directorTime);
+  }
+  return frames;
+}
+
+function millisecondClock(doc) {
+  const times = (doc.records || []).map((record) => record.clock?.directorTime).filter(Number.isFinite);
+  return times.length > 0 && times.every((time) => Math.abs(time * 1000 - Math.round(time * 1000)) < 1e-6);
+}
+
+function planRequests(doc, phases, { readPoint = 'update' } = {}) {
+  assert(PHYSICS_READ_POINTS.includes(readPoint), '--physics-read-point is update or none');
   const renderers = rendererIndex(doc.records);
+  const recorded = recordedFrameTimes(doc), milliseconds = millisecondClock(doc);
   const requests = [];
   for (const record of doc.records) {
     const time = record.clock?.directorTime;
@@ -297,11 +368,16 @@ function planRequests(doc, phases) {
     const deltaTime = Number.isFinite(record.clock?.deltaTime) && record.clock.deltaTime > 0 ? record.clock.deltaTime : 1 / 30;
     const part = record.kind === 'full' ? record.part : null;
     const sections = record.kind === 'frame' ? FRAME_SECTIONS : ['clock', part];
+    const frame = record.clock?.frameCount;
     for (const phase of phases) {
-      const t = time + phase * deltaTime;
+      const neighbour = phase !== 0 && Number.isInteger(frame) && time > 0 ? recorded.get(frame + phase) : undefined;
+      const phaseSource = phase === 0 ? 'record' : neighbour !== undefined ? 'recorded' : 'deltaTime';
+      const estimate = time + phase * deltaTime;
+      const t = neighbour ?? (milliseconds && phase !== 0 ? Math.round(estimate * 1000) / 1000 : estimate);
       if (t < 0) continue;
-      requests.push({ id: `${record.id}@${phase}`, source: record, phase, t, deltaTime, sections,
-        physics: PHYSICS_PARTS.has(part), unknownPart: part !== null && !KNOWN_PARTS.has(part), filter: filterFor(record, renderers) });
+      requests.push({ id: `${record.id}@${phase}`, source: record, phase, phaseSource, t, deltaTime, sections,
+        physics: PHYSICS_PARTS.has(part), readPoint: PHYSICS_PARTS.has(part) && readPoint === 'update',
+        unknownPart: part !== null && !KNOWN_PARTS.has(part), filter: filterFor(record, renderers) });
     }
   }
   return requests.sort((a, b) => a.t - b.t || a.id.localeCompare(b.id));
@@ -334,13 +410,18 @@ function gameClockRate(doc, qualityValues, device) {
 
 // ------------------------------------------------------------- browser side
 
+// The game's rendered frame times the seeks hand to the editor (--frame-history).
+async function setFrameHistory(page, times) {
+  await page.evaluate((times) => { mvFrameProbe.frameHistory = times; }, times || null);
+}
+
 async function evaluatePure(page, batch, keys) {
   return page.evaluate(({ batch, keys }) => {
     const scene = mvFrameProbe.scene;
     const now = () => performance.now();
     return batch.map((request) => {
       const start = now();
-      scene.seek(request.t, undefined, true);
+      scene.seek(request.t, undefined, true, mvFrameProbe.frameHistory || null);
       const seeked = now();
       const values = scene.assetDump({ sections: request.sections, filter: request.filter || undefined, keys: keys || undefined });
       return { id: request.id, values, seekMs: seeked - start, dumpMs: now() - seeked };
@@ -417,7 +498,9 @@ function prerollTimes(time, preroll, rate, grid = null) {
 // A spring preroll ending exactly at t (game frame grid or the same fixed-step
 // grid as mv_frame_capture.js renderFrame()); the last step is deferred too:
 // nothing is drawn or read back. Each call is one physics clock interval
-// (1000 / stampRate ms), so every preroll frame steps the springs once.
+// (1000 / stampRate ms), so every preroll frame steps the springs once. A
+// request with readPoint then runs the next frame's spring step on its own
+// (PHYSICS_READ_POINT) before the values are read.
 async function evaluatePhysics(page, request, preroll, rate, keys, grid = null, stampRate = rate) {
   const plan = prerollTimes(request.t, preroll, rate, grid);
   const result = await page.evaluate(({ request, times, stampRate, keys }) => {
@@ -425,18 +508,21 @@ async function evaluatePhysics(page, request, preroll, rate, keys, grid = null, 
     const begin = performance.now(), time = request.t;
     const start = times.length ? times[0] : time;
     if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / stampRate, undefined, true);
-    scene.seek(start, undefined, true);
+    scene.seek(start, undefined, true, mvFrameProbe.frameHistory || null);
     scene.setPlaying(true);
     try {
       times.forEach((value, step) => scene.playbackFrame(value, step * 1000 / stampRate, true));
       scene.playbackFrame(time, times.length * 1000 / stampRate, true);
+      const readPointStep = request.readPoint ? scene.stepPhysicsUpdate((times.length + 1) * 1000 / stampRate) : null;
       const seeked = performance.now();
       const values = scene.assetDump({ sections: request.sections, filter: request.filter || undefined, keys: keys || undefined });
-      return { id: request.id, values, seekMs: seeked - begin, dumpMs: performance.now() - seeked, steps: times.length, prerollStart: start };
+      return { id: request.id, values, seekMs: seeked - begin, dumpMs: performance.now() - seeked, steps: times.length, prerollStart: start,
+        readPointStep };
     } finally {
       scene.setPlaying(false);
     }
-  }, { request: { id: request.id, t: request.t, sections: request.sections, filter: request.filter }, times: plan.times, stampRate, keys });
+  }, { request: { id: request.id, t: request.t, sections: request.sections, filter: request.filter, readPoint: request.readPoint === true },
+    times: plan.times, stampRate, keys });
   return { ...result, prerollSource: plan.source };
 }
 
@@ -581,8 +667,13 @@ function editorRecord(request, result, rate) {
   const record = { id: request.id, kind: source.kind, sourceRecord: source.id, phase: request.phase };
   if (source.kind === 'full') Object.assign(record, { pass: source.pass ?? null, part: source.part, chunk: source.chunk ?? 0 });
   record.clock = { directorTime: request.t, sourceDirectorTime: source.clock.directorTime, phase: request.phase,
-    phaseSeconds: request.phase * request.deltaTime, deltaTime: request.deltaTime, rate: values.clock?.rate ?? rate };
-  if (request.physics) record.clock.physicsRate = rate;
+    phaseSeconds: request.t - source.clock.directorTime, phaseSource: request.phaseSource ?? null, deltaTime: request.deltaTime,
+    rate: values.clock?.rate ?? rate };
+  if (request.physics) {
+    record.clock.physicsRate = rate;
+    // The pre-timeline spring step of the frame the sampler read in (PHYSICS_READ_POINT): null when not run.
+    record.clock.readPointStep = result.readPointStep ?? null;
+  }
   if (Math.abs((values.clock?.directorTime ?? NaN) - request.t) > 1e-9) {
     (values.errors ||= []).push({ at: 'clock', error: `editor time ${values.clock?.directorTime} != requested ${request.t}` });
   }
@@ -627,8 +718,10 @@ async function prepareLiveView(page, viewport) {
 }
 
 // Evaluates every game record at every phase; pure records in batches.
-async function capturePage(page, game, { phases, preroll, rate, batchSize = 100, keys = null, grid = null, stampRate = rate }) {
-  const requests = planRequests(game, phases);
+async function capturePage(page, game, { phases, preroll, rate, batchSize = 100, keys = null, grid = null, stampRate = rate,
+  history = null, readPoint = 'update' }) {
+  const requests = planRequests(game, phases, { readPoint });
+  await setFrameHistory(page, history);
   const results = new Map();
   const pureStart = Date.now();
   const pure = requests.filter((request) => !request.physics), physics = requests.filter((request) => request.physics);
@@ -682,6 +775,10 @@ async function run() {
   assert(SPRINGS.ORDERS.includes(order), '--physics-order is game or same-frame');
   const gridMode = options['physics-grid'] ?? 'game';
   assert(['game', 'clock', 'rule'].includes(gridMode), '--physics-grid is game, clock or rule');
+  const historyMode = options['frame-history'] ?? 'game';
+  assert(['game', 'none'].includes(historyMode), '--frame-history is game or none');
+  const readPoint = options['physics-read-point'] ?? 'update';
+  assert(PHYSICS_READ_POINTS.includes(readPoint), '--physics-read-point is update or none');
   const batchSize = Number(options.batch ?? 100);
   assert(Number.isInteger(batchSize) && batchSize > 0, '--batch is a positive integer');
   const manifest = capture.readManifest(options.manifest);
@@ -735,7 +832,11 @@ async function run() {
       const value = MVStudio.getState().project;
       return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [] };
     });
-    const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target });
+    const history = historyMode === 'game' ? gameFrameTimes(game) : null;
+    physics.frameHistory = history ? history.length : null;
+    physics.readPoint = readPoint;
+    const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target,
+      history, readPoint });
     timing.importSeconds = importSeconds;
     const webgl = await capture.rendererInfo(page);
     const producer = { name: 'mv_runtime_capture.js', modtools: { commit: capture.gitHead(MODTOOLS), dirty: capture.gitDirty(MODTOOLS) },
@@ -767,5 +868,5 @@ if (require.main === module) run().catch((error) => { console.error(error.stack 
 module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planRequests, filterFor, stageNodeKey, editorRecord, rendererSelector,
   gameSuits, suitPlan, pinCostumes, checkCostumes,
   qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
-  gameFrames, gameFrameTimes, prerollTimes, memberMeshAlias,
+  gameFrames, gameFrameTimes, recordedFrameTimes, setFrameHistory, prerollTimes, memberMeshAlias, PHYSICS_READ_POINTS,
   prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };

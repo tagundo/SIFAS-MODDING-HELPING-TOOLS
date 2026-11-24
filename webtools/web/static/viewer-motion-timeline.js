@@ -773,6 +773,65 @@
     // frame before it. A continuing playback frame keeps that lag; a seek
     // cannot know its previous frame and applies the weights of its own pose.
     var laggedGaze = null;
+    // The cheek floats and keyword the last cheek() call left (undefined before
+    // the first one; null is ResetAll's state).
+    var lastCheek;
+    function cheekApplied(event, amount, enabled) {
+      return { index: event.index, intensity: Math.fround(Math.fround(number(event.intensity, 0)) * Math.fround(amount)), enabled: enabled };
+    }
+    function cheekOff(state) { return { index: state.index, intensity: state.intensity, enabled: false }; }
+    function cheekWeight(event, time) { return weightWithTiming(event, time, getTiming(event)); }
+    // One MemberCheekMixer.Process pass at `time`: every input with a non-zero
+    // weight applies in input order, so the last one wins; null when none ran.
+    function cheekAt(time, weightOf) {
+      var state = null;
+      timedRecords(cheekEvents, time).forEach(function (event) {
+        var amount = weightOf(event);
+        if (amount > 0) state = cheekApplied(event, amount, true);
+      });
+      return state;
+    }
+    // Index of the last frame time below `limit` in an ascending list.
+    function lastFrameBelow(frames, limit) {
+      var low = 0, high = frames.length;
+      while (low < high) {
+        var mid = (low + high) >>> 1;
+        if (frames[mid] < limit) low = mid + 1;
+        else high = mid;
+      }
+      return low - 1;
+    }
+    // The floats a seek to `time` finds when no cheek input is active there:
+    // those of the last rendered frame (history, ascending director times
+    // before `time`) in which a clip was processed, with _CHEEK_ON off. That
+    // frame is known when the history covers the clip from its start, or when
+    // a listed frame follows the last listed frame inside it. Otherwise (the
+    // history starts inside the clip and ends there too, or starts after it)
+    // the clip's end is used: an unevidenced choice, as for a seek without
+    // frames, since the game never seeks an MV.
+    function replayedCheek(time, history) {
+      var frames = history.filter(function (value) { return Number.isFinite(value) && value < time - 1e-9; });
+      var first = frames.length ? frames[0] : Infinity, latest = -Infinity, state = null;
+      cheekEvents.forEach(function (event) {
+        var end = event.start + event.duration;
+        if (!(event.start < time)) return;
+        var index = lastFrameBelow(frames, Math.min(time - 1e-9, end + 1e-9));
+        while (index >= 0 && frames[index] >= event.start && !(cheekWeight(event, frames[index]) > 0)) index -= 1;
+        var inside = index >= 0 && frames[index] >= event.start;
+        if (first <= event.start || (inside && index < frames.length - 1)) {
+          if (inside && frames[index] > latest) {
+            var frame = frames[index];
+            latest = frame;
+            state = cheekOff(cheekAt(frame, function (other) { return cheekWeight(other, frame); }));
+          }
+          return;
+        }
+        if (!(end <= time) || end < latest || !(number(event.weight, 1) > 0)) return;
+        latest = end;
+        state = cheekApplied(event, cheekWeight(event, end), false);
+      });
+      return state;
+    }
     function evaluateGaze(time, context, frame) {
       context = context || (options.getGazeContext ? options.getGazeContext() : {});
       var requests = [];
@@ -816,30 +875,26 @@
         evaluatePose(time);
         evaluateGaze(time);
       },
-      // MemberCheekMixer.Process runs per active input: ApplyEnable(true), then
-      // ApplyCheek(cheekType, intensity * weight) overwrites the material, so the
-      // last active input wins. PostProcess only disables _CHEEK_ON when no input
-      // ran; the floats keep the last applied values. During playback that is the
-      // end of the latest finished clip, which is used here so a seek gives the
-      // same values. Before any clip ResetAll's 0/0 stays (null).
-      cheek: function (time) {
+      // MemberCheekMixer.Process (0x26e9214) runs per active input:
+      // ApplyEnable(true), then ApplyCheek(cheekType, intensity * weight)
+      // overwrites the material, so the last active input wins. PostProcess
+      // (0x26e9344) only disables _CHEEK_ON when no input ran: the floats keep
+      // the values of the last frame a clip was processed in, which inside an
+      // eased-out clip is that frame's faded weight, not 0. `clock` is the
+      // scene's frame clock ({ advancing, history }): an advancing playback frame
+      // keeps the floats the previous frame left; a seek given the game's
+      // rendered frame times (history, e.g. a runtime dump's frame grid) replays
+      // the last of them inside a clip. A seek without them uses the end of the
+      // latest finished clip (the game never seeks an MV; no frame grid to
+      // follow). Before any processed clip ResetAll's 0/0 stays (null).
+      cheek: function (time, clock) {
         beginSample(time, false);
-        var state = null;
-        function applied(event, amount, enabled) {
-          return { index: event.index, intensity: Math.fround(Math.fround(number(event.intensity, 0)) * Math.fround(amount)), enabled: enabled };
+        var state = cheekAt(time, function (event) { return sampleWeight(event, time); });
+        if (!state) {
+          if (clock && clock.advancing === true && lastCheek !== undefined) state = lastCheek && cheekOff(lastCheek);
+          else state = replayedCheek(time, clock && Array.isArray(clock.history) ? clock.history : []);
         }
-        timedRecords(cheekEvents, time).forEach(function (event) {
-          var amount = sampleWeight(event, time);
-          if (amount > 0) state = applied(event, amount, true);
-        });
-        if (state) return state;
-        var latest = -Infinity;
-        cheekEvents.forEach(function (event) {
-          var end = event.start + event.duration;
-          if (!(end <= time) || end < latest || !(number(event.weight, 1) > 0)) return;
-          latest = end;
-          state = applied(event, weightWithTiming(event, end, getTiming(event)), false);
-        });
+        lastCheek = state;
         return state;
       },
       getGazeState: function () { return Object.assign(gaze.getState(), { retargeted: retargetedGaze, sourceOwner: retargetedGaze ? modelGaze.owner : descriptor.targetCharacter || null }); },

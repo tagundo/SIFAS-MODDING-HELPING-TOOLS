@@ -71,6 +71,7 @@ function fixture(visible = true, options = {}) {
       mesh.name = `model-${id}`;
       mesh.bind(rig, new THREE.Matrix4());
       root.add(bone, mesh, auxiliary);
+      options.build?.(root, id);
       const info = { mesh, rig, bone, auxiliary, releases: 0, materialsReleased: 0 };
       rig.dispose = () => { info.releases++; };
       models.set(id, info);
@@ -126,6 +127,9 @@ function fixture(visible = true, options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-asset-dump.js'), 'utf8'), context);
   if (options.lighting) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-lighting.js'), 'utf8'), context);
+  }
+  if (options.axisBillboard) {
+    vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-axis-billboard.js'), 'utf8'), context);
   }
   const fades = [], shadows = [];
   if (options.memberShadow) {
@@ -560,6 +564,36 @@ async function checkMemberRimQuality() {
   f.app.dispose();
 }
 
+// A member prop's ambient mixer writes its LiveCoreMemberAmbient every frame, shown or not: the
+// CheckSame hold steps on hidden frames too, and the material takes the held color while shown.
+async function checkMemberPropHold() {
+  const f = fixture(true, { lighting: true }), value = project(57);
+  value.assets = [{ kind: 'props', previewUrl: address(58), attachment: { member: 1, binding: '/EntryPoint/Live/Props/Prop1' } }];
+  const shown = [];
+  f.window.MVStudioProps = { create(root) {
+    return { bind() {}, setTracks() {}, detach() {}, evaluate(time) { root.visible = !(time > 2.05 && time < 2.85); } };
+  } };
+  // alpha(t) = .2 + .01 t: 0.001 per 0.1 s frame, below the sqrt(1e-5) write threshold until four frames add up.
+  f.window.MVStudioPropLight = { create() {
+    return { setProject() {}, sample: (time) => ({ ambient: [0, 0, 0, .2 + .01 * time], tint: [1, 1, 1, 1] }) };
+  } };
+  await f.app.load(value);
+  f.app.seek(1, value, true);
+  f.app.setPlaying(true);
+  const info = f.models.get(58);
+  for (let step = 1; step <= 19; step++) {
+    const time = 1 + step / 10;
+    f.app.playbackFrame(time, step * 100, true);
+    shown.push([Math.round(time * 10) / 10, Math.round(info.liveLighting.ambient[3] * 1e6) / 1e6]);
+  }
+  // Written at 1.4, 1.8, 2.2 (hidden) and 2.6 (hidden); 2.9 is within the threshold of the 2.6 write.
+  assert.deepEqual(shown.find(([time]) => time === 2.9), [2.9, .226]);
+  assert.deepEqual(shown.find(([time]) => time === 2), [2, .218], 'the last color the material took before it was hidden');
+  assert.deepEqual(shown.find(([time]) => time === 2.5), [2.5, .218], 'a hidden prop keeps its material as it was');
+  f.app.setPlaying(false);
+  f.app.dispose();
+}
+
 // LiveCoreMemberManager.MemberMax = 12: lives such as 12074 bind Member10..Member12.
 async function checkTwelvePerformers() {
   const f = fixture(), value = project(70);
@@ -687,6 +721,195 @@ async function checkAssetDump() {
   f.app.dispose();
 }
 
+// AxisBillboard turns its nodes only when the scene draws; a deferred seek's stage
+// node dump reports the turn the live camera's draw gives (as renderers do).
+async function checkAssetDumpStageBillboard() {
+  const binding = '/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litB_All';
+  let cone = null;
+  const f = fixture(true, { axisBillboard: true, build(root, id) {
+    if (id !== 82) return;
+    const zrot = new THREE.Object3D();
+    zrot.userData.mvStageNode = { binding, path: 11 };
+    zrot.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), 2.03);
+    zrot.position.set(-14.4, 10.2, -2.8);
+    cone = new THREE.Object3D();
+    cone.userData.mvStageNode = { binding, path: 12 };
+    cone.userData.mvAxisBillboard = 1;
+    zrot.add(cone);
+    root.add(zrot);
+  } });
+  const value = project(81);
+  value.duration = 12;
+  value.stage = { glb: address(82) };
+  value.tracks = [{ id: 'cam', label: 'Camera/MainCamera', kind: 'camera', nativeClass: 'AnimationTrack',
+    binding: '/EntryPoint/Live/Cameras/MainCamera', events: [{ id: 'cam:0', start: 0, duration: 10, values: { keyframes: [
+      { time: 0, position: [1, 2, 10], rotation: [0, 0, 0, 1], fov: 30 },
+      { time: 10, position: [5, 3, 0], rotation: [0, 0, 0, 1], fov: 30 }] } }] }];
+  await f.app.load(value);
+  const node = () => JSON.parse(JSON.stringify(f.app.assetDump({ sections: ['stageNodes'] }))).stageNodes
+    .find((entry) => entry.crc === 12);
+  f.app.seek(4, value, true);
+  const deferred = node();
+  f.app.seek(4, value);
+  const drawn = node();
+  deferred.rotation.forEach((component, index) => assert(Math.abs(component - drawn.rotation[index]) < 1e-6,
+    `deferred stage node rotation ${deferred.rotation} matches the drawn turn ${drawn.rotation}`));
+  assert(Math.abs(Math.abs(new THREE.Quaternion(...drawn.rotation).dot(cone.parent.quaternion)) - 1) > 1e-3,
+    'the billboard turned the cone away from its parent');
+  f.app.seek(8, value, true);
+  const later = node();
+  f.app.seek(8, value);
+  later.rotation.forEach((component, index) => assert(Math.abs(component - node().rotation[index]) < 1e-6,
+    'a later deferred seek follows the moved live camera'));
+  f.app.dispose();
+}
+
+// A stage node dump says whether the live camera draws each AxisBillboard
+// (axisBillboardDrawn): shown, with a renderer, and its AxisBillboard.Start
+// bounds (x/z widened to max(sx, sz)) under the reported turn in the frustum.
+async function checkAssetDumpStageBillboardDrawn() {
+  const binding = '/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litB_All';
+  const holders = {}, cones = {};
+  const f = fixture(true, { axisBillboard: true, build(root, id) {
+    if (id !== 82) return;
+    const add = (name, path, size, mesh = true) => {
+      const holder = new THREE.Object3D();
+      holder.userData.mvStageNode = { binding, path };
+      const cone = mesh ? new THREE.Mesh(new THREE.BoxGeometry(...size), new THREE.MeshBasicMaterial()) : new THREE.Object3D();
+      cone.userData.mvStageNode = { binding, path: path + 1 };
+      cone.userData.mvAxisBillboard = 1;
+      holder.add(cone);
+      root.add(holder);
+      (holders[name] ||= []).push(holder);   // every parse of the stage model
+      (cones[name] ||= []).push(cone);
+    };
+    add('front', 20, [0.4, 2, 0.4]);
+    add('behind', 30, [0.4, 2, 0.4]);
+    add('hidden', 40, [0.4, 2, 0.4]);
+    add('bare', 50, null, false);
+    add('edge', 60, [6, 2, 0.01]);
+    // Deep rather than wide (sz > sx): only max(sx, sz) widens x past the 1 cm the cone has.
+    add('deep', 90, [0.01, 2, 6]);
+    // A 12035 cone: the AxisBillboard node is a group whose renderer is a child mesh node of the same name.
+    add('group', 70, null, false);
+    const part = new THREE.Mesh(new THREE.BoxGeometry(.4, 2, .4), new THREE.MeshBasicMaterial());
+    part.name = 'cone_1';
+    part.userData.name = cones.group.at(-1).userData.name = 'cone';
+    cones.group.at(-1).add(part);
+    // A differently named child is another GameObject's renderer, not the billboard's.
+    add('other', 80, null, false);
+    const other = new THREE.Mesh(new THREE.BoxGeometry(.4, 2, .4), new THREE.MeshBasicMaterial());
+    other.userData.name = 'lens';
+    cones.other.at(-1).userData.name = 'cone';
+    cones.other.at(-1).add(other);
+    const child = new THREE.Object3D();
+    child.userData.mvStageNode = { binding, path: 22 };
+    cones.front.at(-1).add(child);
+  } });
+  const value = project(81);
+  value.duration = 12;
+  value.stage = { glb: address(82) };
+  value.tracks = [{ id: 'cam', label: 'Camera/MainCamera', kind: 'camera', nativeClass: 'AnimationTrack',
+    binding: '/EntryPoint/Live/Cameras/MainCamera', events: [{ id: 'cam:0', start: 0, duration: 10, values: { keyframes: [
+      { time: 0, position: [1, 2, 10], rotation: [0, 0, 0, 1], fov: 30 },
+      { time: 10, position: [5, 3, 0], rotation: [0, 0, 0, 1], fov: 30 }] } }] }];
+  await f.app.load(value);
+  f.app.seek(4, value, true);
+  const camera = f.app.assetDump({ sections: ['cameras'] }).cameras.find((entry) => entry.key === 'camera:main');
+  const toWorld = new THREE.Matrix4().fromArray(camera.worldToCamera).invert();
+  // Camera space looks down -z; the frustum's half width at depth 10 is 10 tan(fov/2) aspect.
+  const halfWidth = 10 * Math.tan(camera.fieldOfView * Math.PI / 360) * camera.aspect;
+  const at = (name, x, z) => holders[name].forEach((holder) => holder.position.copy(new THREE.Vector3(x, 0, z).applyMatrix4(toWorld)));
+  at('front', 0, -10);
+  at('behind', 0, 10);
+  at('hidden', 0, -10);
+  at('bare', 0, -10);
+  at('group', 0, -10);
+  at('other', 0, -10);
+  // A 6 m wide, flat cone turned toward the camera from twice the half width: its own bounds stay outside the
+  // right plane, the widened (6 x 2 x 6) bounds reach into the view.
+  at('edge', 2 * halfWidth, -10);
+  // A 6 m deep, 1 cm wide cone at the same place: its own bounds (and x/z widened to sx) stay outside, the
+  // widened (6 x 2 x 6) bounds reach into the view.
+  at('deep', 2 * halfWidth, -10);
+  cones.hidden.forEach((cone) => { cone.visible = false; });
+  for (const holder of Object.values(holders).flat()) {
+    holder.updateMatrix();   // the stage keeps matrixAutoUpdate off on its nodes
+    holder.parent.updateMatrixWorld(true);
+  }
+  const nodes = new Map(JSON.parse(JSON.stringify(f.app.assetDump({ sections: ['stageNodes'] }))).stageNodes
+    .map((entry) => [entry.crc, entry]));
+  const drawn = (crc) => nodes.get(crc)?.axisBillboardDrawn;
+  assert.equal(drawn(21), true, 'a cone in front of the live camera is drawn');
+  assert.equal(drawn(22), true, 'a node below a drawn billboard reports its billboard');
+  assert.equal(drawn(31), false, 'a cone behind the camera is not drawn');
+  assert.equal(drawn(41), undefined, 'a hidden cone is not turned (MVStudioAxisBillboard skips it), so it reports nothing');
+  assert.equal(drawn(51), false, 'a billboard without a renderer is never drawn');
+  assert.equal(drawn(61), true, 'AxisBillboard.Start widens x/z to max(sx, sz)');
+  assert.equal(drawn(91), true, 'AxisBillboard.Start widens x/z to max(sx, sz) when sz is the larger side');
+  assert.equal(drawn(71), true, 'the renderer on a child mesh node of the same name');
+  assert.equal(drawn(81), false, "another GameObject's renderer below the billboard");
+  assert.equal(nodes.get(20).axisBillboard, undefined, 'the parent is not a billboard');
+  assert.equal(drawn(20), undefined);
+  f.app.dispose();
+}
+
+// The particle culling view (Automatic / Pause culling) counts every camera that
+// draws the frame: inside a LiveSplitScreenClip the enabled sub cameras, plus the
+// main camera when the clip keeps it on. Its key follows the split data and the
+// split_screen quality, so the visibility pass restarts when either changes.
+async function checkParticleCullingSplitCameras() {
+  const updates = [];
+  const f = fixture(true);
+  f.window.MVStudioParticleSystems = { async apply() {
+    return { update(time, _project, view) { updates.push({ time, view }); }, dispose() {} };
+  } };
+  const effect = '/EntryPoint/Live/Cameras/SplitScreenEffect';
+  const pointer = { m_FileID: 0, m_PathID: '-42' };
+  const mask = { positions: [1,-1,.01, -1,-1,.01, -1,1,.01, 1,1,.01], indices: [0,1,2,0,2,3], uv: [1,0,0,0,0,1,1,1], bounds: [2,1] };
+  const clip = { id: 'split:0', start: 4, duration: 2, values: { playableClass: 'LiveSplitScreenClip', mainCamera: 0, subCamera1: 1,
+    mask1: pointer } };
+  const value = project(81);
+  value.duration = 12;
+  value.stage = { glb: address(82) };
+  value.quality = { values: { split_screen: true } };
+  value.splitScreen = { masks: { mask }, events: { 'split:0': [{ key: 'mask', pointer }, null, null, null] } };
+  value.tracks = [{ id: 'cam', label: 'Camera/MainCamera', kind: 'camera', nativeClass: 'AnimationTrack',
+    binding: '/EntryPoint/Live/Cameras/MainCamera', events: [{ id: 'cam:0', start: 0, duration: 10, values: { keyframes: [
+      { time: 0, position: [1, 2, 10], rotation: [0, 0, 0, 1], fov: 30 }] } }] },
+  { id: 'split', kind: 'other', nativeClass: 'LiveSplitScreenTrack', binding: effect, events: [clip] },
+  { id: 'sub1', label: 'SubCamera1', kind: 'camera', nativeClass: 'AnimationTrack', binding: `${effect}/Cameras/SubCamera1`,
+    events: [{ id: 'sub1:0', start: 0, duration: 10, values: { keyframes: [{ time: 0, position: [7, 1, -3], rotation: [0, 0, 0, 1], fov: 40 }] } }] }];
+  await f.app.load(value);
+  const viewAt = (time, next = value) => {
+    f.app.seek(time, next, true);
+    const { view } = updates.at(-1);
+    assert.equal(updates.at(-1).time, time);
+    return view;
+  };
+  const outside = viewAt(2);
+  const main = outside.camerasAt(2);
+  assert.equal(main.length, 1, 'outside the split clip only the main camera draws');
+  const inside = viewAt(5);
+  assert.equal(inside.key, outside.key, 'the same project keeps the visibility pass');
+  const subs = inside.camerasAt(5);
+  assert.equal(subs.length, 1, 'mainCamera 0: only the sub camera draws');
+  assert.notEqual(subs[0], main[0]);
+  assert.equal(subs[0].aspect, 2, 'the sub camera takes its mask aspect');
+  assert.deepEqual([subs[0].near, subs[0].far], [.1, 1000]);
+  clip.values.mainCamera = 1;
+  assert.equal(inside.camerasAt(5).length, 2, 'mainCamera 1: the sub camera and the main camera');
+  clip.values.mainCamera = 0;
+  // New split data or the split_screen quality restart the pass (a new key).
+  const moved = viewAt(5, { ...value, splitScreen: { ...value.splitScreen } });
+  assert.notEqual(moved.key, inside.key, 'new split data gives a new key');
+  const off = viewAt(5, { ...value, splitScreen: moved.split, quality: { values: { split_screen: false } } });
+  assert.notEqual(off.key, moved.key, 'the split_screen quality gives a new key');
+  assert.equal(off.camerasAt(5).length, 1, 'split screen off: the main camera only');
+  assert.notEqual(off.camerasAt(5)[0], subs[0]);
+  f.app.dispose();
+}
+
 // The member culler hides the actor root in the editor; the dump reports it as
 // "culled" with node visibility unchanged, and reading it changes nothing.
 async function checkAssetDumpCuller() {
@@ -777,12 +1000,16 @@ function checkAssetDumpHelpers() {
   await checkNativeRenderHeight();
   await checkAdaptivePreview();
   await checkAssetDump();
+  await checkAssetDumpStageBillboard();
+  await checkAssetDumpStageBillboardDrawn();
+  await checkParticleCullingSplitCameras();
   await checkAssetDumpCuller();
   checkAssetDumpHelpers();
   await checkNativeCamera();
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
   await checkMemberRimQuality();
+  await checkMemberPropHold();
   await checkOriginalEndHold();
   await checkShadowPrefabRelease();
   await checkTwelvePerformers();

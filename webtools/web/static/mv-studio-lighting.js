@@ -50,6 +50,40 @@
     return left * right;
   }
 
+  // UtilColor.CheckSame (0x2960e4c) is true when the squared RGBA distance of two
+  // colors is below 1e-5 (the float at 0x56f60fc). The ambient components
+  // (LiveCoreMemberAmbient.ApplyAmbientColor 0x2f670cc and ApplyTintColor,
+  // LiveCoreStageAmbient.ApplyAmbientColor/ApplyTintColor 0x2f70788/ApplyBlendColor,
+  // and their ApplyDefault* writers) compare the new color with the one they last
+  // wrote and skip Material.SetColor when CheckSame holds, so a slowly changing
+  // color stays at the last written value until it moves by sqrt(1e-5). The
+  // material therefore depends on the rendered frames: `frames` is the scene's
+  // frame clock ({advancing, history}); an advancing frame continues the held
+  // color, otherwise the history (earlier rendered frame times, ascending) is
+  // replayed from an unwritten component and an empty history writes the exact
+  // color. valueAt(time) returns the component's color at that time or null when
+  // it writes nothing (the hold then restarts).
+  const HOLD_EPSILON = Math.fround(1e-5);
+
+  function holdStep(hold, color) {
+    if (!rgba(color)) {
+      hold.color = null;
+      return color;
+    }
+    let distance = 0;
+    if (hold.color) for (let channel = 0; channel < 4; channel++) distance += (color[channel] - hold.color[channel]) ** 2;
+    if (!hold.color || distance >= HOLD_EPSILON) hold.color = color.slice(0, 4);
+    return hold.color;
+  }
+
+  function heldColor(hold, valueAt, seconds, frames) {
+    if (!frames?.advancing) {
+      hold.color = null;
+      for (const time of frames?.history || []) holdStep(hold, valueAt(time));
+    }
+    return holdStep(hold, valueAt(seconds));
+  }
+
   function multiply(a, b) { return a.map((channel, index) => channel * b[index]); }
 
   function add(target, source, weight) {
@@ -156,6 +190,11 @@
       }
     }
     return {
+      // LiveBaseLightReciever also writes the ambient components (through the same
+      // CheckSame-gated ApplyBase*Color). Which mixer writes last in a frame is not
+      // established, so the holds are not applied while a base light track exists
+      // (an unevidenced choice: the colors stay exact).
+      baseTrack: !!baseTrack,
       baseAmbient: base?.ambient ?? null, baseTint: base?.tint || white,
       member(position) {
         if (!base && !ambient.has(position) && !rim.has(position)) return null;
@@ -166,5 +205,5 @@
     };
   }
 
-  global.MVStudioLighting = { nativeWeight, memberColor, sample };
+  global.MVStudioLighting = { nativeWeight, memberColor, sample, heldColor, HOLD_EPSILON };
 })(typeof window !== "undefined" ? window : globalThis);

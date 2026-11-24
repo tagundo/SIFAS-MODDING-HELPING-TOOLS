@@ -84,9 +84,13 @@ PICTURE_CAMERAS = {"camera:overlay"}
 SHADER_MATERIAL_PROPERTIES = {"_TintColor", "_AmbientColor", "_BlendColor", "_RimlightColor", "_RimlightDirection",
                               "_RimglightIntensity", "_RimglightPower", "_BeatLength", "_RandomBrightness",
                               "_RandomSwingIntensity", "_RandomDelay", "_RandomUp"}
-# AS/Member cheek floats are only read under the _CHEEK_ON keyword; with _CHEEK 0 the mixer keeps the last
-# applied floats (MemberCheekMixer.PostProcess), whose value depends on the last rendered frame inside the clip.
-CHEEK_FLOATS = {"_CheekIntensity", "_CheekTexArrayIndex"}
+# AS/Member cheek: MemberCheekBase writes _CheekIntensity/_CheekTexArrayIndex with Material.SetFloat (ApplyCheek
+# 0x27c4ccc) and toggles only the _CHEEK_ON keyword (ApplyEnable 0x27c4c14); MemberCheekMixer.PostProcess (0x26e9344)
+# turns the keyword off and keeps the floats of the last frame a clip was processed in. The [Toggle] float _CHEEK is
+# never written by the client and is no uniform of the compiled shader, so it does not tell whether the cheek is drawn:
+# the floats are compared as the material holds them, and the drawn variant through the game's keywords (renderer
+# material slots, compare_member_variant).
+CHEEK_TOGGLE = "_CHEEK"
 # Editor shader uniforms named after their role rather than the Unity property (AS/FlashLight _Speed/_Length,
 # AS/General/Transparent and AS/FlashLight _TintColor). uTextureST is _MainTex's scale/offset (textureSTSpace).
 SHADER_UNIFORM_ALIASES = {"uTint": "_TintColor", "uSpeed": "_Speed", "uLength": "_Length"}
@@ -95,6 +99,17 @@ VECTOR_GLOBALS = {"_RenderTextureResolution"}   # compared on .v (x, y), exact
 # worldToCamera is column-major: elements 12-14 are its translation in metres, compared with the
 # camera position tolerance; the other elements are unitless rotation and projective terms.
 W2C_TRANSLATION = (12, 13, 14)
+# LiveCoreStageEffect.Initialize (0x2f6f4c4) gives every AxisBillboard below the stage effect its camera targets
+# (0x2f6fa68: the main camera's and the stage display camera's transforms). AxisBillboard.OnWillRenderObject
+# (0x27bf944) turns the Transform about its own up axis (RunAxisBillboardY 0x27bfc14) only when Camera.current is a
+# target or, with split screen on, one of LiveSplitScreenEffect.SubCameraTransforms: a cone no target camera draws
+# keeps the turn of its last draw while its Animator parents move on. Its up axis (the beam) is the parents' and
+# is compared on every sample; the turn about it is draw history. A game renderers record says whether the camera
+# drew it (isVisible); a stage node record does not, so a billboard stage node keeps the whole comparison only where
+# the editor reports that the live camera draws it (axisBillboardDrawn, with the live camera's turn), and is compared
+# on its up axis elsewhere.
+AXIS_BILLBOARD_CLASS = "LLAS.Components.AxisBillboard.AxisBillboard"
+STAGE_EFFECT_CLASS = "LLAS.Scene.Live.Components.LiveCoreStageEffect"
 
 
 class DumpError(ValueError):
@@ -137,6 +152,20 @@ def qlog_deg(a, b):
         return [0.0, 0.0, 0.0]
     angle = math.degrees(2 * math.atan2(length, w))
     return [x / length * angle, y / length * angle, z / length * angle]
+
+
+def qrotate(q, v):
+    """Vector v rotated by the unit quaternion q (x, y, z, w)."""
+    x, y, z, w = qnorm(q)
+    tx, ty, tz = 2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])
+    return [v[0] + w * tx + y * tz - z * ty, v[1] + w * ty + z * tx - x * tz, v[2] + w * tz + x * ty - y * tx]
+
+
+def axis_angle(a, b, axis=(0.0, 1.0, 0.0)):
+    """Angle in degrees between the local `axis` of two rotations: their swing, without the twist about that axis."""
+    u, v = qrotate(a, axis), qrotate(b, axis)
+    cross = math.sqrt((u[1] * v[2] - u[2] * v[1]) ** 2 + (u[2] * v[0] - u[0] * v[2]) ** 2 + (u[0] * v[1] - u[1] * v[0]) ** 2)
+    return math.degrees(math.atan2(cross, sum(x * y for x, y in zip(u, v))))
 
 
 def distance(a, b):
@@ -601,6 +630,7 @@ class Comparison:
         self.performer_mismatch = {}
         self.culling_masks = self._culling_masks()
         self.editor_catalog = self._editor_catalog()
+        self.axis_billboards = self._axis_billboards()
 
     # -- game- and editor-wide context
     def _member_roots(self):
@@ -636,6 +666,49 @@ class Comparison:
             best = min(self.culling_masks, key=lambda item: (abs(item[0] - t), abs((item[1] or 0) - (record.get("seq") or 0))))
             cache[ident] = (best[2], best[3])
         return cache[ident]
+
+    def _axis_billboards(self):
+        """GameObject paths below the stage effect root that carry an AxisBillboard (the keys' serialized
+        prefab:effect components). LiveCoreStageEffect.Initialize collects them with
+        GetComponentsInChildren<AxisBillboard>(true) on its own GameObject (0x2f6f554-0x2f6f568), so only rows at or
+        below a row that lists LiveCoreStageEffect count. The other prefab:effect roots (12035: fx_spo_are_01,
+        fx_spo_sha_01, fx_spo_sha_02) are not the Effect GameObject either; a billboard there never gets camera
+        targets (AxisBillboard.Initialize 0x27bff10 enables it only with targets) and keeps its full rotation."""
+        rows = (self.keys or {}).get("prefab:effect") or {}
+        components = {path: (row or {}).get("components") or [] for path, row in rows.items()}
+        effects = {path for path, names in components.items() if STAGE_EFFECT_CLASS in names}
+
+        def below_effect(path):
+            parts = path.split("/")
+            return any("/".join(parts[:end]) in effects for end in range(1, len(parts) + 1))
+
+        return {Conventions.editor_relative_path(path) for path, names in components.items()
+                if "/" in path and AXIS_BILLBOARD_CLASS in names and below_effect(path)}
+
+    def axis_billboard_role(self, path):
+        """'self' when the effect GameObject at the game path carries an AxisBillboard, 'below' when an ancestor
+        does, else None."""
+        if not self.axis_billboards or not isinstance(path, str) or not Conventions.SCOPE_ROOTS[0][1].match(path):
+            return None
+        parts = Conventions.game_relative_path(path, "effect").split("/")
+        if "/".join(parts) in self.axis_billboards:
+            return "self"
+        return "below" if any("/".join(parts[:end]) in self.axis_billboards for end in range(1, len(parts))) else None
+
+    def compare_billboard_transform(self, prefix, key, record, game, editor, role, near, field=None):
+        """Transform of an AxisBillboard node whose turn is draw history (see AXIS_BILLBOARD_CLASS): position,
+        scale and the up axis for the billboard itself; only scale below it (the turn moves its children)."""
+        game, editor = dict(game), dict(editor)
+        rotations = (game.pop("rotation", None), editor.pop("rotation", None))
+        if role == "below":
+            game.pop("position", None)
+            editor.pop("position", None)
+        self.compare_transform("transforms", prefix, key, record, game, editor, self.tol["stagePositionM"],
+                               self.tol["stageRotationDeg"], near, field)
+        if role == "self" and vector(rotations[0], 4) and vector(rotations[1], 4):
+            converted = self.quat(rotations[1])
+            self.add("transforms", prefix + "UpAxisDeg", key, record, rotations[0], converted, axis_angle(rotations[0], converted),
+                     self.tol["stageRotationDeg"], near_cut=near, field=f"{field} (AxisBillboard up axis)" if field else "AxisBillboard up axis")
 
     def _editor_catalog(self):
         """Every editor renderer (renderers parts and census) by key: scope, mesh, GameObject path."""
@@ -783,9 +856,13 @@ class Comparison:
     def timing_uncertain(self, record, phase):
         """Any record (frame or full part) whose Time.deltaTime was clamped to maximumDeltaTime while the director
         followed the music clock: the pose phase t + phase * deltaTime is not the neighbouring frame's time, so the
-        record is timing-uncertain at every phase but 0. Each record is noted once."""
+        record is timing-uncertain at every phase but 0, unless the editor evaluated that phase at the director time the
+        dump recorded for the neighbouring frame (clock.phaseSource "recorded"). Each record is noted once."""
         dt = (record.get("clock") or {}).get("deltaTime")
         if self.identity or phase == 0 or not number(dt) or dt < MAX_DELTA_TIME - 1e-6:
+            return False
+        partner = self.partner(record, phase)
+        if ((partner or {}).get("clock") or {}).get("phaseSource") == "recorded":
             return False
         if record.get("id") not in self.notes["timing.clampedDeltaTime"]:
             self.notes["timing.clampedDeltaTime"].append(record.get("id"))
@@ -940,16 +1017,19 @@ class Comparison:
             self.add("globals", "globalAbs", key, record, game_value["f"], editor_value["f"], abs(game_value["f"] - editor_value["f"]), tol,
                      near_cut=near, field=editor_value.get("from"))
 
-    def compare_transform(self, type_, prefix, key, record, game, editor, tol_position, tol_rotation, near):
+    def compare_transform(self, type_, prefix, key, record, game, editor, tol_position, tol_rotation, near, field=None):
         if vector(game.get("position"), 3) and vector(editor.get("position"), 3):
             converted = self.pos(editor["position"])
-            self.add(type_, prefix + "PositionM", key, record, game["position"], converted, distance(game["position"], converted), tol_position, near_cut=near)
+            self.add(type_, prefix + "PositionM", key, record, game["position"], converted, distance(game["position"], converted), tol_position,
+                     near_cut=near, field=field)
         if vector(game.get("rotation"), 4) and vector(editor.get("rotation"), 4):
             converted = self.quat(editor["rotation"])
-            self.add(type_, prefix + "RotationDeg", key, record, game["rotation"], converted, qangle(game["rotation"], converted), tol_rotation, near_cut=near)
+            self.add(type_, prefix + "RotationDeg", key, record, game["rotation"], converted, qangle(game["rotation"], converted), tol_rotation,
+                     near_cut=near, field=field)
         if vector(game.get("lossyScale"), 3) and vector(editor.get("lossyScale"), 3):
             error = max(abs(g - e) / max(abs(e), 1e-9) for g, e in zip(game["lossyScale"], editor["lossyScale"]))
-            self.add(type_, prefix + "ScaleRel", key, record, game["lossyScale"], editor["lossyScale"], error, self.tol["scaleRel"], near_cut=near)
+            self.add(type_, prefix + "ScaleRel", key, record, game["lossyScale"], editor["lossyScale"], error, self.tol["scaleRel"],
+                     near_cut=near, field=field)
 
     def join_renderer(self, game_renderer):
         """Editor key of a game renderer on (scope, GameObject path), schema 1.5:
@@ -1090,11 +1170,15 @@ class Comparison:
             else:
                 game_transform = dict(game_renderer.get("transform") or {})
                 editor_transform = dict(editor_renderer.get("transform") or {})
-                if billboard_offscreen:
-                    game_transform.pop("rotation", None)
-                    editor_transform.pop("rotation", None)
-                self.compare_transform("transforms", "renderer", key, record, game_transform,
-                                       editor_transform, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
+                role = self.axis_billboard_role(game_renderer.get("path")) if billboard_offscreen else None
+                if role:
+                    self.compare_billboard_transform("renderer", key, record, game_transform, editor_transform, role, near)
+                else:
+                    if billboard_offscreen:
+                        game_transform.pop("rotation", None)
+                        editor_transform.pop("rotation", None)
+                    self.compare_transform("transforms", "renderer", key, record, game_transform,
+                                           editor_transform, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
             editor_slots = {item.get("slot"): item for item in editor_renderer.get("materials") or []}
             for slot in game_renderer.get("materials") or []:
                 editor_slot = editor_slots.get(slot.get("slot"))
@@ -1105,6 +1189,10 @@ class Comparison:
                     same = Conventions.object_name(slot["name"]) == Conventions.object_name(editor_name)
                     self.add("materials", "slotName", f"{key}#{slot.get('slot')}", record, slot["name"], editor_name, int(not same), 0,
                              exact=True, near_cut=near)
+                    # The game reads Material.shaderKeywords per renderer slot: the drawn AS/Member variant
+                    # (_CHEEK_ON among them) is compared there.
+                    if same:
+                        self.compare_member_variant(f"material:{key}#{slot.get('slot')}", record, slot, editor_slot, near)
             if number(game_renderer.get("isVisible")) or isinstance(game_renderer.get("isVisible"), bool):
                 self.notes["visibility.isVisible"].append(bool(game_renderer["isVisible"]))
 
@@ -1170,29 +1258,15 @@ class Comparison:
                 score, error = component, delta
         self.add("materials", "floatScore", key, record, game_value, editor_value, score, 1.0, near_cut=near, field=f"{name} (abs {error:.3g})")
 
-    def drawn_game_material(self, game_material):
-        """The game material with the properties its drawn variant reads: AS/Member reads the cheek floats only
-        under _CHEEK_ON. With _CHEEK 0, MemberCheekMixer.PostProcess keeps the floats of the last frame it applied
-        inside a cheek clip, which depend on the device frame grid and are never drawn: the drawn cheek intensity
-        is 0, which the editor's drawn intensity must match, and the texture-array index is not read."""
+    def cheek_toggle_note(self, game_material):
+        """The AS/Member [Toggle] float _CHEEK is serialized but never written at runtime and is no uniform of the
+        compiled shader (MemberCheekBase toggles only the _CHEEK_ON keyword): it is listed, not read as the
+        keyword state, and the cheek floats are compared as the material holds them."""
         properties = game_material.get("properties") or {}
-        if self.identity or value_of(properties.get("_CHEEK")) != 0 or not CHEEK_FLOATS & set(properties):
-            return game_material
-        self.notes["materials.cheekKeywordOff"].extend(sorted(CHEEK_FLOATS & set(properties)))
-        drawn = {name: value for name, value in properties.items() if name not in CHEEK_FLOATS}
-        if "_CheekIntensity" in properties:
-            drawn["_CheekIntensity"] = {"t": "float", "v": 0.0, "from": "_CHEEK 0: no cheek drawn"}
-        return dict(game_material, properties=drawn)
-
-    @staticmethod
-    def drawn_editor_cheek(editor_material, editor_properties):
-        """An AS/Member editor material draws the cheek only under its _CHEEK_ON variant: without it the drawn
-        cheek intensity is 0 whatever the uniform holds."""
-        keywords = editor_material.get("keywords")
-        intensity = editor_properties.get("_CheekIntensity")
-        if editor_material.get("kind") == "member" and isinstance(keywords, list) and "_CHEEK_ON" not in keywords and \
-                isinstance(intensity, dict) and intensity.get("v") != 0:
-            editor_properties["_CheekIntensity"] = dict(intensity, v=0.0, **{"from": f"{intensity.get('from')} (no _CHEEK_ON: not drawn)"})
+        if not self.identity and CHEEK_TOGGLE in properties and "_CheekIntensity" in properties:
+            label = f"{game_material.get('name')}: {CHEEK_TOGGLE} {value_of(properties.get(CHEEK_TOGGLE))!r}"
+            if label not in self.notes["materials.cheekToggleNotKeyword"]:
+                self.notes["materials.cheekToggleNotKeyword"].append(label)
 
     def editor_material_properties(self, editor_material, game_material, editor_properties):
         """Unity properties of an editor material beyond its mapped `properties`, and the curve-driven ones removed.
@@ -1239,7 +1313,7 @@ class Comparison:
     def compare_materials(self, record, partner, near):
         editor_materials = by_key(partner.get("materials"))
         for game_material in record.get("materials") or []:
-            game_material = self.drawn_game_material(game_material)
+            self.cheek_toggle_note(game_material)
             for use in game_material.get("usedBy") or []:
                 renderer_key, _, slot = str(use).rpartition("#")
                 editor_renderer = self.renderer_map.get(renderer_key)
@@ -1255,8 +1329,6 @@ class Comparison:
                     unity = Conventions.material_property(name)
                     if unity:
                         editor_properties[unity] = prop
-                if not self.identity:
-                    self.drawn_editor_cheek(editor_material, editor_properties)
                 values = editor_material.get("values") or {}
                 key = f"material:{renderer_key}#{slot}"
                 if editor_material.get("visible") is False:
@@ -1336,11 +1408,32 @@ class Comparison:
             editor_node = editor_nodes.get(key)
             if not editor_node:
                 continue
+            # The key's #crc is crc32 of the path below the binding; name that path so same-named nodes read apart.
+            field = (node.get("relPath") or None) if not self.identity else editor_node.get("name")
             game_visible = node.get("visible") if self.identity else node.get("activeInHierarchy", node.get("visible"))
             if isinstance(game_visible, bool) and isinstance(editor_node.get("visible"), bool):
                 self.add("visibility", "stageNodeVisible", key, record, game_visible, editor_node["visible"],
                          int(game_visible != editor_node["visible"]), 0, exact=True, near_cut=near)
-            self.compare_transform("transforms", "stageNode", key, record, node, editor_node, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
+            role = None
+            if not self.identity:
+                binding, rel = node.get("binding"), node.get("relPath")
+                role = self.axis_billboard_role(f"{binding}/{rel}" if rel else binding)
+                if role is None and editor_node.get("axisBillboard") is True:
+                    role = "flagged"     # the editor's flag (a billboard or below one) without the serialized components
+            if role and editor_node.get("axisBillboardDrawn") is True:
+                # The editor reports the live camera's turn and that the live camera draws this billboard (its
+                # AxisBillboard.Start bounds meet the frustum): the game's OnWillRenderObject turned it toward that
+                # camera in the frame the record shows, so the whole transform is compared.
+                if editor_node.get("name") not in self.notes["transforms.stageNodeAxisBillboardDrawn"]:
+                    self.notes["transforms.stageNodeAxisBillboardDrawn"].append(editor_node.get("name"))
+            elif role:
+                # A stage node record has no draw state: the turn is the last target camera's draw (AXIS_BILLBOARD_CLASS).
+                if editor_node.get("name") not in self.notes["transforms.stageNodeAxisBillboard"]:
+                    self.notes["transforms.stageNodeAxisBillboard"].append(editor_node.get("name"))
+                self.compare_billboard_transform("stageNode", key, record, node, editor_node, role, near, field)
+                continue
+            self.compare_transform("transforms", "stageNode", key, record, node, editor_node, self.tol["stagePositionM"], self.tol["stageRotationDeg"],
+                                   near, field)
 
     def compare_members(self, record, partner, near):
         editor_members = {member.get("slot"): member for member in partner.get("members") or [] if isinstance(member, dict)}

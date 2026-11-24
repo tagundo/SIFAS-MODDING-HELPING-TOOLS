@@ -1,7 +1,8 @@
 """Device conventions of mv_runtime_compare.py found on the Max 3D (Quality 10) run of live 12035: runtime member
 meshes, the overlay camera, clamped deltaTime, AxisBillboard transforms, editor shader materials and curve-driven
-(MaterialPropertyBlock) properties, cheek floats under _CHEEK 0, the render-target size, particle systems,
+(MaterialPropertyBlock) properties, cheek floats whatever the _CHEEK toggle, the render-target size, particle systems,
 blend shapes joined by channel name and the per-part coverage of the game dump."""
+import math
 import sys
 import tempfile
 import unittest
@@ -108,6 +109,44 @@ class ClampedDeltaTest(unittest.TestCase):
         result.compare_particles(record, {"particles": [{"path": "fx_a/root/kira", "alive": 45}]}, result.timing_uncertain(record, -1))
         self.assertTrue(all(item["nearCut"] for item in result.items))
         self.assertEqual(result.notes["timing.clampedDeltaTime"], ["p1-particles-00"])
+
+
+class RecordedPhaseTest(unittest.TestCase):
+    def test_a_recorded_neighbour_frame_is_not_timing_uncertain(self):
+        # The capture evaluates phase -1 at the director time the dump recorded for frameCount - 1:
+        # a clamped deltaTime no longer hides that frame's time.
+        record = frame(5.0, 1 / 3)
+        partner = {"id": "e", "sourceRecord": "f5.0", "phase": -1,
+                   "clock": {"directorTime": 4.71, "phaseSource": "recorded"}}
+        game, editor = documents([record], [partner])
+        result = C.Comparison(game, editor)
+        self.assertFalse(result.timing_uncertain(game["records"][0], -1))
+        self.assertEqual(result.notes["timing.clampedDeltaTime"], [])
+        partner["clock"]["phaseSource"] = "deltaTime"
+        game, editor = documents([record], [partner])
+        self.assertTrue(C.Comparison(game, editor).timing_uncertain(game["records"][0], -1))
+
+
+class StageNodeBillboardTest(unittest.TestCase):
+    def test_axis_billboard_stage_node_rotation_is_not_compared(self):
+        # dump4 litB_05_bilcone: AxisBillboard.OnWillRenderObject keeps the turn of the last camera that drew it.
+        binding = "/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litB_All"
+        rel = "litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani/litB_05_bilcone"
+        key = C.Conventions.stage_node_key(binding, rel)
+        game, editor = documents([frame(5.0, 0.2)])
+        result = C.Comparison(game, editor)
+        record = {"id": "p3-stageNodes-00", "clock": {"directorTime": 89.422}, "stageNodes": [
+            {"binding": binding, "relPath": rel, "activeInHierarchy": True, "position": [16.165, 0.359, 2.31],
+             "rotation": [-0.015, 0.0461, 0.309, 0.9498], "lossyScale": [1, 1, 1]}]}
+        node = {"key": key, "name": "litB_05_bilcone", "visible": True, "axisBillboard": True,
+                "position": [-16.165, 0.359, 2.31], "rotation": [0.2124, 0.6529, -0.2249, 0.6914], "lossyScale": [1, 1, 1]}
+        result.compare_stage_nodes(record, {"stageNodes": [node]}, False)
+        metrics = sorted(item["metric"] for item in result.items if item["type"] == "transforms")
+        self.assertEqual(metrics, ["stageNodePositionM", "stageNodeScaleRel"])
+        self.assertEqual(result.notes["transforms.stageNodeAxisBillboard"], ["litB_05_bilcone"])
+        result.items.clear()
+        result.compare_stage_nodes(record, {"stageNodes": [dict(node, axisBillboard=None)]}, False)
+        self.assertIn("stageNodeRotationDeg", [item["metric"] for item in result.items])
 
 
 class ParticleTest(unittest.TestCase):
@@ -266,31 +305,56 @@ class ShaderMaterialTest(unittest.TestCase):
         self.assertEqual([(item["metric"], item["score"]) for item in result.items], [("textureSize", 0.0)])
         self.assertEqual(result.notes["materials.notComparableMPB"], ["mat_stg:_MainTex_ST (mainUVTransform)"])
 
-    def test_cheek_intensity_under_cheek_keyword_off_is_checked_as_zero(self):
+    def test_cheek_floats_are_compared_as_held_whatever_the_cheek_toggle(self):
+        """MemberCheekBase toggles only _CHEEK_ON; the [Toggle] float _CHEEK is never written and is no shader uniform,
+        so the floats (kept after a clip by MemberCheekMixer.PostProcess) are compared as both materials hold them."""
         def scored(editor_intensity, keywords=None, cheek=0):
             result = comparison()
             game = material_record("head", {"_CHEEK": {"t": "float", "v": cheek}, "_CheekIntensity": {"t": "float", "v": 0.045},
-                                            "_CheekTexArrayIndex": {"t": "float", "v": 3}, "_RimglightIntensity": {"t": "float", "v": 0.5}})
+                                            "_CheekTexArrayIndex": {"t": "float", "v": 0}, "_RimglightIntensity": {"t": "float", "v": 0.5}})
             fields = {"_CheekIntensity": {"t": "float", "v": editor_intensity, "from": "uCheekIntensity"},
-                      "_CheekTexArrayIndex": {"t": "float", "v": 1, "from": "uCheekTexArrayIndex"},
+                      "_CheekTexArrayIndex": {"t": "float", "v": 0, "from": "uCheekTexArrayIndex"},
                       "_RimglightIntensity": {"t": "float", "v": 0.5, "from": "uRimglightIntensity"}}
             editor = editor_material(kind="member", properties=fields, **({"keywords": keywords} if keywords is not None else {}))
             result.compare_materials(game, editor, False)
             return result, {item["field"].split(" ")[0]: item for item in result.items if item["metric"] == "floatScore"}
 
-        # The game keeps a stale 0.045 under _CHEEK 0 (MemberCheekMixer.PostProcess) and draws no cheek.
-        result, items = scored(0)
-        self.assertEqual(sorted(items), ["_CheekIntensity", "_RimglightIntensity"], "the index is not read under _CHEEK 0")
-        self.assertEqual((items["_CheekIntensity"]["game"], items["_CheekIntensity"]["score"]), ([0.0], 0.0))
-        self.assertEqual(result.notes["materials.cheekKeywordOff"], ["_CheekIntensity", "_CheekTexArrayIndex"])
-        result, items = scored(0.3, keywords=["_CHEEK_ON"])
-        self.assertGreater(items["_CheekIntensity"]["score"], 1, "the editor draws a cheek the game does not")
-        result, items = scored(0.3, keywords=[])
-        self.assertEqual(items["_CheekIntensity"]["score"], 0.0, "without _CHEEK_ON the editor draws no cheek either")
-        # With _CHEEK 1 both floats are compared as they are.
-        result, items = scored(0.045, keywords=["_CHEEK_ON"], cheek=1)
+        # dump3b 45.261 s: the game holds 0.04505 after the 15.883 s clip (frame 17.241 s), _CHEEK 0.
+        result, items = scored(0.045, keywords=[])
         self.assertEqual(sorted(items), ["_CheekIntensity", "_CheekTexArrayIndex", "_RimglightIntensity"])
+        self.assertEqual((items["_CheekIntensity"]["game"], items["_CheekIntensity"]["score"]), ([0.045], 0.0))
+        self.assertEqual(result.notes["materials.cheekToggleNotKeyword"], ["head: _CHEEK 0"])
+        self.assertNotIn("materials.cheekKeywordOff", result.notes)
+        result, items = scored(0, keywords=[])
+        self.assertGreater(items["_CheekIntensity"]["score"], 1, "an editor that zeroes the kept float differs")
+        # dump4 16.977 s: 0.317 applied in the previous frame with _CHEEK still 0; the editor draws it under _CHEEK_ON.
+        result, items = scored(0.045, keywords=["_CHEEK_ON", "_RIMLIGHT_ON"])
+        self.assertEqual(items["_CheekIntensity"]["score"], 0.0, "_CHEEK 0 does not mean the game draws no cheek")
+        result, items = scored(0.045, keywords=["_CHEEK_ON"], cheek=1)
         self.assertEqual(items["_CheekIntensity"]["score"], 0.0)
+
+    def test_renderer_slot_keywords_compare_the_drawn_member_variant(self):
+        """The game reads Material.shaderKeywords per renderer slot: the drawn AS/Member variant is compared there."""
+        def scored(game_keywords, editor_slot):
+            result = comparison()
+            result.joins["renderer:/x/microphone"] = ("renderer:effect:mic", "path")
+            result.join_renderer = lambda renderer: "renderer:effect:mic"
+            game = {"id": "r", "clock": {"directorTime": 5.0}, "renderers": [
+                {"key": "renderer:/x/microphone", "scope": "effect", "mesh": "mic", "path": "/x/microphone", "enabled": True,
+                 "activeInHierarchy": True, "layer": 0,
+                 "materials": [{"slot": 0, "name": "ch0212_co0002_head", "shader": "AS/Member", "keywords": game_keywords}]}]}
+            partner = {"renderers": [{"key": "renderer:effect:mic", "visible": True, "culled": False, "materialVisible": True,
+                                      "materials": [dict({"slot": 0, "name": "ch0212_co0002_head", "editorName": "ch0212_co0002_head (AS/Member)",
+                                                          "kind": "member", "visible": True}, **editor_slot)]}]}
+            result.compare_renderers(game, partner, False)
+            return [(item["key"], item["game"], item["editorConverted"], item["score"]) for item in result.items
+                    if item["metric"] == "variantKeywords"]
+
+        key = "material:renderer:/x/microphone#0"
+        self.assertEqual(scored(["_RIMLIGHT_ON"], {"keywords": ["_RIMLIGHT_ON"]}), [(key, [], [], 0.0)])
+        self.assertEqual(scored(["_RIMLIGHT_ON"], {"keywords": ["_CHEEK_ON", "_RIMLIGHT_ON"]}), [(key, [], ["_CHEEK_ON"], C.EXACT_SCORE)],
+                         "a blush the editor draws where the game does not")
+        self.assertEqual(scored(["_RIMLIGHT_ON"], {}), [], "an editor slot without keywords is not compared")
 
 
 class BillboardTest(unittest.TestCase):
@@ -309,6 +373,138 @@ class BillboardTest(unittest.TestCase):
         metrics = [item["metric"] for item in result.items if item["type"] == "transforms"]
         self.assertEqual(metrics, ["rendererPositionM"])
         self.assertEqual(result.notes["transforms.offscreenAxisBillboard"], ["renderer:effect:cone"])
+        record["renderers"][0]["isVisible"] = True
+        result.items.clear()
+        result.compare_renderers(record, partner, False)
+        self.assertIn("rendererRotationDeg", [item["metric"] for item in result.items])
+
+
+class AxisBillboardUpAxisTest(unittest.TestCase):
+    """AxisBillboard turns a cone about its own up axis only while a target camera draws it (OnWillRenderObject
+    0x27bf944); an undrawn cone keeps its last turn while its Animator parents move. dump4 p3-stageNodes-00
+    litB_05_bilcone (off screen at 89.422 s): 92.2 deg apart, the up axes 0.0057 deg."""
+    BINDING = "/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litB_All"
+    REL = "litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani/litB_05_bilcone"
+    PREFAB = "bg0006_01_fx_so2035_ex/lit_01/litB_All/" + REL
+    GAME = {"position": [16.1646347, 0.358565003, 2.30999994], "rotation": [-0.0149891181, 0.046079956, 0.308967829, 0.949837327],
+            "lossyScale": [1, 1.00000012, 1]}
+    EDITOR = {"position": [-16.1646504, 0.358576224, 2.30999994], "rotation": [0.212213089, 0.652501641, -0.224993589, 0.691798452],
+              "lossyScale": [1, 1, 1]}
+    KEYS = {"prefab:effect": {
+        "bg0006_01_fx_so2035_ex": {"components": ["LLAS.Scene.Live.Components.LiveCoreStageEffect"]},
+        PREFAB: {"components": ["MeshRenderer", "MeshFilter", "LLAS.Components.AxisBillboard.AxisBillboard"]},
+        PREFAB + "/child": {"components": ["MeshRenderer", "MeshFilter"]}}}
+
+    def comparison(self, keys):
+        game, editor = documents([frame(89.422, 0.2)])
+        return C.Comparison(game, editor, keys=keys)
+
+    def stage(self, result, rel=REL, **editor):
+        key = C.Conventions.stage_node_key(self.BINDING, rel)
+        record = {"id": "p3-stageNodes-00", "clock": {"directorTime": 89.422}, "stageNodes": [
+            dict(self.GAME, binding=self.BINDING, relPath=rel, activeInHierarchy=True)]}
+        node = dict(self.EDITOR, key=key, name=rel.split("/")[-1], visible=True, **editor)
+        result.compare_stage_nodes(record, {"stageNodes": [node]}, False)
+        return {item["metric"]: item for item in result.items if item["type"] == "transforms"}
+
+    def test_axis_angle_ignores_the_turn_about_up(self):
+        turn = [0.0, math.sin(0.6), 0.0, math.cos(0.6)]
+        base = [0.1, 0.2, 0.3, math.sqrt(1 - 0.14)]
+        self.assertAlmostEqual(C.axis_angle(base, C.qmul(base, turn)), 0.0, places=9)
+        self.assertAlmostEqual(C.qangle(base, C.qmul(base, turn)), math.degrees(1.2), places=6)
+        tilt = [math.sin(math.radians(5)), 0.0, 0.0, math.cos(math.radians(5))]
+        self.assertAlmostEqual(C.axis_angle(base, C.qmul(base, tilt)), 10.0, places=6)
+
+    def test_billboard_stage_node_compares_its_up_axis(self):
+        result = self.comparison(self.KEYS)
+        items = self.stage(result)
+        self.assertEqual(sorted(items), ["stageNodePositionM", "stageNodeScaleRel", "stageNodeUpAxisDeg"])
+        self.assertLess(items["stageNodeUpAxisDeg"]["error"], 0.01)
+        self.assertEqual(result.notes["transforms.stageNodeAxisBillboard"], ["litB_05_bilcone"])
+        # The key's #crc is crc32 of the path below the binding; the items name that path.
+        self.assertEqual(items["stageNodePositionM"]["field"], self.REL)
+        self.assertEqual(items["stageNodeUpAxisDeg"]["field"], self.REL + " (AxisBillboard up axis)")
+
+    def test_a_tilted_beam_is_still_found(self):
+        result = self.comparison(self.KEYS)
+        tilt = [math.sin(math.radians(1)), 0.0, 0.0, math.cos(math.radians(1))]
+        items = self.stage(result, rotation=C.qmul(self.EDITOR["rotation"], tilt))
+        self.assertGreater(items["stageNodeUpAxisDeg"]["score"], 10)
+
+    def test_a_node_below_a_billboard_compares_its_scale(self):
+        result = self.comparison(self.KEYS)
+        self.assertEqual(result.axis_billboard_role(f"{self.BINDING}/{self.REL}/child"), "below")
+        self.assertEqual(sorted(self.stage(result, rel=self.REL + "/child")), ["stageNodeScaleRel"])
+
+    def test_without_keys_the_editor_flag_drops_the_rotation_only(self):
+        result = self.comparison(None)
+        self.assertEqual(sorted(self.stage(result, axisBillboard=True)), ["stageNodePositionM", "stageNodeScaleRel"])
+        result = self.comparison(None)
+        self.assertGreater(self.stage(result)["stageNodeRotationDeg"]["score"], 900)
+
+    def test_animated_parents_keep_their_full_rotation(self):
+        result = self.comparison(self.KEYS)
+        self.assertIsNone(result.axis_billboard_role(f"{self.BINDING}/litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani"))
+        self.assertIsNone(result.axis_billboard_role("/EntryPoint/Live/Members/Member1/" + self.REL))
+        self.assertIn("stageNodeRotationDeg", self.stage(result, rel="litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani"))
+
+    def test_only_billboards_below_the_stage_effect_count(self):
+        # GetComponentsInChildren<AxisBillboard>(true) runs on the LiveCoreStageEffect GameObject: a billboard
+        # under another prefab:effect root (the member shaft prefabs) never gets targets and keeps its rotation.
+        keys = {"prefab:effect": dict(self.KEYS["prefab:effect"], **{
+            "fx_spo_sha_01": {"components": []},
+            "fx_spo_sha_01/root/spotlight_01": {"components": ["MeshRenderer", "LLAS.Components.AxisBillboard.AxisBillboard"]}})}
+        result = self.comparison(keys)
+        self.assertEqual(result.axis_billboards, {"lit_01/litB_All/" + self.REL})
+        self.assertIsNone(result.axis_billboard_role("/EntryPoint/Live/Stages/MainStage/Effect/root/spotlight_01"))
+        self.assertEqual(result.axis_billboard_role(f"{self.BINDING}/{self.REL}"), "self")
+        # Without a LiveCoreStageEffect row no billboard counts.
+        bare = {"prefab:effect": {path: row for path, row in self.KEYS["prefab:effect"].items() if "/" in path}}
+        self.assertEqual(self.comparison(bare).axis_billboards, set())
+        # LiveCoreStageEffect below the prefab root: only billboards below it.
+        nested = {"prefab:effect": {"bg": {"components": []}, "bg/fx": {"components": ["LLAS.Scene.Live.Components.LiveCoreStageEffect"]},
+                                    "bg/fx/cone": {"components": ["LLAS.Components.AxisBillboard.AxisBillboard"]},
+                                    "bg/other/cone": {"components": ["LLAS.Components.AxisBillboard.AxisBillboard"]}}}
+        self.assertEqual(self.comparison(nested).axis_billboards, {"fx/cone"})
+
+    def test_drawn_billboard_stage_node_compares_its_full_turn(self):
+        # The editor reports the live camera's turn and that the live camera draws the cone: the game turned it
+        # toward that camera in the frame the record shows, so the whole rotation is compared.
+        result = self.comparison(self.KEYS)
+        game_turn = C.Conventions.quaternion(self.GAME["rotation"])
+        items = self.stage(result, axisBillboardDrawn=True, rotation=game_turn)
+        self.assertEqual(sorted(items), ["stageNodePositionM", "stageNodeRotationDeg", "stageNodeScaleRel"])
+        self.assertLess(items["stageNodeRotationDeg"]["error"], 1e-3)
+        self.assertEqual(result.notes["transforms.stageNodeAxisBillboardDrawn"], ["litB_05_bilcone"])
+        self.assertNotIn("transforms.stageNodeAxisBillboard", result.notes)
+        # A turn toward another camera is caught (92 deg about the beam).
+        result = self.comparison(self.KEYS)
+        self.assertGreater(self.stage(result, axisBillboardDrawn=True)["stageNodeRotationDeg"]["score"], 900)
+        # Not drawn (or unknown): the up axis only.
+        for drawn in (False, None):
+            result = self.comparison(self.KEYS)
+            self.assertEqual(sorted(self.stage(result, axisBillboardDrawn=drawn)),
+                             ["stageNodePositionM", "stageNodeScaleRel", "stageNodeUpAxisDeg"])
+        # Below a drawn billboard the whole transform follows the reported turn; without keys the editor flag
+        # with the drawn report compares the whole transform too.
+        result = self.comparison(self.KEYS)
+        self.assertEqual(sorted(self.stage(result, rel=self.REL + "/child", axisBillboardDrawn=True)),
+                         ["stageNodePositionM", "stageNodeRotationDeg", "stageNodeScaleRel"])
+        result = self.comparison(None)
+        self.assertIn("stageNodeRotationDeg", self.stage(result, axisBillboard=True, axisBillboardDrawn=True))
+
+    def test_off_screen_billboard_renderer_compares_its_up_axis(self):
+        result = self.comparison(self.KEYS)
+        result.joins["renderer:cone"] = ("renderer:effect:litB_05_bilcone", "path")
+        result.editor_catalog["renderer:effect:litB_05_bilcone"] = {"path": self.PREFAB}
+        record = {"id": "g", "clock": {"directorTime": 89.422}, "renderers": [
+            {"key": "renderer:cone", "scope": "effect", "path": f"{self.BINDING}/{self.REL}", "enabled": True,
+             "activeInHierarchy": True, "isVisible": False, "transform": self.GAME}]}
+        partner = {"renderers": [{"key": "renderer:effect:litB_05_bilcone", "visible": True, "axisBillboard": True,
+                                  "transform": self.EDITOR}]}
+        result.compare_renderers(record, partner, False)
+        metrics = sorted(item["metric"] for item in result.items if item["type"] == "transforms")
+        self.assertEqual(metrics, ["rendererPositionM", "rendererScaleRel", "rendererUpAxisDeg"])
         record["renderers"][0]["isVisible"] = True
         result.items.clear()
         result.compare_renderers(record, partner, False)

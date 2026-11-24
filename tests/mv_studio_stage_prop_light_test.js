@@ -96,6 +96,27 @@ async function run() {
   close(uniforms.uTintColor.value.toArray(), [1, 1, 1, 1], "default tint");
   assert.equal(uniforms.uRimglightIntensity.value, 0);
 
+  // LiveCoreMemberAmbient keeps its last written color until the mixed color moves
+  // by sqrt(1e-5) (UtilColor.CheckSame): the material depends on the rendered frames.
+  const fade = {binding, nativeClass: "LivePropAmbientTrack", events: [
+    clip("LivePropAmbientClip", 0, 2, {color: rgba([0, 1 / 3, 1, .2]), tintColor: rgba([.3, .3, .3, 1]), blendOut: 1}),
+    clip("LivePropAmbientClip", 1, 3, {color: rgba([0, 1 / 3, 1, .21]), tintColor: rgba([.3, .3, .3, 1]), blendIn: 1}),
+  ]};
+  const fading = {quality: {values: {}}, tracks: [fade, rimTrack]};
+  controller.setProject(fading);
+  const alpha = () => uniforms.uAmbientColor.value.w;
+  controller.update(1.8);
+  assert(Math.abs(alpha() - (.2 + .01 * .896)) < 1e-7, "a seek without frame history writes the exact color");
+  controller.update(1.8, {advancing: false, history: [.5, 1.2, 1.6]});
+  assert(Math.abs(alpha() - (.2 + .01 * .648)) < 1e-7, "1.8 s moved 0.0025 from the 1.6 s write: the material keeps it");
+  controller.update(1.9, {advancing: true, history: []});
+  assert(Math.abs(alpha() - (.2 + .01 * .972)) < 1e-7, "an advancing frame 0.0032 away writes");
+  controller.update(1.2, {advancing: false, history: [.5]});
+  close(uniforms.uAmbientColor.value.toArray(), [0, 1 / 3, 1, .2], "a change of 0.001 is not written");
+  controller.update(1.2, {advancing: false, history: [.5]}, true);
+  assert(Math.abs(alpha() - (.2 + .01 * .104)) < 1e-7, "a base light writes the same component every frame: exact");
+  controller.setProject(project);
+
   // Quality gates and muting follow the member prop components.
   project.quality.values.prop_ambient = false;
   project.quality.values.prop_rim_light = false;

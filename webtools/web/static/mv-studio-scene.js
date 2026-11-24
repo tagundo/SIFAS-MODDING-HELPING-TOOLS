@@ -341,6 +341,9 @@
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const liveCamera = new T.PerspectiveCamera(42, 1, 0.02, 1000);
+    // The game main camera's culling frustum at past frames (particle culling).
+    const cullingCamera = new T.PerspectiveCamera(30, 1, 0.1, 1000);
+    let cullingView = null;
     const stageCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const controls = new T.OrbitControls(editorCamera, renderer.domElement);
     const stage = new T.Group(), actors = new T.Group(), effects = new T.Group(), memberShadows = new T.Group();
@@ -381,6 +384,12 @@
     let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1, adaptivePreview = true;
     let lastShaftFrame = null, resetShafts = true;
+    // Client state that changes only on rendered frames (the director's beat
+    // origin, the ambient components' last written colors, the cheek floats
+    // MemberCheekMixer leaves after a clip): an advancing playback frame
+    // continues it; a seek replays the rendered frame times it is given (seek's
+    // `history`) or, without them, uses exact values. One frame clock serves all.
+    let pendingHistory = null, frameClock = { advancing: false, history: [] }, historyLighting = new Map();
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
     let antiAliasing = options?.antiAliasing === true;
@@ -1524,6 +1533,60 @@
       return true;
     }
 
+    // The shot frameTracks gives the live camera at `time`, posed on a scratch
+    // camera with the game's clip planes (near 0.1, far 1000) and the live
+    // camera's aspect and lens correction (liveFov); null with no shot.
+    function mainCameraAt(time) {
+      let shot = null, ended = null;
+      const hold = project?.source?.kind === "game";
+      for (const track of renderTracks) {
+        if (track.kind !== "camera") continue;
+        const event = activeCameraEvent(track, time);
+        if (event) {
+          shot = { event, track, at: time };
+          continue;
+        }
+        const last = hold ? endedCameraEvent(track, time) : null;
+        if (last && (!ended || last.start + last.duration > ended.event.start + ended.event.duration)) ended = { event: last, track };
+      }
+      if (!shot && ended) shot = { event: ended.event, track: ended.track, at: ended.event.start + ended.event.duration };
+      if (!shot || !poseCamera(shot.event, shot.at, shot.track, cullingCamera)) return null;
+      const native = shot.track.nativeClass === "AnimationTrack" && /(?:^|\/)MainCamera$/i.test(shot.track.binding || "");
+      const correction = native ? global.MVStudioSplit?.aspectCorrection(liveCamera.aspect) ?? 1 : 1;
+      cullingCamera.fov = Math.min(170, cullingCamera.fov / correction);
+      cullingCamera.aspect = liveCamera.aspect;
+      cullingCamera.near = 0.1;
+      cullingCamera.far = 1000;
+      cullingCamera.updateProjectionMatrix();
+      applyCameraOffsets(cullingCamera, shot.track.binding, time);
+      cullingCamera.updateMatrixWorld(true);
+      return cullingCamera;
+    }
+
+    // Every camera that draws the particle layers at `time`: the main camera,
+    // or while a LiveSplitScreenClip is active the enabled sub cameras plus
+    // the main camera when the clip keeps it on (mv-studio-split.js camerasAt).
+    function cullingCamerasAt(time) {
+      const views = split?.camerasAt?.(time, sampleSplitCamera) ?? null;
+      const main = !views || views.main ? mainCameraAt(time) : null;
+      return [...(views?.cameras || []), ...(main ? [main] : [])];
+    }
+
+    // Recreated when the camera tracks or the aspect change, so the particle
+    // visibility pass starts over.
+    function particleCullingView() {
+      // applyProject rebuilds renderTracks on every seek; its source array changes only with an edit.
+      const cameras = renderTracks.filter((track) => track.kind === "camera").map((track) => track.id).join("|");
+      if (!cullingView || cullingView.tracks !== trackSource || cullingView.cameras !== cameras ||
+          cullingView.aspect !== liveCamera.aspect || cullingView.hold !== (project?.source?.kind === "game") ||
+          cullingView.split !== project?.splitScreen || cullingView.splitQuality !== settings?.split_screen) {
+        cullingView = { tracks: trackSource, cameras, aspect: liveCamera.aspect, hold: project?.source?.kind === "game",
+          split: project?.splitScreen, splitQuality: settings?.split_screen, cameraAt: mainCameraAt, camerasAt: cullingCamerasAt };
+        cullingView.key = cullingView;
+      }
+      return cullingView;
+    }
+
     function lightValue(event, keys) {
       const values = event.values || {};
       for (const key of keys) if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
@@ -1755,12 +1818,56 @@
       }
     }
 
-    function seek(time, value, deferDraw = false) {
+    // `history`: optional ascending director times of the frames the game rendered
+    // before `time` (a runtime dump's frame grid); only frame-stepped client state
+    // reads them.
+    function seek(time, value, deferDraw = false, history = null) {
       if (disposed) return;
       if ((value && value !== project) || (Number.isFinite(time) && Math.abs(time - currentTime) > 1e-9)) resetPhysics("seek");
       project = value || project;
       applyProject();
-      playbackFrame(time, undefined, deferDraw);
+      pendingHistory = Array.isArray(history) ? history : [];
+      try {
+        playbackFrame(time, undefined, deferDraw);
+      } finally {
+        pendingHistory = null;
+      }
+    }
+
+    function nextFrameClock(time) {
+      const advancing = pendingHistory === null && playing && Number.isFinite(time) && time >= currentTime - 1e-9;
+      if (advancing) return { advancing, history: [] };
+      const history = (pendingHistory || []).filter((value) => Number.isFinite(value) && value < time - 1e-9);
+      for (let index = 1; index < history.length; index++) {
+        if (history[index] < history[index - 1]) return { advancing: false, history: history.sort((a, b) => a - b) };
+      }
+      return { advancing: false, history };
+    }
+
+    // MVStudioLighting.sample at an earlier rendered frame of the frame clock.
+    function lightingAt(time, lighting) {
+      if (time === currentTime) return lighting;
+      if (!historyLighting.has(time)) historyLighting.set(time, global.MVStudioLighting?.sample(project, time) ?? null);
+      return historyLighting.get(time);
+    }
+
+    // LiveCoreMemberAmbient's ambient and tint writes (MVStudioLighting.heldColor)
+    // for a member or a member prop. With a base light track LiveBaseLightReciever
+    // also writes these components (ApplyBase*Color, CheckSame-gated as well); the
+    // write order of the two mixers within a frame is not established, so the
+    // colors stay exact there (unevidenced choice).
+    function heldLiveLighting(record, slot, value, valueAt, lighting) {
+      const holds = (record.lightingHolds ||= {})[slot] ||= { ambient: {}, tint: {} };
+      if (!value || lighting?.baseTrack || !global.MVStudioLighting?.heldColor) {
+        holds.ambient.color = holds.tint.color = null;
+        return value;
+      }
+      const held = { ...value };
+      for (const key of ["ambient", "tint"]) {
+        held[key] = value[key] ? global.MVStudioLighting.heldColor(holds[key], (time) => valueAt(time)?.[key] ?? null,
+          currentTime, frameClock) : (holds[key].color = null, value[key]);
+      }
+      return held;
     }
 
     function setPlaying(value) {
@@ -1782,6 +1889,8 @@
       const continuing = Number.isFinite(frameTimestamp) && Number.isFinite(time) && time > currentTime + 1e-9;
       captureFocusLag(continuing);
       if (Number.isFinite(frameTimestamp) && time < currentTime - 1e-9) resetPhysics("clock-rewind");
+      frameClock = nextFrameClock(Number.isFinite(frameTimestamp) || pendingHistory !== null ? time : NaN);
+      historyLighting = new Map();
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
@@ -1821,7 +1930,7 @@
       stageSparksA?.update(currentTime, project);
       stageSparksB?.update(currentTime, project);
       stageSparksRoop?.update(currentTime, project);
-      stageParticleSystems?.update(currentTime, project);
+      stageParticleSystems?.update(currentTime, project, particleCullingView());
       stageControlPrefabs?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
@@ -1830,10 +1939,10 @@
       for (const record of records) record.stageSoftBillboards?.update(currentTime);
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
-      for (const record of records) record.penlight?.update(currentTime, project);
+      for (const record of records) record.penlight?.update(currentTime, project, frameClock);
       for (const record of records) {
-        record.stageMaterial?.update(currentTime, project, lighting);
-        record.stagePropLight?.update(currentTime);
+        record.stageMaterial?.update(currentTime, project, lighting, frameClock);
+        record.stagePropLight?.update(currentTime, frameClock, !!lighting?.baseTrack);
       }
       for (const record of records) record.stageColoring?.update(currentTime, project);
       for (const record of records) record.stageDisplay?.update(currentTime, project);
@@ -1847,7 +1956,8 @@
         // Keep sampling its transforms so other actors can still track it.
         const culled = memberCulledAt(record.position, currentTime);
         record.root.visible = record.actorVisible && !culled;
-        record.materials?.setLiveLighting?.(lighting?.member(record.position));
+        record.materials?.setLiveLighting?.(heldLiveLighting(record, "member", lighting?.member(record.position),
+          (time) => lightingAt(time, lighting)?.member(record.position), lighting));
         record.physics?.restorePose();
         record.constraints?.restorePose();
         record.nodeScaling?.resetHeight();
@@ -1856,7 +1966,7 @@
         if (record.motion) {
           record.motion.evaluatePose(currentTime, { split: activeSplitGazeCameras !== null });
           record.motion.applyVisibility(currentTime);
-          if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime));
+          if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime, frameClock));
         } else if (record.mixer) record.mixer.setTime(currentTime);
         record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), currentTime);
       }
@@ -1906,7 +2016,13 @@
       for (const record of records) if (record.prop) {
         record.prop.bind(records.find((actor) => actor.group === actors && actor.position === record.propMember) || null);
         record.prop.evaluate(currentTime);
-        if (record.root.visible) record.propMaterial?.setLiveLighting?.(record.propLight?.sample(currentTime));
+        if (record.propMaterial) {
+          // The prop's ambient mixer writes its component every frame, shown or not: the
+          // hold steps on every frame and the material takes it while the prop is shown.
+          const live = heldLiveLighting(record, "prop", record.propLight?.sample(currentTime),
+            (time) => record.propLight?.sample(time), lighting);
+          if (record.root.visible) record.propMaterial.setLiveLighting?.(live);
+        }
       }
       advanceFocus();
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
@@ -2170,8 +2286,12 @@
         culled: entry.record.group === actors && memberCulledAt(entry.record.position, currentTime),
         materialVisible: slots(entry).every(({ material }) => material?.visible !== false),
         transform: D.decompose(rendererWorld(entry), temp), axisBillboard: billboardOf(entry) !== null,
-        materials: slots(entry).map(({ material }, slot) => ({ slot, name: D.materialName(material),
-          editorName: material?.name ?? null, kind: D.materialProperties(material).kind, visible: material?.visible !== false })),
+        materials: slots(entry).map(({ material }, slot) => {
+          // The drawn AS/Member variant, as the game reads Material.shaderKeywords per renderer slot.
+          const { kind, keywords } = D.materialProperties(material);
+          return { slot, name: D.materialName(material), editorName: material?.name ?? null, kind, visible: material?.visible !== false,
+            ...(Array.isArray(keywords) ? { keywords } : {}) };
+        }),
       })));
       // Uniforms an AnimationTrack curve drives (MVStudioStageMotion material channels): the game applies those
       // through a MaterialPropertyBlock, which its dump does not read, so the comparator never scores them.
@@ -2210,11 +2330,57 @@
           const key = D.keyFor("stageNode", { binding: tag.binding, path: tag.path });
           if (wanted && !wanted.has(key)) return;
           if (nodes.length >= maxNodes) { if (!truncated.includes("stageNodes")) truncated.push("stageNodes"); return; }
+          // An AxisBillboard node (or a child of one) reports the live camera's turn, as renderers do,
+          // and whether the live camera draws that billboard (axisBillboardDrawn, when known).
+          const billboard = billboardOf({ owner: node });
+          const drawn = billboard ? billboardDrawn(billboard) : null;
           nodes.push({ key, binding: tag.binding, crc: tag.path, name: D.nodeName(node), activeSelf: node.visible,
-            visible: D.effectiveVisible(node), ...D.decompose(node.matrixWorld, temp) });
+            visible: D.effectiveVisible(node), ...D.decompose(rendererWorld({ owner: node }), temp),
+            ...(billboard ? { axisBillboard: true } : {}), ...(typeof drawn === "boolean" ? { axisBillboardDrawn: drawn } : {}) });
         });
         return nodes;
       });
+
+      // Whether the live camera draws an AxisBillboard, so that its OnWillRenderObject (0x27bf944) turned it toward
+      // that camera in the frame the dump shows: the node is shown, has a renderer, and its AxisBillboard.Start
+      // bounds (0x27bf774: the mesh bounds widened to (max(sx, sz), sy, max(sx, sz)) about their center) under the
+      // reported turn meet the live camera's frustum (Unity culls a renderer by its world bounds). null (unknown)
+      // while a split clip is active, since the sub cameras turn it too and the frame's last draw is not modelled,
+      // and for billboards the editor turns by another rule (the member shaft). The camera culling mask is not
+      // checked: the 12035 cones are on layer 14, which the main camera's mask 0x0C0BC013 draws (dump4 renderer
+      // and camera records); other stages are assumed alike (unevidenced).
+      function billboardDrawn(node) {
+        cache.billboardDrawn ||= new Map();
+        if (cache.billboardDrawn.has(node)) return cache.billboardDrawn.get(node);
+        let drawn = null;
+        const tagged = records.some((record) => record.axisBillboard?.nodes?.includes(node));
+        if (tagged && activeSplitGazeCameras === null) {
+          drawn = false;
+          // The GameObject's own renderer: the node itself, or the child mesh node the exporter gives it (same name).
+          const name = D.nodeName(node);
+          const meshes = rendererEntries().filter((entry) => entry.owner === node ||
+            (entry.owner.parent === node && D.nodeName(entry.owner) === name)).flatMap((entry) => entry.meshes);
+          if (D.effectiveVisible(node) && meshes.length) {
+            const box = new T.Box3(), part = new T.Box3(), local = new T.Matrix4(), inverse = new T.Matrix4().copy(node.matrixWorld).invert();
+            for (const mesh of meshes) {
+              if (!mesh.geometry) continue;
+              if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+              part.copy(mesh.geometry.boundingBox);
+              if (mesh !== node) part.applyMatrix4(local.multiplyMatrices(inverse, mesh.matrixWorld));
+              box.union(part);
+            }
+            if (!box.isEmpty()) {
+              const center = box.getCenter(new T.Vector3()), size = box.getSize(new T.Vector3()), side = Math.max(size.x, size.z);
+              box.setFromCenterAndSize(center, size.set(side, size.y, side)).applyMatrix4(rendererWorld({ owner: node }));
+              const view = new T.Matrix4().fromArray(viewOf(liveCamera).view);
+              drawn = new T.Frustum().setFromProjectionMatrix(new T.Matrix4().multiplyMatrices(liveCamera.projectionMatrix, view))
+                .intersectsBox(box);
+            }
+          }
+        }
+        cache.billboardDrawn.set(node, drawn);
+        return drawn;
+      }
       read("members", "members", () => {
         const wanted = Array.isArray(filter.bones) ? new Set(filter.bones) : null;
         const result = [];
@@ -2333,6 +2499,20 @@
         physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
         resetPhysics("physics-timing");
         return physicsTiming && { ...physicsTiming, rate: physicsRate() };
+      },
+      // The next game frame's LiveCoreMemberManager.Update on its own, for a runtime value
+      // dump: the springs step once on the pose the last evaluated frame ended with and
+      // nothing else runs, as a reader between the Update scripts and that frame's deferred
+      // director evaluation (LiveTimeSynchronizer.SyncMusicPlayingTime sets the time, then
+      // DeferredEvaluate) sees the members. Playing frames only; returns the step taken
+      // (0: none, e.g. paused or the same-frame order, whose job runs after the timeline).
+      // The next seek or playback frame continues as usual.
+      stepPhysicsUpdate(frameTimestamp) {
+        if (disposed || !playing || !visible || !records.some((record) => record.physics)) return 0;
+        const physicsStep = physicsClock?.step(frameTimestamp, physicsRate()) || 0;
+        for (const record of records) record.physics?.frame?.("update", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
+        if (scene.autoUpdate) scene.updateMatrixWorld();
+        return physicsTiming?.order === "same-frame" ? 0 : physicsStep;
       },
       frameAll,
       // Read-only state of the last evaluated frame for frame comparisons.

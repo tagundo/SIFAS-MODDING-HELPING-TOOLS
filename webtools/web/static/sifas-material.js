@@ -849,7 +849,7 @@
           if (shown && pair.cheekShared === false) {
             limitations.add("This head's cheek_array differs from the game's shared Live/Characters/facialAssets/cheek_array, which the game shows instead; the preview shows the head's own copy.");
           } else if (shown && pair.cheekShared !== true) {
-            limitations.add("The preview shows this head's own cheek_array; the game binds its shared Live/Characters/facialAssets/cheek_array, identical on stock costumes.");
+            limitations.add("The preview shows this head's own cheek_array; the game binds its shared Live/Characters/facialAssets/cheek_array, identical on the stock heads checked.");
           }
           pair.cheek.enabled = enabled;
           if (!!pair.main.defines.SIFAS_CHEEK !== shown) {

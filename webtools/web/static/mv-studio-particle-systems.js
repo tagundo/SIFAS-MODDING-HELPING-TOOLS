@@ -17,15 +17,27 @@
   //  * Age runs from 0 to 100 at dt * 100 / lifetime per step (reciprocal
   //    refined as on ARM), curves are sampled at age * .01.
   //  * Rate emission carries its fraction across steps; newborns advance by
-  //    their fraction of the step. Prewarm replays one maximum lifetime with
-  //    .2 s steps while more than 5 s remain, then .02 s steps, and the
-  //    remainder runs after the first display frame's full steps.
+  //    their fraction of the step. Prewarm (Play(1) from playOnAwake 0x1cdaa4
+  //    -> Simulate 0x1cbf64 flags 3 -> 0x1d1e54, 0x1ce4b0) replays one maximum
+  //    lifetime of system time from the loop time that ends it at a loop
+  //    end: 1 s steps while more than 10 s remain, .2 s steps while more than
+  //    5 s remain, then Time.fixedDeltaTime (.02) steps, and the remainder
+  //    runs after the first display frame's full steps. Its rate carry starts
+  //    at 1 - (scan carry) + 1e-4, so an enabled module emits one extra
+  //    particle in the first step even at rate 0. A procedural system
+  //    (culling.procedural) prewarms in one procedural update whose emission
+  //    cap counts every particle emitted so far, live or dead, and whose
+  //    burst particles start at their step's end; after the prewarm the cap
+  //    counts live particles again (per-frame updates run non-procedurally,
+  //    0x1ce1b8).
   //  * The clone root sits at the world origin plus the clip offset; its
   //    systems use their own serialized random seeds.
   //
-  //  * Local-aligned billboard quads with 3D start rotation turn by the
-  //    negated X/Y/Z angles in Unity's Euler order (Z, then X, then Y) inside
-  //    the emitter frame, as mv-studio-display-lights.js draws its Local strokes.
+  //  * Billboard quads with 3D start rotation turn by the negated X/Y/Z angles
+  //    in Unity's Euler order (Z, then X, then Y) on the alignment's axes, as
+  //    mv-studio-display-lights.js draws its Local strokes: the emitter's for
+  //    Local, the world's for World, and camera right, up and back for View
+  //    (libunity.so 0xd242c, axes from 0xc37d8).
   //  * Local scaling mode applies the system's own localScale s: local-space
   //    positions go through the scaled transform; billboard quads keep their
   //    unscaled size, roll and tilt, and their axes in world space are
@@ -33,15 +45,25 @@
   //    unscaled larger side with the limit over s.x (libunity.so 0xc35c4,
   //    0xd2844; core/mv_studio_particle_systems.py _scaled_billboard).
   //
+  //  * Unity culling (core/mv_studio_particle_systems.py culling()): a system
+  //    whose clock culling freezes off screen (looping procedural Automatic,
+  //    or Pause) and whose culling box the importer reproduced advances only
+  //    in display frames whose previous frame showed its box to a camera
+  //    that draws it: the main camera, and the split-screen sub cameras
+  //    while a split clip is active (the activation frame always advances).
+  //    The box is the local procedural box through the local-to-world
+  //    matrix; View alignment takes the largest scale on every axis
+  //    (libunity.so 0xc0e3c). Particles keep their state while culled;
+  //    PauseAndCatchup systems keep simulating.
+  //
   // Not reproduced, so the importer reports these systems and this runtime
-  // refuses them as well: X/Y start rotation on View or World billboards (the
-  // handedness of the camera and world frames for that turn is not evidenced)
-  // and on other render modes, X/Y rotation over lifetime,
+  // refuses them as well: X/Y start rotation on other render modes than
+  // Billboard, X/Y rotation over lifetime,
   // ShapeModule.alignToDirection except where a horizontal billboard cannot
   // show it, any other transform scale the scaling mode would apply to
   // particles (Hierarchy, Shape, world-space forces), and either billboard case
-  // above on a system Unity culling may pause off screen (looping Automatic or
-  // Pause culling: its clock depends on the cameras' visibility history).
+  // above on a system culling pauses off screen when its culling box is not
+  // reproduced (its clock depends on the cameras' visibility history).
 
   const f32 = Math.fround;
   const gravityMagnitude = f32(9.81), ageScale = f32(.01);
@@ -206,11 +228,15 @@
       !velocity?.worldSpace && !clamp?.worldSpace && pose.local.every(value => value > 1e-6) && !pausedOffScreen(system);
   }
 
-  // Unity culling may pause a looping Automatic (0) system and pauses any Pause
-  // (2) system while its renderer is invisible, and resumes it without catching
-  // up (libunity.so renderer callbacks 0xc2618 / 0xc2648 -> uncull 0x1cbd10 /
-  // cull 0x1cc5d8); core/mv_studio_particle_systems.py _paused_off_screen.
-  const pausedOffScreen = ({main}) => (main.cullingMode ?? 0) === 2 || ((main.cullingMode ?? 0) === 0 && !!main.looping);
+  // Unity culling freezes a looping procedural Automatic (0) system and any
+  // Pause (2) system while its renderer is invisible, and resumes it without
+  // catching up (libunity.so renderer callbacks 0xc2618 / 0xc2648 -> uncull
+  // 0x1cbd10 / cull 0x1cc5d8); core/mv_studio_particle_systems.py culling().
+  // The runtime reproduces that from the importer's culling box; without one
+  // (or from a descriptor older than it) the clock-dependent cases are refused.
+  const cullingBox = ({culling}) => culling?.pauses && culling.bounds ? culling.bounds : null;
+  const pausedOffScreen = system => system.culling ? !!system.culling.pauses && !system.culling.bounds :
+    (system.main.cullingMode ?? 0) === 2 || ((system.main.cullingMode ?? 0) === 0 && !!system.main.looping);
 
   // The scaling-mode scale a billboard's quad axes and size cap carry, or null
   // when it is the identity. libunity.so: the ParticleSystem state keeps it at
@@ -258,7 +284,8 @@
         (main.size3D && !(validCurve(main.sizeY) && validCurve(main.sizeZ))) ||
         (main.rotation3D && !(validCurve(main.rotationX) && validCurve(main.rotationY))) ||
         !validColor(main.color) || !finite(main.simulationSpeed) || main.simulationSpeed <= 0) return false;
-    if (!validCurve(emission.rate) || !Array.isArray(emission.bursts) || emission.bursts.length > 32 ||
+    if ((emission.enabled !== undefined && typeof emission.enabled !== "boolean") ||
+        !validCurve(emission.rate) || !Array.isArray(emission.bursts) || emission.bursts.length > 32 ||
         !emission.bursts.every(burst => finite(burst?.time) && validCurve(burst.count) &&
           Number.isInteger(burst.cycles) && finite(burst.interval) && finite(burst.probability))) return false;
     if (shape && !(Number.isInteger(shape.type) && vector(shape.position, 3) && vector(shape.rotation, 3) &&
@@ -285,19 +312,26 @@
     if (system.rotationBySpeed && !(validCurve(system.rotationBySpeed.curve) && vector(system.rotationBySpeed.range, 2))) {
       return false;
     }
-    if ((tilted(system) && (renderer.mode !== 0 || renderer.alignment !== 2 || pausedOffScreen(system))) ||
+    if ((tilted(system) && (renderer.mode !== 0 || pausedOffScreen(system))) ||
         (system.rotation?.separateAxes && !(zeroCurve(system.rotation.x) && zeroCurve(system.rotation.y))) ||
         (shape?.alignToDirection && !planarAlignment(system))) return false;
     return [0, 1, 2, 3].includes(renderer.mode) && finite(renderer.maxParticleSize) &&
       finite(renderer.minParticleSize) && vector(renderer.pivot, 3) && vector(renderer.flip, 3);
   }
 
-  // X/Y start rotation: drawn on Local billboards culling cannot pause only (validSimulation).
+  // X/Y start rotation: drawn on View, World and Local billboards, on a system culling cannot
+  // pause or whose culling the runtime reproduces (validSimulation).
   const tilted = ({main}) => main.rotation3D && !(zeroCurve(main.rotationX) && zeroCurve(main.rotationY));
+
+  function validCulling(value) {
+    return value === undefined || (!!value && typeof value.pauses === "boolean" && typeof value.uniform === "boolean" &&
+      (value.procedural === undefined || typeof value.procedural === "boolean") &&
+      (value.bounds === null || (vector(value.bounds, 6) && [0, 1, 2].every(axis => value.bounds[axis] <= value.bounds[axis + 3]))));
+  }
 
   function validSystem(system, textures) {
     const material = system?.material;
-    return validSimulation(system) && !!material && vector(material.tint, 4) && vector(material.st, 4) && vector(material.blend, 2) && vector(material.stencil, 4) &&
+    return validSimulation(system) && validCulling(system.culling) && !!material && vector(material.tint, 4) && vector(material.st, 4) && vector(material.blend, 2) && vector(material.stencil, 4) &&
       (material.texture === null || (Number.isInteger(material.texture) && !!textures[material.texture])) &&
       Number.isInteger(system.node) && Number.isInteger(system.layer);
   }
@@ -450,6 +484,31 @@
     }
   }
 
+  // 0x1d7490 step sizes of a prewarm of `horizon` system seconds (fixed
+  // step Time.fixedDeltaTime .02, TimeManager +0x48; the APK's TimeManager
+  // keeps Unity's .02): while more than 10 s remain, the previous step if
+  // above 1 s, else min(duration, 1); while more than 5 s remain, the
+  // previous step if above .2 s, else min(duration, .2); then the fixed step,
+  // until less than the last step is left. That remainder stays in the update
+  // accumulator (state +0) for the next frame.
+  function prewarmSteps(horizon, cycle) {
+    const steps = [];
+    let remainder = f32(horizon), last = fixedStep;
+    if (!(remainder >= fixedStep)) return {steps, remainder};
+    do {
+      let dt;
+      if (remainder > 10) dt = last > 1 ? last : f32(Math.min(cycle, 1));
+      else {
+        dt = remainder < fixedStep ? remainder : fixedStep;
+        if (remainder > 5) dt = last > catchUpStep ? last : f32(Math.min(cycle, catchUpStep));
+      }
+      steps.push(dt);
+      remainder = f32(remainder - dt);
+      last = dt;
+    } while (remainder >= last && steps.length < 100000);
+    return {steps, remainder};
+  }
+
   // system: one normalized ParticleSystem; seed: its effective random seed;
   // gravity: the world down axis in the emitter's simulation space.
   function create(system, seed, {gravity = [0, -1, 0], worldVelocity = null} = {}) {
@@ -465,6 +524,9 @@
       [compile(main.rotation)];
     const rate = compile(emission.rate);
     const bursts = emission.bursts.map(burst => ({...burst, count: compile(burst.count)}));
+    // An enabled EmissionModule (a descriptor older than the flag: one that can emit at all).
+    const emitting = typeof emission.enabled === "boolean" ? emission.enabled :
+      !zeroCurve(emission.rate) || emission.bursts.length > 0;
     const shape = makeShape(system.shape, native);
     const velocity = system.velocity && ["x", "y", "z"].map(axis => compile(system.velocity[axis]));
     const orbital = system.velocity?.orbital && ["orbitalX", "orbitalY", "orbitalZ", "orbitalOffsetX", "orbitalOffsetY",
@@ -690,8 +752,16 @@
       return found;
     }
 
+    // Particles the emission cap counts: the live ones, or during a
+    // procedural prewarm every particle emitted so far (state.batched).
+    const used = state => state.batched ?? state.active.length;
+
     function step(state, rawDt) {
-      let dt = f32(rawDt * speedScale);
+      simulate(state, f32(rawDt * speedScale));
+    }
+
+    // One update step of dt system seconds.
+    function simulate(state, dt) {
       const {active} = state;
       for (const atom of active) advance(atom, dt);
       cull(active);
@@ -716,16 +786,27 @@
       state.clock = clock;
       if (wrapped) state.loop++;
       if (!main.looping && next >= cycle) state.stopped = true;
-      const room = Math.max(0, main.maxParticles - active.length);
+      const room = Math.max(0, main.maxParticles - used(state));
       const regular = Math.min(requested, room);
       if (regular > 0) {
         const inverse = amount < clockBias ? 1 : f32(1 / amount);
         born(state, regular, index => f32(dt * Math.min(1, Math.max(birthBias, f32(f32(index + state.carry) * inverse)))),
           systemTime);
+        if (state.batched !== undefined) state.batched += regular;
       }
       for (const {count, elapsed} of pulses) {
-        const allowed = Math.min(count, Math.max(0, main.maxParticles - active.length));
-        if (allowed > 0) born(state, allowed, () => Math.max(birthBias, Math.min(dt, elapsed)), systemTime);
+        const allowed = Math.min(count, Math.max(0, main.maxParticles - used(state)));
+        if (!(allowed > 0)) continue;
+        if (state.batched === undefined) {
+          born(state, allowed, () => Math.max(birthBias, Math.min(dt, elapsed)), systemTime);
+          continue;
+        }
+        // A procedural batch starts at age 0 at the end of its step and only
+        // its rate particles get spacing offsets (0x1d7908 stores the rate
+        // count at +0x18; 0x1d7ed8 offsets only those), so its burst
+        // particles are born at the step end.
+        born(state, allowed, () => birthBias, systemTime);
+        state.batched += allowed;
       }
     }
 
@@ -749,18 +830,32 @@
         carry = f32(combined - Math.trunc(combined));
         phase = next;
       }
-      warm = {...warm, clock: f32(start % cycle), carry: perSecond > 0 ? f32(f32(1 - carry) + clockBias) : 0};
-      remainder = horizon;
-      for (let dt = remainder > 5 ? catchUpStep : fixedStep; remainder >= dt; dt = remainder > 5 ? catchUpStep : fixedStep) {
-        step(warm, dt);
-        remainder = f32(remainder - dt);
-      }
+      // 0x1d1e54 seeds the carry with 1 - (the scan's carry) + 1e-4 whatever the
+      // rate: an enabled module emits that one extra particle in the first
+      // step even at rate 0 (0x65b770 adds the carry after its rate branch).
+      // The particles' random draws (start colour, size, roll, shape position) follow emission order here, so
+      // every particle the prewarm emits shifts the draws of the later ones. Unity's own RNG consumption (per-step
+      // groups under the game's frame steps, 0x60fe08 batch regeneration) is not modelled: counts and ages match
+      // the game while random placement and colour do not. 12035 dump4 shots 6, 13 and 17 (the gradient_01 glow:
+      // same ages, a shifted colour/position sequence) belong to this class with the line_up and kira dots.
+      warm = {...warm, clock: f32(start % cycle), carry: emitting ? f32(f32(1 - carry) + clockBias) : 0};
+      // A procedural system prewarms in one procedural update (Simulate
+      // 0x1cbf64 -> 0x1ce4b0 with flag 2): 0x1d7490 appends emission batches
+      // and caps each step by the particles of every batch so far, live or
+      // dead, since only the closing 0x1d7a94 rebuilds the live ones.
+      if (system.culling?.procedural) warm.batched = 0;
+      const plan = prewarmSteps(horizon, cycle);
+      for (const dt of plan.steps) simulate(warm, dt);
+      remainder = plan.remainder;
+      delete warm.batched;
     }
     const layouts = new Map(), checkpointInterval = 2 * nativeStepRate;
 
     function layout(fps) {
       const grouped = nativeStepRate / fps;
-      let residue = f32(f32(1 / fps) + remainder);
+      // The prewarm's leftover system time runs after the first display
+      // frame's full steps, in the raw time step() scales back to it.
+      let residue = f32(f32(1 / fps) + f32(remainder / speedScale));
       for (let i = 0; i < grouped; i++) residue = f32(residue - nativeStep);
       const entry = {state: clone(warm), checkpoints: [warm], grouped, residue: main.prewarm && main.looping ? residue : 0};
       layouts.set(fps, entry);
@@ -836,13 +931,66 @@
   // time scale do not change when OnBehaviourPlay activates the clone.
   const timelineTick = time => Math.trunc(time / 1e-12 + .5);
 
+  // Display frame index of the clip's activation frame (frame 1 below).
+  function activationFrame(event, fps) {
+    const start = timelineTick(event.start), first = Math.ceil(event.start * fps);
+    return timelineTick((first - 1) / fps) === start ? first - 1 : first;
+  }
+
   function activeFrames(event, time, fps) {
     if (!event || !finite(event.start) || !finite(event.duration) || event.duration <= 0) return 0;
     const start = timelineTick(event.start), current = timelineTick(time);
     if (current < start || current >= timelineTick(event.start + event.duration)) return 0;
-    const first = Math.ceil(event.start * fps);
-    const activated = timelineTick((first - 1) / fps) === start ? first - 1 : first;
-    return Math.max(0, Math.floor(time * fps + 1e-9) - activated + 1);
+    return Math.max(0, Math.floor(time * fps + 1e-9) - activationFrame(event, fps) + 1);
+  }
+
+  // ---------------------------------------------------------------- culling
+  // World box (three.js space: Unity X mirrored) of a local culling box under a
+  // node pose: the scaling-mode scale (Hierarchy the lossy scale, Local the
+  // node's own, Shape 1) after the world rotation; View alignment widens each
+  // scaled column to the largest scale (libunity.so 0xc0e78: max(s) / s_i when
+  // s_i > 1e-9).
+  function worldBox(bounds, system, pose) {
+    const mode = system.main.scalingMode;
+    let scale = mode === 0 ? pose.scale : mode === 1 ? pose.local : [1, 1, 1];
+    if (system.culling.uniform) {
+      const largest = Math.max(...scale);
+      scale = scale.map(value => value > 1e-9 ? largest : value);
+    }
+    const center = [0, 1, 2].map(axis => (bounds[axis] + bounds[axis + 3]) / 2);
+    const extent = [0, 1, 2].map(axis => (bounds[axis + 3] - bounds[axis]) / 2);
+    const columns = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map((axis, i) => quatRotate(pose.rotation, axis).map(value => value * scale[i]));
+    const middle = [0, 1, 2].map(row => pose.position[row] + columns[0][row] * center[0] + columns[1][row] * center[1] +
+      columns[2][row] * center[2]);
+    const reach = [0, 1, 2].map(row => Math.abs(columns[0][row]) * extent[0] + Math.abs(columns[1][row]) * extent[1] +
+      Math.abs(columns[2][row]) * extent[2]);
+    return [-middle[0] - reach[0], middle[1] - reach[1], middle[2] - reach[2],
+      -middle[0] + reach[0], middle[1] + reach[1], middle[2] + reach[2]];
+  }
+
+  // The six clip-space planes (a, b, c, d) of projection * view, as Unity's
+  // camera culling planes.
+  function cameraPlanes(camera) {
+    const view = camera.matrixWorldInverse?.elements, projection = camera.projectionMatrix?.elements;
+    if (!vector(view ? Array.from(view) : null, 16) || !vector(projection ? Array.from(projection) : null, 16)) return null;
+    const m = new Float64Array(16);
+    for (let column = 0; column < 4; column++) for (let row = 0; row < 4; row++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) sum += projection[k * 4 + row] * view[column * 4 + k];
+      m[column * 4 + row] = sum;
+    }
+    const row = index => [m[index], m[4 + index], m[8 + index], m[12 + index]];
+    const [x, y, z, w] = [row(0), row(1), row(2), row(3)];
+    return [0, 1, 2].flatMap(axis => [w.map((value, i) => value + [x, y, z][axis][i]),
+      w.map((value, i) => value - [x, y, z][axis][i])]);
+  }
+
+  function boxVisible(box, planes) {
+    for (const [a, b, c, d] of planes) {
+      const px = a > 0 ? box[3] : box[0], py = b > 0 ? box[4] : box[1], pz = c > 0 ? box[5] : box[2];
+      if (a * px + b * py + c * pz + d < 0) return false;
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------- rendering
@@ -915,13 +1063,25 @@
       // Positive particle rotation turns the quad clockwise.
       local = vec2(c * local.x + s * local.y, -s * local.x + c * local.y);
       #if defined(TILTED)
-      // 3D start rotation of a Local billboard: the negated Z, X, Y angles in
-      // Unity's Euler order in the emitter frame (Z above, then X, then Y).
+      // 3D start rotation: the negated Z, X, Y angles in Unity's Euler order
+      // (Z above, then X, then Y) on the alignment's three axes (libunity.so
+      // 0xd242c): Local the emitter's, World the unit axes, View the columns of
+      // the inverse world-to-camera matrix (0xc37d8 of Camera 0x2966b8, which
+      // flips Z): camera right, up and back, three.js view x, y and z.
       float cx = cos(particleTilt.x), sx = sin(particleTilt.x);
       float cy = cos(particleTilt.y), sy = sin(particleTilt.y);
       vec3 turned = vec3(local.x, cx * local.y, -sx * local.y);
       turned = vec3(cy * turned.x - sy * turned.z, turned.y, sy * turned.x + cy * turned.z);
+      #if defined(VIEW_FACING) && defined(SCALED)
+      vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+      vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+      vec3 back = vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+      point.xyz += mat3(modelViewMatrix) * (uScale * (right * turned.x + up * turned.y + back * turned.z));
+      #elif defined(VIEW_FACING)
+      point.xyz += turned;
+      #else
       point.xyz += mat3(modelViewMatrix) * (uAxisX * turned.x + uAxisY * turned.y + uAxisZ * turned.z);
+      #endif
       #elif defined(VIEW_FACING) && defined(SCALED)
       // Camera right/up in world space times the scale, component-wise, like
       // the fixed axes of World and Local quads (libunity.so 0xd2844).
@@ -1116,7 +1276,8 @@
         // Drawn by the main camera only on its culling-mask layers; layer 20
         // belongs to the overlay camera, which this module does not drive.
         const drawn = ((mainCameraMask >>> system.layer) & 1) === 1 && system.layer < 32 && reproducible(system, pose);
-        return {system, systemIndex, pose, drawn, packet: null, stream: null, frame: -1, fps: 0, count: 0,
+        return {system, systemIndex, pose, restPose: pose, box: cullingBox(system), history: null, updates: 0,
+          drawn, packet: null, stream: null, frame: -1, fps: 0, count: 0,
           seed: system.main.autoRandomSeed ?
             // The game draws a fresh auto seed per activation; keep a stable stand-in per clip.
             (Math.imul((cue.clipSeed >>> 0) ^ 0x9e3779b9, 0x85ebca6b) + Math.imul(systemIndex + 1, 0xc2b2ae35) + cueIndex) >>> 0 :
@@ -1126,6 +1287,61 @@
     });
     const local = new T.Vector3(), center = new T.Vector3();
     let tracks, disposed = false;
+    // Culling planes of every camera that draws the frame, per display frame
+    // index, for the visibility pass (Unity counts a renderer visible when
+    // any camera drawing its layer sees it).
+    const frusta = new Map();
+    let cullKey = null, cullFps = 0;
+
+    function frustaAt(index, fps, view) {
+      if (frusta.has(index)) return frusta.get(index);
+      const time = index / fps;
+      const cameras = typeof view.camerasAt === "function" ? view.camerasAt(time) : [view.cameraAt(time)];
+      const planes = (cameras || []).filter(Boolean).map(cameraPlanes).filter(Boolean);
+      frusta.set(index, planes);
+      return planes;
+    }
+
+    // Node poses at a clone frame when the prefab Animator moves nodes, else null.
+    function posesAt(entry, frames, fps) {
+      const animation = entry.template.animation;
+      if (!animation?.channels.some(row => row.kind === "translation")) return null;
+      if (entry.poseCache?.fps !== fps) entry.poseCache = {fps, frames: new Map()};
+      let poses = entry.poseCache.frames.get(frames);
+      if (!poses) {
+        const evaluate = global.MVStudioStageMotion.evaluate;
+        const times = animation.clips.map(clip => animatorTime(clip, frames, fps));
+        const moved = entry.template.nodes.map(node => ({...node}));
+        for (const row of animation.channels) {
+          if (row.kind === "translation") moved[row.node].position = row.curves.map(curve => evaluate(curve, times[row.clip]));
+        }
+        poses = nodePoses(moved, entry.cue.offset);
+        entry.poseCache.frames.set(frames, poses);
+      }
+      return poses;
+    }
+
+    // Display frames whose update the system ran by clone frame `frames`: the
+    // activation frame always runs (Play adds the system to the update list),
+    // and a later frame runs only when the previous frame's culling showed the
+    // system's box to a camera drawing it; otherwise cull 0x1cc5d8 had taken it
+    // off the list (the becameInvisible callback, or the update end 0x1cde54
+    // finding the renderer not visible), and becameVisible's uncull put it back.
+    function advanced(item, entry, event, frames, fps, view) {
+      const activated = activationFrame(event, fps);
+      let history = item.history;
+      if (!history || history.activated !== activated) history = item.history = {activated, count: [0], visible: [false]};
+      for (let index = history.count.length; index < frames; index++) {
+        const planes = frustaAt(activated + index - 1, fps, view);
+        const poses = planes.length ? posesAt(entry, index, fps) : null;
+        const pose = poses ? poses[item.system.node] : item.restPose;
+        const box = planes.length ? worldBox(item.box, item.system, pose) : null;
+        const seen = planes.some(sides => boxVisible(box, sides));
+        history.visible.push(seen);
+        history.count.push(history.count[index - 1] + (seen ? 1 : 0));
+      }
+      return 1 + history.count[frames - 1];
+    }
 
     function simulationOf(entry) {
       if (entry.stream === undefined || entry.stream) return entry.stream;
@@ -1256,7 +1472,13 @@
     }
 
     return {
-      update(time, project) {
+      // view: {camerasAt(time) -> every posed camera drawing the frame (the
+      // main camera, and split-screen sub cameras while a split clip is
+      // active), or cameraAt(time) -> the main camera or null; key}; a new
+      // key (camera tracks, split data or viewport aspect changed) restarts
+      // the visibility pass.
+      // Without a view, culled systems simulate as if always visible.
+      update(time, project, view = null) {
         if (disposed) return;
         if (tracks !== project?.tracks) {
           tracks = project?.tracks;
@@ -1265,6 +1487,16 @@
         }
         const quality = project?.quality?.values;
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
+        const camera = typeof view?.camerasAt === "function" || typeof view?.cameraAt === "function" ? view : null;
+        if ((camera?.key ?? null) !== cullKey || fps !== cullFps) {
+          cullKey = camera?.key ?? null;
+          cullFps = fps;
+          frusta.clear();
+          for (const entry of cues) {
+            entry.poseCache = null;
+            for (const item of entry.systems) item.history = null;
+          }
+        }
         for (const entry of cues) {
           const {cue, track, systems} = entry;
           const event = track && !track.muted && quality?.[cue.quality] !== false &&
@@ -1277,10 +1509,12 @@
               hide(item);
               continue;
             }
-            if (item.frame === frames && item.fps === fps) continue;
+            const updates = item.box && camera ? advanced(item, entry, event, frames, fps, camera) : frames;
+            if (item.frame === frames && item.fps === fps && item.updates === updates) continue;
             item.frame = frames;
             item.fps = fps;
-            write(item, entry, frames, fps);
+            item.updates = updates;
+            write(item, entry, updates, fps);
           }
         }
       },
@@ -1288,8 +1522,12 @@
         const result = [];
         for (const entry of cues) for (const item of entry.systems) {
           if (item.frame <= 0) continue;
+          const {main} = item.system, elapsed = item.updates / item.fps * main.simulationSpeed;
           result.push({cue: entry.cue.eventId, track: entry.cue.trackId, template: entry.template.name,
             path: item.system.path, layer: item.system.layer, seed: item.seed, frames: item.frame,
+            // Frames the system updated (fewer than frames while culling froze it) and its clock.
+            updates: item.updates, time: main.looping ? elapsed % main.duration : Math.min(elapsed, main.duration),
+            culled: !!item.box && !!item.history && item.frame > 1 && !item.history.visible[item.frame - 1],
             alive: item.stream ? (item.rows?.length ?? 0) : 0, drawn: item.count,
             positions: (item.rows || []).slice(0, limit).map(row => row.world.map(value => Math.round(value * 1e4) / 1e4))});
         }
@@ -1312,5 +1550,6 @@
   global.MVStudioParticleSystems = {
     apply, create, activeFrames, animatorTime, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
     nodePoses, eulerQuaternion, blendFactor, depthFunction, renderState, loadTexture, mainCameraMask, salts,
+    activationFrame, worldBox, cameraPlanes, boxVisible, prewarmSteps,
   };
 })(typeof window !== "undefined" ? window : globalThis);
