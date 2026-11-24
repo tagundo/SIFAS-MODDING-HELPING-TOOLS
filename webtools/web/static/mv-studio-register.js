@@ -27,7 +27,10 @@
 
   // revision counts project changes; planned is the revision the shown plan was made from.
   // consent lists the platforms the user agreed to leave at the original MV for this submit;
-  // exclude is a mod project's other platform after its bake failed (OTHER_PLATFORM_FAILED).
+  // exclude is a mod project's other platform after its bake failed (OTHER_PLATFORM_FAILED). Both
+  // are one-shot: exclude holds for the one submit its button starts and is cleared when that
+  // submit ends in any way (job done, failed or cancelled, an early return, an error) and on
+  // every project change.
   function fresh() {
     return { plan: null, planning: null, timer: 0, planError: "", revision: 0, planned: -1, target: undefined,
       template: null, title: null, credit: null, jacket: null, jacketInfo: null, crop: null, audio: null, bpm: null,
@@ -288,9 +291,16 @@
 
   function submit(mode) {
     const plan = state.plan;
-    if (!plan || state.job || plan.blocked.length || stale() || state.planning) return;
+    if (!plan || state.job || plan.blocked.length || stale() || state.planning) {
+      if (!state.job) state.exclude = null;
+      draw();
+      return;
+    }
     const title = text(state.title).trim();
-    if (!title || title.length > 160) { state.error = "Enter a song title between 1 and 160 characters."; draw(); focus("mv-register-title"); return; }
+    if (!title || title.length > 160) {
+      state.exclude = null;
+      state.error = "Enter a song title between 1 and 160 characters."; draw(); focus("mv-register-title"); return;
+    }
     const { skipped } = platformsFor(plan);
     if (skipped.length && !consented(skipped)) {
       state.confirm = { mode, platforms: skipped, message: consentMessage(skipped) };
@@ -319,6 +329,7 @@
       const { send, skipped } = platformsFor(fresh);
       if (fresh.blocked.length || freshMode !== mode || mode === "update" && fresh.song.liveId !== plan.song.liveId) {
         state.job = null;
+        state.exclude = null;
         draw();
         return;
       }
@@ -355,6 +366,7 @@
     } catch (error) {
       if (current !== state) return;
       state.job = null;
+      state.exclude = null;
       if (error.name !== "AbortError") state.error = text(error.message);
       draw();
     }
@@ -403,10 +415,11 @@
         finished = true;
         events.close();
         current.job = null;
+        // The one-platform choice covered this job only, however it ended.
+        current.exclude = null;
         if (current.failed) current.error = current.failed.message;
         else if (event.status === "error") current.error = text(event.summary);
         else if (event.status === "cancelled") current.error = "MV registration was cancelled.";
-        else current.exclude = null;
         // Check again after every job: the songs and the originals may have changed.
         if (current === state) { loadSongs(songs.region); runPlan(); }
       }
@@ -415,6 +428,7 @@
     events.onerror = () => {
       if (finished || events.readyState !== global.EventSource.CLOSED) return;
       current.job = null;
+      current.exclude = null;
       current.error = "MV registration progress was interrupted. Check the songs list.";
       if (current === state) draw();
     };
@@ -813,12 +827,20 @@
     } else {
       item("ok", t("No native timeline: the base MV's timeline plays unchanged."));
     }
-    const bake = timeline.bake || [], downloads = timeline.download || [], kept = timeline.keep || [];
+    const bake = timeline.bake || [], kept = timeline.keep || [];
+    // The platform left out by "Register for Android/iOS only", while that choice holds (platformsFor).
+    const excluded = state.exclude && bake.includes(state.exclude) ? state.exclude : null;
+    const downloads = (timeline.download || []).filter((platform) => platform !== excluded);
     if (kept.length && plan.song) {
       item("ok", format("{platform}: the registered timeline stays", { platform: kept.map(platformName).join(" · ") }));
     }
+    if (excluded) {
+      const row = item("warn", format("{platform}: left out of this registration, it plays the original MV",
+        { platform: platformName(excluded) }));
+      row.id = "mv-register-excluded";
+    }
     if (bake.length) {
-      const ready = bake.filter((platform) => !downloads.includes(platform));
+      const ready = bake.filter((platform) => !downloads.includes(platform) && platform !== excluded);
       if (ready.length === 2) item("ok", t("Applied on Android and iOS"));
       else if (ready.length === 1) item("ok", format("Applied on {platform}", { platform: platformName(ready[0]) }));
       if (downloads.length) {
@@ -898,7 +920,7 @@
     const row = make("div", null, { class: "mv-controls" });
     row.append(button("Continue", () => { const { mode, platforms } = state.confirm; state.consent = platforms; state.confirm = null; submit(mode); },
       { id: "mv-register-confirm-yes" }),
-      button("Cancel", () => { state.confirm = null; draw(); }, { id: "mv-register-confirm-no" }));
+      button("Cancel", () => { state.confirm = null; state.exclude = null; draw(); }, { id: "mv-register-confirm-no" }));
     dialog.append(make("p", t(state.confirm.message)), row);
     return dialog;
   }
@@ -1147,8 +1169,10 @@
         if (open()) runPlan();
         return;
       }
-      // Every change makes the shown plan stale, also while the panel is closed.
+      // Every change makes the shown plan stale, also while the panel is closed, and ends a
+      // one-platform choice made for the project as it was.
       state.revision++;
+      state.exclude = null;
       syncSubmit();
       schedulePlan(reason === "history" ? 1000 : 0);
     },
@@ -1170,6 +1194,7 @@
     "Camera: {count} shots edited (follow camera included)", "Values: {values} · clip timing: {timing}",
     "Applied on Android and iOS", "Applied on {platform}", "Download (about {size} MB)", "No {platform} original",
     "{platform}: the registered timeline stays", "Register for Android only", "Register for iOS only",
+    "{platform}: left out of this registration, it plays the original MV",
     "{platform} has no original in this region: it plays the base MV.", "Not in the game:",
     "Checking what reaches the game…", "Open this panel to check what reaches the game.", "Region: {region}", "New song",
     "Update {title} ({id})", "Register as", "Songs registered from this base MV: {songs}", "Not chosen", "Game region", "Search MV",

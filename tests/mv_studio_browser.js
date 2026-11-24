@@ -109,7 +109,17 @@ async function registrationControls(page) {
   await page.route('**/api/jobs/job3/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
     { type: 'mv-stage', stage: 'check', label: 'Checking the base MV originals', index: 0, total: 3 },
     { type: 'done', status: 'error', summary: otherFailed }]) }));
-  await page.route('**/api/jobs/job4/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+  // job4: the Android-only job, held open (no 'done') until finishJob4, then cancelled. job5: the next
+  // normal submit, whose iOS bake fails again. job6: Android only again, registered.
+  let finishJob4 = false;
+  await page.route('**/api/jobs/job4/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' },
+    body: 'retry: 100\n\n' + stream([
+      { type: 'mv-stage', stage: 'android', label: 'Building the Android timeline', index: 1, total: 3 },
+      ...(finishJob4 ? [{ type: 'done', status: 'cancelled', summary: 'MV registration was cancelled.' }] : [])]) }));
+  await page.route('**/api/jobs/job5/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-stage', stage: 'check', label: 'Checking the base MV originals', index: 0, total: 3 },
+    { type: 'done', status: 'error', summary: otherFailed }]) }));
+  await page.route('**/api/jobs/job6/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
     { type: 'mv-song', mode: 'new', changed: true, restart: 'manual', warnings: [], song: { liveId: 93002, region: 'gl', title: 'MV Studio sample' } },
     { type: 'done', status: 'done', summary: 'ok' }]) }));
   const panel = page.locator('#mv-panel-register');
@@ -180,23 +190,41 @@ async function registrationControls(page) {
   await page.waitForFunction(() => { const button = document.querySelector('#mv-register-only'); return button && !button.disabled; });
   assert.equal(await only.textContent(), 'Android에만 등록');
   await only.click();
-  await page.locator('#mv-register-result').filter({ hasText: '93002' }).waitFor();
+  // While the one-platform choice holds, the check list shows the platform it leaves out.
+  await page.locator('#mv-register-stage').filter({ hasText: 'Android 타임라인' }).waitFor();
   assert.deepEqual(jobs[3].platforms, ['android']);
+  assert.equal(await page.locator('#mv-register-excluded').textContent(), '⚠iOS: 이번 등록에서 빠지며 원래 MV가 재생됩니다');
+  assert.match(await page.locator('#mv-register-plan').textContent(), /Android에 적용/);
+  assert.doesNotMatch(await page.locator('#mv-register-plan').textContent(), /Android · iOS 모두 적용/);
+  await panel.screenshot({ path: path.join(evidence, 'register-excluded-ko.png') });
+  // The Android-only job is cancelled: the choice ends with it, and the next Register sends both platforms.
+  finishJob4 = true;
+  await page.locator('#mv-register-error').filter({ hasText: 'MV 등록을 취소했습니다.' }).waitFor();
+  assert.equal(await page.locator('#mv-register-excluded').count(), 0);
+  await page.waitForFunction(() => { const submit = document.querySelector('#mv-register-submit'); return submit && !submit.disabled; });
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-error').filter({ hasText: 'iOS 원본 MV에 넣지 못했습니다' }).waitFor();
+  assert.deepEqual(jobs[4].platforms, ['android', 'ios'], 'A cancelled one-platform job does not leave iOS out of the next one');
+  await page.waitForFunction(() => { const button = document.querySelector('#mv-register-only'); return button && !button.disabled; });
+  await page.locator('#mv-register-only').click();
+  await page.locator('#mv-register-result').filter({ hasText: '93002' }).waitFor();
+  assert.deepEqual(jobs[5].platforms, ['android']);
+  assert.equal(await page.locator('#mv-register-excluded').count(), 0);
   // A store refusal after the game server stopped: Cancel is off from the stop on, and the error
-  // comes with the server's state. The stream stays open (without 'done') until finishJob5.
-  let finishJob5 = false;
+  // comes with the server's state. The stream stays open (without 'done') until finishJob7.
+  let finishJob7 = false;
   const refused = 'The selected music ID or cue already belongs to a song in this region.';
-  await page.route('**/api/jobs/job5/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' },
+  await page.route('**/api/jobs/job7/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' },
     body: 'retry: 100\n\n' + stream([
       { type: 'mv-stage', stage: 'check', label: 'Checking the base MV originals', index: 0, total: 4 },
       { type: 'mv-stage', stage: 'stop', label: 'Stopping the game server', index: 1, total: 4 },
-      ...(finishJob5 ? [{ type: 'mv-failed', message: refused, restart: 'done' },
+      ...(finishJob7 ? [{ type: 'mv-failed', message: refused, restart: 'done' },
         { type: 'done', status: 'error', summary: refused }] : [])]) }));
   await page.waitForFunction(() => { const submit = document.querySelector('#mv-register-submit'); return submit && !submit.disabled; });
   await page.locator('#mv-register-submit').click();
   await page.locator('#mv-register-stage').filter({ hasText: '게임 서버 정지' }).waitFor();
   assert(await page.locator('#mv-register-cancel').isDisabled(), 'No cancel once the server stops');
-  finishJob5 = true;
+  finishJob7 = true;
   await page.locator('#mv-register-error').filter({ hasText: '이 지역의 다른 곡이 이미 쓰고 있습니다' }).waitFor();
   assert.equal(await page.locator('#mv-register-error-server').textContent(), '게임 서버를 다시 시작했습니다.');
   // Deleting on a standalone PC: the server was stopped and must be started again; the store's

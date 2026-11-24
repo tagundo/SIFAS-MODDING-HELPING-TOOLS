@@ -2924,6 +2924,8 @@ _MV_REGISTER_TRANSLATIONS = {
     "{platform}: the registered timeline stays": ("{platform}: 등록된 타임라인을 그대로 둡니다", "{platform}：登録済みのタイムラインのままです"),
     "Register for Android only": ("Android에만 등록", "Androidだけに登録"),
     "Register for iOS only": ("iOS에만 등록", "iOSだけに登録"),
+    "{platform}: left out of this registration, it plays the original MV": (
+        "{platform}: 이번 등록에서 빠지며 원래 MV가 재생됩니다", "{platform}：今回の登録から外れ、元のMVが再生されます"),
     "Backup: {path}": ("백업: {path}", "バックアップ：{path}"),
     "Enter a song title between 1 and 160 characters.": ("곡 제목을 1~160자로 입력하세요.", "曲のタイトルを1〜160文字で入力してください。"),
     "Enter a credit of at most 200 characters on one line.": (
