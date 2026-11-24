@@ -202,6 +202,11 @@ async function run() {
     assert.match(removal.body.reviewToken, /^[0-9a-f]{64}$/);
     assert.deepEqual(log().slice(removedAt).filter((call) => call === 'stop' || call === 'start'), ['stop', 'start']);
     assert.deepEqual(await page.evaluate(async () => (await (await fetch('/api/mv-studio/songs?region=gl')).json()).songs), []);
+    // The panel is back to registering a new song.
+    await page.locator('#mv-register-submit').filter({ hasText: 'MV 전용 곡으로 등록' }).waitFor();
+    assert(await page.locator('#mv-register-submit').isEnabled());
+    assert.equal(await page.locator('#mv-register-target').count(), 0);
+    assert.equal(await page.evaluate(() => MVStudio.getState().project.registration), undefined);
     await shot(page, panel, 'register-removed-ko.png');
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ status: 'PASS', evidence }));

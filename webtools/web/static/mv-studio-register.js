@@ -307,6 +307,16 @@
         current.audio = null;
       } else if (event.type === "mv-song-removed") {
         current.removed = event;
+        // The removed song can no longer be updated: the panel goes back to registering a new song.
+        if (current.target === event.liveId) {
+          current.target = undefined;
+          current.jacket = current.jacketInfo = current.crop = null;
+          current.audio = null;
+          current.result = null;
+        }
+        const project = ctx.project();
+        const link = project && project.registration;
+        if (current === state && link && link.liveId === event.liveId && link.region === event.region) delete project.registration;
       } else if (event.type === "done") {
         finished = true;
         events.close();
