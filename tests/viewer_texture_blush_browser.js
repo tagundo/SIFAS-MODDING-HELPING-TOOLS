@@ -357,6 +357,7 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       assertBlushInView(await blushLayout(page, 'top'), lang);
       assert.equal(await page.locator('#viewer-texture-blush-game-level').textContent(), lang === 'ko' ? '‘약하게’ ≈ 게임 곡의 가장 진한 홍조' : '「薄く」≈ ゲームの楽曲で最も濃い頬紅');
       assert.equal(await page.locator('#viewer-texture-blush-remove').textContent(), lang === 'ko' ? '홍조 제거' : '頬紅を外す');
+      assert.equal(await page.locator('#viewer-texture-blush-advanced-summary').textContent(), lang === 'ko' ? '고급 설정: 세기 값' : '詳細設定: 強さの値');
       // Reopening the tab started the default preview again; drop it.
       await click(page, '#viewer-texture-cancel'); assert.equal((await state(page)).blush.pending, false);
       await page.setViewportSize({ width: 1480, height: 1100 }); await frames(page);
