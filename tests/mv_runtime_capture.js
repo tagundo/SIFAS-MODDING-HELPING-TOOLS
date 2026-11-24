@@ -352,17 +352,16 @@ async function evaluatePure(page, batch, keys) {
 // give the previous frame's director time.
 const MAX_DELTA_TIME = 1 / 3;
 
-// The game's own rendered-frame times (director seconds) from every record
-// that carries clock.frameCount. A record is a rendered frame; the frame
-// before it is at directorTime - deltaTime unless deltaTime was clamped to
-// maximumDeltaTime; the other frames between two records are spread evenly
-// over the director time between them. While the director does not advance
-// (pinned at the song end) every frame between two records shows that time;
-// a director that goes back leaves its frames out. Springs step once per
-// rendered frame (SwingBoneGroupJob has no time step), so this grid is what
-// the game's springs saw, including its frame-time jitter on a slow device.
-// The same rule as mv_frame_compare.py game_frame_times.
-function gameFrameTimes(doc) {
+// The game's own rendered frames (frameCount -> director seconds, in frame
+// order) from every record that carries clock.frameCount. Every record is a
+// frame it showed; the frame before it is at directorTime - deltaTime unless
+// deltaTime was clamped to maximumDeltaTime; the other frames between two
+// records are spread evenly over the director time between them. While the
+// director does not advance (pinned at the song end) every frame between two
+// records shows that time. A director that goes back leaves the frames between
+// those two records unknown; both records keep their own times. The same map
+// as mv_frame_compare.py game_frame_times.
+function gameFrames(doc) {
   const anchors = new Map();
   for (const record of doc.records || []) {
     const clock = record.clock;
@@ -370,19 +369,35 @@ function gameFrameTimes(doc) {
     if (!anchors.has(clock.frameCount)) anchors.set(clock.frameCount, { frame: clock.frameCount, t: clock.directorTime, dt: clock.deltaTime });
   }
   const sorted = [...anchors.values()].sort((a, b) => a.frame - b.frame);
-  const times = sorted.length ? [sorted[0].t] : [];
+  const frames = new Map(sorted.map(({ frame, t }) => [frame, t]));
   for (let index = 1; index < sorted.length; index++) {
-    const a = sorted[index - 1], b = sorted[index], frames = b.frame - a.frame;
+    const a = sorted[index - 1], b = sorted[index], count = b.frame - a.frame;
     if (Math.abs(b.t - a.t) <= 1e-9) {
-      for (let k = 1; k <= frames; k++) times.push(a.t);
+      for (let k = 1; k < count; k++) frames.set(a.frame + k, a.t);
       continue;
     }
     if (!(b.t > a.t)) continue;
-    const before = Number.isFinite(b.dt) && b.dt > 0 && b.dt < MAX_DELTA_TIME - 1e-6 && b.t - b.dt > a.t + 1e-9 && frames >= 2 ? b.t - b.dt : null;
-    const end = before ?? b.t, spread = before === null ? frames : frames - 1;
-    for (let k = 1; k < spread; k++) times.push(a.t + k * (end - a.t) / spread);
-    if (before !== null) times.push(before);
-    times.push(b.t);
+    const before = Number.isFinite(b.dt) && b.dt > 0 && b.dt < MAX_DELTA_TIME - 1e-6 && b.t - b.dt > a.t + 1e-9 && count >= 2 ? b.t - b.dt : null;
+    const end = before ?? b.t, spread = before === null ? count : count - 1;
+    for (let k = 1; k < spread; k++) frames.set(a.frame + k, a.t + k * (end - a.t) / spread);
+    if (before !== null) frames.set(b.frame - 1, before);
+  }
+  return new Map([...frames].sort((a, b) => a[0] - b[0]));
+}
+
+// The spring preroll grid: gameFrames as an ascending list of director times.
+// Springs step once per rendered frame (SwingBoneGroupJob has no time step), so
+// this grid is what the game's springs saw, including its frame-time jitter on
+// a slow device. The preroll picks its frames by time, so the list must not go
+// back: a frame earlier than a time already listed (a rewound record, and the
+// frames after it until the director passes that time again) is left out,
+// while mv_frame_compare.py game_frame_times keeps it in its frameCount map.
+function gameFrameTimes(doc) {
+  const times = [];
+  for (const time of gameFrames(doc).values()) {
+    // A pinned director's records may differ by rounding (<= 1e-9 s); they hold the listed time.
+    if (!times.length) times.push(time);
+    else if (time >= times.at(-1) - 1e-9) times.push(Math.max(time, times.at(-1)));
   }
   return times;
 }
@@ -752,5 +767,5 @@ if (require.main === module) run().catch((error) => { console.error(error.stack 
 module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planRequests, filterFor, stageNodeKey, editorRecord, rendererSelector,
   gameSuits, suitPlan, pinCostumes, checkCostumes,
   qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
-  gameFrameTimes, prerollTimes, memberMeshAlias,
+  gameFrames, gameFrameTimes, prerollTimes, memberMeshAlias,
   prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };

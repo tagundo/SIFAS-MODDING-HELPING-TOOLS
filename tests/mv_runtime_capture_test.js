@@ -100,8 +100,19 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
   const end = capture.gameFrameTimes({ records: [clocked(196, 19.4, 0.2), clocked(199, 20, 0.2), clocked(200, 20, 1 / 3),
     clocked(204, 20, 0.12)] });
   assert.deepEqual(end.map((value) => Math.round(value * 1e9) / 1e9), [19.4, 19.6, 19.8, 20, 20, 20, 20, 20, 20]);
-  // A director that goes back leaves its frames out.
+  // A director that goes back leaves the frames between those records unknown; the map keeps both
+  // records (as mv_frame_compare.py game_frame_times does), the ascending preroll grid leaves out the
+  // rewound record and the frames after it until the director passes the listed time again.
   assert.deepEqual(capture.gameFrameTimes({ records: [clocked(300, 30, 0.2), clocked(302, 29, 0.2)] }), [30]);
+  const rewound = { records: [clocked(300, 30, 0.2), clocked(302, 29, 0.2), clocked(304, 29.5, 0.2), clocked(306, 31, 0.2)] };
+  assert.deepEqual([...capture.gameFrames(rewound)].map(([frame, time]) => [frame, Math.round(time * 1e9) / 1e9]),
+    [[300, 30], [302, 29], [303, 29.3], [304, 29.5], [305, 30.8], [306, 31]]);
+  const times = capture.gameFrameTimes(rewound);
+  assert.deepEqual(times.map((value) => Math.round(value * 1e9) / 1e9), [30, 30.8, 31]);
+  assert(times.every((value, index) => index === 0 || value >= times[index - 1]), 'the preroll grid never goes back');
+  // Pinned records that differ by rounding still hold the listed time.
+  const pinned = capture.gameFrameTimes({ records: [clocked(10, 5 + 5e-10, 0.2), clocked(12, 5, 0.2)] });
+  assert.deepEqual(pinned, [5 + 5e-10, 5 + 5e-10, 5 + 5e-10]);
 
   console.log('MV_RUNTIME_CAPTURE_PASS viewport, stage-scene selector and pinned suits');
 })().catch((error) => { console.error(error); process.exitCode = 1; });
