@@ -175,4 +175,26 @@ test("large UV regions fill row spans while keeping the untouched corner clear",
   assert.strictEqual(covered, width * (width + 1) / 2);
   assert.strictEqual(mask[mask.length - 1], 0);
 });
+test("UV island selection grows one texel in all eight directions", () => {
+  const mask = new Uint8Array(6 * 5); mask[2 * 6 + 2] = 255;
+  const grown = tools.growMask(mask, 6, 5);
+  assert.deepStrictEqual(Array.from(grown, (value, index) => value ? index : -1).filter(index => index >= 0), [7, 8, 9, 13, 14, 15, 19, 20, 21]);
+  assert.strictEqual(mask.filter(Boolean).length, 1, "the source mask is left unchanged");
+  assert.ok(grown.every(value => value === 0 || value === 255));
+});
+test("the island ring stops at the texture border and does not wrap", () => {
+  const mask = new Uint8Array(4 * 3); mask[0] = 255; mask[4 * 3 - 1] = 255;
+  const grown = tools.growMask(mask, 4, 3);
+  assert.deepStrictEqual(Array.from(grown, (value, index) => value ? index : -1).filter(index => index >= 0), [0, 1, 4, 5, 6, 7, 10, 11]);
+  assert.strictEqual(grown[3], 0, "the row end does not wrap to the next row");
+  assert.strictEqual(grown[8], 0, "the row start does not wrap to the previous row");
+});
+test("a grid-aligned island gains exactly its one-texel ring", () => {
+  const mask = new Uint8Array(8 * 6), points = [[2 / 8, 2 / 6], [4 / 8, 2 / 6], [2 / 8, 4 / 6], [4 / 8, 4 / 6]];
+  tools.rasterTriangle(mask, 8, 6, [points[0], points[1], points[2]]);
+  tools.rasterTriangle(mask, 8, 6, [points[2], points[1], points[3]]);
+  const grown = tools.growMask(mask, 8, 6), expected = [];
+  for (let y = 1; y <= 4; y++) for (let x = 1; x <= 4; x++) expected.push(y * 8 + x);
+  assert.deepStrictEqual(Array.from(grown, (value, index) => value ? index : -1).filter(index => index >= 0), expected);
+});
 process.stdout.write("PASS " + cases + " texture controller geometry cases\n");

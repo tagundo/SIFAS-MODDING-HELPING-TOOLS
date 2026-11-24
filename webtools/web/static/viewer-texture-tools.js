@@ -93,6 +93,17 @@
       if (right > left) mask.fill(255, y * width + left, y * width + right);
     }
   }
+  // Grow a selection mask by one texel in all eight directions, clamped at the
+  // texture border. UV island selection uses it so the island's outer ring is
+  // selected too: the area-overlap raster alone can leave edge texels that
+  // still show on the model unselected. It changes the selection only, never
+  // the texture pixels.
+  function growMask(mask, width, height) {
+    var across = new Uint8Array(mask.length), grown = new Uint8Array(mask.length), x, y, i;
+    for (y = 0; y < height; y++) for (x = 0, i = y * width; x < width; x++, i++) across[i] = mask[i] || x > 0 && mask[i - 1] || x + 1 < width && mask[i + 1] ? 255 : 0;
+    for (y = 0; y < height; y++) for (x = 0, i = y * width; x < width; x++, i++) grown[i] = across[i] || y > 0 && across[i - width] || y + 1 < height && across[i + width] ? 255 : 0;
+    return grown;
+  }
   function rasterFaces(width, height, triangles, uvs, faces, texture) {
     var mask = new Uint8Array(width * height);
     faces.forEach(function (face) {
@@ -827,7 +838,8 @@
       if (entry.standalone || !global.TextureUVSelection || !bindings(entry).length) { say("Open a model texture to select UV regions."); return false; }
       var image = entry.engine.getImage(false), data = uvSelectionData(entry), hits = data.index.hit(point.x / image.width, point.y / image.height, tool), mask = new Uint8Array(image.width * image.height), faces = new Set();
       hits.forEach(function (index) { var polygon = data.polygons[index]; rasterTriangle(mask, image.width, image.height, polygon.points); faces.add(polygon.meshId + ":" + polygon.face); });
-      cancelPreview(); entry.lastUVSelection = { mode: tool, polygonCount: hits.length, faceCount: faces.size }; entry.engine.selectRegion(mask, mode); return true;
+      var grow = tool === "select-uv-island" && hits.length ? 1 : 0; if (grow) mask = growMask(mask, image.width, image.height);
+      cancelPreview(); entry.lastUVSelection = { mode: tool, polygonCount: hits.length, faceCount: faces.size, grow: grow }; entry.engine.selectRegion(mask, mode); return true;
     }
     function drawUV(entry, context, view) {
       if (!showUV.checked || entry !== active || !entry.engine) return;
@@ -2064,7 +2076,7 @@
       dispose: function () { if (disposed) return; reset(false, true); disposed = true; listeners.forEach(function (remove) { remove(); }); finishPickerStack(); if (expanded) setExpanded(false); if (uvControl) uvControl.dispose(); if (processor) processor.dispose(); modelCursor.remove(); section.remove(); }
     };
   }
-  var exported = { create: create, key: key, sameIdentity: same, equalPixels: equalPixels, sampledUv: sampledUv, triangleCopies: triangleCopies, rasterTriangle: rasterTriangle, rasterFaces: rasterFaces, stampMaskCircle: stampMaskCircle, brushMask: brushMask };
+  var exported = { create: create, key: key, sameIdentity: same, equalPixels: equalPixels, sampledUv: sampledUv, triangleCopies: triangleCopies, rasterTriangle: rasterTriangle, rasterFaces: rasterFaces, growMask: growMask, stampMaskCircle: stampMaskCircle, brushMask: brushMask };
   global.ViewerTextureTools = exported;
   if (typeof module === "object" && module.exports) module.exports = exported;
 }(typeof window !== "undefined" ? window : globalThis));
