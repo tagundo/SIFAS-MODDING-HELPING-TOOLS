@@ -42,6 +42,9 @@ function basics() {
     'the event is copied before its first change');
   assert.equal(events.length, 1);
   assert.equal(events[0].direction, 'do');
+  assert.deepEqual(events[0].changes, [{ target: { kind: 'event', track: 'camera', event: 'shot-1' }, path: ['values', 'fov'], op: 'set', before: 30, after: 55 }]);
+  events[0].command.changes[0].before = 999;   // listeners get copies
+  assert.equal(events[0].command.label, 'Edit value');
   assert.equal(history.peekUndo().label, 'Edit value');
   assert.deepEqual([...history.editedEvents()], ['shot-1']);
 
@@ -53,7 +56,7 @@ function basics() {
   assert.equal(project.tracks[0].events[0].values.fov, 55);
   assert.equal(events.at(-1).direction, 'undo');
   assert.equal(history.undo(), true);
-  assert.equal(project.tracks[0].events[0].values.fov, 30);
+  assert.equal(project.tracks[0].events[0].values.fov, 30, 'a listener editing its copy does not change undo');
   assert.equal(history.undo(), false, 'nothing left to undo');
   assert.deepEqual([...history.editedEvents()], [], 'back to the original values: not edited');
   assert.equal(history.redo(), true);

@@ -222,9 +222,18 @@
       return true;
     }
 
+    // Listeners get copies: nothing they do can change what undo/redo restores.
+    function publicChange(change) {
+      const view = { target: clone(change.target), path: change.path.slice(), op: change.op };
+      if (change.op === "set") { view.before = clone(change.before); view.after = clone(change.after); }
+      else { view.index = change.index; view.value = clone(change.value); }
+      return view;
+    }
+
     function emit(entry, direction, applied) {
       version++;
-      onChange({ command: entry, direction, changes: applied || entry.changes });
+      const command = { label: entry.label, detail: entry.detail, coalesce: entry.coalesce, changes: entry.changes.map(publicChange) };
+      onChange({ command, direction, changes: (applied || entry.changes).map(publicChange) });
     }
 
     // A later set on the same (target, path) keeps the first before and the last after.
