@@ -32,7 +32,15 @@
     return Math.max(0, Math.min(1, global.ViewerMotionTimeline?.curve(keys, t, fallback) ?? fallback));
   }
 
+  // A Live* mixer input's weight at `time`: 0 for an input the scene's mixer walk left out
+  // (MVStudioMixer: LiveMixerBase`2.ProcessWithoutSeek during playback), else clipWeight.
   function nativeWeight(event, time) {
+    if (global.MVStudioMixer?.skipped(event, time)) return 0;
+    return clipWeight(event, time);
+  }
+
+  // The input weight Timeline gives a clip at `time` (blend or ease curves, extrapolation).
+  function clipWeight(event, time) {
     const v = event.values;
     let local = time - event.start;
     if (local < 0) {
@@ -235,5 +243,5 @@
     };
   }
 
-  global.MVStudioLighting = { nativeWeight, memberColor, sample, heldColor, heldScalar, approximately, HOLD_EPSILON };
+  global.MVStudioLighting = { nativeWeight, clipWeight, memberColor, sample, heldColor, heldScalar, approximately, HOLD_EPSILON };
 })(typeof window !== "undefined" ? window : globalThis);
