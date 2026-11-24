@@ -130,12 +130,22 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
   assert.equal(planned.get('f0163@-1').phaseSource, 'deltaTime', 'no record of frame 9845');
   // A clamped deltaTime (1/3 s) hides the real interval: the recorded previous frame is used at any distance.
   assert.deepEqual(phase('f0201@-1'), [104, 'recorded']);
-  // A neighbour on the wrong side of t or more than half a deltaTime away is not that frame's time.
-  assert.equal(planned.get('f0202@-1').phaseSource, 'recorded');
+  assert.deepEqual(phase('f0202@-1'), [105.3, 'recorded']);
   assert.deepEqual(phase('f0203@1'), [105.5, 'recorded']);
-  const sparse = new Map(capture.planRequests({ records: [at('a', 10, 0.5, 1 / 15), at('b', 11, 1, 1 / 15)] }, [-1])
+  // A recorded neighbour is the time of the evaluation that frame ran, however far it lies from
+  // t +/- deltaTime: a jittered next frame (12035 dump4 f0070: 35.675 s, deltaTime 0.125641406, frame
+  // +1 at 35.885 s), a director pinned at the song end (106.666 s in both frames) or a director that
+  // went back.
+  const jitter = capture.planRequests({ records: [at('f0070', 7000, 35.675, 0.125641406), at('f0071', 7001, 35.885, 0.21)] }, [1])[0];
+  assert.deepEqual([jitter.t, jitter.phaseSource], [35.885, 'recorded']);
+  const songEnd = new Map(capture.planRequests({ records: [at('f0170', 9000, 106.666, 0.155343145), at('f0171', 9001, 106.666, 0.314309984)] },
+    [-1, 1]).map((request) => [request.id, request]));
+  assert.deepEqual([songEnd.get('f0171@-1').t, songEnd.get('f0171@-1').phaseSource], [106.666, 'recorded']);
+  assert.deepEqual([songEnd.get('f0170@1').t, songEnd.get('f0170@1').phaseSource], [106.666, 'recorded']);
+  const sparse = new Map(capture.planRequests({ records: [at('a', 10, 0.5, 1 / 15), at('b', 11, 1, 1 / 15), at('c', 13, 2, 1 / 15)] }, [-1])
     .map((request) => [request.id, request]));
-  assert.deepEqual([sparse.get('b@-1').phaseSource, sparse.get('b@-1').t], ['deltaTime', 0.933],
+  assert.deepEqual([sparse.get('b@-1').phaseSource, sparse.get('b@-1').t], ['recorded', 0.5]);
+  assert.deepEqual([sparse.get('c@-1').phaseSource, sparse.get('c@-1').t], ['deltaTime', 1.933],
     'the director follows the millisecond music clock: the estimate is rounded to it');
   // 12035 Max 3D f0089: frame 9614 at 46.934 s, deltaTime 0.186060965, no record of frame 9613: the
   // previous frame is estimated at 46.748 s (the camera fov there matches the game to 1e-4 degrees).
@@ -145,8 +155,22 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
   assert(Math.abs(fractional.t - 0.8005) < 1e-12, 'a dump whose times are not whole milliseconds keeps the estimate');
   const flipped = new Map(capture.planRequests({ records: [at('a', 10, 2, 0.2), at('b', 11, 1.9, 0.2)] }, [-1, 1])
     .map((request) => [request.id, request]));
-  assert.equal(flipped.get('b@-1').phaseSource, 'deltaTime', 'a later neighbour is not the previous frame');
-  assert.equal(flipped.get('a@1').phaseSource, 'deltaTime');
+  assert.deepEqual([flipped.get('b@-1').t, flipped.get('b@-1').phaseSource], [2, 'recorded'], 'the evaluation before a rewind');
+  assert.deepEqual([flipped.get('a@1').t, flipped.get('a@1').phaseSource], [1.9, 'recorded']);
+
+  // Members and springs records are read after the next frame's pre-timeline spring step
+  // (PHYSICS_READ_POINT); --physics-read-point none leaves it out. Pure parts never take it.
+  const parts = { records: [at('m', 20, 3, 0.2, { kind: 'full', part: 'members' }), at('s', 21, 3.2, 0.2, { kind: 'full', part: 'springs' }),
+    at('r', 21, 3.2, 0.2, { kind: 'full', part: 'renderers' }), at('f', 21, 3.2, 0.2)] };
+  const readPoints = (options) => Object.fromEntries(capture.planRequests(parts, [-1], options)
+    .map((request) => [request.id, [request.physics, request.readPoint]]));
+  assert.deepEqual(readPoints(), { 'm@-1': [true, true], 's@-1': [true, true], 'r@-1': [false, false], 'f@-1': [false, false] });
+  assert.deepEqual(readPoints({ readPoint: 'none' }), { 'm@-1': [true, false], 's@-1': [true, false], 'r@-1': [false, false], 'f@-1': [false, false] });
+  assert.throws(() => capture.planRequests(parts, [-1], { readPoint: 'late' }), /physics-read-point/);
+  assert.deepEqual(capture.PHYSICS_READ_POINTS, ['update', 'none']);
+  const springRecord = capture.editorRecord(capture.planRequests(parts, [-1]).find((request) => request.id === 's@-1'),
+    { values: { clock: { directorTime: 3 } }, seekMs: 1, dumpMs: 1, steps: 4, prerollStart: 2.2, prerollSource: 'game-frames', readPointStep: 33.3 }, 30);
+  assert.deepEqual([springRecord.clock.directorTime, springRecord.clock.phaseSource, springRecord.clock.readPointStep], [3, 'recorded', 33.3]);
   const record = capture.editorRecord(planned.get('f0164@-1'), { values: { clock: { directorTime: 100.335 } }, seekMs: 1, dumpMs: 1 }, 30);
   assert.deepEqual([record.clock.phaseSource, Math.round(record.clock.phaseSeconds * 1e9) / 1e9], ['recorded', -0.219]);
 

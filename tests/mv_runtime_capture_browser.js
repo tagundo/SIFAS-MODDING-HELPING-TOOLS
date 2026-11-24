@@ -112,9 +112,12 @@ async function run() {
       assert.equal(item.sourceRecord, sourceId);
       assert.equal(item.phase, Number(phase));
       const source = game.records.find((entry) => entry.id === sourceId);
-      // Whole-millisecond director times: the estimated neighbour frame is on the millisecond clock.
+      // A recorded neighbour frame gives its own director time; otherwise the estimate is on the
+      // millisecond clock (whole-millisecond director times).
+      const neighbour = item.phase ? game.records.find((entry) => entry.clock.frameCount === source.clock.frameCount + item.phase) : null;
       const estimate = Math.round((source.clock.directorTime + item.phase * DT) * 1000) / 1000;
-      assert(Math.abs(item.clock.directorTime - estimate) < 1e-12, `time of ${item.id}`);
+      assert.equal(item.clock.phaseSource, item.phase === 0 ? 'record' : neighbour ? 'recorded' : 'deltaTime', `phase source of ${item.id}`);
+      assert(Math.abs(item.clock.directorTime - (neighbour ? neighbour.clock.directorTime : estimate)) < 1e-12, `time of ${item.id}`);
       assert.equal(item.clock.sourceDirectorTime, source.clock.directorTime);
       assert.equal(item.kind, source.kind);
       assert(!item.errors, `${item.id}: ${JSON.stringify(item.errors)}`);
@@ -138,6 +141,10 @@ async function run() {
     assert(renderers.every((entry) => (entry.path === null) === (entry.pathSource === 'flattened') && entry.culled === false),
       'every renderer states its GameObject path source and culler state');
     assert(records.find((entry) => entry.id === 'p0-members-00@0').cost.prerollSteps === 15, 'physics preroll on the 30 Hz grid');
+    // The members record is read after the next frame's pre-timeline spring step (PHYSICS_READ_POINT);
+    // the fixture performer has no swing bones, so the read point runs and steps nothing.
+    assert.deepEqual(records.filter((entry) => entry.part === 'members').map((entry) => entry.clock.readPointStep), [0, 0, 0]);
+    assert(records.filter((entry) => entry.kind === 'frame' || entry.part === 'renderers').every((entry) => !('readPointStep' in entry.clock)));
     assert(timing.captureSeconds >= 0);
     assert.deepEqual(errors, []);
 
