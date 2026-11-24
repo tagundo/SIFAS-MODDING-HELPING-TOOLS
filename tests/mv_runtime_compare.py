@@ -783,9 +783,13 @@ class Comparison:
     def timing_uncertain(self, record, phase):
         """Any record (frame or full part) whose Time.deltaTime was clamped to maximumDeltaTime while the director
         followed the music clock: the pose phase t + phase * deltaTime is not the neighbouring frame's time, so the
-        record is timing-uncertain at every phase but 0. Each record is noted once."""
+        record is timing-uncertain at every phase but 0, unless the editor evaluated that phase at the director time the
+        dump recorded for the neighbouring frame (clock.phaseSource "recorded"). Each record is noted once."""
         dt = (record.get("clock") or {}).get("deltaTime")
         if self.identity or phase == 0 or not number(dt) or dt < MAX_DELTA_TIME - 1e-6:
+            return False
+        partner = self.partner(record, phase)
+        if ((partner or {}).get("clock") or {}).get("phaseSource") == "recorded":
             return False
         if record.get("id") not in self.notes["timing.clampedDeltaTime"]:
             self.notes["timing.clampedDeltaTime"].append(record.get("id"))
@@ -1340,6 +1344,15 @@ class Comparison:
             if isinstance(game_visible, bool) and isinstance(editor_node.get("visible"), bool):
                 self.add("visibility", "stageNodeVisible", key, record, game_visible, editor_node["visible"],
                          int(game_visible != editor_node["visible"]), 0, exact=True, near_cut=near)
+            if not self.identity and editor_node.get("axisBillboard") is True:
+                # AxisBillboard.OnWillRenderObject (0x27bf944) turns the node toward Camera.current when that camera
+                # is one of its cameraTargets, so the Transform keeps the turn of the last camera that drew it; a
+                # stage node record has no draw state (an off-screen cone keeps an old turn). Its rotation is not
+                # comparable here; drawn cones are compared as renderers (isVisible).
+                if editor_node.get("name") not in self.notes["transforms.stageNodeAxisBillboard"]:
+                    self.notes["transforms.stageNodeAxisBillboard"].append(editor_node.get("name"))
+                node = {name: value for name, value in node.items() if name != "rotation"}
+                editor_node = {name: value for name, value in editor_node.items() if name != "rotation"}
             self.compare_transform("transforms", "stageNode", key, record, node, editor_node, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
 
     def compare_members(self, record, partner, near):

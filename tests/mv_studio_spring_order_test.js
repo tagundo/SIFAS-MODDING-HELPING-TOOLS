@@ -94,6 +94,29 @@ window.MVStudioPhysics.create = () => ({
   assert.equal(scene.setPhysicsTiming({ device: {}, order: 'game' }).rate, 60, 'Max 3D requests 60 fps');
   assert.throws(() => scene.setPhysicsTiming({ order: 'lagged' }), /game or same-frame/);
 
+  // The runtime dump's read point: the next frame's LiveCoreMemberManager.Update on its own. Only the
+  // update hook runs, once, at the time of the last evaluated frame (the pose it ended with); the timeline,
+  // restorePose and LateUpdate do not.
+  play(2, 60, 60);
+  log.length = 0;
+  assert.equal(scene.stepPhysicsUpdate(62 * 1000 / 60), 1 / 60);
+  assert.deepEqual(log, [['update', 1 + 61 / 60, 1 / 60, 'game']]);
+  assert.equal(scene.inspect().time, 1 + 61 / 60, 'the director time does not move');
+  // A display frame inside the same game frame has no job, as in playback.
+  log.length = 0;
+  assert.equal(scene.stepPhysicsUpdate(62 * 1000 / 60 + 1), 0);
+  assert.deepEqual(log, [['update', 1 + 61 / 60, 0, 'game']]);
+  // The same-frame order runs its job after the timeline, so it has no pre-timeline step.
+  scene.setPhysicsTiming({ order: 'same-frame' });
+  play(1, 60, 70);
+  assert.equal(scene.stepPhysicsUpdate(71 * 1000 / 60), 0);
+  scene.setPhysicsTiming({ order: 'game' });
+  scene.setPlaying(false);
+  log.length = 0;
+  assert.equal(scene.stepPhysicsUpdate(80 * 1000 / 60), 0, 'paused: no step');
+  assert.deepEqual(log, []);
+  scene.setPlaying(true);
+
   // Paused frames run the hooks without a job, so the held output is shown.
   scene.setPlaying(false);
   log.length = 0;

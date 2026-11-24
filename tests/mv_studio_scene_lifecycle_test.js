@@ -71,6 +71,7 @@ function fixture(visible = true, options = {}) {
       mesh.name = `model-${id}`;
       mesh.bind(rig, new THREE.Matrix4());
       root.add(bone, mesh, auxiliary);
+      options.build?.(root, id);
       const info = { mesh, rig, bone, auxiliary, releases: 0, materialsReleased: 0 };
       rig.dispose = () => { info.releases++; };
       models.set(id, info);
@@ -126,6 +127,9 @@ function fixture(visible = true, options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-asset-dump.js'), 'utf8'), context);
   if (options.lighting) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-lighting.js'), 'utf8'), context);
+  }
+  if (options.axisBillboard) {
+    vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-axis-billboard.js'), 'utf8'), context);
   }
   const fades = [], shadows = [];
   if (options.memberShadow) {
@@ -560,6 +564,36 @@ async function checkMemberRimQuality() {
   f.app.dispose();
 }
 
+// A member prop's ambient mixer writes its LiveCoreMemberAmbient every frame, shown or not: the
+// CheckSame hold steps on hidden frames too, and the material takes the held color while shown.
+async function checkMemberPropHold() {
+  const f = fixture(true, { lighting: true }), value = project(57);
+  value.assets = [{ kind: 'props', previewUrl: address(58), attachment: { member: 1, binding: '/EntryPoint/Live/Props/Prop1' } }];
+  const shown = [];
+  f.window.MVStudioProps = { create(root) {
+    return { bind() {}, setTracks() {}, detach() {}, evaluate(time) { root.visible = !(time > 2.05 && time < 2.85); } };
+  } };
+  // alpha(t) = .2 + .01 t: 0.001 per 0.1 s frame, below the sqrt(1e-5) write threshold until four frames add up.
+  f.window.MVStudioPropLight = { create() {
+    return { setProject() {}, sample: (time) => ({ ambient: [0, 0, 0, .2 + .01 * time], tint: [1, 1, 1, 1] }) };
+  } };
+  await f.app.load(value);
+  f.app.seek(1, value, true);
+  f.app.setPlaying(true);
+  const info = f.models.get(58);
+  for (let step = 1; step <= 19; step++) {
+    const time = 1 + step / 10;
+    f.app.playbackFrame(time, step * 100, true);
+    shown.push([Math.round(time * 10) / 10, Math.round(info.liveLighting.ambient[3] * 1e6) / 1e6]);
+  }
+  // Written at 1.4, 1.8, 2.2 (hidden) and 2.6 (hidden); 2.9 is within the threshold of the 2.6 write.
+  assert.deepEqual(shown.find(([time]) => time === 2.9), [2.9, .226]);
+  assert.deepEqual(shown.find(([time]) => time === 2), [2, .218], 'the last color the material took before it was hidden');
+  assert.deepEqual(shown.find(([time]) => time === 2.5), [2.5, .218], 'a hidden prop keeps its material as it was');
+  f.app.setPlaying(false);
+  f.app.dispose();
+}
+
 // LiveCoreMemberManager.MemberMax = 12: lives such as 12074 bind Member10..Member12.
 async function checkTwelvePerformers() {
   const f = fixture(), value = project(70);
@@ -687,6 +721,49 @@ async function checkAssetDump() {
   f.app.dispose();
 }
 
+// AxisBillboard turns its nodes only when the scene draws; a deferred seek's stage
+// node dump reports the turn the live camera's draw gives (as renderers do).
+async function checkAssetDumpStageBillboard() {
+  const binding = '/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litB_All';
+  let cone = null;
+  const f = fixture(true, { axisBillboard: true, build(root, id) {
+    if (id !== 82) return;
+    const zrot = new THREE.Object3D();
+    zrot.userData.mvStageNode = { binding, path: 11 };
+    zrot.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), 2.03);
+    zrot.position.set(-14.4, 10.2, -2.8);
+    cone = new THREE.Object3D();
+    cone.userData.mvStageNode = { binding, path: 12 };
+    cone.userData.mvAxisBillboard = 1;
+    zrot.add(cone);
+    root.add(zrot);
+  } });
+  const value = project(81);
+  value.duration = 12;
+  value.stage = { glb: address(82) };
+  value.tracks = [{ id: 'cam', label: 'Camera/MainCamera', kind: 'camera', nativeClass: 'AnimationTrack',
+    binding: '/EntryPoint/Live/Cameras/MainCamera', events: [{ id: 'cam:0', start: 0, duration: 10, values: { keyframes: [
+      { time: 0, position: [1, 2, 10], rotation: [0, 0, 0, 1], fov: 30 },
+      { time: 10, position: [5, 3, 0], rotation: [0, 0, 0, 1], fov: 30 }] } }] }];
+  await f.app.load(value);
+  const node = () => JSON.parse(JSON.stringify(f.app.assetDump({ sections: ['stageNodes'] }))).stageNodes
+    .find((entry) => entry.crc === 12);
+  f.app.seek(4, value, true);
+  const deferred = node();
+  f.app.seek(4, value);
+  const drawn = node();
+  deferred.rotation.forEach((component, index) => assert(Math.abs(component - drawn.rotation[index]) < 1e-6,
+    `deferred stage node rotation ${deferred.rotation} matches the drawn turn ${drawn.rotation}`));
+  assert(Math.abs(Math.abs(new THREE.Quaternion(...drawn.rotation).dot(cone.parent.quaternion)) - 1) > 1e-3,
+    'the billboard turned the cone away from its parent');
+  f.app.seek(8, value, true);
+  const later = node();
+  f.app.seek(8, value);
+  later.rotation.forEach((component, index) => assert(Math.abs(component - node().rotation[index]) < 1e-6,
+    'a later deferred seek follows the moved live camera'));
+  f.app.dispose();
+}
+
 // The member culler hides the actor root in the editor; the dump reports it as
 // "culled" with node visibility unchanged, and reading it changes nothing.
 async function checkAssetDumpCuller() {
@@ -777,12 +854,14 @@ function checkAssetDumpHelpers() {
   await checkNativeRenderHeight();
   await checkAdaptivePreview();
   await checkAssetDump();
+  await checkAssetDumpStageBillboard();
   await checkAssetDumpCuller();
   checkAssetDumpHelpers();
   await checkNativeCamera();
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
   await checkMemberRimQuality();
+  await checkMemberPropHold();
   await checkOriginalEndHold();
   await checkShadowPrefabRelease();
   await checkTwelvePerformers();

@@ -381,6 +381,11 @@
     let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1, adaptivePreview = true;
     let lastShaftFrame = null, resetShafts = true;
+    // Client state that changes only on rendered frames (the director's beat
+    // origin, the ambient components' last written colors): an advancing
+    // playback frame continues it; a seek replays the rendered frame times it is
+    // given (seek's `history`) or, without them, uses exact values.
+    let pendingHistory = null, frameClock = { advancing: false, history: [] }, historyLighting = new Map();
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
     let antiAliasing = options?.antiAliasing === true;
@@ -1755,12 +1760,56 @@
       }
     }
 
-    function seek(time, value, deferDraw = false) {
+    // `history`: optional ascending director times of the frames the game rendered
+    // before `time` (a runtime dump's frame grid); only frame-stepped client state
+    // reads them.
+    function seek(time, value, deferDraw = false, history = null) {
       if (disposed) return;
       if ((value && value !== project) || (Number.isFinite(time) && Math.abs(time - currentTime) > 1e-9)) resetPhysics("seek");
       project = value || project;
       applyProject();
-      playbackFrame(time, undefined, deferDraw);
+      pendingHistory = Array.isArray(history) ? history : [];
+      try {
+        playbackFrame(time, undefined, deferDraw);
+      } finally {
+        pendingHistory = null;
+      }
+    }
+
+    function nextFrameClock(time) {
+      const advancing = pendingHistory === null && playing && Number.isFinite(time) && time >= currentTime - 1e-9;
+      if (advancing) return { advancing, history: [] };
+      const history = (pendingHistory || []).filter((value) => Number.isFinite(value) && value < time - 1e-9);
+      for (let index = 1; index < history.length; index++) {
+        if (history[index] < history[index - 1]) return { advancing: false, history: history.sort((a, b) => a - b) };
+      }
+      return { advancing: false, history };
+    }
+
+    // MVStudioLighting.sample at an earlier rendered frame of the frame clock.
+    function lightingAt(time, lighting) {
+      if (time === currentTime) return lighting;
+      if (!historyLighting.has(time)) historyLighting.set(time, global.MVStudioLighting?.sample(project, time) ?? null);
+      return historyLighting.get(time);
+    }
+
+    // LiveCoreMemberAmbient's ambient and tint writes (MVStudioLighting.heldColor)
+    // for a member or a member prop. With a base light track LiveBaseLightReciever
+    // also writes these components (ApplyBase*Color, CheckSame-gated as well); the
+    // write order of the two mixers within a frame is not established, so the
+    // colors stay exact there (unevidenced choice).
+    function heldLiveLighting(record, slot, value, valueAt, lighting) {
+      const holds = (record.lightingHolds ||= {})[slot] ||= { ambient: {}, tint: {} };
+      if (!value || lighting?.baseTrack || !global.MVStudioLighting?.heldColor) {
+        holds.ambient.color = holds.tint.color = null;
+        return value;
+      }
+      const held = { ...value };
+      for (const key of ["ambient", "tint"]) {
+        held[key] = value[key] ? global.MVStudioLighting.heldColor(holds[key], (time) => valueAt(time)?.[key] ?? null,
+          currentTime, frameClock) : (holds[key].color = null, value[key]);
+      }
+      return held;
     }
 
     function setPlaying(value) {
@@ -1782,6 +1831,8 @@
       const continuing = Number.isFinite(frameTimestamp) && Number.isFinite(time) && time > currentTime + 1e-9;
       captureFocusLag(continuing);
       if (Number.isFinite(frameTimestamp) && time < currentTime - 1e-9) resetPhysics("clock-rewind");
+      frameClock = nextFrameClock(Number.isFinite(frameTimestamp) || pendingHistory !== null ? time : NaN);
+      historyLighting = new Map();
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
@@ -1830,10 +1881,10 @@
       for (const record of records) record.stageSoftBillboards?.update(currentTime);
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
-      for (const record of records) record.penlight?.update(currentTime, project);
+      for (const record of records) record.penlight?.update(currentTime, project, frameClock);
       for (const record of records) {
-        record.stageMaterial?.update(currentTime, project, lighting);
-        record.stagePropLight?.update(currentTime);
+        record.stageMaterial?.update(currentTime, project, lighting, frameClock);
+        record.stagePropLight?.update(currentTime, frameClock, !!lighting?.baseTrack);
       }
       for (const record of records) record.stageColoring?.update(currentTime, project);
       for (const record of records) record.stageDisplay?.update(currentTime, project);
@@ -1847,7 +1898,8 @@
         // Keep sampling its transforms so other actors can still track it.
         const culled = memberCulledAt(record.position, currentTime);
         record.root.visible = record.actorVisible && !culled;
-        record.materials?.setLiveLighting?.(lighting?.member(record.position));
+        record.materials?.setLiveLighting?.(heldLiveLighting(record, "member", lighting?.member(record.position),
+          (time) => lightingAt(time, lighting)?.member(record.position), lighting));
         record.physics?.restorePose();
         record.constraints?.restorePose();
         record.nodeScaling?.resetHeight();
@@ -1906,7 +1958,13 @@
       for (const record of records) if (record.prop) {
         record.prop.bind(records.find((actor) => actor.group === actors && actor.position === record.propMember) || null);
         record.prop.evaluate(currentTime);
-        if (record.root.visible) record.propMaterial?.setLiveLighting?.(record.propLight?.sample(currentTime));
+        if (record.propMaterial) {
+          // The prop's ambient mixer writes its component every frame, shown or not: the
+          // hold steps on every frame and the material takes it while the prop is shown.
+          const live = heldLiveLighting(record, "prop", record.propLight?.sample(currentTime),
+            (time) => record.propLight?.sample(time), lighting);
+          if (record.root.visible) record.propMaterial.setLiveLighting?.(live);
+        }
       }
       advanceFocus();
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
@@ -2210,8 +2268,11 @@
           const key = D.keyFor("stageNode", { binding: tag.binding, path: tag.path });
           if (wanted && !wanted.has(key)) return;
           if (nodes.length >= maxNodes) { if (!truncated.includes("stageNodes")) truncated.push("stageNodes"); return; }
+          // An AxisBillboard node (or a child of one) reports the live camera's turn, as renderers do.
+          const turned = billboardOf({ owner: node }) !== null;
           nodes.push({ key, binding: tag.binding, crc: tag.path, name: D.nodeName(node), activeSelf: node.visible,
-            visible: D.effectiveVisible(node), ...D.decompose(node.matrixWorld, temp) });
+            visible: D.effectiveVisible(node), ...D.decompose(rendererWorld({ owner: node }), temp),
+            ...(turned ? { axisBillboard: true } : {}) });
         });
         return nodes;
       });
@@ -2333,6 +2394,20 @@
         physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
         resetPhysics("physics-timing");
         return physicsTiming && { ...physicsTiming, rate: physicsRate() };
+      },
+      // The next game frame's LiveCoreMemberManager.Update on its own, for a runtime value
+      // dump: the springs step once on the pose the last evaluated frame ended with and
+      // nothing else runs, as a reader between the Update scripts and that frame's deferred
+      // director evaluation (LiveTimeSynchronizer.SyncMusicPlayingTime sets the time, then
+      // DeferredEvaluate) sees the members. Playing frames only; returns the step taken
+      // (0: none, e.g. paused or the same-frame order, whose job runs after the timeline).
+      // The next seek or playback frame continues as usual.
+      stepPhysicsUpdate(frameTimestamp) {
+        if (disposed || !playing || !visible || !records.some((record) => record.physics)) return 0;
+        const physicsStep = physicsClock?.step(frameTimestamp, physicsRate()) || 0;
+        for (const record of records) record.physics?.frame?.("update", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
+        if (scene.autoUpdate) scene.updateMatrixWorld();
+        return physicsTiming?.order === "same-frame" ? 0 : physicsStep;
       },
       frameAll,
       // Read-only state of the last evaluated frame for frame comparisons.
