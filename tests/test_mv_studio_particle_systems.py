@@ -219,7 +219,7 @@ class NormalizationTests(unittest.TestCase):
             self.assertIsNone(systems.system({}, None, particle, Reader({**RENDERER, "m_Enabled": 0}),
                                              systems._Textures(0)))
 
-    def test_three_dimensional_rotation_is_drawn_on_local_billboards_only(self):
+    def test_three_dimensional_rotation_is_drawn_on_billboards(self):
         self.assertTrue(systems._zero(constant(0.0)))
         self.assertFalse(systems._zero(constant(0.5)))
         self.assertTrue(systems._zero({**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(0, 0), key(1, 0)]}}))
@@ -236,14 +236,13 @@ class NormalizationTests(unittest.TestCase):
                                            InitialModule={**initial, "rotation3D": True, axis: constant(math.pi)})
                 self.assertEqual(systems._main(tumbling)["rotationX" if axis.endswith("X") else "rotationY"]["scalar"],
                                  math.pi)
-                # Local billboards turn in the emitter frame (the native display-light strokes' rule).
-                row = systems.system({}, None, Reader(tumbling), local, systems._Textures(0))
-                self.assertTrue(row["main"]["rotation3D"])
-                # The View camera frame and the World frame have no evidenced handedness for the X/Y turn.
-                for alignment in (0, 1):
-                    with self.assertRaisesRegex(systems._Unsupported, "3D start rotation .* on a View or World billboard"):
-                        systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderAlignment": alignment}),
-                                       systems._Textures(0))
+                # Billboards turn on their alignment's axes (libunity.so 0xd242c): the emitter's for
+                # Local (the native display-light strokes' rule), the world's for World, and camera
+                # right, up and back for View.
+                for alignment in (0, 1, 2):
+                    row = systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderAlignment": alignment}),
+                                         systems._Textures(0))
+                    self.assertTrue(row["main"]["rotation3D"])
                 # Stretched, horizontal and vertical quads are reported.
                 for mode in (1, 2, 3):
                     with self.assertRaisesRegex(systems._Unsupported, r"^3D start rotation \(X/Y axes\)$"):
@@ -648,21 +647,18 @@ class OriginalTimelineTests(unittest.TestCase):
 
         parsed = mv_studio_timeline.parse_timeline(_TIMELINE_12035.read_bytes(), "12035", preview_particle_systems=True)
         source = parsed["stageParticleSystems"]
-        # The light beams (Local billboards tilted on Y, one on a 1.1x1.1 node) and the main
-        # display clouds (View billboards on 5x3 and 6x3 nodes) are looping procedural Automatic
-        # systems: the runtime replays their culling from the main camera with their culling
-        # box. The side display clouds are View billboards tilted on Y, whose frame handedness
-        # is unevidenced.
-        reasons = {(row["template"], row["path"].rsplit("/root/", 1)[1]): row["reason"] for row in source["unsupported"]}
-        view_tilt = "3D start rotation (X/Y axes) on a View or World billboard"
-        self.assertEqual(reasons, {("fx_dis_par_so2035_02", f"sub_dis_{side}/cloud_{cloud}"): view_tilt
-                                   for side in "LR" for cloud in "LR"})
+        # Every system is drawn. The light beams (Local billboards tilted on Y, one on a
+        # 1.1x1.1 node) and the display clouds (View billboards on 5x3..7x3 nodes, the side
+        # ones tilted on Y) are looping procedural Automatic systems: the runtime replays
+        # their culling from the main camera with their culling box.
+        self.assertEqual(source["unsupported"], [])
         self.assertEqual(len(source["cues"]), 14)
         names = {template["name"]: template for template in source["templates"]}
         self.assertEqual(len(names), 10)
         rows = {row["path"].split("/root/", 1)[1]: row for name in ("fx_dis_par_so2035_02", "fx_par_so2035_04")
                 for row in names[name]["systems"]}
-        self.assertEqual(sorted(rows), ["light_01", "light_02", "main_dis/cloud_L", "main_dis/cloud_R"])
+        self.assertEqual(sorted(rows), ["light_01", "light_02", "main_dis/cloud_L", "main_dis/cloud_R",
+                                        "sub_dis_L/cloud_L", "sub_dis_L/cloud_R", "sub_dis_R/cloud_L", "sub_dis_R/cloud_R"])
         for path, row in rows.items():
             self.assertTrue(row["culling"]["pauses"], path)
             self.assertEqual(row["culling"]["uniform"], path.startswith(("main_dis", "sub_dis")), path)
@@ -671,9 +667,9 @@ class OriginalTimelineTests(unittest.TestCase):
         # A 1-unit cloud drifting along +X by the integral of its velocity curve (0.0239 to 0 over 10 s).
         self.assertEqual([round(value, 4) for value in rows["main_dis/cloud_L"]["culling"]["bounds"]],
                          [-.71, -.71, -.71, .8296, .71, .71])
-        # 63 of the 89 drawn systems are looping procedural Automatic systems; all have a culling box.
+        # 67 of the 93 systems are looping procedural Automatic systems; all have a culling box.
         culled = [row for template in names.values() for row in template["systems"] if row["culling"]["pauses"]]
-        self.assertEqual((len(culled), sum(1 for row in culled if row["culling"]["bounds"])), (63, 63))
+        self.assertEqual((len(culled), sum(1 for row in culled if row["culling"]["bounds"])), (67, 67))
         # fx_flo_so2035_03 holds 35 systems, but 20 sit under inactive GameObjects that no clip
         # or Animator activates, so the clone never plays them.
         self.assertEqual({name: len(row["systems"]) for name, row in names.items() if name.startswith("fx_flo")},

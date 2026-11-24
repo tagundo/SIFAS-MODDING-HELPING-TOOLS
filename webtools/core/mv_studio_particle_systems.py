@@ -21,16 +21,19 @@ One common rule for every song, taken from the client and the serialized assets:
   curve, or whose ParticleSystem/renderer properties are animated, are listed
   as not previewed instead of being drawn statically.
 
-* Local-aligned Billboard renderers draw 3D start rotation: the quad turns by
-  the negated start angles in Unity's Euler order (Z, X, Y) inside the emitter
-  frame, the rule mv-studio-display-lights.js draws its Local strokes with.
-  libunity.so draws View, World and Local billboards with one geometry routine
-  (0xd242c; its variants 0xd78f4, 0xdd314 and 0xdf694 are picked by flags other
-  than the alignment in 0xcb86c) that turns the quad in its own unscaled
-  coefficients and then maps them through the alignment's three axes. The
-  camera axes of View alignment (0xc37d8) and the X/Y turn on World quads are
-  not yet checked against a game frame, so X/Y start rotation on View or
-  World billboards stays reported, as on the other render modes.
+* Billboard renderers draw 3D start rotation: the quad turns by the negated
+  start angles in Unity's Euler order (Z, X, Y), the rule
+  mv-studio-display-lights.js draws its Local strokes with. libunity.so draws
+  View, World and Local billboards with one geometry routine (0xd242c; its
+  variants 0xd78f4, 0xdd314 and 0xdf694 are picked by flags other than the
+  alignment in 0xcb86c) that turns the quad in its own unscaled coefficients
+  and then maps them through the alignment's three axes (0xd25a8..0xd26bc):
+  Local the columns of the emitter's world rotation, World the unit axes
+  (0xb35f40, 0xb35f70, 0xb35f00), View the renderer job's camera axes, which
+  0xc37d8 takes as the columns of the inverse of Camera::GetWorldToCameraMatrix
+  (0x2966b8: Scale(1, 1, -1) times the camera's world-to-local), that is
+  camera right, up and back (toward the viewer). Other render modes stay
+  reported.
 * Local scaling mode applies the node's own localScale to local-space
   billboards (_scaled_billboard): positions through the scaled transform, and
   the quad axes times the scale component-wise in world space, after the roll
@@ -256,7 +259,7 @@ def _main(source):
     if result["size3D"]:
         result["sizeY"], result["sizeZ"] = curve(initial["startSizeY"]), curve(initial["startSizeZ"])
     if result["rotation3D"]:
-        # X/Y start rotation is drawn on Local billboards only (see system()).
+        # X/Y start rotation is drawn on Billboard renderers only (see system()).
         result["rotationX"], result["rotationY"] = curve(initial["startRotationX"]), curve(initial["startRotationY"])
     return result
 
@@ -1086,11 +1089,6 @@ def system(objects, game, particle, renderer, textures, blocked=None, *, upright
     tilted = result["main"]["rotation3D"] and not (_zero(initial["startRotationX"]) and _zero(initial["startRotationY"]))
     if tilted and drawn["mode"] != 0:
         raise _Unsupported("3D start rotation (X/Y axes)")
-    if tilted and drawn["alignment"] != 2:
-        # Only the emitter frame of Local alignment is evidenced (display-light
-        # strokes, the 12035 shot 34/35 light X-cross). The handedness of the
-        # View camera frame and the World frame for the X/Y turn is not.
-        raise _Unsupported("3D start rotation (X/Y axes) on a View or World billboard")
     result["culling"] = culling(source, render_tree)
     paused = _paused_off_screen(result["main"], result["culling"]) if tilted or scaled else None
     if paused:

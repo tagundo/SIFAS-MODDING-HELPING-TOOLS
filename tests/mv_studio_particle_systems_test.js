@@ -239,15 +239,13 @@ async function testUnreproducedSystemsAreRefused() {
   const base = system();
   assert.equal(P.validSimulation(system({main: {rotation3D: true, rotationX: constant(0), rotationY: between(0, 0)}})),
     true, "3D rotation that stays on Z is drawn");
-  // X/Y start rotation: Local billboards only, on systems culling cannot pause or whose culling
-  // box the runtime replays.
+  // X/Y start rotation: Billboards (View, World and Local), on systems culling cannot pause or
+  // whose culling box the runtime replays.
   const tumbling = (cullingMode, looping, alignment = 2, mode = 0, culling = undefined) => system({
     main: {rotation3D: true, rotationX: constant(0), rotationY: constant(.35), cullingMode, looping},
     renderer: {...base.renderer, alignment, mode}, ...(culling === undefined ? {} : {culling})});
-  assert.equal(P.validSimulation(tumbling(3, true)), true, "Local billboards turn by X/Y start rotation in the emitter frame");
-  for (const alignment of [0, 1]) {
-    assert.equal(P.validSimulation(tumbling(3, true, alignment)), false,
-      "the View/World frame handedness of the X/Y turn is not evidenced");
+  for (const alignment of [0, 1, 2]) {
+    assert.equal(P.validSimulation(tumbling(3, true, alignment)), true, "billboards turn by X/Y start rotation on their axes");
   }
   for (const mode of [1, 2, 3]) {
     assert.equal(P.validSimulation(tumbling(3, true, 2, mode)), false, "other render modes do not draw X/Y start rotation");
@@ -261,11 +259,11 @@ async function testUnreproducedSystemsAreRefused() {
   }
   // With it, a system culling pauses is drawn when its culling box is known.
   const box = [-1, -1, -1, 1, 1, 1];
-  assert.equal(P.validSimulation(tumbling(0, true, 2, 0, {pauses: true, bounds: box, uniform: false})), true);
-  assert.equal(P.validSimulation(tumbling(0, true, 2, 0, {pauses: true, bounds: null, uniform: false})), false);
-  assert.equal(P.validSimulation(tumbling(0, true, 2, 0, {pauses: false, bounds: null, uniform: false})), true,
+  assert.equal(P.validSimulation(tumbling(0, true, 0, 0, {pauses: true, bounds: box, uniform: true})), true);
+  assert.equal(P.validSimulation(tumbling(0, true, 0, 0, {pauses: true, bounds: null, uniform: true})), false);
+  assert.equal(P.validSimulation(tumbling(0, true, 0, 0, {pauses: false, bounds: null, uniform: true})), true,
     "a looping Automatic system without the procedural flag is never culled");
-  assert.equal(P.validSystem(tumbling(0, true, 2, 0, {pauses: true, bounds: [1, 0, 0, 0, 0, 0], uniform: false}),
+  assert.equal(P.validSystem(tumbling(0, true, 0, 0, {pauses: true, bounds: [1, 0, 0, 0, 0, 0], uniform: true}),
     [{}]), false, "an inverted box is rejected");
   const spin = {separateAxes: true, x: constant(0), y: constant(0), z: constant(2)};
   assert.equal(P.validSimulation(system({rotation: spin})), true);
@@ -308,10 +306,11 @@ async function testTiltedAndLocallyScaledBillboards() {
     main: {duration: 10, lifetime: constant(10), size: constant(1.2), cullingMode: 1}});
   const paused = system({path: "fx/paused", node: 1, shape: null, emission: once,
     main: {duration: 10, lifetime: constant(10), size: constant(1.2), cullingMode: 0, looping: true}});
-  // The same cloud with the importer's culling box (main display: View, on a 5x3 node).
+  // The same cloud with the importer's culling box (side display: View, tilted 20 degrees on Y).
   const replayed = system({path: "fx/replayed", node: 1, shape: null, emission: once,
-    culling: {pauses: true, bounds: [-.71, -.71, -.71, .8296, .71, .71], uniform: true},
-    main: {duration: 10, lifetime: constant(10), size: constant(1), cullingMode: 0, looping: true}});
+    culling: {pauses: true, bounds: [-.852, -.852, -.852, .852, .852, .852], uniform: true},
+    main: {duration: 10, lifetime: constant(10), size: constant(1.2), cullingMode: 0, looping: true, rotation3D: true,
+      rotationX: constant(0), rotationY: constant(.3490658503988659)}});
   const beam = system({path: "fx/beam", node: 2, shape: null, emission: once, renderer: {...cloud.renderer, alignment: 2},
     main: {duration: 5, lifetime: constant(5), size: constant(17), rotation3D: true, rotationX: constant(.25),
       rotationY: constant(.0872664600610733), cullingMode: 3}});
@@ -334,7 +333,12 @@ async function testTiltedAndLocallyScaledBillboards() {
   assert.deepEqual(Object.keys(meshes).sort(), ["beam", "cloud", "flat", "replayed"],
     "Automatic culling would pause fx/paused, whose culling box is unknown");
   assert.deepEqual(controller.inspect().map(row => row.path).sort(), ["fx/beam", "fx/cloud", "fx/flat", "fx/replayed"]);
-  assert.equal(meshes.replayed.material.defines.SCALED, 1);
+  // A tilted View quad turns on camera right, up and back (three.js view x, y, z).
+  assert.equal(meshes.replayed.material.defines.TILTED, 1);
+  assert.equal(meshes.replayed.material.defines.VIEW_FACING, 1);
+  assert.match(meshes.replayed.material.vertexShader,
+    /uScale \* \(right \* turned\.x \+ up \* turned\.y \+ back \* turned\.z\)/);
+  assert.match(meshes.replayed.material.vertexShader, /#elif defined\(VIEW_FACING\)\n\s*point\.xyz \+= turned;/);
   const attribute = (mesh, name) => Array.from(mesh.geometry.getAttribute(name).array.slice(0, 3));
   // Local scaling: the quad keeps its 1.2 units; the node's (5, 3, 1) reaches the shader, which scales
   // the camera axes by it in world components and caps the quad at the limit over 5 (libunity.so
@@ -367,7 +371,7 @@ async function testTiltedAndLocallyScaledBillboards() {
   assert.equal(meshes.flat.geometry.getAttribute("particleTilt"), undefined);
   assert.deepEqual(attribute(meshes.flat, "particleSize"), [2, 2, 2]);
   assert.match(meshes.beam.material.vertexShader, /vec3 turned = vec3\(local.x, cx \* local.y, -sx \* local.y\)/);
-  assert.doesNotMatch(meshes.beam.material.vertexShader, /turned\.xy, -turned\.z/, "no camera-frame tilt");
+  assert.doesNotMatch(meshes.beam.material.vertexShader, /turned\.xy, -turned\.z/, "camera back is +z in three.js view space");
   controller.dispose();
 }
 

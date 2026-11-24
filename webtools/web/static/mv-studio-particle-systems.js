@@ -23,9 +23,11 @@
   //  * The clone root sits at the world origin plus the clip offset; its
   //    systems use their own serialized random seeds.
   //
-  //  * Local-aligned billboard quads with 3D start rotation turn by the
-  //    negated X/Y/Z angles in Unity's Euler order (Z, then X, then Y) inside
-  //    the emitter frame, as mv-studio-display-lights.js draws its Local strokes.
+  //  * Billboard quads with 3D start rotation turn by the negated X/Y/Z angles
+  //    in Unity's Euler order (Z, then X, then Y) on the alignment's axes, as
+  //    mv-studio-display-lights.js draws its Local strokes: the emitter's for
+  //    Local, the world's for World, and camera right, up and back for View
+  //    (libunity.so 0xd242c, axes from 0xc37d8).
   //  * Local scaling mode applies the system's own localScale s: local-space
   //    positions go through the scaled transform; billboard quads keep their
   //    unscaled size, roll and tilt, and their axes in world space are
@@ -43,9 +45,8 @@
   //    their state while culled; PauseAndCatchup systems keep simulating.
   //
   // Not reproduced, so the importer reports these systems and this runtime
-  // refuses them as well: X/Y start rotation on View or World billboards (the
-  // handedness of the camera and world frames for that turn is not evidenced)
-  // and on other render modes, X/Y rotation over lifetime,
+  // refuses them as well: X/Y start rotation on other render modes than
+  // Billboard, X/Y rotation over lifetime,
   // ShapeModule.alignToDirection except where a horizontal billboard cannot
   // show it, any other transform scale the scaling mode would apply to
   // particles (Hierarchy, Shape, world-space forces), and either billboard case
@@ -298,15 +299,15 @@
     if (system.rotationBySpeed && !(validCurve(system.rotationBySpeed.curve) && vector(system.rotationBySpeed.range, 2))) {
       return false;
     }
-    if ((tilted(system) && (renderer.mode !== 0 || renderer.alignment !== 2 || pausedOffScreen(system))) ||
+    if ((tilted(system) && (renderer.mode !== 0 || pausedOffScreen(system))) ||
         (system.rotation?.separateAxes && !(zeroCurve(system.rotation.x) && zeroCurve(system.rotation.y))) ||
         (shape?.alignToDirection && !planarAlignment(system))) return false;
     return [0, 1, 2, 3].includes(renderer.mode) && finite(renderer.maxParticleSize) &&
       finite(renderer.minParticleSize) && vector(renderer.pivot, 3) && vector(renderer.flip, 3);
   }
 
-  // X/Y start rotation: drawn on Local billboards, on a system culling cannot pause or whose
-  // culling the runtime reproduces (validSimulation).
+  // X/Y start rotation: drawn on View, World and Local billboards, on a system culling cannot
+  // pause or whose culling the runtime reproduces (validSimulation).
   const tilted = ({main}) => main.rotation3D && !(zeroCurve(main.rotationX) && zeroCurve(main.rotationY));
 
   function validCulling(value) {
@@ -987,13 +988,25 @@
       // Positive particle rotation turns the quad clockwise.
       local = vec2(c * local.x + s * local.y, -s * local.x + c * local.y);
       #if defined(TILTED)
-      // 3D start rotation of a Local billboard: the negated Z, X, Y angles in
-      // Unity's Euler order in the emitter frame (Z above, then X, then Y).
+      // 3D start rotation: the negated Z, X, Y angles in Unity's Euler order
+      // (Z above, then X, then Y) on the alignment's three axes (libunity.so
+      // 0xd242c): Local the emitter's, World the unit axes, View the columns of
+      // the inverse world-to-camera matrix (0xc37d8 of Camera 0x2966b8, which
+      // flips Z): camera right, up and back, three.js view x, y and z.
       float cx = cos(particleTilt.x), sx = sin(particleTilt.x);
       float cy = cos(particleTilt.y), sy = sin(particleTilt.y);
       vec3 turned = vec3(local.x, cx * local.y, -sx * local.y);
       turned = vec3(cy * turned.x - sy * turned.z, turned.y, sy * turned.x + cy * turned.z);
+      #if defined(VIEW_FACING) && defined(SCALED)
+      vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+      vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+      vec3 back = vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+      point.xyz += mat3(modelViewMatrix) * (uScale * (right * turned.x + up * turned.y + back * turned.z));
+      #elif defined(VIEW_FACING)
+      point.xyz += turned;
+      #else
       point.xyz += mat3(modelViewMatrix) * (uAxisX * turned.x + uAxisY * turned.y + uAxisZ * turned.z);
+      #endif
       #elif defined(VIEW_FACING) && defined(SCALED)
       // Camera right/up in world space times the scale, component-wise, like
       // the fixed axes of World and Local quads (libunity.so 0xd2844).
