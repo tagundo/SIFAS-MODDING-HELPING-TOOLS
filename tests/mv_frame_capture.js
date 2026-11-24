@@ -103,6 +103,7 @@ function readManifest(file) {
   // off unless the player saved it); with it, Max and High 3D draw at the screen height.
   assert(manifest.device?.antiAliasing === undefined || typeof manifest.device.antiAliasing === 'boolean',
     'device.antiAliasing is true or false');
+  assert(manifest.screenFade === undefined || typeof manifest.screenFade === 'boolean', 'screenFade is true or false');
   assert(source.deck === undefined || ['custom', 'original'].includes(source.deck), 'source.deck is "custom" or "original"');
   assert(source.player === undefined || (Number.isSafeInteger(source.player) && source.player > 0),
     'source.player is a local Elichika user id');
@@ -448,6 +449,18 @@ function gameFrameGrid(manifest, gameDump = null) {
 // value with an editor control, the manifest quality only when the game recorded none or it cannot be
 // applied), so the spring rule rate (frame_rate_60fps) and the render height follow the game run.
 // Otherwise it is the manifest quality.
+// The MV dark filter (LiveMvDarkFilterField) and the live-end blur. The device screen shows
+// them: LiveMvManager.StartAct (0x20f9f7c) broadcasts the initialize message after
+// LiveMvScene.OnPlayLiveMv (0x223feb0) has called LiveMusicMachine.PlayMusic, and
+// OnInitializeMessage (0x20f8c18) starts StartFade(1, 2.0 s) from the opaque black that
+// Initialize (0x20f8898) set; Update (0x20f8ca0) writes alpha = 1 - brightness before it adds
+// Time.deltaTime. Every runtime-dump screencap taken in the first 0.7 s of director time is
+// black (dump2, dump3b and dump4 shot 1), so a run compared with a runtime dump (--game-dump)
+// draws them. The libfovmod 3D captures do not show them. manifest.screenFade overrides both.
+function screenFadeFor(manifest, gameDump = null) {
+  return typeof manifest.screenFade === 'boolean' ? manifest.screenFade : Boolean(gameDump);
+}
+
 async function captureQuality(page, manifest, gameDump = null) {
   if (gameDump) return require('./mv_runtime_capture').applyGameQuality(page, gameDump.doc.header?.quality, manifest.quality);
   const applied = await applyQuality(page, manifest.quality);
@@ -521,18 +534,18 @@ async function run() {
     const renderHeight = await nativeRenderHeight(page, quality.values, manifest.screen?.height ?? target?.height, antiAliasing);
     const renderWidth = Math.round(renderHeight * aspect / 2) * 2;
     await pinViewport(page, renderWidth, renderHeight);
+    const screenFade = screenFadeFor(manifest, gameDump);
     await page.evaluate((screenFade) => {
       const select = document.querySelector('#mv-camera-mode');
       select.value = 'live';
       select.dispatchEvent(new Event('change', { bubbles: true }));
-      // The MV dark filter and live-end blur are absent from the libfovmod 3D
-      // captures this harness is compared with; a manifest can ask for them.
+      // The MV dark filter and live-end blur (screenFadeFor).
       const fade = document.querySelector('#mv-screen-fade');
       if (fade && fade.checked !== screenFade) {
         fade.checked = screenFade;
         fade.dispatchEvent(new Event('change', { bubbles: true }));
       }
-    }, manifest.screenFade === true);
+    }, screenFade);
     const physics = physicsReference(manifest, quality.values, target);
     await applyPhysicsReference(page, physics);
     const rate = physics.rate, stampRate = physics.ruleRate ?? physics.rate;
@@ -568,7 +581,7 @@ async function run() {
       physics: { rate, reference: physics.source, order: physics.order, exportFps: physics.exportFps, device: physics.device,
         warmupSteps: physics.warmupSteps, ruleRate: stampRate,
         grid: grid ? { source: grid.source, file: grid.file, frames: grid.times.length } : null },
-      render: { width: renderWidth, height: renderHeight, aspect, antiAliasing, video: target },
+      render: { width: renderWidth, height: renderHeight, aspect, antiAliasing, video: target, screenFade },
       quality: { mode: quality.mode, values: quality.values, source: quality.source,
         ...(gameDump ? { file: gameDump.file, request: quality.request, status: quality.status, reasons: quality.reasons,
           gameOnly: quality.gameOnly, gameDifferences: quality.gameDifferences } : {}) },
@@ -590,6 +603,7 @@ async function run() {
 
 module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, deckRequest, importOriginal, projectRecord, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty,
   videoFps, physicsReference, applyPhysicsReference, nativeRenderHeight, applyAntiAliasing, prerollPlan, readGameDump, gameFrameGrid, captureQuality,
+  screenFadeFor,
   MAX_DELTA_TIME };
 // Exported before run() starts: run() requires mv_runtime_capture.js (--game-dump), which requires this
 // module back and would otherwise keep its unfinished exports.

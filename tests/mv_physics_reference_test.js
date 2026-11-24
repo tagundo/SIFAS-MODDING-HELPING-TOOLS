@@ -56,6 +56,13 @@ assert.deepEqual([reference.source, reference.rate, reference.ruleRate], ['manif
 assert.throws(() => manifest({ physics: { rate: 0 } }), /physics.rate/);
 assert.throws(() => manifest({ screen: { width: 1280 } }), /screen is/);
 assert.deepEqual(manifest({ screen: { width: 1280, height: 720 } }).screen, { width: 1280, height: 720 });
+// The MV dark filter and live-end blur: drawn when the reference is a runtime dump (device
+// screencaps show the start fade), off for other references, and a manifest's boolean wins.
+assert.equal(capture.screenFadeFor(manifest({}), null), false);
+assert.equal(capture.screenFadeFor(manifest({}), { file: 'dump.json.gz' }), true);
+assert.equal(capture.screenFadeFor(manifest({ screenFade: false }), { file: 'dump.json.gz' }), false);
+assert.equal(capture.screenFadeFor(manifest({ screenFade: true }), null), true);
+assert.throws(() => manifest({ screenFade: 'yes' }), /screenFade is true or false/);
 // device.antiAliasing: the player's option, a boolean; it does not change the spring rate.
 assert.equal(manifest({ device: { antiAliasing: true } }).device.antiAliasing, true);
 assert.throws(() => manifest({ device: { antiAliasing: 1 } }), /device.antiAliasing/);
