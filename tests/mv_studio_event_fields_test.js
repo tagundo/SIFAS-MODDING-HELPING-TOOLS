@@ -84,7 +84,10 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
               values: { asset: 'cab:11', playableClass: 'LiveStageSingleAmbientClip', color: { r: 0, g: 0, b: 0, a: .5 } } }] },
           { id: 'grey', kind: 'stage', events: [
             { id: 'grey:0', start: 0, duration: 2, label: 'G0', editableValues: ['tintColor'],
-              values: { asset: 'cab:12', playableClass: 'LiveColoringClip', tintColor: { r: .75, g: .75, b: .75, a: 1 } } }] },
+              values: { asset: 'cab:12', playableClass: 'LiveColoringClip', tintColor: { r: .75, g: .75, b: .75, a: 1 } } },
+            // An HDR colour whose k has more than 4 decimals: the box shows 1.498.
+            { id: 'grey:1', start: 2, duration: 2, label: 'G1', editableValues: ['tintColor'],
+              values: { asset: 'cab:13', playableClass: 'LiveColoringClip', tintColor: { r: 1.4980392456054688, g: .5, b: .25, a: 1 } } }] },
         ] };
       const history = MVStudioEditHistory.create({ getProject: () => project });
       const ctx = {
@@ -172,9 +175,10 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
 
       // Brightest channel below 1 (k = 1): an entry above 1 sets the brightest channel to it,
       // so the box shows the entry and the same entry again writes nothing. Black: nothing.
+      // The value the box shows (k to 4 places), typed as other text, writes nothing either.
       out.dark = {};
       for (const [id, key, entries] of [['ambient:0', 'color', ['1.2', '1.2']], ['grey:0', 'tintColor', ['2', '2']],
-        ['ambient:1', 'color', ['3', '3']]]) {
+        ['ambient:1', 'color', ['3', '3']], ['grey:1', 'tintColor', ['1.4980', '1.498']]]) {
         const element = control(id, key);
         const box = element.querySelector('.mv-color-intensity');
         const start = history.size().undo;
@@ -332,6 +336,13 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
       { value: { r: 0, g: 0, b: 0, a: .5 }, shown: '1', steps: 0, swatch: '#000000' },
       { undone: { r: 0, g: 0, b: 0, a: .5 }, steps: 0 },
     ], 'a black colour has no hue to scale: nothing is written and the box goes back to 1');
+    const hdr = { r: 1.4980392456054688, g: .5, b: .25, a: 1 };
+    assert.deepEqual(result.dark['grey:1'], [
+      { shown: '1.498', swatch: '#ff552b' },
+      { value: hdr, shown: '1.498', steps: 0, swatch: '#ff552b' },
+      { value: hdr, shown: '1.498', steps: 0, swatch: '#ff552b' },
+      { undone: hdr, steps: 0 },
+    ], 'entering the shown intensity (k to 4 places) writes nothing');
     assert.deepEqual(result.threshold, { min: '-100', shown: '-1.72', typed: -3, back: -1.72 },
       'a negative native bloom threshold is shown, kept and can be typed back');
 

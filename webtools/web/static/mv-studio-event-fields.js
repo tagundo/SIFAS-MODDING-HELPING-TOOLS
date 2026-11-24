@@ -468,14 +468,15 @@
     // k = max(1, r, g, b) is never below 1, so the box is not either (an entry below 1
     // clamps to 1); a darker colour is picked on the swatch or typed in the exact values.
     // An entry sets the brightest channel to it, so the box then shows the entry and the
-    // same entry again writes nothing. A black colour has no hue to scale: nothing is
+    // same entry again writes nothing. An entry equal to the value the box shows, k to 4
+    // places, writes nothing either. A black colour has no hue to scale: nothing is
     // written and the box goes back to its value.
     const intensity = numberBox(ctx, 1, { min: 1, max: 1000, class: "mv-color-intensity", "data-mv-field": info.path + ".intensity",
       "aria-label": ctx.format("{label}: intensity", { label }),
       title: ctx.t("Intensity (×): the colour's brightest channel, shown as 1 when it is lower. An entry of 1 or more scales the colour so that channel equals it. Pick a darker colour on the swatch.") },
     (next) => {
       pickIntensity = null;
-      write(next === colorParts(state).k ? null : scaleColor(state, next));
+      write(next === round(colorParts(state).k, 4) ? null : scaleColor(state, next));
     });
     const boxes = {};
     for (const channel of CHANNELS) {
