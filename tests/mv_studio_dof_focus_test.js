@@ -178,10 +178,19 @@ axis.values.memberPosition = 1;
 sample(project, 5, 30, (slot) => axisDistance[slot], options());
 assert.equal(state.prevPos, -1);
 exact(state.prevDistance, Math.fround(2.1));
-// Modes 1 and 2 with no member loaded yet keep the previous frame's depth of field.
+// Modes 1 and 2 with no member loaded keep the previous frame's depth of field
+// (an editor loading rule). Performers still loading are silent; an MV without
+// performers is reported.
 for (const mode of [1, 2]) {
   axis.values.cameraAutoDistanceMode = mode;
-  kept(sample(project, 5, 30, () => 2, { members: [], angle: () => 0, previous }), previous, 30, `mode ${mode} without members`);
+  const loadingWarnings = [], emptyWarnings = [];
+  kept(sample(project, 5, 30, () => 2, { members: [], performers: [1], angle: () => 0, previous,
+    warn: (message) => loadingWarnings.push(message) }), previous, 30, `mode ${mode} while members load`);
+  assert.deepEqual(loadingWarnings, [], `mode ${mode}: a performer still loading is not reported`);
+  kept(sample(project, 5, 30, () => 2, { members: [], performers: [], angle: () => 0, previous,
+    warn: (message) => emptyWarnings.push(message) }), previous, 30, `mode ${mode} without performers`);
+  assert.equal(emptyWarnings.length, 1);
+  assert.match(emptyWarnings[0], new RegExp(`cameraAutoDistanceMode ${mode}, but this MV has no performers`));
 }
 const vectorAngle = globalThis.MVStudioDofFocus.vectorAngle;
 exact(vectorAngle({ x: 0, y: 0, z: -1 }, { x: 1, y: 0, z: -1 }), 45);

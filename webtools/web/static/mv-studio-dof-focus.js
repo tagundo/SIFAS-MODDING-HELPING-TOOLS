@@ -20,9 +20,14 @@
   // check (IndexOutOfRangeException, 0x2924148) and GetPart(bodyPart).transform
   // behind a null check (NullReferenceException, 0x29241a0). Nothing in
   // LiveMixerBase`2.ProcessFrame (0x2b3996c; its only landing pad ends in
-  // _Unwind_Resume) or the DOF mixer catches it, so PostProcess, the only
-  // writer of SetDepthOfFieldEnabled/Settings, is skipped and the camera keeps
-  // the DepthOfFieldModel.Settings the previous frame wrote.
+  // _Unwind_Resume) or the DOF mixer catches it, so PostProcess (0x29242f4) is
+  // skipped and the camera keeps the DepthOfFieldModel.Settings the previous
+  // frame wrote. PostProcess is the only per-frame writer of
+  // SetDepthOfFieldEnabled/Settings; the other caller of SetDepthOfFieldEnabled
+  // is LiveCoreCameraPostProcess.SetDisabledAll (0x2f614bc), which only turns
+  // the depth of field off, on the director's reset path
+  // (LiveDirectorBase.ResetComponents 0x2926fb0 -> LiveCoreCameraManager.ResetAll
+  // -> LiveCoreCamera.ResetComponentsState).
   const KEEP_PREVIOUS = Symbol("keep the previous frame's depth of field");
 
   // DepthOfFieldComponent.CalculateFocalLength (0x2cce59c) resolves the lens
@@ -84,9 +89,13 @@
   // other value uses memberPosition. Only mode 2 runs the focusTransitionTime
   // lerp, when the chosen member changes; modes 0 and 1 reset it every call.
   // Returns the focus distance, undefined when this preview lacks a part the
-  // client would have (the caller keeps focusDistance), or KEEP_PREVIOUS where
-  // the client throws: a body part partMap never holds, a memberPosition with
-  // no performer in the MV, or a performer that is not loaded (yet).
+  // client would have (the caller keeps focusDistance), or KEEP_PREVIOUS. The
+  // client throws for a body part partMap never holds and for a memberPosition
+  // the MV has no performer for. The editor also keeps the previous frame
+  // while a performer of the MV is not loaded (still loading, or its load
+  // failed and was reported). That is an editor loading rule, not client
+  // behaviour: the client fills Members for every spawned member in
+  // LiveDirector.PostprocessInitializeAsync, before playback starts.
   function memberFocus(value, local, distance, options, state) {
     const part = clipValue(value, "bodyPart"), mode = clipValue(value, "cameraAutoDistanceMode");
     if (!BODY_PARTS.has(part)) {
@@ -97,7 +106,19 @@
     const loaded = Array.isArray(options.members);
     const members = loaded ? options.members : [];
     let focus;
-    if ((mode === 1 || mode === 2) && loaded && !members.length) return KEEP_PREVIOUS;
+    // Modes 1 and 2 with no loaded member: an editor loading rule. The client's
+    // Members is never empty in an MV with performers; with an empty one, mode 1
+    // would skip its loop and return +inf - 0.1 (0x2923b98 -> 0x2924218) and
+    // mode 2 would throw on Members[0] (0x2923f80). An MV without performers is
+    // reported once; performers still loading are silent (a failed load reports
+    // through onError).
+    if ((mode === 1 || mode === 2) && loaded && !members.length) {
+      if (Array.isArray(options.performers) && !options.performers.length) {
+        options.warn?.(`A depth-of-field clip picks a member by cameraAutoDistanceMode ${mode}, but this MV has no ` +
+          "performers; this preview keeps the previous frame's depth of field.");
+      }
+      return KEEP_PREVIOUS;
+    }
     if (mode === 1) {
       focus = Infinity;
       for (const slot of members) {

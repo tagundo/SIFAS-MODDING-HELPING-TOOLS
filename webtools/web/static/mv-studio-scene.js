@@ -417,7 +417,11 @@
     // frame before it left. A frame on the client's exception path (a missing
     // member or a body part partMap lacks) keeps dofPrevious's settings and
     // resolves its lens at the current camera FOV, as
-    // DepthOfFieldComponent.CalculateFocalLength does at render time.
+    // DepthOfFieldComponent.CalculateFocalLength does at render time. With no
+    // earlier evaluated frame (after a load, or a seek, which cannot replay the
+    // frames before it) the preview draws none; the client's only writer
+    // besides the mixer's PostProcess, LiveCoreCameraPostProcess.SetDisabledAll
+    // on the director's reset path, only turns the depth of field off.
     let dofApplied = null, dofPrevious = null;
     const dofWarnings = new Set();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
