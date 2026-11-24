@@ -151,7 +151,7 @@ async function pluginContract(browser, url) {
   assert.deepEqual(await page.evaluate(() => window.probeCalls), ['attach']);
   assert.equal(await page.evaluate(() => document.getElementById('mv-events').nextElementSibling.id), 'mv-panel-probe');
   assert(await page.locator('#mv-panel-probe').isHidden(), 'not available without a project');
-  const project = { version: 1, name: 'Probe MV', duration: 20, nativeTimeline: false, assets: [], warnings: [],
+  const project = { version: 1, name: 'Probe MV', duration: 20, nativeTimeline: false, assets: [], warnings: [], quality: {},
     performers: [{ id: 'member-1', label: '우에하라 아유무', position: 1, transform: { position: [0, 0, 0] } }],
     source: { kind: 'game', region: 'gl', platform: 'android', liveId: 99, assetId: 1 },
     tracks: [
@@ -244,6 +244,16 @@ async function pluginContract(browser, url) {
   await page.locator('.mv-clip[data-event=lip-1]').click();
   await page.locator('#mv-revert-clip').click();
   assert.equal((await page.evaluate(() => MVStudio.getState().project.tracks[1].events[0].values.weight)), .5, 'built-in revert');
+
+  // The editor layer (originals) is saved with the project and comes back on reopen.
+  await page.locator('#mv-save').click();
+  const link = page.locator('#mv-save-result a');
+  await link.waitFor();
+  const restored = await page.request.post(url + '/api/mv-studio/open', { data: { path: await link.getAttribute('title') } }).then((reply) => reply.json());
+  const saved = (await page.evaluate(() => MVStudio.getState())).project;
+  assert.deepEqual(restored.editor, saved.editor);
+  assert.deepEqual(Object.keys(restored.editor.originals).sort(), ['cam-1', 'lip-1', 'mouth:u1']);
+  assert.equal(restored.editor.originals['lip-1'].values.weight, .5);
 
   // beforeSave can refuse a save with a message.
   await page.evaluate(() => { window.probeRefuseSave = true; });
