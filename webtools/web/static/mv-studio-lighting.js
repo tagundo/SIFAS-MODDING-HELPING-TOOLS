@@ -190,7 +190,10 @@
       }
     }
     return {
-      // LiveBaseLightMixer also writes the ambient components every frame.
+      // LiveBaseLightReciever also writes the ambient components (through the same
+      // CheckSame-gated ApplyBase*Color). Which mixer writes last in a frame is not
+      // established, so the holds are not applied while a base light track exists
+      // (an unevidenced choice: the colors stay exact).
       baseTrack: !!baseTrack,
       baseAmbient: base?.ambient ?? null, baseTint: base?.tint || white,
       member(position) {

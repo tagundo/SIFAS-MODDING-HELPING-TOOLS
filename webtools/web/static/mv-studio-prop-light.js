@@ -214,8 +214,10 @@
       // (LivePropAmbientMixer.PostProcess 0x20f1480 -> ApplyAmbientColor
       // 0x2f670cc / ApplyTintColor / ApplyDefault*), which keeps its last written
       // color until the new one moves by sqrt(1e-5) (MVStudioLighting.heldColor
-      // on the scene's frame clock `frames`). A base light track writes the same
-      // components every frame (`exact`), so its colors are not held.
+      // on the scene's frame clock `frames`). With a base light track (`exact`)
+      // LiveBaseLightReciever writes the same components too, and the order of the
+      // two writers within a frame is not established, so the colors are not held
+      // there (unevidenced choice).
       update(seconds, frames = null, exact = false) {
         const samples = new Map();
         const sampleAt = (controller, time) => {

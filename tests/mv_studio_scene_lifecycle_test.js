@@ -564,6 +564,36 @@ async function checkMemberRimQuality() {
   f.app.dispose();
 }
 
+// A member prop's ambient mixer writes its LiveCoreMemberAmbient every frame, shown or not: the
+// CheckSame hold steps on hidden frames too, and the material takes the held color while shown.
+async function checkMemberPropHold() {
+  const f = fixture(true, { lighting: true }), value = project(57);
+  value.assets = [{ kind: 'props', previewUrl: address(58), attachment: { member: 1, binding: '/EntryPoint/Live/Props/Prop1' } }];
+  const shown = [];
+  f.window.MVStudioProps = { create(root) {
+    return { bind() {}, setTracks() {}, detach() {}, evaluate(time) { root.visible = !(time > 2.05 && time < 2.85); } };
+  } };
+  // alpha(t) = .2 + .01 t: 0.001 per 0.1 s frame, below the sqrt(1e-5) write threshold until four frames add up.
+  f.window.MVStudioPropLight = { create() {
+    return { setProject() {}, sample: (time) => ({ ambient: [0, 0, 0, .2 + .01 * time], tint: [1, 1, 1, 1] }) };
+  } };
+  await f.app.load(value);
+  f.app.seek(1, value, true);
+  f.app.setPlaying(true);
+  const info = f.models.get(58);
+  for (let step = 1; step <= 19; step++) {
+    const time = 1 + step / 10;
+    f.app.playbackFrame(time, step * 100, true);
+    shown.push([Math.round(time * 10) / 10, Math.round(info.liveLighting.ambient[3] * 1e6) / 1e6]);
+  }
+  // Written at 1.4, 1.8, 2.2 (hidden) and 2.6 (hidden); 2.9 is within the threshold of the 2.6 write.
+  assert.deepEqual(shown.find(([time]) => time === 2.9), [2.9, .226]);
+  assert.deepEqual(shown.find(([time]) => time === 2), [2, .218], 'the last color the material took before it was hidden');
+  assert.deepEqual(shown.find(([time]) => time === 2.5), [2.5, .218], 'a hidden prop keeps its material as it was');
+  f.app.setPlaying(false);
+  f.app.dispose();
+}
+
 // LiveCoreMemberManager.MemberMax = 12: lives such as 12074 bind Member10..Member12.
 async function checkTwelvePerformers() {
   const f = fixture(), value = project(70);
@@ -831,6 +861,7 @@ function checkAssetDumpHelpers() {
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
   await checkMemberRimQuality();
+  await checkMemberPropHold();
   await checkOriginalEndHold();
   await checkShadowPrefabRelease();
   await checkTwelvePerformers();

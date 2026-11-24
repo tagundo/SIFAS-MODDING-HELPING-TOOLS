@@ -1794,8 +1794,10 @@
     }
 
     // LiveCoreMemberAmbient's ambient and tint writes (MVStudioLighting.heldColor)
-    // for a member or a member prop. A base light track also writes these
-    // components every frame, so its colors stay exact.
+    // for a member or a member prop. With a base light track LiveBaseLightReciever
+    // also writes these components (ApplyBase*Color, CheckSame-gated as well); the
+    // write order of the two mixers within a frame is not established, so the
+    // colors stay exact there (unevidenced choice).
     function heldLiveLighting(record, slot, value, valueAt, lighting) {
       const holds = (record.lightingHolds ||= {})[slot] ||= { ambient: {}, tint: {} };
       if (!value || lighting?.baseTrack || !global.MVStudioLighting?.heldColor) {
@@ -1956,9 +1958,12 @@
       for (const record of records) if (record.prop) {
         record.prop.bind(records.find((actor) => actor.group === actors && actor.position === record.propMember) || null);
         record.prop.evaluate(currentTime);
-        if (record.root.visible && record.propMaterial) {
-          record.propMaterial.setLiveLighting?.(heldLiveLighting(record, "prop", record.propLight?.sample(currentTime),
-            (time) => record.propLight?.sample(time), lighting));
+        if (record.propMaterial) {
+          // The prop's ambient mixer writes its component every frame, shown or not: the
+          // hold steps on every frame and the material takes it while the prop is shown.
+          const live = heldLiveLighting(record, "prop", record.propLight?.sample(currentTime),
+            (time) => record.propLight?.sample(time), lighting);
+          if (record.root.visible) record.propMaterial.setLiveLighting?.(live);
         }
       }
       advanceFocus();
