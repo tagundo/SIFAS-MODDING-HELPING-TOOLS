@@ -614,8 +614,10 @@ opens that face texture.
   16×16 mip; 532 texels the rule leaves alone change over all levels). Each
   spliced level is decoded again; the save falls back to exact pixels unless
   every texel outside the re-encoded blocks and every alpha value is unchanged.
-  Paint on the same texture, a non-ASTC texture and an `astcenc` without an
-  encoder also save exact pixels. After saving, the save status says which mode
+  Paint on the same texture, a non-ASTC texture, an `astcenc` without an
+  encoder and any other failure of the re-encode (its own 60 s budget, or the
+  decoder refusing a re-encoded level) also save exact pixels; the save itself
+  never fails because of the ASTC option. After saving, the save status says which mode
   each baked face used and, for a fallback, why. The tests use a stand-in
   encoder; `REAL_ASTCENC_BIN=/path/to/astcenc` (4.8.0) runs the astc-keep save
   with the real CLI as well (with `REAL_MV_SAMPLES`, on a real head too).

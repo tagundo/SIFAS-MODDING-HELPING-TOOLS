@@ -41,6 +41,11 @@ class SpliceUnavailable(Exception):
     """The original compression cannot be kept; the caller saves losslessly."""
 
 
+# Also the reason the caller gives when its own decoding of the levels runs
+# out of the splice's time budget.
+TOO_LONG = "Re-encoding the baked blocks took too long."
+
+
 def astc_block(format_name):
     """The block edge of a square ASTC format name, or None."""
     match = _ASTC.fullmatch(str(format_name or ""))
@@ -80,7 +85,7 @@ def touched_blocks(before, after, width, height, block, box):
 def _remaining(deadline):
     seconds = deadline - time.monotonic()
     if seconds <= 0:
-        raise SpliceUnavailable("Re-encoding the baked blocks took too long.")
+        raise SpliceUnavailable(TOO_LONG)
     return seconds
 
 
@@ -114,7 +119,7 @@ def encode(image, block, deadline):
                                          "-j", str(threads)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                         timeout=_remaining(deadline))
             except subprocess.TimeoutExpired as error:
-                raise SpliceUnavailable("Re-encoding the baked blocks took too long.") from error
+                raise SpliceUnavailable(TOO_LONG) from error
             except OSError as error:
                 raise SpliceUnavailable("The ASTC encoder could not be started.") from error
             if result.returncode == 0 and os.path.isfile(output) and not os.path.islink(output):

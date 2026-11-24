@@ -25,7 +25,7 @@ from UnityPy.helpers.TypeTreeNode import TypeTreeNode
 
 import astc_standin
 import costume_part_transplant as cpt
-from webtools.core import decode, model_edits, model_viewer, texture_blush as tb, viewer_texture_tools as textures
+from webtools.core import decode, model_edits, model_viewer, texture_blush as tb, texture_block_splice, viewer_texture_tools as textures
 from webtools.core.model_materials import _original_mips
 from fsspec.implementations.local import LocalFileSystem
 from test_graft_shared_assets import add_component, pointer
@@ -414,6 +414,66 @@ class BlushSessionTests(unittest.TestCase):
                 self.assertEqual(summary["encodingReason"], (fallback + " " if fallback else "") + textures.SAVED_EXACT)
                 self.assertEqual(result["recipe"]["state"]["textures"][0]["blush"], {"layer": 1, "k": 2.3, "encoding": requested})
 
+    @unittest.skipUnless(astc_standin.available(), "needs astc-encoder-py for the test astcenc")
+    def test_astc_keep_saves_exact_pixels_when_a_reencoded_level_cannot_be_checked(self):
+        """The ASTC option never fails the save: a decoder that times out or
+        refuses a re-encoded level leaves exact pixels and the reason."""
+        self.astc_encoder()
+        raw, _ = head_fixture(astc=True)
+        self.cache(self.payload)
+        cheek = tb.layer_bytes(self.payload, 0)
+        original = decode._android_image
+        for name, error, reason in (("timeout", TimeoutError("Thumbnail decoding timed out"), texture_block_splice.TOO_LONG),
+                                    ("decoder", ValueError("ASTC decoder returned incorrect dimensions"), textures.SPLICE_UNCHECKED),
+                                    ("io", OSError("No space left on device"), textures.SPLICE_UNCHECKED)):
+            with self.subTest(name):
+                decoded = []
+
+                def failing(texture, deadline, *args, error=error, **kwargs):
+                    # Only a spliced level (the splice's proxy has no m_Name);
+                    # the original texture and its authored mips decode as usual.
+                    if getattr(texture, "m_Name", None) is None:
+                        decoded.append(texture.m_Width)
+                        raise error
+                    return original(texture, deadline, *args, **kwargs)
+
+                token, _ = self.open(raw, name + ".unity")
+                _, row = self.head(token)
+                _, before = levels_of(raw)
+                with patch.object(decode, "_android_image", failing):
+                    result, output = self.export(token, self.operation(row, before[0], {"layer": 0, "k": 1.65, "encoding": "astc-keep"}))
+                self.assertEqual(decoded, [SIZE], "the splice reached the check of its first re-encoded level")
+                written, after = levels_of(output)
+                self.assertEqual((written.m_TextureFormat, written.m_MipCount), (4, LEVELS))
+                for authored, level in zip(before, after):
+                    self.assertEqual(level.tobytes(), tb.bake_rgba(authored.tobytes(), authored.width, authored.height, cheek, 1.65)[0])
+                summary = result["summary"][0]["textureEdits"][0]
+                self.assertEqual((summary["blush"]["encoding"], summary["blush"]["requested"], summary["blush"]["fallback"],
+                                  summary["blush"]["note"]), ("exact", "astc-keep", reason, textures.SAVED_EXACT))
+                self.assertEqual(summary["encodingReason"], reason + " " + textures.SAVED_EXACT)
+
+    def test_the_splice_has_its_own_time_budget_and_the_exact_save_a_fresh_one(self):
+        raw, images = head_fixture()
+        self.cache(self.payload)
+        token, _ = self.open(raw)
+        _, row = self.head(token)
+        budgets = []
+
+        def splice(obj, original, levels, before, layer, bounds, blush, block, deadline):
+            budgets.append(deadline - time.monotonic())
+            raise TimeoutError("Thumbnail decoding timed out")
+
+        # A non-ASTC head never reaches the splice; make this one look ASTC.
+        with patch.object(textures, "_splice_blush", splice), \
+                patch.object(texture_block_splice, "astc_block", lambda name: 6):
+            result, output = self.export(token, self.operation(row, images[0], {"layer": 1, "k": 2.3, "encoding": "astc-keep"}))
+        self.assertEqual(len(budgets), 1)
+        self.assertGreater(budgets[0], 55)
+        summary = result["summary"][0]["textureEdits"][0]
+        self.assertEqual((summary["blush"]["encoding"], summary["blush"]["fallback"]), ("exact", texture_block_splice.TOO_LONG))
+        _, levels = levels_of(output)
+        self.assertEqual(levels[0].tobytes(), tb.bake_rgba(images[0].tobytes(), SIZE, SIZE, tb.layer_bytes(self.payload, 1), 2.3)[0])
+
     def test_the_cheek_pattern_never_makes_the_server_search_its_working_directory(self):
         """Original heads use the AS/Member shader of another bundle. Reading
         the cheek pattern for a model session must not make UnityPy list the
@@ -491,10 +551,11 @@ class BlushSessionTests(unittest.TestCase):
         from webtools import i18n
         from webtools.core import texture_block_splice
         sentences = {textures.SAVED_EXACT, textures.SAVED_ASTC, textures.KEEP_PAINTED, textures.KEEP_NOT_ASTC,
+                     textures.SPLICE_UNCHECKED, texture_block_splice.TOO_LONG,
                      "Choose how to save the baked blush: exact pixels or the game's ASTC compression."}
         for module in (texture_block_splice, textures):
             sentences.update(re.findall(r'SpliceUnavailable\("([^"]+)"\)', Path(module.__file__).read_text(encoding="utf-8")))
-        self.assertGreaterEqual(len(sentences), 14)
+        self.assertGreaterEqual(len(sentences), 15)
         for lang in ("ko", "ja"):
             missing = [text for text in sorted(sentences) if i18n.tr(text, lang) == text]
             self.assertEqual(missing, [], lang)

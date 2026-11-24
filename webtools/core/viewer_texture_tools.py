@@ -97,6 +97,7 @@ SAVED_ASTC = ("The baked blush kept the game's ASTC compression: only the blocks
               "and every other block keeps its original bytes.")
 KEEP_PAINTED = "This texture is also painted, and painted pixels are always saved exactly, so its ASTC compression was not kept."
 KEEP_NOT_ASTC = "This texture is not ASTC-compressed, so there was no ASTC compression to keep."
+SPLICE_UNCHECKED = "The re-encoded ASTC blocks could not be decoded and checked."
 CHEEK_UNAVAILABLE = ("No verified stock blush pattern (cheek_array) is available. Open another costume that "
                      "contains it once (most costume bundles do) so it is kept automatically, then reopen this model.")
 
@@ -685,8 +686,8 @@ def _write(obj, edited, blush=None, cheek=None):
     exactly the shader result (blush encoding "exact"). Only a bake that asks
     for "astc-keep", alone on an ASTC texture, keeps the ASTC format and
     re-encodes the blocks holding changed texels (_splice_blush); paint on the
-    same texture, a non-ASTC source or an encoder failure saves exact pixels
-    instead, and the summary says why.
+    same texture, a non-ASTC source or any failure of the splice (encoder,
+    time budget, decoder) saves exact pixels instead, and the summary says why.
     """
     from PIL import Image
     from . import decode, texture_block_splice
@@ -715,11 +716,19 @@ def _write(obj, edited, blush=None, cheek=None):
             elif not block:
                 fallback = KEEP_NOT_ASTC
             else:
+                # The splice has its own time budget, and whatever stops it
+                # (the encoder, a timeout, the decoder refusing a re-encoded
+                # level) saves exact pixels instead with a fresh budget. The
+                # splice writes the texture only once every level passed.
                 try:
-                    return _splice_blush(obj, original, levels, before, layer, bounds, blush, block, deadline)
+                    return _splice_blush(obj, original, levels, before, layer, bounds, blush, block, time.monotonic() + 60)
                 except texture_block_splice.SpliceUnavailable as error:
                     fallback = str(error)
-                    deadline = time.monotonic() + 60
+                except TimeoutError:
+                    fallback = texture_block_splice.TOO_LONG
+                except (ValueError, OSError):
+                    fallback = SPLICE_UNCHECKED
+                deadline = time.monotonic() + 60
     finally:
         before.close()
     width, height = edited.size
