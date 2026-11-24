@@ -1,5 +1,5 @@
 {
-  "source": "MV 12035 (Android) native timeline parsed with core.mv_studio_timeline.parse_timeline. Structure and clip timing only: ids are anonymised, playable values are dropped (only the extrapolation timing values and editableValues key names are kept). A track-level editableValues is the list shared by its events unless an event lists its own.",
+  "source": "MV 12035 (Android) native timeline parsed with core.mv_studio_timeline.parse_timeline (written by tests/fixtures/make_mv_studio_tracks_12035.py). Structure and clip timing only: ids are anonymised, playable values are dropped (only the extrapolation timing values and editableValues key names are kept). A track-level editableValues is the list shared by its events unless an event lists its own.",
   "duration": 106.68333333333334,
   "tracks": [
     {"id": "t00", "kind": "group", "nativeClass": "GroupTrack", "label": "CameraMotion", "events": []},
