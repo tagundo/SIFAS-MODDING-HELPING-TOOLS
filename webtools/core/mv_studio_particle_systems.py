@@ -21,6 +21,34 @@ One common rule for every song, taken from the client and the serialized assets:
   curve, or whose ParticleSystem/renderer properties are animated, are listed
   as not previewed instead of being drawn statically.
 
+* Local-aligned Billboard renderers draw 3D start rotation: the quad turns by
+  the negated start angles in Unity's Euler order (Z, X, Y) inside the emitter
+  frame, the rule mv-studio-display-lights.js draws its Local strokes with.
+  libunity.so draws View, World and Local billboards with one geometry routine
+  (0xd242c; its variants 0xd78f4, 0xdd314 and 0xdf694 are picked by flags other
+  than the alignment in 0xcb86c) that turns the quad in its own unscaled
+  coefficients and then maps them through the alignment's three axes. The
+  camera axes of View alignment (0xc37d8) and the X/Y turn on World quads are
+  not yet checked against a game frame, so X/Y start rotation on View or
+  World billboards stays reported, as on the other render modes.
+* Local scaling mode applies the node's own localScale to local-space
+  billboards (_scaled_billboard): positions through the scaled transform, and
+  the quad axes times the scale component-wise in world space, after the roll
+  and 3D turn; the min/max size cap is checked on the unscaled quad against
+  the limit over the scale's X (libunity.so 0xc35c4, 0xd2844, 0xd2c30). Other
+  scaled cases are reported.
+* Unity culling may pause a looping Automatic (cullingMode 0) system and
+  pauses any Pause (cullingMode 2) system while its renderer is invisible, and
+  resumes it without catching up (libunity.so GL 3.12.0, Unity 2018.4: the
+  ParticleSystemRenderer visibility callbacks 0xc2618 / 0xc2648 in vtable
+  slots 0xe11d58 / 0xe11d60 call uncull 0x1cbd10 / cull 0x1cc5d8), so its
+  clock lags the clip by however long the cameras looked away. The runtime
+  does not reproduce that visibility history. The two billboard cases above
+  are therefore drawn only on systems culling cannot pause (AlwaysSimulate,
+  PauseAndCatchup, or Automatic without looping); on others they stay
+  reported (_paused_off_screen). Systems drawn without these cases keep their
+  earlier always-simulating preview.
+
 This module only normalizes serialized data. ``mv-studio-particle-systems.js``
 simulates and draws it. Textures keep their authored pixels and mip levels.
 """
@@ -226,11 +254,7 @@ def _main(source):
     if result["size3D"]:
         result["sizeY"], result["sizeZ"] = curve(initial["startSizeY"]), curve(initial["startSizeZ"])
     if result["rotation3D"]:
-        # The runtime turns a particle quad about its Z axis only. No native
-        # reader reproduces a 3D-rotated billboard, so X/Y start rotation is
-        # reported (center_stars, butterfly_glow reject it as well).
-        if not (_zero(initial["startRotationX"]) and _zero(initial["startRotationY"])):
-            raise _Unsupported("3D start rotation (X/Y axes)")
+        # X/Y start rotation is drawn on Local billboards only (see system()).
         result["rotationX"], result["rotationY"] = curve(initial["startRotationX"]), curve(initial["startRotationY"])
     return result
 
@@ -528,9 +552,9 @@ def _turns_about_y(walked, own):
 def _unit_scale(walked, own, scaling):
     """The transform scale the scaling mode applies is the identity.
 
-    The runtime scales particle positions by it but never particle size, and
-    Shape mode's emitter-only scale is not reproduced; no native reader has a
-    scaled emitter to take the rule from (falling_display requires identity).
+    Shape mode's emitter-only scale and Hierarchy mode's lossy scale are not
+    reproduced; Local mode's own scale is, on the billboards _scaled_billboard
+    accepts.
     """
     unit = lambda node: all(abs(value - 1) <= 1e-6 for value in node["scale"])
     if scaling == 1:
@@ -541,6 +565,60 @@ def _unit_scale(walked, own, scaling):
             return False
         index = walked[index]["parent"]
     return True
+
+
+def _scaled_billboard(source, render_tree, scale):
+    """A Local-mode transform scale the runtime applies as Unity does.
+
+    libunity.so (GL 3.12.0, Unity 2018.4):
+
+    * 0x1cca20 keeps the scaling-mode scale s in the ParticleSystem state at
+      +0x154: Hierarchy the lossy scale, Local the node's own localScale
+      (0x1cd2f0), Shape (1, 1, 1). The local-to-world matrix is the node's
+      world rotation and position times diag(s) (Matrix4x4::Scale 0x210684).
+    * The renderer job copies s (0xc3528) and divides the renderer's min/max
+      particle size by max(s.x, 1e-5) before the camera factor (0xc35c4).
+    * The View/World/Local billboard geometry (0xd242c and its variants
+      0xd78f4, 0xdd314, 0xdf694) multiplies its three quad axes
+      component-wise by s in world space (0xd2844), turns each particle by
+      its roll and 3D rotation in the unscaled quad coefficients (0xd301c),
+      and caps the particle's own, unscaled larger side (0xd2c30).
+
+    So positions go through the scaled transform, the quad keeps its unscaled
+    size and turns, its axes carry s, and the cap sees the size times s.x.
+    Only this set-up is accepted: a Billboard renderer, local simulation space,
+    a positive scale, and no world-space force or velocity whose conversion
+    into the scaled space is unknown. system() still reports it on a system
+    culling can pause (_paused_off_screen).
+    """
+    initial = source.get("InitialModule") or {}
+    velocity, clamp = source.get("VelocityModule") or {}, source.get("ClampVelocityModule") or {}
+    return (render_tree.get("m_RenderMode") == 0 and source.get("moveWithTransform") == 0
+            and all(value > 1e-6 for value in scale) and _zero(initial.get("gravityModifier") or {})
+            and not (velocity.get("enabled") and velocity.get("inWorldSpace"))
+            and not (clamp.get("enabled") and clamp.get("inWorldSpace")))
+
+
+def _paused_off_screen(main):
+    """Why culling may freeze this system's clock while it is off screen, or None.
+
+    libunity.so (GL 3.12.0, Unity 2018.4): the ParticleSystemRenderer
+    visibility callbacks 0xc2618 (became visible) and 0xc2648 (became
+    invisible), in vtable slots 0xe11d58 / 0xe11d60, call uncull 0x1cbd10 and
+    cull 0x1cc5d8. Cull: mode 3 (AlwaysSimulate) never culls; mode 0
+    (Automatic) culls only a looping system whose procedural flag (state +0x21,
+    set at Play by 0x1d1910) is on and whose state +0x22 is clear; modes 1 and
+    2 always cull. Uncull simulates the culled time only for mode 1
+    (PauseAndCatchup). 0x1d1910 reads dozens of module fields and is not
+    mapped to the serialized modules, so a looping Automatic system is
+    reported as one culling may pause.
+    """
+    mode = main.get("cullingMode", 0)
+    if mode == 2:
+        return "Pause culling pauses it off screen (not reproduced)"
+    if mode == 0 and main.get("looping"):
+        return "Automatic culling may pause it off screen (not reproduced)"
+    return None
 
 
 def _alive_bound(row):
@@ -569,13 +647,15 @@ def _alive_bound(row):
     return total
 
 
-def system(objects, game, particle, renderer, textures, blocked=None, *, upright=True):
+def system(objects, game, particle, renderer, textures, blocked=None, *, upright=True, scaled=False):
     """Normalize one ParticleSystem and its renderer, or raise _Unsupported.
 
     ``blocked`` is a reason from outside the system itself (its prefab
     Animator or transform scale); it is raised after the system's own checks
     and before any texture is read, so the warning names the system's own gap
     first. ``upright`` tells whether the emitter's world rotation is a pure Y turn.
+    ``scaled`` tells that a non-unit Local-mode node scale was accepted for it
+    (_scaled_billboard).
     """
     source = particle.read_typetree()
     for name in _UNSUPPORTED_MODULES:
@@ -602,6 +682,19 @@ def system(objects, game, particle, renderer, textures, blocked=None, *, upright
               "renderer": drawn}
     if result["shape"] and result["shape"]["alignToDirection"] and not (upright and _planar_alignment(result)):
         raise _Unsupported("ShapeModule.alignToDirection")
+    initial = source["InitialModule"]
+    tilted = result["main"]["rotation3D"] and not (_zero(initial["startRotationX"]) and _zero(initial["startRotationY"]))
+    if tilted and drawn["mode"] != 0:
+        raise _Unsupported("3D start rotation (X/Y axes)")
+    if tilted and drawn["alignment"] != 2:
+        # Only the emitter frame of Local alignment is evidenced (display-light
+        # strokes, the 12035 shot 34/35 light X-cross). The handedness of the
+        # View camera frame and the World frame for the X/Y turn is not.
+        raise _Unsupported("3D start rotation (X/Y axes) on a View or World billboard")
+    paused = _paused_off_screen(result["main"]) if tilted or scaled else None
+    if paused:
+        # Its look depends on how long it was culled, which is not reproduced.
+        raise _Unsupported(paused)
     if result["main"]["maxParticles"] > _MAX_PARTICLES:
         bound = _alive_bound(result)
         if bound is None or bound >= _MAX_PARTICLES:
@@ -844,13 +937,16 @@ def template(objects, prefab, textures, deadline, walked=None):
                 raise _Unsupported("too many systems in one prefab")
             source = components["ParticleSystem"].read_typetree()
             scaling = source.get("scalingMode")
+            scaled = False
             if not blocked and scaling in _SCALING and not _unit_scale(walked, own, scaling):
-                blocked = f"non-unit transform scale ({_SCALING[scaling]} scaling mode)"
+                scaled = scaling == 1 and _scaled_billboard(source, renderer.read_typetree(), node["scale"])
+                if not scaled:
+                    blocked = f"non-unit transform scale ({_SCALING[scaling]} scaling mode)"
             if not blocked and translated[own] and source.get("moveWithTransform") != 0:
                 # World-space particles keep the emitter position of their birth step.
                 blocked = "world-space particles under an Animator that moves the emitter"
             row = system(objects, node["game"], components["ParticleSystem"], renderer, textures, blocked,
-                         upright=_turns_about_y(walked, own))
+                         upright=_turns_about_y(walked, own), scaled=scaled)
             if row is not None:
                 index = remap[own]
                 row.update(node=index, path=node["path"], layer=nodes[index]["layer"])

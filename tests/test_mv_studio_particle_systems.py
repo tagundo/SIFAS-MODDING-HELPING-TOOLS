@@ -219,7 +219,7 @@ class NormalizationTests(unittest.TestCase):
             self.assertIsNone(systems.system({}, None, particle, Reader({**RENDERER, "m_Enabled": 0}),
                                              systems._Textures(0)))
 
-    def test_three_dimensional_rotation_is_reported(self):
+    def test_three_dimensional_rotation_is_drawn_on_local_billboards_only(self):
         self.assertTrue(systems._zero(constant(0.0)))
         self.assertFalse(systems._zero(constant(0.5)))
         self.assertTrue(systems._zero({**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(0, 0), key(1, 0)]}}))
@@ -228,10 +228,41 @@ class NormalizationTests(unittest.TestCase):
         initial = particle_system()["InitialModule"]
         flat = systems._main(particle_system(InitialModule={**initial, "rotation3D": True}))
         self.assertTrue(flat["rotation3D"])
-        for axis in ("startRotationX", "startRotationY"):
-            tumbling = particle_system(InitialModule={**initial, "rotation3D": True, axis: constant(math.pi)})
-            with self.assertRaisesRegex(systems._Unsupported, "3D start rotation"):
-                systems._main(tumbling)
+        with mock.patch.object(systems, "_material", return_value=(dict(SURFACE), None)):
+            local = Reader({**RENDERER, "m_RenderAlignment": 2})
+            for axis in ("startRotationX", "startRotationY"):
+                # AlwaysSimulate: culling never pauses it.
+                tumbling = particle_system(cullingMode=3,
+                                           InitialModule={**initial, "rotation3D": True, axis: constant(math.pi)})
+                self.assertEqual(systems._main(tumbling)["rotationX" if axis.endswith("X") else "rotationY"]["scalar"],
+                                 math.pi)
+                # Local billboards turn in the emitter frame (the native display-light strokes' rule).
+                row = systems.system({}, None, Reader(tumbling), local, systems._Textures(0))
+                self.assertTrue(row["main"]["rotation3D"])
+                # The View camera frame and the World frame have no evidenced handedness for the X/Y turn.
+                for alignment in (0, 1):
+                    with self.assertRaisesRegex(systems._Unsupported, "3D start rotation .* on a View or World billboard"):
+                        systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderAlignment": alignment}),
+                                       systems._Textures(0))
+                # Stretched, horizontal and vertical quads are reported.
+                for mode in (1, 2, 3):
+                    with self.assertRaisesRegex(systems._Unsupported, r"^3D start rotation \(X/Y axes\)$"):
+                        systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderMode": mode}),
+                                       systems._Textures(0))
+            # Culling that may pause the system off screen (looping Automatic, Pause) keeps it
+            # reported: its clock depends on the cameras' visibility history.
+            for culling, looping, reason in ((0, True, "Automatic culling may pause"), (2, False, "Pause culling pauses"),
+                                             (0, False, None), (1, True, None), (3, True, None)):
+                tumbling = particle_system(cullingMode=culling, looping=looping,
+                                           InitialModule={**initial, "rotation3D": True, "startRotationY": constant(.1)})
+                if reason:
+                    with self.assertRaisesRegex(systems._Unsupported, f"^{reason} it off screen \\(not reproduced\\)$"):
+                        systems.system({}, None, Reader(tumbling), local, systems._Textures(0))
+                else:
+                    self.assertTrue(systems.system({}, None, Reader(tumbling), local, systems._Textures(0)))
+            # A Z-only 3D rotation is no new case: culling does not keep it reported.
+            self.assertTrue(systems.system({}, None, Reader(particle_system(InitialModule={**initial, "rotation3D": True})),
+                                           local, systems._Textures(0)))
         # Unity keeps serialized X/Y values while 3D rotation is off; only Z is used then.
         self.assertFalse(systems._main(particle_system(InitialModule={**initial, "startRotationX": constant(1.0)}))
                          ["rotation3D"])
@@ -263,9 +294,9 @@ class NormalizationTests(unittest.TestCase):
                          "5 original particle systems are not previewed: ShapeModule.alignToDirection x5.")
 
     def test_transform_scale_is_reported_for_the_scaling_mode(self):
-        def walked(scaling, parent_scale, own_scale):
+        def walked(scaling, parent_scale, own_scale, culling=3):
             emitter = walked_node("fx/root/emitter", 1)
-            emitter["components"].update(ParticleSystem=Reader(particle_system(scalingMode=scaling)),
+            emitter["components"].update(ParticleSystem=Reader(particle_system(scalingMode=scaling, cullingMode=culling)),
                                          ParticleSystemRenderer=Reader(RENDERER))
             emitter["scale"] = list(own_scale)
             rows = [walked_node("fx", None), walked_node("fx/root", 0), emitter]
@@ -274,9 +305,11 @@ class NormalizationTests(unittest.TestCase):
                 node["authored"] = True
             return rows
 
+        local = "non-unit transform scale (Local scaling mode)"
         cases = {(0, (2, 2, 2), (1, 1, 1)): "non-unit transform scale (Hierarchy scaling mode)",
                  (2, (1, 1, 1), (1, 1, 0)): "non-unit transform scale (Shape scaling mode)",
-                 (1, (1, 1, 1), (5, 3, 1)): "non-unit transform scale (Local scaling mode)",
+                 # Local mode sizes a billboard by its own scale (the display clouds' 5x3 nodes).
+                 (1, (1, 1, 1), (5, 3, 1)): None, (1, (1, 1, 1), (-5, 3, 1)): local,
                  (1, (2, 2, 2), (1, 1, 1)): None, (0, (1, 1, 1), (1, 1, 1)): None}
         with mock.patch.object(systems, "_material", return_value=(dict(SURFACE), None)):
             for (scaling, parent, own), reason in cases.items():
@@ -284,6 +317,29 @@ class NormalizationTests(unittest.TestCase):
                     row, unsupported, _ = systems.template({}, None, systems._Textures(0), 0)
                 self.assertEqual([item["reason"] for item in unsupported], [reason] if reason else [])
                 self.assertEqual(len(row["systems"]), 0 if reason else 1)
+            # The same scaled billboard under culling that pauses it off screen stays reported;
+            # an unscaled one keeps its always-simulating preview.
+            for culling, own, reasons in ((0, (5, 3, 1), ["Automatic culling may pause it off screen (not reproduced)"]),
+                                          (2, (5, 3, 1), ["Pause culling pauses it off screen (not reproduced)"]),
+                                          (1, (5, 3, 1), []), (0, (1, 1, 1), [])):
+                with mock.patch.object(systems, "_walk", return_value=walked(1, (1, 1, 1), own, culling)):
+                    row, unsupported, _ = systems.template({}, None, systems._Textures(0), 0)
+                self.assertEqual([item["reason"] for item in unsupported], reasons)
+                self.assertEqual(len(row["systems"]), 0 if reasons else 1)
+            # Only billboards in local simulation space without world-space forces.
+            velocity = {"enabled": True, "inWorldSpace": True, "speedModifier": constant(1.0),
+                        **{name: constant(0.0) for name in ("x", "y", "z", "orbitalX", "orbitalY", "orbitalZ",
+                                                            "orbitalOffsetX", "orbitalOffsetY", "orbitalOffsetZ", "radial")}}
+            for change in ({"moveWithTransform": 1},
+                           {"InitialModule": {**particle_system()["InitialModule"], "gravityModifier": constant(0.5)}},
+                           {"VelocityModule": velocity}, {"renderer": {**RENDERER, "m_RenderMode": 2}}):
+                rows = walked(1, (1, 1, 1), (5, 3, 1))
+                renderer = change.pop("renderer", RENDERER)
+                rows[2]["components"].update(ParticleSystem=Reader(particle_system(scalingMode=1, cullingMode=3, **change)),
+                                             ParticleSystemRenderer=Reader(renderer))
+                with mock.patch.object(systems, "_walk", return_value=rows):
+                    row, unsupported, _ = systems.template({}, None, systems._Textures(0), 0)
+                self.assertEqual([item["reason"] for item in unsupported], [local])
 
     def test_claimed_cues_and_warning(self):
         result = {"tracks": [{"trackId": "ignored", "eventId": "ignored"}],
@@ -504,17 +560,22 @@ class OriginalTimelineTests(unittest.TestCase):
 
         parsed = mv_studio_timeline.parse_timeline(_TIMELINE_12035.read_bytes(), "12035", preview_particle_systems=True)
         source = parsed["stageParticleSystems"]
-        # The light beams and the display clouds tilt their quads on X/Y or sit on a
-        # scaled node; they are reported and their two cues are left out.
+        # The light beams (Local billboards tilted on Y, one on a 1.1x1.1 node) and the
+        # main display clouds (View billboards on 5x3 and 6x3 nodes) are looping Automatic
+        # systems: culling may pause them off screen, so they stay reported. The side display
+        # clouds are also View billboards tilted on Y, whose frame handedness is unevidenced.
         reasons = {(row["template"], row["path"].rsplit("/root/", 1)[1]): row["reason"] for row in source["unsupported"]}
-        tilted, scaled = "3D start rotation (X/Y axes)", "non-unit transform scale (Local scaling mode)"
+        paused = "Automatic culling may pause it off screen (not reproduced)"
+        view_tilt = "3D start rotation (X/Y axes) on a View or World billboard"
         self.assertEqual(reasons, {
-            ("fx_par_so2035_04", "light_01"): tilted, ("fx_par_so2035_04", "light_02"): tilted,
-            ("fx_dis_par_so2035_02", "main_dis/cloud_L"): scaled, ("fx_dis_par_so2035_02", "main_dis/cloud_R"): scaled,
-            **{("fx_dis_par_so2035_02", f"sub_dis_{side}/cloud_{cloud}"): tilted for side in "LR" for cloud in "LR"}})
+            ("fx_par_so2035_04", "light_01"): paused, ("fx_par_so2035_04", "light_02"): paused,
+            ("fx_dis_par_so2035_02", "main_dis/cloud_L"): paused, ("fx_dis_par_so2035_02", "main_dis/cloud_R"): paused,
+            **{("fx_dis_par_so2035_02", f"sub_dis_{side}/cloud_{cloud}"): view_tilt for side in "LR" for cloud in "LR"}})
         self.assertEqual(len(source["cues"]), 12)
         names = {template["name"]: template for template in source["templates"]}
         self.assertEqual(len(names), 8)
+        self.assertNotIn("fx_dis_par_so2035_02", names)
+        self.assertNotIn("fx_par_so2035_04", names)
         # fx_flo_so2035_03 holds 35 systems, but 20 sit under inactive GameObjects that no clip
         # or Animator activates, so the clone never plays them.
         self.assertEqual({name: len(row["systems"]) for name, row in names.items() if name.startswith("fx_flo")},
@@ -560,9 +621,10 @@ class OriginalTimelineTests(unittest.TestCase):
         self.assertEqual(len(reasons["animated by the prefab Animator (activation)"]), 4)
         self.assertNotIn("animated by the prefab Animator (Transform)", reasons)
         # The dragon's Animator moves its local-space emitter: it is drawn with that curve.
-        # The clouds it also moves sit on scaled nodes, which stay reported.
+        # The clouds beside it are Local billboards on scaled nodes; they loop under Automatic
+        # culling, which may pause them off screen, so they stay reported.
         self.assertEqual(drawn["fx_dis_par_so2036_05"], ["ryuu_01"])
-        self.assertEqual(sorted(path for path in reasons["non-unit transform scale (Local scaling mode)"]
+        self.assertEqual(sorted(path for path in reasons["Automatic culling may pause it off screen (not reproduced)"]
                                 if "so2036_05" in path),
                          [f"fx_dis_par_so2036_05/root/kumo_0{index}" for index in range(1, 5)])
         dragon = next(template for template in source["templates"] if template["name"] == "fx_dis_par_so2036_05")

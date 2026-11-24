@@ -239,8 +239,23 @@ async function testUnreproducedSystemsAreRefused() {
   const base = system();
   assert.equal(P.validSimulation(system({main: {rotation3D: true, rotationX: constant(0), rotationY: between(0, 0)}})),
     true, "3D rotation that stays on Z is drawn");
-  assert.equal(P.validSimulation(system({main: {rotation3D: true, rotationX: constant(0), rotationY: constant(.35)}})),
-    false, "X/Y start rotation is not drawn as a Z roll");
+  // X/Y start rotation: Local billboards only, and only where culling cannot pause the system.
+  const tumbling = (cullingMode, looping, alignment = 2, mode = 0) => system({
+    main: {rotation3D: true, rotationX: constant(0), rotationY: constant(.35), cullingMode, looping},
+    renderer: {...base.renderer, alignment, mode}});
+  assert.equal(P.validSimulation(tumbling(3, true)), true, "Local billboards turn by X/Y start rotation in the emitter frame");
+  for (const alignment of [0, 1]) {
+    assert.equal(P.validSimulation(tumbling(3, true, alignment)), false,
+      "the View/World frame handedness of the X/Y turn is not evidenced");
+  }
+  for (const mode of [1, 2, 3]) {
+    assert.equal(P.validSimulation(tumbling(3, true, 2, mode)), false, "other render modes do not draw X/Y start rotation");
+  }
+  for (const [cullingMode, looping, valid] of [[0, true, false], [0, false, true], [1, true, true], [2, false, false],
+    [3, false, true]]) {
+    assert.equal(P.validSimulation(tumbling(cullingMode, looping)), valid,
+      `culling ${cullingMode} looping ${looping}: Automatic (looping) and Pause culling freeze the clock off screen`);
+  }
   const spin = {separateAxes: true, x: constant(0), y: constant(0), z: constant(2)};
   assert.equal(P.validSimulation(system({rotation: spin})), true);
   assert.equal(P.validSimulation(system({rotation: {...spin, y: {mode: 1, scalar: 1, min: 0,
@@ -256,7 +271,7 @@ async function testUnreproducedSystemsAreRefused() {
     assert.equal(P.validSimulation(system({shape: {...base.shape, type, radiusThickness}})), valid, `${type}/${radiusThickness}`);
   }
   assert.equal(P.validSimulation(system({main: {maxParticles: 5000}})), false, "the importer reports larger pools");
-  // A transform scale the scaling mode would apply is never drawn.
+  // A transform scale the scaling mode applies is drawn only for Local billboards.
   const root = new T.Group();
   const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [2, 2, 2]},
     {parent: 0, path: "fx/a", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
@@ -270,6 +285,72 @@ async function testUnreproducedSystemsAreRefused() {
     quality: {values: {stage_control: true}}});
   assert.deepEqual(controller.inspect().map(row => row.path), ["fx/a/local"],
     "Local scaling ignores the parent; Hierarchy and Shape would scale the particles");
+  controller.dispose();
+}
+
+async function testTiltedAndLocallyScaledBillboards() {
+  // fx_par_so2035_04 light_02: a Local billboard tilted 5 degrees on Y on a 1.1x1.1 node, and a
+  // View billboard on a 5x3 node (fx_dis_par_so2035_02 main_dis/cloud_L), both with a culling mode that
+  // cannot pause them; the same clouds under looping Automatic culling stay refused.
+  const once = {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]};
+  const cloud = system({path: "fx/cloud", node: 1, shape: null, emission: once,
+    main: {duration: 10, lifetime: constant(10), size: constant(1.2), cullingMode: 1}});
+  const paused = system({path: "fx/paused", node: 1, shape: null, emission: once,
+    main: {duration: 10, lifetime: constant(10), size: constant(1.2), cullingMode: 0, looping: true}});
+  const beam = system({path: "fx/beam", node: 2, shape: null, emission: once, renderer: {...cloud.renderer, alignment: 2},
+    main: {duration: 5, lifetime: constant(5), size: constant(17), rotation3D: true, rotationX: constant(.25),
+      rotationY: constant(.0872664600610733), cullingMode: 3}});
+  const flat = system({path: "fx/flat", node: 3, shape: null, emission: once,
+    main: {duration: 5, lifetime: constant(5), size: constant(2)}});
+  const turn = [0, Math.sin(Math.PI / 8), 0, Math.cos(Math.PI / 8)];
+  const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]},
+    {parent: 0, path: "fx/cloud", layer: 1, position: [1, 2, 3], rotation: [0, 0, 0, 1], scale: [5, 3, 1]},
+    {parent: 0, path: "fx/beam", layer: 1, position: [0, 0, 0], rotation: turn, scale: [1.1, 1.1, 1]},
+    {parent: 0, path: "fx/flat", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
+  const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
+    templates: [{name: "fx", nodes, systems: [cloud, paused, beam, flat]}],
+    cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1}]};
+  assert.equal(P.validDescriptor(descriptor), true);
+  const root = new T.Group();
+  const controller = await P.apply(T, root, descriptor);
+  controller.update(2, {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 5}]}],
+    quality: {values: {stage_display: true}}});
+  const meshes = Object.fromEntries(root.children[0].children.map(mesh => [mesh.name.split("/").pop(), mesh]));
+  assert.deepEqual(Object.keys(meshes).sort(), ["beam", "cloud", "flat"], "Automatic culling would pause fx/paused");
+  assert.deepEqual(controller.inspect().map(row => row.path).sort(), ["fx/beam", "fx/cloud", "fx/flat"]);
+  const attribute = (mesh, name) => Array.from(mesh.geometry.getAttribute(name).array.slice(0, 3));
+  // Local scaling: the quad keeps its 1.2 units; the node's (5, 3, 1) reaches the shader, which scales
+  // the camera axes by it in world components and caps the quad at the limit over 5 (libunity.so
+  // 0xd2844, 0xc35c4). The particle sits at the node.
+  assert.deepEqual(attribute(meshes.cloud, "particleSize"), [f32(1.2), f32(1.2), f32(1.2)]);
+  assert.deepEqual(meshes.cloud.position.toArray(), [-1, 2, 3], "Unity X is reflected like the stage");
+  assert.equal(meshes.cloud.material.defines.TILTED, undefined);
+  assert.equal(meshes.cloud.material.defines.VIEW_FACING, 1);
+  assert.equal(meshes.cloud.material.defines.SCALED, 1);
+  assert.deepEqual(meshes.cloud.material.uniforms.uScale.value.toArray(), [5, 3, 1]);
+  assert.match(meshes.cloud.material.vertexShader, /sizeLimit \/= max\(uScale\.x, 1\.0e-5\);/);
+  assert.match(meshes.cloud.material.vertexShader, /uScale \* \(right \* local\.x \+ up \* local\.y\)/);
+  assert.deepEqual(attribute(meshes.beam, "particleSize"), [17, 17, 17]);
+  assert.equal(meshes.beam.material.defines.SCALED, 1);
+  // The X/Y start angles reach the vertex shader; the Z angle stays the roll.
+  assert.equal(meshes.beam.material.defines.TILTED, 1);
+  assert.deepEqual(Array.from(meshes.beam.geometry.getAttribute("particleTilt").array.slice(0, 2)),
+    [f32(.25), f32(.0872664600610733)]);
+  // A Local billboard turns inside the reflected emitter basis, normal included; each axis is then
+  // scaled by the node's (1.1, 1.1, 1) in world components, not along the emitter's own axes.
+  const close = (actual, expected) => actual.every((value, i) => Math.abs(value - expected[i]) < 1e-6);
+  const uniforms = meshes.beam.material.uniforms;
+  assert.ok(close(uniforms.uAxisX.value.toArray(), [-Math.SQRT1_2 * 1.1, 0, -Math.SQRT1_2]), uniforms.uAxisX.value.toArray());
+  assert.ok(close(uniforms.uAxisY.value.toArray(), [0, 1.1, 0]));
+  assert.ok(close(uniforms.uAxisZ.value.toArray(), [-Math.SQRT1_2 * 1.1, 0, Math.SQRT1_2]), uniforms.uAxisZ.value.toArray());
+  // Untilted, unscaled systems keep the plain roll shader and unit axes.
+  assert.equal(meshes.flat.material.defines.TILTED, undefined);
+  assert.equal(meshes.flat.material.defines.SCALED, undefined);
+  assert.equal(meshes.flat.material.uniforms.uScale, undefined);
+  assert.equal(meshes.flat.geometry.getAttribute("particleTilt"), undefined);
+  assert.deepEqual(attribute(meshes.flat, "particleSize"), [2, 2, 2]);
+  assert.match(meshes.beam.material.vertexShader, /vec3 turned = vec3\(local.x, cx \* local.y, -sx \* local.y\)/);
+  assert.doesNotMatch(meshes.beam.material.vertexShader, /turned\.xy, -turned\.z/, "no camera-frame tilt");
   controller.dispose();
 }
 
@@ -322,6 +403,7 @@ async function testPrefabAnimatorCurves() {
   testMaterialMappingAndLayers();
   await testApplyDrawsActiveCuesOnly();
   await testUnreproducedSystemsAreRefused();
+  await testTiltedAndLocallyScaledBillboards();
   await testPrefabAnimatorCurves();
   console.log("mv_studio_particle_systems_test: ok");
 })().catch(error => {
