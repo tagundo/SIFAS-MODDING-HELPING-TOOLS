@@ -150,6 +150,20 @@ async function run() {
     assert.equal(await page.locator('#mv-register-songs summary').textContent(), '등록한 MV 전용 곡 (1)');
     await shot(page, panel, 'register-songs-ko.png');
 
+    // Advanced: the placeholder Advanced chart is replaced in place through the existing attach flow.
+    await page.locator('#mv-register-charts > summary').click();
+    await page.locator('#mv-chart-templates').click();
+    await page.locator('#mv-chart-template option').first().waitFor({ state: 'attached' });
+    assert.match(await page.locator('#mv-chart-template option').first().textContent(), /^상급 \(/);
+    await page.locator('#mv-chart-file').click();
+    await chooseFile(page, path.join(server.library, 'modded'), 'advanced-chart.json');
+    await page.locator('#mv-attach-chart').click();
+    await page.locator('#mv-chart-result').waitFor();
+    assert.equal(await page.locator('#mv-chart-result').textContent(),
+      '채보를 연결했습니다. 목록 변경을 게임에 적용하려면 게임 서버를 재시작하세요.');
+    const charted = await page.evaluate(async () => (await (await fetch('/api/mv-studio/songs?region=gl')).json()).songs[0]);
+    assert.deepEqual(charted.difficulties.map((item) => [item.type, item.placeholder]), [[30, false]]);
+
     // Update with nothing changed: the registered jacket stays and nothing is written.
     await page.locator('#mv-register-submit').filter({ hasText: '업데이트' }).waitFor();
     assert.equal(await page.locator('#mv-register-target').inputValue(), '93000');

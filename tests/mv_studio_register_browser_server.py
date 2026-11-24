@@ -21,7 +21,7 @@ if os.environ.get("ELICHIKA_DIR"):
 
 from http.server import ThreadingHTTPServer  # noqa: E402
 
-from test_mv_studio_register import build_root  # noqa: E402
+from test_mv_studio_register import build_root, stage_chart  # noqa: E402
 
 
 class Controller:
@@ -73,6 +73,9 @@ def main():
         for y in range(0, 400, 40):
             wide.putpixel((x, y), (255, 200, 40))
     wide.save(library / "modded" / "jacket-wide.png")
+    chart = stage_chart(1)
+    del chart["live_difficulty_id"]
+    (library / "modded" / "advanced-chart.json").write_text(json.dumps(chart), encoding="utf-8")
     os.environ.update(SUKUSTA_DIR=str(library), SUKUSTA_BACKUP_ROOT=str(base / "backups"),
                       LLAS_INDEX_CACHE_DIR=str(base / "pack-index"))
     from adminui import serverctl
