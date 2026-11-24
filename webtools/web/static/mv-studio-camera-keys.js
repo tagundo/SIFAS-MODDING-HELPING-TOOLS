@@ -114,6 +114,18 @@
       position: values.position.slice(0, 3), rotation: values.rotation.slice(0, 4), fov: finite(values.fov) ? values.fov : null }));
   }
 
+  // An editor-made shot's samples on the grid of its current length: kept as they are while the
+  // count matches, otherwise index/60 times with the poses held from the last sample.
+  function userGrid(frames, duration) {
+    const count = Math.max(2, Math.round(Math.max(0, duration) * FRAME_RATE) + 1);
+    if (frames.length === count) return frames;
+    return Array.from({ length: count }, (_, index) => {
+      const sample = frames[Math.min(index, frames.length - 1)];
+      return { time: index / FRAME_RATE, position: sample.position.slice(0, 3), rotation: sample.rotation.slice(0, 4),
+        fov: finite(sample.fov) ? sample.fov : null };
+    });
+  }
+
   const sameNumberArray = (a, b) => a === b || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => value === b[index]));
 
   function sameFrames(a, b) {
@@ -169,11 +181,18 @@
     // (non-native projects) is never written by the bake, so the event's own values are its source.
     const current = event.values || {};
     const values = original && original.values ? original.values : current;
-    let source = null, staticSource = false;
+    let source = null, staticSource = false, regrid = false;
     if (validFrames(values.keyframes)) source = values.keyframes;
     else if (!user && vector(current.position, 3) && vector(current.rotation, 4) && project && project.nativeTimeline !== true) {
       source = staticGrid(current, event.duration);
       staticSource = true;
+    }
+    // A shot made in the editor is never exported natively, so it can be resized: its 60 Hz
+    // grid follows the clip's length (the keys own its pose).
+    if (user && source) {
+      const grid = userGrid(source, event.duration);
+      regrid = grid !== source;
+      source = grid;
     }
     const native = project && project.nativeTimeline === true;
     let editable = !!source && source.length >= 2 && track.editable !== false && event.editable !== false;
@@ -189,7 +208,7 @@
     }
     const count = source ? source.length : 0;
     const shots = mainCameraShots(ctx);
-    const info = { track, event, source, count, user, native, staticSource, editable, reason, lengthChanged,
+    const info = { track, event, source, count, user, native, staticSource, regrid, editable, reason, lengthChanged,
       record: source ? normalizeRecord(recordOf(ctx, event.id), count) : null,
       lens: M.nativeLens(track), index: shots.findIndex((item) => item.event === event), total: shots.length,
       fallbackFov: finite(current.fov) ? current.fov : finite(values.fov) ? values.fov : 30 };
@@ -304,7 +323,8 @@
   function bakeShot(ctx, shot) {
     const record = shot.record;
     const active = affecting(ctx, shot);
-    if ((!record || !record.keys.length) && !active.length) return { restore: true };
+    // An editor-made shot has nothing to restore; a resized one still takes its new grid.
+    if ((!record || !record.keys.length) && !active.length && !(shot.user && shot.regrid)) return { restore: true };
     // Layers get copies (they may write into the arrays); a rotation still equal to its
     // untouched source sample is kept as stored, bit for bit.
     const untouched = [];
@@ -376,6 +396,14 @@
     return result;
   }
 
+  // A shot's length is locked while its samples differ from the originals: the native writer
+  // keeps the sample count. Shots made in the editor are never written natively and resize.
+  function durationLocked(ctx, track, event) {
+    if (!mainTrack(track) || !event) return false;
+    const original = ctx.history && ctx.history.originals ? ctx.history.originals.get(event.id) : undefined;
+    return original !== null && differs(ctx, event);
+  }
+
   // Shots a bake must visit: those with a record, a layer, or samples to restore.
   function candidates(ctx, events) {
     const list = [];
@@ -383,7 +411,7 @@
       if (events && !events.includes(event.id)) continue;
       const shot = shotInfo(ctx, track, event);
       if (!shot || !shot.source || (shot.lengthChanged && !differs(ctx, event))) continue;
-      if (shot.record || differs(ctx, event) || (layers.length && affecting(ctx, shot).length)) list.push(shot);
+      if (shot.record || (shot.user && shot.regrid) || differs(ctx, event) || (layers.length && affecting(ctx, shot).length)) list.push(shot);
     }
     return list;
   }
@@ -456,7 +484,20 @@
     const changes = [];
     if (!editor || !editor.camera || editor.camera.version !== 1) changes.push({ target: { kind: "editor" }, path: ["camera", "version"], after: 1 });
     changes.push({ target: { kind: "editor" }, path: ["camera", "shots", shot.event.id], after: record ? cleanRecord(record) : undefined });
+    changes.push(...orphanChanges(ctx, shot.event.id));
     return ctx.history.apply({ label, detail: detail || shot.event.label || "", changes });
+  }
+
+  // Records whose clip is gone (deleted on the timeline) leave with the next camera command,
+  // in the same undo step: undoing it brings them back before the clip's deletion is undone.
+  function orphanChanges(ctx, keep) {
+    const editor = ctx.editor(false), shots = editor && editor.camera && editor.camera.shots;
+    const project = ctx.project();
+    if (!shots || typeof shots !== "object" || !project || !Array.isArray(project.tracks)) return [];
+    const ids = new Set();
+    for (const track of project.tracks) for (const event of Array.isArray(track.events) ? track.events : []) if (event) ids.add(event.id);
+    return Object.keys(shots).filter((id) => id !== keep && !ids.has(id))
+      .map((id) => ({ target: { kind: "editor" }, path: ["camera", "shots", id], after: undefined }));
   }
 
   function emptyRecord(ctx) {
@@ -924,7 +965,7 @@
     }
     const ids = new Set(project.tracks.flatMap((item) => item.events.map((event) => event.id)));
     let number = 1;
-    while (ids.has(`${track.id}:u${number}`)) number++;
+    while (ids.has(`${track.id}:u${number}`) || recordOf(ctx, `${track.id}:u${number}`) !== undefined) number++;
     const id = `${track.id}:u${number}`;
     const rig = pose || viewPose(ctx) || { position: [0, 1.4, 6], rotation: [0, 0, 0, 1], fov: 30 };
     const keyframes = Array.from({ length: count }, (_, index) => ({ time: index / FRAME_RATE, position: rig.position.slice(0, 3),
@@ -937,6 +978,7 @@
     const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "insert", index: track.events.length, value: event }];
     if (!editor || !editor.camera || editor.camera.version !== 1) changes.push({ target: { kind: "editor" }, path: ["camera", "version"], after: 1 });
     changes.push({ target: { kind: "editor" }, path: ["camera", "shots", id], after: record });
+    changes.push(...orphanChanges(ctx, id));
     if (!ctx.history.apply({ label: "New camera shot", changes })) return null;
     ctx.renderTimeline();
     const added = track.events.find((item) => item.id === id);
@@ -1408,7 +1450,7 @@
     if (refs.note) {
       const notes = [];
       if (layers.length && affecting(ctx, shot).length) notes.push(t(ctx, "A camera rig also moves this shot."));
-      if (differs(ctx, shot.event)) notes.push(t(ctx, "Duration is locked while this shot has camera edits."));
+      if (durationLocked(ctx, shot.track, shot.event)) notes.push(t(ctx, "Duration is locked while this shot has camera edits."));
       refs.note.textContent = notes.join(" ");
     }
   }
@@ -1548,7 +1590,7 @@
     },
     laneDecorate(ctx, track, lane, layout) { decorate(ctx, track, lane, layout); },
     clipConstraints(ctx, track, event) {
-      if (!mainTrack(track) || !differs(ctx, event)) return undefined;
+      if (!durationLocked(ctx, track, event)) return undefined;
       return { resize: false, reason: t(ctx, "Duration is locked while this shot has camera edits.") };
     },
     revertEvent(ctx, track, event) {

@@ -486,7 +486,20 @@ function nonNative() {
   assert.equal(project.editor.camera.shots[created.event.id].mode, 'keys');
   nearVector(created.event.values.keyframes[100].position, [-1, 2, 3], 1e-12, 'the free view as a rig pose');
   assert.equal(created.event.values.keyframes[100].fov, 50);
-  assert(plugin.clipConstraints(ctx, created.track, created.event), 'an editor shot with keys keeps its length');
+  // An editor-made shot is never written natively: it resizes, and its 60 Hz grid follows.
+  assert.equal(plugin.clipConstraints(ctx, created.track, created.event), undefined, 'an editor-made shot keeps its resize');
+  const resize = (duration) => history.apply({ label: 'Resize clip',
+    changes: [{ target: { kind: 'event', track: K.USER_TRACK, event: created.event.id }, path: ['duration'], after: duration }] });
+  assert(resize(6));
+  assert.equal(created.event.values.keyframes.length, 361, 'a longer clip gets a longer grid');
+  created.event.values.keyframes.forEach((sample, index) => assert.equal(sample.time, index / 60, `grid time ${index}`));
+  nearVector(created.event.values.keyframes[360].position, [-1, 2, 3], 1e-12, 'the keyed pose holds to the new end');
+  assert(resize(1.5));
+  assert.equal(created.event.values.keyframes.length, 91, 'a shorter clip gets a shorter grid');
+  history.undo();
+  history.undo();
+  assert.equal(created.event.values.keyframes.length, 241, 'undo brings the original grid back');
+  assert.equal(created.event.duration, 4);
   history.undo();
   assert.equal(created.track.events.length, 0, 'undo removes the shot');
   assert.equal(K.ensureUserShot({ ...ctx, project: () => nativeProject() }, 0, 4), null, 'native projects never get new shots');
@@ -606,6 +619,33 @@ function valueLimits() {
   assert.equal(key.values.y, 1e6);
 }
 
+// A record whose clip was deleted goes with the next camera command, in the same undo step.
+function orphanRecords() {
+  const project = { version: 1, name: 'Mod MV', duration: 20, nativeTimeline: false, tracks: [
+    { id: 'camera', kind: 'camera', binding: 'MainCamera', label: 'Camera', events: [
+      { id: 'static', start: 2, duration: 2, values: { position: [0, 1.5, 5], rotation: [0, 0, 0, 1], fov: 35 }, editableValues: ['fov', 'position', 'rotation'] }] }] };
+  const scene = { getViewPose: () => ({ mode: 'orbit', position: [1, 2, 3], quaternion: [0, 0, 0, 1], fov: 50, aspect: 16 / 9 }),
+    onViewChange: () => () => {}, setGameCameraHelper() {} };
+  const { ctx, history, at } = harness(project, { scene });
+  const created = K.ensureUserShot(ctx, 10, 12);
+  const id = created.event.id;
+  const userTrack = created.track;
+  history.apply({ label: 'Delete clip', changes: [{ target: { kind: 'track', track: userTrack.id }, path: ['events'], op: 'remove', index: 0 }] });
+  assert.deepEqual(Object.keys(project.editor.camera.shots), [id], 'the delete itself leaves the record');
+  at(3);
+  assert(K.setChannels(ctx, 'offset', { y: .5 }));
+  assert.deepEqual(Object.keys(project.editor.camera.shots), ['static'], 'the next camera edit drops the orphan');
+  history.undo();
+  assert.deepEqual(Object.keys(project.editor.camera.shots), [id], 'undo brings it back');
+  history.undo();
+  assert.equal(userTrack.events.length, 1, 'and undoing the delete restores the clip with its record');
+  assert.equal(project.editor.camera.shots[id].mode, 'keys');
+  // A new shot never reuses the id of a record still held.
+  history.apply({ label: 'Delete clip', changes: [{ target: { kind: 'track', track: userTrack.id }, path: ['events'], op: 'remove', index: 0 }] });
+  const next = K.ensureUserShot(ctx, 14, 16);
+  assert.notEqual(next.event.id, id, 'a fresh id');
+  assert.deepEqual(Object.keys(project.editor.camera.shots), [next.event.id], 'the new shot command drops the orphan too');
+}
 
 (async () => {
   unedited();
@@ -625,5 +665,6 @@ function valueLimits() {
   playheadGap();
   imeShortcuts();
   valueLimits();
+  orphanRecords();
   console.log('mv studio camera keys tests passed');
 })().catch((error) => { console.error(error); process.exit(1); });
