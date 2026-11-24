@@ -1222,12 +1222,17 @@ def _clear_late_cancel(job):
 
 
 def _guarded_manager():
+    """True when the app's guarded job manager (adminui.jobs) runs this job: it already holds
+    whole_job_server and the database guard for the whole job."""
     try:
         from adminui.jobs import JobManager as GuardedJobManager
-        from webtools.jobs import MANAGER
     except ImportError:
         return False
-    return isinstance(MANAGER, GuardedJobManager)
+    import sys
+    manager = getattr(sys.modules.get("webtools.server"), "MANAGER", None)
+    if manager is None:
+        from webtools.jobs import MANAGER as manager
+    return isinstance(manager, GuardedJobManager)
 
 
 def _lifecycle(stack, job):
