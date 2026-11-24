@@ -449,8 +449,13 @@
           drawWorld(preparation.scene, stageCamera, preparation.records, preparation.preview.quality?.mode);
           return;
         }
+        // Drags move the free camera only while it is the camera drawn (camera editor).
+        controls.enabled = !(useLive && hasShot);
         if (!(useLive && split?.draw(renderView, hasShot ? liveCamera : null))) {
+          // The game camera's frustum, only while the free camera draws (never in captures).
+          const helper = !useLive && hasShot ? showGameCameraHelper() : null;
           renderView(useLive && hasShot ? liveCamera : editorCamera);
+          if (helper) scene.remove(helper);
         }
         if (useLive && settings.stage_overlay_effect !== false) {
           const particles = stageLens?.sortEntries(20);
@@ -2465,6 +2470,40 @@
       return result;
     }
 
+    // ---- Camera editor (mv-studio-camera-keys.js): the free view and the game camera ----
+    // A short CameraHelper of a scratch copy of the game camera, added only around the
+    // free camera's render in draw(); the asset dump and inspect() never see it.
+    let gameCameraHelper = null, gameHelperEnabled = false;
+    const helperCamera = new T.PerspectiveCamera(), alignTarget = new T.Vector3();
+    function showGameCameraHelper() {
+      if (!gameHelperEnabled || typeof T.CameraHelper !== "function") return null;
+      helperCamera.position.copy(liveCamera.position);
+      helperCamera.quaternion.copy(liveCamera.quaternion);
+      helperCamera.fov = liveCamera.fov;
+      helperCamera.aspect = liveCamera.aspect;
+      helperCamera.near = .1;
+      helperCamera.far = Math.max(.6, Math.min(4, editorCamera.position.distanceTo(liveCamera.position) * .3));
+      helperCamera.updateProjectionMatrix();
+      helperCamera.updateMatrixWorld(true);
+      if (!gameCameraHelper) gameCameraHelper = new T.CameraHelper(helperCamera);
+      gameCameraHelper.update();
+      scene.add(gameCameraHelper);
+      gameCameraHelper.updateMatrixWorld(true);
+      return gameCameraHelper;
+    }
+
+    // The LiveCameraOffset Y (rig up, metres) the preview adds at `time` to a camera track
+    // with `binding` (applyCameraOffsets).
+    function cameraOffsetAt(time, binding) {
+      const weight = global.ViewerMotionTimeline?.weight, clips = cameraOffsets.get(binding);
+      if (!weight || !clips || !Number.isFinite(time)) return 0;
+      let offset = 0;
+      for (const clip of clips) {
+        if (time >= clip.start && time < clip.start + clip.duration) offset += clip.offset * weight(clip, time);
+      }
+      return offset;
+    }
+
     const observer = global.ResizeObserver ? new global.ResizeObserver(() => resize(false)) : null;
     if (observer) observer.observe(mount);
     controls.addEventListener("change", requestDraw);
@@ -2472,7 +2511,7 @@
     return {
       load, prepareStage, cancelStagePreparation, seek, playbackFrame, setPlaying, resize,
       flushSeekDraw() { if (seekDrawPending) draw(); },
-      setCamera(mode) { useLive = mode !== "orbit"; draw(); },
+      setCamera(mode) { useLive = mode !== "orbit"; controls.enabled = !(useLive && hasShot); draw(); },
       setScreenFade(enabled) { screenFadeEnabled = enabled !== false; requestDraw(); },
       // Fixed-step captures play on slow timestamps: with the adaptive preview off, the slow-frame
       // downscale is undone and not applied again. Playback, the physics clock and the shaft
@@ -2515,6 +2554,43 @@
         return physicsTiming?.order === "same-frame" ? 0 : physicsStep;
       },
       frameAll,
+      // Camera editor: the free (orbit) view in three.js space, its mode, lens and orbit target.
+      getViewPose() {
+        editorCamera.updateMatrixWorld();
+        return { mode: useLive ? "live" : "orbit", position: editorCamera.position.toArray(), quaternion: editorCamera.quaternion.toArray(),
+          fov: editorCamera.fov, aspect: editorCamera.aspect, target: controls.target.toArray() };
+      },
+      // Puts the free camera at the game camera's pose and lens (its orbit target ahead of it).
+      alignViewToGame() {
+        if (!hasShot) return false;
+        const distance = Math.max(.5, editorCamera.position.distanceTo(controls.target));
+        editorCamera.position.copy(liveCamera.position);
+        editorCamera.quaternion.copy(liveCamera.quaternion);
+        if (editorCamera.fov !== liveCamera.fov) { editorCamera.fov = liveCamera.fov; editorCamera.updateProjectionMatrix(); }
+        controls.target.copy(alignTarget.set(0, 0, -1).applyQuaternion(liveCamera.quaternion).multiplyScalar(distance).add(liveCamera.position));
+        editorCamera.updateMatrixWorld();
+        requestDraw();
+        return true;
+      },
+      cameraOffsetAt(time = currentTime, binding) { return cameraOffsetAt(time, binding); },
+      // The game camera's lens: its aspect, the vertical FOV shown, the authored FOV and the correction.
+      gameCameraLens() {
+        return { aspect: liveCamera.aspect, fov: liveCamera.fov, authoredFov: authoredMainFov, nativeLens: nativeMainLens,
+          correction: nativeMainLens ? global.MVStudioSplit?.aspectCorrection(liveCamera.aspect) ?? 1 : 1 };
+      },
+      // listener() after each finished free-camera drag (OrbitControls "end"); returns the remover.
+      onViewChange(listener) {
+        if (typeof listener !== "function") return () => {};
+        const handler = () => listener();
+        controls.addEventListener("end", handler);
+        return () => controls.removeEventListener("end", handler);
+      },
+      setGameCameraHelper(enabled) {
+        const value = enabled === true;
+        if (value === gameHelperEnabled) return;
+        gameHelperEnabled = value;
+        if (!useLive) requestDraw();
+      },
       // Read-only state of the last evaluated frame for frame comparisons.
       inspect() {
         const live = useLive && hasShot, camera = live ? liveCamera : editorCamera;
