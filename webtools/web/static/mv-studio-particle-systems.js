@@ -75,6 +75,8 @@
   const f32 = Math.fround;
   const gravityMagnitude = f32(9.81), ageScale = f32(.01);
   const fixedStep = f32(.02), catchUpStep = f32(.2), clockBias = f32(.0001), birthBias = f32(1e-6);
+  // InitialModule +0x1e8 outside sub-emitter emission (see birth()).
+  const inheritedLifetime = 1;
   const maxElapsed = 1200;
   const salts = {
     speed: 0x96aa4de3, gravity: 0xe2b7c3c3, velocity: 0xe0fbd834, size: 0x8d2c8431, color: 0x591bc05c,
@@ -575,10 +577,17 @@
     // InitialModule start values of one lane. A per-step start (0x60bd60)
     // draws the particle word first, then the lifetime; the procedural
     // regeneration (0x60fe08) has drawn the lifetime before the word and
-    // passes it as `drawnLife`.
+    // passes it as `drawnLife`. The per-step start scales the lifetime by
+    // InitialModule +0x1e8 and keeps at least 1e-5 (0x60c2b0-0x60c2cc).
+    // +0x1e8 is the sub-emitter inherited lifetime: 1 (constructor 0x60bb38,
+    // Reset 0x60bc84, restored at 0x1cf9d8 after every sub-emitter emission),
+    // the parent's remaining lifetime only while a sub-emitter with Inherit
+    // Lifetime emits (0x1c9aec bit 3 from 0x1c6420). This runtime runs no
+    // sub-emitters, so the factor is always 1.
     function birth({initial}, systemTime, drawnLife) {
       const word = initial();
-      const life = drawnLife ?? Math.max(f32(1e-4), lifetime.sample(systemTime, nativeUnit(initial())));
+      const life = drawnLife ??
+        Math.max(f32(1e-5), f32(lifetime.sample(systemTime, nativeUnit(initial())) * inheritedLifetime));
       const size = sizes.map(curve => curve.sample(systemTime, nativeUnit(initial())));
       const angles = rotations.map(curve => curve.sample(systemTime, nativeUnit(initial())));
       const rgba = startColor(nativeUnit(initial()), systemTime);

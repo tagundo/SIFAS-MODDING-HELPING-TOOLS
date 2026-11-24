@@ -75,6 +75,17 @@ function testDrawOrderMatchesNativeLanes() {
   assert.equal(first.source.position[0], f32(f32(native.nativeUnit(shape()) - .5) * 12));
 }
 
+// A per-step start (libunity.so 0x60bd60) keeps a lifetime of at least 1e-5 s (0x3727c5ac at 0x60c2c8) after
+// scaling it by the sub-emitter inherited lifetime (InitialModule +0x1e8), which is 1 outside sub-emitters.
+function testPerStepLifetimeFloor() {
+  for (const [lifetime, kept] of [[5e-5, 5e-5], [2e-6, 1e-5], [0, 1e-5]]) {
+    const stream = P.create(system({main: {lifetime: constant(lifetime)}, emission: {rate: constant(60)}}), 11);
+    const atoms = stream.sample(1, 30);
+    assert.ok(atoms.length > 0, `particles started at lifetime ${lifetime}`);
+    for (const atom of atoms) assert.equal(atom.source.life, native.nativeInverseLifetime(f32(kept)), `lifetime ${lifetime}`);
+  }
+}
+
 function testSeekMatchesPlayback() {
   const row = system({main: {prewarm: true}, velocity: {x: constant(0), y: between(-.2, .2), z: constant(.1), worldSpace: false},
     size: {separateAxes: false, curve: linear}});
@@ -745,6 +756,7 @@ async function testCullingFreezesTheClockOffScreen() {
 
 (async () => {
   testDrawOrderMatchesNativeLanes();
+  testPerStepLifetimeFloor();
   testSeekMatchesPlayback();
   testPrewarmedSteadyState();
   testPrewarmActivationBuildUp();
