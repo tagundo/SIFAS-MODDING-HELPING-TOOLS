@@ -249,14 +249,14 @@ class NormalizationTests(unittest.TestCase):
                     with self.assertRaisesRegex(systems._Unsupported, r"^3D start rotation \(X/Y axes\)$"):
                         systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderMode": mode}),
                                        systems._Textures(0))
-            # Culling that pauses the system off screen (looping Automatic, Pause) keeps it reported:
-            # its clock depends on the cameras' visibility history.
-            for culling, looping, reason in ((0, True, "Automatic"), (2, False, "Pause"), (0, False, None),
-                                             (1, True, None), (3, True, None)):
+            # Culling that may pause the system off screen (looping Automatic, Pause) keeps it
+            # reported: its clock depends on the cameras' visibility history.
+            for culling, looping, reason in ((0, True, "Automatic culling may pause"), (2, False, "Pause culling pauses"),
+                                             (0, False, None), (1, True, None), (3, True, None)):
                 tumbling = particle_system(cullingMode=culling, looping=looping,
                                            InitialModule={**initial, "rotation3D": True, "startRotationY": constant(.1)})
                 if reason:
-                    with self.assertRaisesRegex(systems._Unsupported, f"^{reason} culling pauses it off screen"):
+                    with self.assertRaisesRegex(systems._Unsupported, f"^{reason} it off screen \\(not reproduced\\)$"):
                         systems.system({}, None, Reader(tumbling), local, systems._Textures(0))
                 else:
                     self.assertTrue(systems.system({}, None, Reader(tumbling), local, systems._Textures(0)))
@@ -319,7 +319,7 @@ class NormalizationTests(unittest.TestCase):
                 self.assertEqual(len(row["systems"]), 0 if reason else 1)
             # The same scaled billboard under culling that pauses it off screen stays reported;
             # an unscaled one keeps its always-simulating preview.
-            for culling, own, reasons in ((0, (5, 3, 1), ["Automatic culling pauses it off screen (not reproduced)"]),
+            for culling, own, reasons in ((0, (5, 3, 1), ["Automatic culling may pause it off screen (not reproduced)"]),
                                           (2, (5, 3, 1), ["Pause culling pauses it off screen (not reproduced)"]),
                                           (1, (5, 3, 1), []), (0, (1, 1, 1), [])):
                 with mock.patch.object(systems, "_walk", return_value=walked(1, (1, 1, 1), own, culling)):
@@ -562,10 +562,10 @@ class OriginalTimelineTests(unittest.TestCase):
         source = parsed["stageParticleSystems"]
         # The light beams (Local billboards tilted on Y, one on a 1.1x1.1 node) and the
         # main display clouds (View billboards on 5x3 and 6x3 nodes) are looping Automatic
-        # systems: culling pauses them off screen, so they stay reported. The side display
+        # systems: culling may pause them off screen, so they stay reported. The side display
         # clouds are also View billboards tilted on Y, whose frame handedness is unevidenced.
         reasons = {(row["template"], row["path"].rsplit("/root/", 1)[1]): row["reason"] for row in source["unsupported"]}
-        paused = "Automatic culling pauses it off screen (not reproduced)"
+        paused = "Automatic culling may pause it off screen (not reproduced)"
         view_tilt = "3D start rotation (X/Y axes) on a View or World billboard"
         self.assertEqual(reasons, {
             ("fx_par_so2035_04", "light_01"): paused, ("fx_par_so2035_04", "light_02"): paused,
@@ -622,9 +622,9 @@ class OriginalTimelineTests(unittest.TestCase):
         self.assertNotIn("animated by the prefab Animator (Transform)", reasons)
         # The dragon's Animator moves its local-space emitter: it is drawn with that curve.
         # The clouds beside it are Local billboards on scaled nodes; they loop under Automatic
-        # culling, which pauses them off screen, so they stay reported.
+        # culling, which may pause them off screen, so they stay reported.
         self.assertEqual(drawn["fx_dis_par_so2036_05"], ["ryuu_01"])
-        self.assertEqual(sorted(path for path in reasons["Automatic culling pauses it off screen (not reproduced)"]
+        self.assertEqual(sorted(path for path in reasons["Automatic culling may pause it off screen (not reproduced)"]
                                 if "so2036_05" in path),
                          [f"fx_dis_par_so2036_05/root/kumo_0{index}" for index in range(1, 5)])
         dragon = next(template for template in source["templates"] if template["name"] == "fx_dis_par_so2036_05")

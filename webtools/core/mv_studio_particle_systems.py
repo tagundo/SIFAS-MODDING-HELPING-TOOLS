@@ -37,15 +37,17 @@ One common rule for every song, taken from the client and the serialized assets:
   and 3D turn; the min/max size cap is checked on the unscaled quad against
   the limit over the scale's X (libunity.so 0xc35c4, 0xd2844, 0xd2c30). Other
   scaled cases are reported.
-* Unity culling pauses a looping Automatic (cullingMode 0) or any Pause
-  (cullingMode 2) system while its renderer is invisible and resumes it
-  without catching up (libunity.so 2018.4: cull 0x1cc5d8, uncull 0x1cbd10), so
-  its clock lags the clip by however long the cameras looked away. The
-  runtime does not reproduce that visibility history. The two billboard cases
-  above are therefore drawn only on systems culling cannot pause
-  (AlwaysSimulate, PauseAndCatchup, or Automatic without looping); on others
-  they stay reported (_paused_off_screen). Systems drawn without these cases
-  keep their earlier always-simulating preview.
+* Unity culling may pause a looping Automatic (cullingMode 0) system and
+  pauses any Pause (cullingMode 2) system while its renderer is invisible, and
+  resumes it without catching up (libunity.so GL 3.12.0, Unity 2018.4: the
+  ParticleSystemRenderer visibility callbacks 0xc2618 / 0xc2648 in vtable
+  slots 0xe11d58 / 0xe11d60 call uncull 0x1cbd10 / cull 0x1cc5d8), so its
+  clock lags the clip by however long the cameras looked away. The runtime
+  does not reproduce that visibility history. The two billboard cases above
+  are therefore drawn only on systems culling cannot pause (AlwaysSimulate,
+  PauseAndCatchup, or Automatic without looping); on others they stay
+  reported (_paused_off_screen). Systems drawn without these cases keep their
+  earlier always-simulating preview.
 
 This module only normalizes serialized data. ``mv-studio-particle-systems.js``
 simulates and draws it. Textures keep their authored pixels and mip levels.
@@ -598,20 +600,24 @@ def _scaled_billboard(source, render_tree, scale):
 
 
 def _paused_off_screen(main):
-    """The culling mode that freezes this system's clock while it is off screen, or None.
+    """Why culling may freeze this system's clock while it is off screen, or None.
 
-    libunity.so (GL 3.12.0, Unity 2018.4) ParticleSystem cull 0x1cc5d8: mode 3
-    (AlwaysSimulate) never culls; mode 0 (Automatic) culls only a looping
-    system with the procedural flag and no explicit Emit; modes 1 and 2 always
-    cull. Uncull 0x1cbd10 simulates the culled time only for mode 1
-    (PauseAndCatchup). The procedural flag (0x1d1910) is not mapped to the
-    serialized modules, so every looping Automatic system counts as pausable.
+    libunity.so (GL 3.12.0, Unity 2018.4): the ParticleSystemRenderer
+    visibility callbacks 0xc2618 (became visible) and 0xc2648 (became
+    invisible), in vtable slots 0xe11d58 / 0xe11d60, call uncull 0x1cbd10 and
+    cull 0x1cc5d8. Cull: mode 3 (AlwaysSimulate) never culls; mode 0
+    (Automatic) culls only a looping system whose procedural flag (state +0x21,
+    set at Play by 0x1d1910) is on and whose state +0x22 is clear; modes 1 and
+    2 always cull. Uncull simulates the culled time only for mode 1
+    (PauseAndCatchup). 0x1d1910 reads dozens of module fields and is not
+    mapped to the serialized modules, so a looping Automatic system is
+    reported as one culling may pause.
     """
     mode = main.get("cullingMode", 0)
     if mode == 2:
-        return "Pause"
+        return "Pause culling pauses it off screen (not reproduced)"
     if mode == 0 and main.get("looping"):
-        return "Automatic"
+        return "Automatic culling may pause it off screen (not reproduced)"
     return None
 
 
@@ -688,7 +694,7 @@ def system(objects, game, particle, renderer, textures, blocked=None, *, upright
     paused = _paused_off_screen(result["main"]) if tilted or scaled else None
     if paused:
         # Its look depends on how long it was culled, which is not reproduced.
-        raise _Unsupported(f"{paused} culling pauses it off screen (not reproduced)")
+        raise _Unsupported(paused)
     if result["main"]["maxParticles"] > _MAX_PARTICLES:
         bound = _alive_bound(result)
         if bound is None or bound >= _MAX_PARTICLES:

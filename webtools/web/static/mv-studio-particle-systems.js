@@ -40,7 +40,7 @@
   // ShapeModule.alignToDirection except where a horizontal billboard cannot
   // show it, any other transform scale the scaling mode would apply to
   // particles (Hierarchy, Shape, world-space forces), and either billboard case
-  // above on a system Unity culling pauses off screen (looping Automatic or
+  // above on a system Unity culling may pause off screen (looping Automatic or
   // Pause culling: its clock depends on the cameras' visibility history).
 
   const f32 = Math.fround;
@@ -206,10 +206,10 @@
       !velocity?.worldSpace && !clamp?.worldSpace && pose.local.every(value => value > 1e-6) && !pausedOffScreen(system);
   }
 
-  // Unity culling pauses a looping Automatic (0) or any Pause (2) system while
-  // its renderer is invisible and resumes it without catching up (libunity.so
-  // cull 0x1cc5d8 / uncull 0x1cbd10); core/mv_studio_particle_systems.py
-  // _paused_off_screen.
+  // Unity culling may pause a looping Automatic (0) system and pauses any Pause
+  // (2) system while its renderer is invisible, and resumes it without catching
+  // up (libunity.so renderer callbacks 0xc2618 / 0xc2648 -> uncull 0x1cbd10 /
+  // cull 0x1cc5d8); core/mv_studio_particle_systems.py _paused_off_screen.
   const pausedOffScreen = ({main}) => (main.cullingMode ?? 0) === 2 || ((main.cullingMode ?? 0) === 0 && !!main.looping);
 
   // The scaling-mode scale a billboard's quad axes and size cap carry, or null
