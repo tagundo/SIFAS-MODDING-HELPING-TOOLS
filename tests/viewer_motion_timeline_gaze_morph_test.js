@@ -86,4 +86,26 @@ manual.apply({ 8: 1 }, true);
 assert.deepStrictEqual(Array.from(s.face.morphTargetInfluences), [0, 0, 0], 'manual gaze writes no blend shape');
 assert(manual.operations().every((operation) => ['position', 'quaternion', 'scale'].includes(operation.kind)));
 
-console.log('PASS: gaze clip blend shape');
+// One-frame lag: a continuing frame applies the weights the previous frame computed.
+s = setup();
+player = timeline(s, [eye2, { kind: 'gaze', target: 21, start: 0, duration: 20, weight: 1 }]);
+const right = { camera: [-1, 0, 1] }, left = { camera: [1, 0, 1] };
+player.evaluatePose(6); player.evaluateGaze(6, right, { continuing: false });
+close(s.left.position.x, -1, 'a seek applies the weights of its own pose (direction 6)');
+close(s.face.morphTargetInfluences[1], 1, 'with its blend shape');
+player.evaluatePose(6.1); player.evaluateGaze(6.1, left, { continuing: true });
+close(s.left.position.x, -1, 'the next frame still shows the weights the previous LateUpdate set');
+player.evaluatePose(6.2); player.evaluateGaze(6.2, left, { continuing: true });
+close(s.left.position.x, 1, 'one frame later the new direction (7) arrives');
+player.evaluatePose(6.3); player.evaluateGaze(6.3, right, { continuing: false });
+close(s.left.position.x, -1, 'a seek never shows a stale lagged weight');
+player.evaluatePose(6.4); player.evaluateGaze(6.4, right);
+close(s.left.position.x, -1, 'without frame information the gaze is evaluated in the same frame');
+const ended = timeline(setup(), [eye2, { kind: 'gaze', target: 21, start: 0, duration: 1, weight: 1 }]);
+ended.evaluatePose(.9); ended.evaluateGaze(.9, right, { continuing: false });
+ended.evaluatePose(1.1); ended.evaluateGaze(1.1, right, { continuing: true });
+assert.equal(ended.getGazeState().weights[6], 1, 'the frame after a gaze clip ends still shows its last weights');
+ended.evaluatePose(1.2); ended.evaluateGaze(1.2, right, { continuing: true });
+assert.equal(Object.keys(ended.getGazeState().weights).length, 0, 'and the frame after that none');
+
+console.log('PASS: gaze clip blend shape, one-frame gaze lag');

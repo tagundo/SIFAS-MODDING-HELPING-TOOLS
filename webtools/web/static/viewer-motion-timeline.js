@@ -208,6 +208,14 @@
       var vertical = Math.abs(direction.y) <= .001 ? 0 : Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * 180 / Math.PI / 30;
       return gazeAxes(horizontal, vertical);
     }
+    // LiveMemberEyeContact.LateUpdate (0x29985b0): every input starts at 0
+    // and each active clip adds its direction weights (CalcWeight 0x29987c4).
+    function weights(requests, context) {
+      missingTargets = []; var combined = {};
+      (requests || []).forEach(function (request) { var values = targetWeights(request.target, context); if (!values) return;
+        Object.keys(values).forEach(function (id) { combined[id] = (combined[id] || 0) + values[id] * clamp(number(request.weight, 1), 0, 1); }); });
+      return combined;
+    }
     function apply(weights, neutral) {
       lastWeights = Object.assign({}, weights); var contributions = {}, requested = false;
       Object.keys(weights).forEach(function (id) {
@@ -239,12 +247,8 @@
         gazeWrites.forEach(function (group) { writeGroup(group, group.base); });
         gazeWrites.length = 0;
       },
-      evaluate: function (requests, context) {
-        missingTargets = []; var combined = {};
-        (requests || []).forEach(function (request) { var values = targetWeights(request.target, context); if (!values) return;
-          Object.keys(values).forEach(function (id) { combined[id] = (combined[id] || 0) + values[id] * clamp(number(request.weight, 1), 0, 1); }); });
-        return apply(combined, false);
-      },
+      weights: weights,
+      evaluate: function (requests, context) { return apply(weights(requests, context), false); },
       properties: function () { var result = {}; Object.keys(groups).forEach(function (key) { var group = groups[key], id = group.property === "morph" ? undefined : group.node.userData && group.node.userData.elichika_node;
         if (id !== undefined) { if (!result[String(id)]) result[String(id)] = {}; result[String(id)][group.property] = true; } }); return result; },
       operations: function () { return Object.keys(groups).filter(function (key) { return groups[key].property !== "morph"; }).map(function (key) { var group = groups[key], node = group.node.userData && group.node.userData.elichika_node;
@@ -751,7 +755,15 @@
       evaluateGroups(faceGroups, time, faceWrites);
       applyShapes(time);
     }
-    function evaluateGaze(time, context) {
+    // LiveCoreMemberHead.Initialize sets its PlayableGraph to game time and
+    // plays it (SetTimeUpdateMode(1) 0x2f65fb0, Play 0x2f660dc), so Unity
+    // evaluates the head in PreLateUpdate, before LiveMemberEyeContact.LateUpdate
+    // recomputes the gaze inputs from that frame's pose and sets them with
+    // ApplyAll (0x2998950). An evaluated frame shows the gaze weights of the
+    // frame before it. A continuing playback frame keeps that lag; a seek
+    // cannot know its previous frame and applies the weights of its own pose.
+    var laggedGaze = null;
+    function evaluateGaze(time, context, frame) {
       context = context || (options.getGazeContext ? options.getGazeContext() : {});
       var requests = [];
       timedRecords(gazeEvents, time).forEach(function (event) {
@@ -759,7 +771,9 @@
         var amount = alternate ? weightWithTiming(event, time, getTiming(event), event.splitWeight) : sampleWeight(event, time);
         if (amount > 0) requests.push({ target: alternate ? event.splitTarget : event.target, weight: amount });
       });
-      gaze.evaluate(requests, context);
+      var computed = gaze.weights(requests, context);
+      gaze.apply(frame && frame.continuing === true && laggedGaze ? laggedGaze : computed, false);
+      laggedGaze = computed;
       gaze.warnings.forEach(warn);
       if (gaze.getState().missingTargets.length) warn(restoreFace ? "The original gaze target is unavailable in this preview." :
         "An original gaze target is unavailable in this single-model preview.");
