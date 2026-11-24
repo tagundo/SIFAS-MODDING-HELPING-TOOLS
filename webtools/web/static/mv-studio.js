@@ -1219,7 +1219,9 @@
     ruler.addEventListener("pointerdown", (event) => { ruler.setPointerCapture(event.pointerId); scrub(event, true); });
     ruler.addEventListener("pointermove", (event) => { if (ruler.hasPointerCapture(event.pointerId)) scrub(event, true); });
     for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) ruler.addEventListener(type, flushScrub);
-    const plan = Tabs.plan(project.tracks, { tab: activeTab, member: preferredMember, search: searchText,
+    // A remembered member that this MV does not have is ignored (and kept for the next MV).
+    const member = Tabs.memberChoices(project).some((choice) => choice.slot === preferredMember) ? preferredMember : null;
+    const plan = Tabs.plan(project.tracks, { tab: activeTab, member, search: searchText,
       editableOnly: activeTab !== "edit" && editableOnly, group: groupFilter, edited: history.editedEvents(), extra: extraLanes(activeTab) });
     lastPlan = plan;
     lastEditSignature = editSignature();

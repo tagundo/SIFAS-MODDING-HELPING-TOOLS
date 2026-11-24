@@ -508,8 +508,16 @@ async function run() {
     assert.equal(await page.locator('#mv-track-search').inputValue(), 'eye');
     assert.deepEqual((await state(page)).filters.member, 2);
     assert.deepEqual(await laneLabels(page), ['Member2/Eye']);
-    // Editable only and native group combine with the tab.
+    // A remembered member the next MV does not have is ignored there, and kept for later.
     await page.locator('#mv-track-search').fill('');
+    await importGame(gameProject());
+    assert.equal((await state(page)).filters.member, null);
+    assert.equal(await page.locator('#mv-member-filter [aria-checked=true]').textContent(), '전체 멤버');
+    assert.equal((await state(page)).tab, 'all');
+    assert.equal((await laneLabels(page)).length, 42, 'nothing filtered out');
+    await importGame(gameProject({ duet: true, name: 'Timeline 12035 duet' }));
+    assert.equal((await state(page)).filters.member, 2);
+    // Editable only and native group combine with the tab.
     await page.locator('#mv-member-filter [data-mv-member=""]').click();
     await page.locator('#mv-tab-stage').click();
     await page.locator('#mv-tracks summary').scrollIntoViewIfNeeded();
