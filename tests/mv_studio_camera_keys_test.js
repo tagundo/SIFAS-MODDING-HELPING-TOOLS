@@ -189,6 +189,24 @@ function interpolation() {
   K.setKeyProperty(ctx, 'interp', 'bezier');
   near(delta(50), 1, 1e-9, 'bezier midpoint');
   assert(delta(10) < .1, 'eased start');
+  // Free handles: converting keeps the curve; dragging one handle (the curve view) changes
+  // only that channel's segment.
+  const curveAt = (frame) => M.curve(K.normalizeRecord(project.editor.camera.shots['cam:1'], 181).keys, 'x', frame);
+  const beforeFree = [20, 50, 80].map(curveAt);
+  K.selectKey(ctx, 'cam:1', 0);
+  K.setKeyProperty(ctx, 'handle', 'free');
+  assert.equal(project.editor.camera.shots['cam:1'].keys[0].handle, 'free');
+  [20, 50, 80].forEach((frame, index) => near(curveAt(frame), beforeFree[index], 1e-12, `free keeps the curve at ${frame}`));
+  const yBefore = copy(shot.values.keyframes.map((sample) => sample.position));
+  assert(K.setHandle(ctx, 'cam:1', 0, 'x', 'out', [30, 1.5]));
+  const stored = project.editor.camera.shots['cam:1'].keys[0].handles.x.out;
+  assert.deepEqual(stored, [30, 1.5], 'the dragged handle is stored');
+  assert(curveAt(20) > beforeFree[0] + .1, 'the steeper handle lifts the start of the segment');
+  assert.equal(history.peekUndo().label, 'Edit camera handle');
+  history.undo();
+  assert.deepEqual(shot.values.keyframes.map((sample) => sample.position), yBefore, 'undo restores the samples');
+  K.setKeyProperty(ctx, 'handle', 'auto-clamped');
+  assert.equal(project.editor.camera.shots['cam:1'].keys[0].handles, undefined, 'non-free keys store no handles');
   // Ease presets on the outgoing segment.
   K.ease(ctx, 'ease-out');
   assert.deepEqual(project.editor.camera.shots['cam:1'].keys.map((key) => key.handle), ['auto-clamped', 'flat']);
