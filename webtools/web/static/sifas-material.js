@@ -541,7 +541,20 @@
         _MatcapBrightR: 1, _MatcapBrightG: 1, _CheekTexArrayIndex: 0, _CheekIntensity: 0 };
       Object.keys(defaults).forEach(function (name) { uniforms["u" + name.slice(1)] = { value: finite(floats[name], defaults[name]) }; });
       if (!memberProp) uniforms.uRimglightPower.value = Math.max(.0001, uniforms.uRimglightPower.value);
-      if (liveMember) uniforms.uRimglightIntensity.value = 0;
+      if (liveMember) {
+        // CommonCoreMember.ResetComponentsState (0x27c1b48) runs
+        // LiveCoreMemberRimlight.ResetAll (0x2f663f0): ResetColor writes
+        // defaultRimlightColor (UtilColor.Clear), ApplyIntensity adds
+        // InitMemberRimIntensity 0 and ApplySharpness InitMemberRimSharpness 1
+        // to the unset base (power = base + 1 + 1), and ResetDirection writes
+        // (UtilVector.Up3, 0). With no Base Light or Member Rim Light write
+        // (e.g. both quality values off) the material keeps these, not its
+        // serialized rim (dump2 q40: color 0, direction (0,1,0,0), power 2).
+        uniforms.uRimlightColor.value.set(0, 0, 0, 0);
+        uniforms.uRimlightDirection.value.set(0, 1, 0, 0);
+        uniforms.uRimglightIntensity.value = 0;
+        uniforms.uRimglightPower.value = 2;
+      }
       var defines = {};
       // A cheek array present without the authored _CHEEK_ON keyword is only
       // available to the runtime cheek (setCheek); the static variant follows

@@ -78,6 +78,9 @@ const root = path.resolve(__dirname, '..');
       const live = await build({ live: true });
       out.baseline = { rimOff: noRim.draw(), rimZero: live.draw(), intensity: live.uniforms.uRimglightIntensity.value,
         defined: live.defined('SIFAS_RIMLIGHT'), stencil: live.stencil() };
+      const rimState = (built) => ({ color: built.uniforms.uRimlightColor.value.toArray(), direction: built.uniforms.uRimlightDirection.value.toArray(),
+        intensity: built.uniforms.uRimglightIntensity.value, power: built.uniforms.uRimglightPower.value });
+      out.resetState = rimState(live);
       // Static viewer keeps the authored intensity.
       const authored = await build({ live: false });
       out.authored = { intensity: authored.uniforms.uRimglightIntensity.value, stencil: authored.stencil() };
@@ -90,6 +93,10 @@ const root = path.resolve(__dirname, '..');
       out.unlit = { stencil: live.stencil(), pixel: live.draw() };
       live.controller.setLiveLighting(null);
       out.noLighting = { stencil: live.stencil(), intensity: live.uniforms.uRimglightIntensity.value };
+      out.noLightingState = rimState(live);
+      live.controller.setLiveLighting({ rim: { intensity: 0 } });
+      out.intensityOnlyState = rimState(live);
+      out.authoredState = rimState(authored);
       authored.controller.setLiveLighting({ rim });
       out.authoredLit = authored.stencil();
       // 2b. member_rim_light off mutes only the rim tracks: the base light alone
@@ -156,6 +163,14 @@ const root = path.resolve(__dirname, '..');
     assert.equal(result.baseline.defined, true, 'every AS/Member variant evaluates the rim');
     assert.deepEqual(result.baseline.stencil, [result.Always, 8], 'ApplyEnable(false) at initialization');
     assert.deepEqual(result.authored, { intensity: 1, stencil: [result.Always, 8] }, 'the static viewer keeps authored values');
+    // ResetComponentsState -> LiveCoreMemberRimlight.ResetAll: colour UtilColor.Clear, direction (Up3, 0),
+    // power base 0 + 1 + InitMemberRimSharpness 1, intensity 0, instead of the material's serialized rim.
+    const resetAll = { color: [0, 0, 0, 0], direction: [0, 1, 0, 0], intensity: 0, power: 2 };
+    assert.deepEqual(result.resetState, resetAll, 'a live performer starts from ResetAll');
+    assert.deepEqual(result.noLightingState, resetAll, 'no lighting writes leave the ResetAll state');
+    assert.deepEqual(result.intensityOnlyState, resetAll, 'ApplyIntensity(0) alone changes nothing else');
+    assert.deepEqual(result.authoredState, { color: [0, 1, 0, 1], direction: [0, 0, 0, 0], intensity: 1, power: 1 },
+      'the static viewer keeps the serialized rim');
     // 2
     assert.deepEqual(result.lit.stencil, [result.Equal, 3]);
     assert(result.lit.pixel[1] > result.baseline.rimOff[1] + 20, `lit rim adds green: ${result.lit.pixel}`);
