@@ -45,7 +45,7 @@
     if (!state) {
       state = { selected: null, channels: ["x"], autoKey: false, space: "view", pending: null, controller: null, events: undefined,
         scene: null, unsubscribe: null, panel: null, curves: null, differs: new WeakMap(), lastShot: null, helper: false,
-        toggle: null };
+        toggle: null, refreshed: null };
       states.set(ctx, state);
     }
     return state;
@@ -380,7 +380,7 @@
     for (const shot of candidates(ctx, events)) {
       if (writeBake(ctx, shot, bakeShot(ctx, shot))) changed.add(shot.track.id);
     }
-    for (const id of changed) ctx.refreshLane(id);
+    for (const id of changed) { ctx.refreshLane(id); stateOf(ctx).refreshed?.add(id); }
     if (changed.size) ctx.seek(ctx.time(), { audio: false });
     return changed.size > 0;
   }
@@ -1005,16 +1005,19 @@
       if (event.type === "pointercancel") { ctx.refreshLane(diamond.closest?.(".mv-lane")?.dataset.track); return; }
       const shot = findShot(ctx, eventId);
       if (!shot) return;
+      let at = frame;
       if (ended.moved && ended.frame !== frame) {
         moveKey(ctx, eventId, frame, ended.frame);
         const moved = selectedFrame(ctx, eventId);
-        ctx.seek(frameTime(shot, moved === null ? frame : moved), { audio: false });
+        if (moved !== null) at = moved;
+        ctx.seek(frameTime(shot, at), { audio: false });
       } else {
         select(ctx, shot, frame);
         ctx.seek(frameTime(shot, frame), { audio: false });
       }
       ctx.refreshLane(shot.track.id);
       renderPanel(ctx);
+      focusDiamond(shot.track.id, eventId, at);
     };
     diamond.addEventListener("pointerup", finish);
     diamond.addEventListener("pointercancel", finish);
@@ -1028,6 +1031,7 @@
         ctx.seek(frameTime(shot, frame), { audio: false });
         ctx.refreshLane(shot.track.id);
         renderPanel(ctx);
+        focusDiamond(shot.track.id, eventId, frame);
       }
     });
     diamond.addEventListener("keydown", (event) => {
@@ -1038,10 +1042,18 @@
       if (moveKey(ctx, eventId, frame, frame + step)) {
         const shot = findShot(ctx, eventId), moved = selectedFrame(ctx, eventId);
         if (shot && moved !== null) ctx.seek(frameTime(shot, moved), { audio: false });
-        const lane = shot && document.querySelector(`.mv-lane[data-track="${CSS.escape(shot.track.id)}"]`);
-        lane?.querySelector(`.mv-cam-key[data-event="${CSS.escape(eventId)}"][data-frame="${moved}"]`)?.focus({ preventScroll: true });
+        if (shot && moved !== null) focusDiamond(shot.track.id, eventId, moved);
       }
     });
+  }
+
+  // A lane refresh replaces the diamonds, and the host then hands the focus to the clip with
+  // the same data-event: the selected key's diamond takes it back, so Alt+Arrow keeps moving
+  // the key, not the shot.
+  function focusDiamond(trackId, eventId, frame) {
+    if (!global.document || typeof CSS === "undefined") return;
+    const lane = document.querySelector(`.mv-lane[data-track="${CSS.escape(trackId)}"]`);
+    lane?.querySelector(`.mv-cam-key[data-event="${CSS.escape(eventId)}"][data-frame="${frame}"]`)?.focus({ preventScroll: true });
   }
 
   function selectedFrame(ctx, eventId) {
@@ -1413,18 +1425,27 @@
   // History changes that need a rebake: camera records, rigs, or a main-camera shot's timing.
   function bakeScope(ctx, command) {
     let all = false;
-    const ids = new Set();
+    const ids = new Set(), records = new Set();
     const main = new Set(mainTracks(ctx.project()).map((track) => track.id));
     for (const change of command && Array.isArray(command.changes) ? command.changes : []) {
       const target = change.target || {}, path = change.path || [];
       if (target.kind === "editor" && path[0] === "camera") {
-        if (path[1] === "shots" && typeof path[2] === "string") ids.add(path[2]);
+        if (path[1] === "shots" && typeof path[2] === "string") { ids.add(path[2]); records.add(path[2]); }
         else all = true;
       } else if (target.kind === "event" && main.has(target.track)) ids.add(target.event);
       else if (target.kind === "track" && main.has(target.track)) all = true;
     }
-    if (all) return { events: undefined };
-    return ids.size ? { events: [...ids] } : null;
+    if (all) return { events: undefined, records: [...records] };
+    return ids.size ? { events: [...ids], records: [...records] } : null;
+  }
+
+  // The lanes whose key diamonds a record change moved. A bake redraws a lane only when the
+  // samples change, and a key can move without changing them (a lone offset key).
+  function refreshKeyLanes(ctx, records, skip) {
+    if (!records.length) return;
+    for (const track of mainTracks(ctx.project())) {
+      if (!skip.has(track.id) && track.events.some((event) => event && records.includes(event.id))) ctx.refreshLane(track.id);
+    }
   }
 
   const plugin = {
@@ -1452,8 +1473,13 @@
       if (info.reason === "reload" || info.reason === "reimport") { state.panel = null; requestBake(ctx, { reason: info.reason }); }
       else if (info.reason === "history") {
         const scope = bakeScope(ctx, info.command);
-        if (scope) requestBake(ctx, { events: scope.events, reason: "history" });
-        else renderPanel(ctx);
+        if (scope) {
+          state.refreshed = new Set();
+          try { requestBake(ctx, { events: scope.events, reason: "history" }); } finally {
+            refreshKeyLanes(ctx, scope.records, state.refreshed);
+            state.refreshed = null;
+          }
+        } else renderPanel(ctx);
       } else renderPanel(ctx);
     },
     timeChanged(ctx) {

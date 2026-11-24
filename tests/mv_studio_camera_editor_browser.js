@@ -10,6 +10,7 @@
    - a key diamond appears on the camera lane and drags frame-snapped;
    - Free camera → orbit → Key current view (K) → back in Game camera the pose equals
      the view (≤ 1e-3 m / 0.01°, same FOV); Ctrl+Z restores, Ctrl+Shift+Z redoes;
+   - a clicked or Enter-activated key diamond keeps the focus, so Alt+Arrow moves the key;
    - the curve view renders;
    - a closed panel opened at another shot shows that shot;
    - save → reopen keeps editor.camera and the baked samples;
@@ -223,6 +224,22 @@ async function synthetic(browser, url) {
   assert.equal(current.history.undoLabel, 'Move camera key');
   near(current.time, moved / 60, 1e-9, 'the playhead follows the key');
   assert.equal(await page.locator(`.mv-lane[data-track="cam"] .mv-cam-key[data-frame="${moved}"]`).getAttribute('aria-pressed'), 'true');
+  // The lane refresh replaces the diamonds (and the host would hand the focus to the clip): the
+  // key's diamond keeps the focus, after a drag and after Enter, so Alt+Arrow nudges the key.
+  const focusedKey = () => page.evaluate(() => {
+    const element = document.activeElement;
+    return element && element.classList.contains('mv-cam-key') ? Number(element.dataset.frame) : String(element && element.className);
+  });
+  assert.equal(await focusedKey(), moved, 'the dragged diamond keeps the focus');
+  const clipStart = current.project.tracks[0].events[0].start;
+  await page.keyboard.press('Enter');
+  assert.equal(await focusedKey(), moved, 'Enter selects the key and keeps the focus on its diamond');
+  await page.keyboard.press('Alt+ArrowRight');
+  current = await state(page);
+  assert.equal(current.history.undoLabel, 'Move camera key', 'Alt+Arrow moves the key, not the shot');
+  assert.equal(current.project.editor.camera.shots['cam:0'].keys[0].frame, moved + 1);
+  assert.equal(current.project.tracks[0].events[0].start, clipStart, 'the shot stays put');
+  assert.equal(await focusedKey(), moved + 1, 'the moved diamond has the focus');
 
   // Free camera → orbit → Key current view (K) → the game camera shows the view.
   const shotStart = 241 / 60, keyTime = shotStart + 75 / 60;

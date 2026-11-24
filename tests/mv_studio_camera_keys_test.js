@@ -516,6 +516,25 @@ function inspectorAndKeys() {
 }
 
 // The panel's shot is the scene's (mainCameraAt): a gap between two shots is no shot; past the
+// A key that moves without changing the samples (a lone offset key) still redraws its lane's
+// diamonds, on the edit and on undo/redo.
+function keyLaneRefresh() {
+  const project = nativeProject();
+  const { ctx, history, log, at } = harness(project);
+  at(.5);
+  K.setChannels(ctx, 'offset', { z: 1 });
+  const arrays = project.tracks[0].events[0].values.keyframes;
+  log.refreshed.length = 0;
+  assert(K.moveKey(ctx, 'cam:0', 30, 40));
+  assert.equal(project.tracks[0].events[0].values.keyframes, arrays, 'the samples are not rewritten');
+  assert.deepEqual(log.refreshed, ['cam'], 'the lane is redrawn once');
+  history.undo();
+  history.redo();
+  assert.deepEqual(log.refreshed, ['cam', 'cam', 'cam'], 'and on undo and redo');
+  K.setChannels(ctx, 'offset', { z: 2 });
+  assert.deepEqual(log.refreshed, ['cam', 'cam', 'cam', 'cam'], 'a rebake that redraws the lane is not doubled');
+}
+
 
 (async () => {
   unedited();
@@ -531,5 +550,6 @@ function inspectorAndKeys() {
   simplifyShot();
   nonNative();
   inspectorAndKeys();
+  keyLaneRefresh();
   console.log('mv studio camera keys tests passed');
 })().catch((error) => { console.error(error); process.exit(1); });
