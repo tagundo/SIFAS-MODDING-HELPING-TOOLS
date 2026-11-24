@@ -39,7 +39,7 @@ const uniforms = (time) => {
 let data = uniforms(1);
 assert.deepEqual(data.uPalette.value[0].toArray(), [1, 0, 0, 1]);
 assert.deepEqual(data.uLocalToPreview.value.elements.slice(12, 15), [-2, 0, 0]);
-assert.equal(data.uBeat.value, 0);
+assert.equal(data.uBeat.value, 2, "before the first CRI callback LiveDirectorBase runs its constructor bpm 120 from origin 0");
 assert.equal(light.material.side, T.FrontSide);
 assert.equal(light.material.blendSrc, T.SrcAlphaFactor);
 assert.equal(light.material.blendDst, T.OneFactor);
@@ -91,6 +91,39 @@ for (const segments of [[regions[0], null], Array(257).fill(regions[0])]) {
 }
 project.stage.beatSync = { ...regions[0], segments: regions };
 assert.equal(uniforms(1.25).uBeat.value, 2.5);
+
+// LiveDirectorBase.SyncBeat stores the music time of the frame that dispatches
+// the CRI callback: the beat restarts from its count at that frame.
+const api = globalThis.MVStudioPenlight;
+const real = api.prepareBeatClock({ bpm: 90, startSample: 235185, baseRate: 44100 });
+const frameBeat = (time, history) => api.beatValue(time, api.dispatchBeat(null, time, real, { advancing: false, history }));
+assert.equal(frameBeat(1.5, []), 3, "no callback yet: 120 bpm from the director's origin 0");
+// 12035 Max 3D dump: beat 84 at 61.333 s, previous frame 61.251 s, frame 61.511 s reads exactly 84.
+assert.equal(frameBeat(61.511, [60.954, 61.251]), 84);
+assert.ok(Math.abs(frameBeat(61.511, []) - 84.2665) < 1e-3, "a seek without history counts from the beat itself");
+// Beat 85 at 62.000 s was dispatched by the frame at 62.049 s; the dump reads 85.4155 at 62.326 s.
+assert.ok(Math.abs(frameBeat(62.326, [61.511, 61.771, 62.049]) - 85.4155) < 1e-9);
+// Frames from before the region start: the first callback restarts the count at its frame.
+assert.equal(frameBeat(5.435, [4.72, 5.2434]), 0);
+// Advancing frames continue the stored state; a later beat is dispatched by the next frame.
+let state = api.dispatchBeat(null, 61.251, real, { advancing: false, history: [60.954] });
+assert.equal(state.event.count, 83);
+state = api.dispatchBeat(state, 61.511, real, { advancing: true, history: [] });
+assert.deepEqual([state.event.count, state.origin], [84, 61.511]);
+const kept = api.dispatchBeat(state, 61.6, real, { advancing: true, history: [] });
+assert.equal(kept, state, "no new callback keeps the dispatch frame");
+assert.ok(Math.abs(api.beatValue(61.6, kept) - (84 + .089 * 1.5)) < 1e-9);
+
+// The scene hands its frame clock to the penlights.
+project.stage.beatSync = { bpm: 90, startSample: 235185, baseRate: 44100 };
+project.tracks[0].events = [clip(0, 100, 2, 1, [0, 0, 0])];
+preview.invalidate();
+preview.update(61.251, project, { advancing: false, history: [60.954] });
+preview.update(61.511, project, { advancing: true, history: [] });
+assert.equal(light.material.uniforms.uBeat.value, 84);
+preview.update(61.511, project, { advancing: false, history: [] });
+assert.ok(Math.abs(light.material.uniforms.uBeat.value - 84.2665) < 1e-3);
+project.stage.beatSync = { ...regions[0], segments: regions };
 
 let disposals = 0;
 light.material.addEventListener("dispose", () => { disposals++; });

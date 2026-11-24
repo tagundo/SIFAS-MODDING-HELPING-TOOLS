@@ -381,8 +381,8 @@
     let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1, adaptivePreview = true;
     let lastShaftFrame = null, resetShafts = true;
-    // Client state that changes only on rendered frames (the ambient
-    // components' last written colors): an advancing
+    // Client state that changes only on rendered frames (the director's beat
+    // origin, the ambient components' last written colors): an advancing
     // playback frame continues it; a seek replays the rendered frame times it is
     // given (seek's `history`) or, without them, uses exact values.
     let pendingHistory = null, frameClock = { advancing: false, history: [] }, historyLighting = new Map();
@@ -1877,7 +1877,7 @@
       for (const record of records) record.stageSoftBillboards?.update(currentTime);
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
-      for (const record of records) record.penlight?.update(currentTime, project);
+      for (const record of records) record.penlight?.update(currentTime, project, frameClock);
       for (const record of records) {
         record.stageMaterial?.update(currentTime, project, lighting, frameClock);
         record.stagePropLight?.update(currentTime, frameClock, !!lighting?.baseTrack);
