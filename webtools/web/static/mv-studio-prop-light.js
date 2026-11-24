@@ -238,16 +238,36 @@
             uniforms.uTintColor.value.fromArray(held ? held(entry.holds.tint, tintAt, seconds, frames) : tintAt(seconds));
           }
           if (light.rim && sample) {
-            const rim = sample.rim;
+            const rim = sample.rim, held = heldRim(entry, rim, (time) => sampleAt(controller, time)?.rim, frames);
             uniforms.uRimglightIntensity.value = rim?.intensity ?? 0;
-            if (rim?.color) uniforms.uRimlightColor.value.fromArray(rim.color);
-            if (Number.isFinite(rim?.power)) uniforms.uRimglightPower.value = rim.power;
-            if (rim?.direction) uniforms.uRimlightDirection.value.fromArray(rim.direction);
+            uniforms.uRimlightColor.value.fromArray(held?.color ?? fields.rimlightColor);
+            uniforms.uRimglightPower.value = held?.power ?? fields.power;
+            uniforms.uRimlightDirection.value.fromArray(held?.direction ?? fields.rimlightDirection);
           }
         }
       },
       dispose,
     };
+  }
+
+  // LivePropRimlightMixer.PostProcess (0x20f21a4) applies colour, sharpness and
+  // direction only in a frame an input ran (otherwise only ApplyIntensity(0)),
+  // and a muted track writes nothing. The prop's own material instance (a copy
+  // of the listed asset, the exported fields) therefore keeps the rim of the
+  // last frame a clip ran: the previous playing frame, or after a seek the last
+  // written frame of the frame clock's history; its copied values before any.
+  function heldRim(entry, rim, rimAt, frames) {
+    const written = (value) => Array.isArray(value?.color) && Array.isArray(value?.direction) && Number.isFinite(value?.power);
+    if (written(rim)) return entry.rimHold = rim;
+    if (!frames?.advancing) {
+      entry.rimHold = null;
+      const history = Array.isArray(frames?.history) ? frames.history : [];
+      for (let index = history.length - 1; index >= 0 && !entry.rimHold; index--) {
+        const value = rimAt(history[index]);
+        if (written(value)) entry.rimHold = value;
+      }
+    }
+    return entry.rimHold ?? null;
   }
 
   global.MVStudioPropLight = {create, apply, ambientAt, rimAt};
