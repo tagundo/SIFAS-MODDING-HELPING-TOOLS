@@ -85,4 +85,12 @@ assert.equal(comparator, null);
 fail = false;
 sorter.draw(scene, camera, []);
 assert.deepEqual(order, stock);
+// AS/Coloring/Transparent meshes (LiveCoreStageColoring) share queue 3000 with the alpha-blended
+// soft billboards: they take part in the same native sort.
+sortEntries[0].center.x = 8;
+sorter.draw(scene, camera, [{stageColoring: {sortEntries: () => sortEntries.slice(0, 1)}},
+  {stageSoftBillboards: {sortEntries: () => sortEntries.slice(1)}}]);
+assert.deepEqual(order, native, "coloring and soft billboard entries sort together");
+sorter.draw(scene, camera, [{stageColoring: {}}]);
+assert.deepEqual(order, stock, "a coloring controller without sort entries keeps the stock order");
 console.log("Native transparent bounds ordering, camera changes, legacy draw slots and cleanup passed.");

@@ -32,7 +32,15 @@
     return Math.max(0, Math.min(1, global.ViewerMotionTimeline?.curve(keys, t, fallback) ?? fallback));
   }
 
+  // A Live* mixer input's weight at `time`: 0 for an input the scene's mixer walk left out
+  // (MVStudioMixer: LiveMixerBase`2.ProcessWithoutSeek during playback), else clipWeight.
   function nativeWeight(event, time) {
+    if (global.MVStudioMixer?.skipped(event, time)) return 0;
+    return clipWeight(event, time);
+  }
+
+  // The input weight Timeline gives a clip at `time` (blend or ease curves, extrapolation).
+  function clipWeight(event, time) {
     const v = event.values;
     let local = time - event.start;
     if (local < 0) {
@@ -82,6 +90,45 @@
       for (const time of frames?.history || []) holdStep(hold, valueAt(time));
     }
     return holdStep(hold, valueAt(seconds));
+  }
+
+  // UnityEngine.Mathf.Approximately (0x34ab0ac): |b - a| < max(1e-6 * max(|a|, |b|),
+  // Mathf.Epsilon * 8), the 1e-6 being the float at 0x56f60f8 and Mathf.Epsilon read from the
+  // Mathf statics at run time. Mathf..cctor (0x34ab480) stores Epsilon =
+  // MathfInternal.IsFlushToZeroEnabled ? FloatMinNormal : FloatMinDenormal; MathfInternal..cctor
+  // (0x441442c) stores FloatMinNormal = 0x00800000 and FloatMinDenormal = 0x00000001 and sets
+  // IsFlushToZeroEnabled = (FloatMinDenormal == 0) with a scalar fcmp, which is true only when
+  // FPCR.FZ flushes the denormal input. No arm64 library of the client APK writes FPCR (no msr
+  // fpcr in libil2cpp, libunity or any plugin; the few fpcr accesses are reads in compiler-rt
+  // and SQLite), so the threads keep the AArch64 Linux default FZ = 0: IsFlushToZeroEnabled is
+  // false and Mathf.Epsilon is FloatMinDenormal, 2^-149. Shared with MVStudioMixer.
+  const MATHF_EPSILON = 1.401298464324817e-45;
+  const APPROXIMATELY_FLOOR = Math.fround(MATHF_EPSILON * 8);
+  // LiveCoreStageEmissive.ApplyEmissiveIntensity (0x2f74f5c) skips Material.SetFloat while
+  // Approximately holds for the intensity it last wrote.
+  const APPROXIMATELY_SCALE = Math.fround(1e-6);
+
+  function approximately(a, b) {
+    return Math.abs(b - a) < Math.max(Math.fround(APPROXIMATELY_SCALE * Math.max(Math.abs(a), Math.abs(b))), APPROXIMATELY_FLOOR);
+  }
+
+  function holdScalarStep(hold, value) {
+    if (!Number.isFinite(value)) {
+      hold.value = null;
+      return value;
+    }
+    if (hold.value == null || !approximately(value, hold.value)) hold.value = value;
+    return hold.value;
+  }
+
+  // heldColor for a float written behind Mathf.Approximately: valueAt(time) returns the
+  // float or null when nothing is written (the hold then restarts).
+  function heldScalar(hold, valueAt, seconds, frames) {
+    if (!frames?.advancing) {
+      hold.value = null;
+      for (const time of frames?.history || []) holdScalarStep(hold, valueAt(time));
+    }
+    return holdScalarStep(hold, valueAt(seconds));
   }
 
   function multiply(a, b) { return a.map((channel, index) => channel * b[index]); }
@@ -205,5 +252,6 @@
     };
   }
 
-  global.MVStudioLighting = { nativeWeight, memberColor, sample, heldColor, HOLD_EPSILON };
+  global.MVStudioLighting = { nativeWeight, clipWeight, memberColor, sample, heldColor, heldScalar, approximately, HOLD_EPSILON,
+    APPROXIMATELY_FLOOR };
 })(typeof window !== "undefined" ? window : globalThis);

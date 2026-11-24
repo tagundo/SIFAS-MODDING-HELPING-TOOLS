@@ -471,6 +471,15 @@
     // fed the same colors and defaults) share a hold.
     const componentHolds = new Map(), stageSamples = new Map();
     const held = global.MVStudioLighting?.heldColor;
+    // LiveCoreStageEmissive (one component for the stage model) keeps the color and intensity
+    // it last wrote: ApplyEmissiveColor (0x2f74e18) skips Material.SetColor while
+    // UtilColor.CheckSame(color, cachedEmissiveColor) holds, and ApplyEmissiveIntensity
+    // (0x2f74f5c) skips SetFloat while Mathf.Approximately(intensity, cachedIntensity).
+    // The .ctor (0x2f75064) starts them at UtilColor.InvalidColor and -1, so the first
+    // mixer frame always writes. LiveStageEmissiveMixer.PostProcess (0x20f69e8) is the
+    // only writer, so the base light track does not touch this hold.
+    const emissiveHold = {color: {}, intensity: {}};
+    const heldScalar = global.MVStudioLighting?.heldScalar;
     function componentHold(key) {
       if (!componentHolds.has(key)) componentHolds.set(key, {});
       return componentHolds.get(key);
@@ -518,7 +527,17 @@
           if (!stageSamples.has(key)) stageSamples.set(key, stageAmbient(project, time, track));
           return stageSamples.get(key);
         };
-        const emissive = stageEmissive(project, seconds, emissiveTrack);
+        let emissive = stageEmissive(project, seconds, emissiveTrack);
+        if (held && heldScalar && hasEmissiveBinding) {
+          const emissiveSamples = new Map([[seconds, emissive]]);
+          const emissiveAt = (time) => {
+            if (!emissiveSamples.has(time)) emissiveSamples.set(time, stageEmissive(project, time, emissiveTrack));
+            return emissiveSamples.get(time);
+          };
+          const color = held(emissiveHold.color, (time) => emissiveAt(time)?.color ?? null, seconds, frames);
+          const intensity = heldScalar(emissiveHold.intensity, (time) => emissiveAt(time)?.intensity ?? null, seconds, frames);
+          if (emissive) emissive = {color, intensity};
+        }
         const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
         for (const {node, original, meta, material, reflectionCube, prop} of records) {
           if (meta.reflectionToggle) {

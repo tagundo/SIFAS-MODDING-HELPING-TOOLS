@@ -128,6 +128,9 @@ function fixture(visible = true, options = {}) {
   if (options.lighting) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-lighting.js'), 'utf8'), context);
   }
+  if (options.mixer) {
+    vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-mixer.js'), 'utf8'), context);
+  }
   if (options.axisBillboard) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-axis-billboard.js'), 'utf8'), context);
   }
@@ -597,6 +600,32 @@ async function checkMemberRimHold() {
   f.app.dispose();
 }
 
+// The scene runs the Live* mixers' input walk (LiveMixerBase`2.ProcessWithoutSeek) on its frame
+// clock: a seek replays the history it is handed, playback frames continue it, and a seek without
+// history processes every input (ProcessWithSeek). MVStudioLighting.nativeWeight reads the walk.
+async function checkMixerWalk() {
+  const f = fixture(true, { lighting: true, mixer: true }), value = project(59);
+  const clip = (start, duration, values = {}) => ({ start, duration, values: { playableClass: 'LiveColoringClip', ...values } });
+  const late = clip(47.233, .7, { blendIn: .15 });
+  value.tracks.push({ nativeClass: 'LiveColoringTrack', label: 'StageEffect/Expert/Coloring/LED_panel_03', binding: '/x',
+    events: [clip(42.6, 2.533), clip(46.467, .566, { blendOut: .25 }), clip(46.783, .384, { blendIn: .25 }),
+      clip(47.167, .216, { blendOut: .15 }), late] });
+  const history = [];
+  for (let time = 47.138; time > 42; time -= .19) history.unshift(Math.round(time * 1e4) / 1e4);
+  await f.app.load(value);
+  const { MVStudioLighting: lighting } = f.window;
+  f.app.seek(47.328, value, true);
+  assert(lighting.nativeWeight(late, 47.328) > .6, 'a seek without history processes every input');
+  f.app.seek(47.328, value, true, history);
+  assert.equal(lighting.nativeWeight(late, 47.328), 0, 'the game frames leave the 47.233 s clip out at 47.328 s');
+  f.app.setPlaying(true);
+  f.app.playbackFrame(47.518, 100, true);
+  assert(lighting.nativeWeight(late, 47.518) > .9, 'the next playback frame takes it');
+  f.app.setPlaying(false);
+  f.app.dispose();
+  assert(lighting.nativeWeight(late, 47.328) > .6, 'a disposed scene leaves no walk behind');
+}
+
 // A member prop's ambient mixer writes its LiveCoreMemberAmbient every frame, shown or not: the
 // CheckSame hold steps on hidden frames too, and the material takes the held color while shown.
 async function checkMemberPropHold() {
@@ -1044,6 +1073,7 @@ function checkAssetDumpHelpers() {
   await checkMemberRimQuality();
   await checkMemberRimHold();
   await checkMemberPropHold();
+  await checkMixerWalk();
   await checkOriginalEndHold();
   await checkShadowPrefabRelease();
   await checkTwelvePerformers();

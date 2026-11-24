@@ -337,6 +337,10 @@
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
     const transparentSort = global.MVStudioTransparentSort?.create(T, renderer);
+    // The Live* mixers' input walk over the frame clock (LiveMixerBase`2.ProcessWithoutSeek):
+    // MVStudioLighting.nativeWeight leaves out the inputs it skipped.
+    const mixers = global.MVStudioMixer?.controller((event, time) => global.MVStudioLighting.clipWeight(event, time)) ?? null;
+    global.MVStudioMixer?.activate(mixers);
 
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
@@ -1946,6 +1950,7 @@
       frameClock = nextFrameClock(Number.isFinite(frameTimestamp) || pendingHistory !== null ? time : NaN);
       historyLighting = new Map();
       currentTime = Number.isFinite(time) ? time : 0;
+      mixers?.update(project, currentTime, frameClock);
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
       if (adaptivePreview && playing && Number.isFinite(frameTimestamp) && previewScale > 0.5) {
@@ -2622,6 +2627,10 @@
         split?.dispose();
         post?.dispose();
         screenFade?.dispose();
+        if (mixers) {
+          mixers.reset();
+          global.MVStudioMixer?.release(mixers);
+        }
         cameraDepth?.dispose();
         release(grid);
         controls.dispose();
