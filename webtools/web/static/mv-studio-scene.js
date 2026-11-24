@@ -2194,8 +2194,12 @@
         culled: entry.record.group === actors && memberCulledAt(entry.record.position, currentTime),
         materialVisible: slots(entry).every(({ material }) => material?.visible !== false),
         transform: D.decompose(rendererWorld(entry), temp), axisBillboard: billboardOf(entry) !== null,
-        materials: slots(entry).map(({ material }, slot) => ({ slot, name: D.materialName(material),
-          editorName: material?.name ?? null, kind: D.materialProperties(material).kind, visible: material?.visible !== false })),
+        materials: slots(entry).map(({ material }, slot) => {
+          // The drawn AS/Member variant, as the game reads Material.shaderKeywords per renderer slot.
+          const { kind, keywords } = D.materialProperties(material);
+          return { slot, name: D.materialName(material), editorName: material?.name ?? null, kind, visible: material?.visible !== false,
+            ...(Array.isArray(keywords) ? { keywords } : {}) };
+        }),
       })));
       // Uniforms an AnimationTrack curve drives (MVStudioStageMotion material channels): the game applies those
       // through a MaterialPropertyBlock, which its dump does not read, so the comparator never scores them.

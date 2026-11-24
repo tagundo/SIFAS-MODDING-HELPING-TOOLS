@@ -84,9 +84,13 @@ PICTURE_CAMERAS = {"camera:overlay"}
 SHADER_MATERIAL_PROPERTIES = {"_TintColor", "_AmbientColor", "_BlendColor", "_RimlightColor", "_RimlightDirection",
                               "_RimglightIntensity", "_RimglightPower", "_BeatLength", "_RandomBrightness",
                               "_RandomSwingIntensity", "_RandomDelay", "_RandomUp"}
-# AS/Member cheek floats are only read under the _CHEEK_ON keyword; with _CHEEK 0 the mixer keeps the last
-# applied floats (MemberCheekMixer.PostProcess), whose value depends on the last rendered frame inside the clip.
-CHEEK_FLOATS = {"_CheekIntensity", "_CheekTexArrayIndex"}
+# AS/Member cheek: MemberCheekBase writes _CheekIntensity/_CheekTexArrayIndex with Material.SetFloat (ApplyCheek
+# 0x27c4ccc) and toggles only the _CHEEK_ON keyword (ApplyEnable 0x27c4c14); MemberCheekMixer.PostProcess (0x26e9344)
+# turns the keyword off and keeps the floats of the last frame a clip was processed in. The [Toggle] float _CHEEK is
+# never written by the client and is no uniform of the compiled shader, so it does not tell whether the cheek is drawn:
+# the floats are compared as the material holds them, and the drawn variant through the game's keywords (renderer
+# material slots, compare_member_variant).
+CHEEK_TOGGLE = "_CHEEK"
 # Editor shader uniforms named after their role rather than the Unity property (AS/FlashLight _Speed/_Length,
 # AS/General/Transparent and AS/FlashLight _TintColor). uTextureST is _MainTex's scale/offset (textureSTSpace).
 SHADER_UNIFORM_ALIASES = {"uTint": "_TintColor", "uSpeed": "_Speed", "uLength": "_Length"}
@@ -1105,6 +1109,10 @@ class Comparison:
                     same = Conventions.object_name(slot["name"]) == Conventions.object_name(editor_name)
                     self.add("materials", "slotName", f"{key}#{slot.get('slot')}", record, slot["name"], editor_name, int(not same), 0,
                              exact=True, near_cut=near)
+                    # The game reads Material.shaderKeywords per renderer slot: the drawn AS/Member variant
+                    # (_CHEEK_ON among them) is compared there.
+                    if same:
+                        self.compare_member_variant(f"material:{key}#{slot.get('slot')}", record, slot, editor_slot, near)
             if number(game_renderer.get("isVisible")) or isinstance(game_renderer.get("isVisible"), bool):
                 self.notes["visibility.isVisible"].append(bool(game_renderer["isVisible"]))
 
@@ -1170,29 +1178,15 @@ class Comparison:
                 score, error = component, delta
         self.add("materials", "floatScore", key, record, game_value, editor_value, score, 1.0, near_cut=near, field=f"{name} (abs {error:.3g})")
 
-    def drawn_game_material(self, game_material):
-        """The game material with the properties its drawn variant reads: AS/Member reads the cheek floats only
-        under _CHEEK_ON. With _CHEEK 0, MemberCheekMixer.PostProcess keeps the floats of the last frame it applied
-        inside a cheek clip, which depend on the device frame grid and are never drawn: the drawn cheek intensity
-        is 0, which the editor's drawn intensity must match, and the texture-array index is not read."""
+    def cheek_toggle_note(self, game_material):
+        """The AS/Member [Toggle] float _CHEEK is serialized but never written at runtime and is no uniform of the
+        compiled shader (MemberCheekBase toggles only the _CHEEK_ON keyword): it is listed, not read as the
+        keyword state, and the cheek floats are compared as the material holds them."""
         properties = game_material.get("properties") or {}
-        if self.identity or value_of(properties.get("_CHEEK")) != 0 or not CHEEK_FLOATS & set(properties):
-            return game_material
-        self.notes["materials.cheekKeywordOff"].extend(sorted(CHEEK_FLOATS & set(properties)))
-        drawn = {name: value for name, value in properties.items() if name not in CHEEK_FLOATS}
-        if "_CheekIntensity" in properties:
-            drawn["_CheekIntensity"] = {"t": "float", "v": 0.0, "from": "_CHEEK 0: no cheek drawn"}
-        return dict(game_material, properties=drawn)
-
-    @staticmethod
-    def drawn_editor_cheek(editor_material, editor_properties):
-        """An AS/Member editor material draws the cheek only under its _CHEEK_ON variant: without it the drawn
-        cheek intensity is 0 whatever the uniform holds."""
-        keywords = editor_material.get("keywords")
-        intensity = editor_properties.get("_CheekIntensity")
-        if editor_material.get("kind") == "member" and isinstance(keywords, list) and "_CHEEK_ON" not in keywords and \
-                isinstance(intensity, dict) and intensity.get("v") != 0:
-            editor_properties["_CheekIntensity"] = dict(intensity, v=0.0, **{"from": f"{intensity.get('from')} (no _CHEEK_ON: not drawn)"})
+        if not self.identity and CHEEK_TOGGLE in properties and "_CheekIntensity" in properties:
+            label = f"{game_material.get('name')}: {CHEEK_TOGGLE} {value_of(properties.get(CHEEK_TOGGLE))!r}"
+            if label not in self.notes["materials.cheekToggleNotKeyword"]:
+                self.notes["materials.cheekToggleNotKeyword"].append(label)
 
     def editor_material_properties(self, editor_material, game_material, editor_properties):
         """Unity properties of an editor material beyond its mapped `properties`, and the curve-driven ones removed.
@@ -1239,7 +1233,7 @@ class Comparison:
     def compare_materials(self, record, partner, near):
         editor_materials = by_key(partner.get("materials"))
         for game_material in record.get("materials") or []:
-            game_material = self.drawn_game_material(game_material)
+            self.cheek_toggle_note(game_material)
             for use in game_material.get("usedBy") or []:
                 renderer_key, _, slot = str(use).rpartition("#")
                 editor_renderer = self.renderer_map.get(renderer_key)
@@ -1255,8 +1249,6 @@ class Comparison:
                     unity = Conventions.material_property(name)
                     if unity:
                         editor_properties[unity] = prop
-                if not self.identity:
-                    self.drawn_editor_cheek(editor_material, editor_properties)
                 values = editor_material.get("values") or {}
                 key = f"material:{renderer_key}#{slot}"
                 if editor_material.get("visible") is False:
