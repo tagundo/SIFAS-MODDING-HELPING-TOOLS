@@ -2,7 +2,7 @@
 
    node tests/mv_frame_capture.js --manifest frames.json --out DIR [--url http://127.0.0.1:PORT]
      [--server-root ../] [--library SUKUSTA_DIR] [--video game.mp4] [--chromium PATH] [--software true]
-     [--game-dump mv-runtime-dump.json.gz]
+     [--game-dump mv-runtime-dump.json.gz [--particle-clock game|director]]
 
    The manifest names the original MV (region, platform, liveId, assetId), the game
    quality mode and the timeline times to render. Each frame is produced with the
@@ -23,6 +23,10 @@
    fallback when the game recorded none or it cannot be applied), so the spring
    clock's rule rate (frame_rate_60fps) and the render height follow the game run;
    capture.json quality records its source and status ("matched" or "invalid:quality").
+   With --game-dump the original particle systems also run on the game run's Time.time
+   (--particle-clock game, the default: mv_runtime_capture.gameClockSamples, the dump's
+   frame clock rows or record clocks), which falls behind the director when frames hit
+   Time.maximumDeltaTime; capture.json physics.particleClock records it.
 
    Members follow the client's MV deck chain; source.deck "original" picks the
    Original tab instead of Customize, source.player picks a local Elichika player of
@@ -493,6 +497,9 @@ async function run() {
   const serverRoot = path.resolve(options['server-root'] || path.join(MODTOOLS, '..'));
   const gameDump = options['game-dump'] ? readGameDump(options['game-dump']) : null;
   const grid = gameFrameGrid(manifest, gameDump);
+  const particleClockMode = options['particle-clock'] ?? (gameDump ? 'game' : 'director');
+  assert(['game', 'director'].includes(particleClockMode), '--particle-clock is game or director');
+  assert(particleClockMode === 'director' || gameDump, '--particle-clock game needs --game-dump');
   assert(!grid || manifest.game?.exporter !== 'fovmod', 'A game frame grid is for a real-time game run, not a FOVMOD export');
   let server = null, browser = null;
   try {
@@ -535,6 +542,10 @@ async function run() {
     }, manifest.screenFade === true);
     const physics = physicsReference(manifest, quality.values, target);
     await applyPhysicsReference(page, physics);
+    // The game run's Time.time for the original particle systems (null: the director's clock).
+    const clockPlan = particleClockMode === 'game' ? require('./mv_runtime_capture').gameClockSamples(gameDump.doc) : null;
+    const clockSamples = await require('./mv_runtime_capture').setGameClock(page, clockPlan?.samples ?? null);
+    const particleClock = { mode: particleClockMode, source: clockPlan?.source ?? 'director', samples: clockSamples, lagMax: clockPlan?.lagMax ?? null };
     const rate = physics.rate, stampRate = physics.ruleRate ?? physics.rate;
     const project = await projectRecord(page);
     let soundtrack = null;
@@ -567,7 +578,7 @@ async function run() {
       project, soundtrack, physicsRate: rate,
       physics: { rate, reference: physics.source, order: physics.order, exportFps: physics.exportFps, device: physics.device,
         warmupSteps: physics.warmupSteps, ruleRate: stampRate,
-        grid: grid ? { source: grid.source, file: grid.file, frames: grid.times.length } : null },
+        grid: grid ? { source: grid.source, file: grid.file, frames: grid.times.length } : null, particleClock },
       render: { width: renderWidth, height: renderHeight, aspect, antiAliasing, video: target },
       quality: { mode: quality.mode, values: quality.values, source: quality.source,
         ...(gameDump ? { file: gameDump.file, request: quality.request, status: quality.status, reasons: quality.reasons,
