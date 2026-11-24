@@ -48,11 +48,20 @@ _FRAMES_PER_CHUNK = 512
 
 
 class AudioEncodeError(ValueError):
-    """Raised for audio that cannot be encoded or verified."""
+    """Raised for audio that cannot be encoded or verified.
+
+    ``str(error)`` is always one fixed English sentence, so the UI can look it
+    up as an exact key in its translation tables. Numbers and the text of a
+    nested error are kept apart in ``details`` (a dict, possibly empty).
+    """
+
+    def __init__(self, message, **details):
+        super().__init__(message)
+        self.details = details
 
 
-def _fail(message):
-    raise AudioEncodeError(message)
+def _fail(message, **details):
+    raise AudioEncodeError(message, **details)
 
 
 # ---------------------------------------------------------------------------
@@ -918,7 +927,10 @@ def read_wav(data, *, sample_rate=SAMPLE_RATE, channels=CHANNELS, max_bytes=WAV_
     if bits != 16:
         _fail("The WAV file is not 16-bit integer PCM.")
     if count != channels or rate != sample_rate:
-        _fail(f"The WAV file must be {sample_rate} Hz with {channels} channels.")
+        found = {"sampleRate": rate, "channels": count, "expectedSampleRate": sample_rate, "expectedChannels": channels}
+        if (sample_rate, channels) == (SAMPLE_RATE, CHANNELS):
+            _fail("The WAV file must be 44100 Hz stereo.", **found)
+        _fail("The WAV file has the wrong sample rate or channel count.", **found)
     if align != channels * 2 or byte_rate != sample_rate * align:
         _fail("The WAV format chunk is inconsistent.")
     if not pcm or len(pcm) % align:

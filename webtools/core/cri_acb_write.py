@@ -40,8 +40,8 @@ _ROOT_ALIGN = 32
 PREFETCH_BLOCKS = 5
 
 
-def _fail(message):
-    raise AudioEncodeError(message)
+def _fail(message, **details):
+    raise AudioEncodeError(message, **details)
 
 
 def _zero(kind):
@@ -470,9 +470,10 @@ def build_cue(template_acb, template_awb, hca, *, sheet, beat, guid=None):
     except AudioEncodeError:
         raise
     except cri_audio_decode.AudioDecodeError as error:
-        raise AudioEncodeError(f"The template cue sheet cannot be read: {error}") from error
+        raise AudioEncodeError("The template cue sheet cannot be read.", cause=str(error)) from error
     except (KeyError, IndexError, ValueError) as error:
-        raise AudioEncodeError("The template cue sheet does not have the stock music layout.") from error
+        raise AudioEncodeError("The template cue sheet does not have the stock music layout.",
+                               cause=str(error)) from error
 
 
 def _build_cue(template_acb, template_awb, hca, sheet, beat, guid):
@@ -626,17 +627,19 @@ def verify_cue(acb, awb, pcm, *, cue=None, snr_floor=SNR_FLOOR_DB, scratch_dir=N
         try:
             meta = cri_audio_decode.decode_cue(acb, awb, cue, path)
         except cri_audio_decode.AudioDecodeError as error:
-            raise AudioEncodeError(f"The new audio does not decode: {error}") from error
+            raise AudioEncodeError("The new audio does not decode.", cause=str(error)) from error
         if meta.get("decoder") != "clhca":
             _fail("The new audio was not decoded by the app's HCA decoder.")
         with wave.open(str(path), "rb") as stream:
             channels = stream.getnchannels()
             decoded = np.frombuffer(stream.readframes(stream.getnframes()), dtype="<i2").reshape(-1, channels)
     if decoded.shape != pcm.shape:
-        _fail(f"The new audio decodes to {decoded.shape[0]} samples instead of {pcm.shape[0]}.")
+        _fail("The new audio does not decode to the input's length and channels.",
+              samples=int(decoded.shape[0]), channels=int(decoded.shape[1]),
+              expectedSamples=int(pcm.shape[0]), expectedChannels=int(pcm.shape[1]))
     snr = snr_db(pcm, decoded)
     if snr < snr_floor:
-        _fail(f"The new audio decodes with {snr:.1f} dB SNR, below the {snr_floor:.1f} dB floor.")
+        _fail("The decoded audio differs too much from the input.", snrDb=snr, snrFloorDb=float(snr_floor))
     return {"frames": int(decoded.shape[0]), "snrDb": snr, "decoder": "clhca"}
 
 
@@ -670,11 +673,12 @@ def template_info(template_acb, template_awb=None):
                 "sampleRate": waveforms.value(0, "SamplingRate") if waveforms.has("SamplingRate") else SAMPLE_RATE,
                 "streaming": streaming, "subkey": subkey, "hasBeats": bool(beats and beats.rows)}
     except cri_audio_decode.AudioDecodeError as error:
-        raise AudioEncodeError(f"The template cue sheet cannot be read: {error}") from error
+        raise AudioEncodeError("The template cue sheet cannot be read.", cause=str(error)) from error
     except (KeyError, IndexError, ValueError) as error:
         if isinstance(error, AudioEncodeError):
             raise
-        raise AudioEncodeError("The template cue sheet does not have the stock music layout.") from error
+        raise AudioEncodeError("The template cue sheet does not have the stock music layout.",
+                               cause=str(error)) from error
 
 
 def encoder_available():

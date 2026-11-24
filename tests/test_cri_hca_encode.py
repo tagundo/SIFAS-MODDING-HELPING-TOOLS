@@ -435,6 +435,50 @@ class WavTests(unittest.TestCase):
             enc.read_wav(good, max_bytes=len(good) - 1)
         self.assertEqual(enc.read_wav(mono, channels=1).shape, (10, 1))
 
+    def test_format_refusal_is_a_fixed_sentence_with_details(self):
+        rate = enc.write_wav(np.zeros((10, 2), dtype=np.int16), sample_rate=48000)
+        with self.assertRaises(enc.AudioEncodeError) as caught:
+            enc.read_wav(rate)
+        self.assertEqual(str(caught.exception), "The WAV file must be 44100 Hz stereo.")
+        self.assertEqual(caught.exception.details, {"sampleRate": 48000, "channels": 2, "expectedSampleRate": 44100,
+                                                    "expectedChannels": 2})
+        with self.assertRaises(enc.AudioEncodeError) as caught:
+            enc.read_wav(enc.write_wav(np.zeros((10, 2), dtype=np.int16)), sample_rate=22050)
+        self.assertEqual(str(caught.exception), "The WAV file has the wrong sample rate or channel count.")
+        self.assertEqual(caught.exception.details["expectedSampleRate"], 22050)
+
+
+class MessageTests(unittest.TestCase):
+    def test_every_audio_encode_error_message_is_a_fixed_sentence(self):
+        # The UI translates messages by exact English key (webtools/i18n.py tr()),
+        # so no message may be built from numbers or nested errors.
+        import ast
+        from webtools.core import cri_acb_write
+        messages = set()
+        for module in (enc, cri_acb_write):
+            tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+            # The _fail helpers forward their caller's message; every other raise names a literal.
+            helpers = {id(node) for function in ast.walk(tree)
+                       if isinstance(function, ast.FunctionDef) and function.name == "_fail"
+                       for node in ast.walk(function)}
+            for node in ast.walk(tree):
+                if (not isinstance(node, ast.Call) or id(node) in helpers or not isinstance(node.func, ast.Name)
+                        or node.func.id not in ("_fail", "AudioEncodeError")):
+                    continue
+                with self.subTest(module=module.__name__, line=node.lineno):
+                    self.assertTrue(node.args, "message argument missing")
+                    message = node.args[0]
+                    self.assertIsInstance(message, ast.Constant)
+                    self.assertIsInstance(message.value, str)
+                    self.assertTrue(message.value.endswith("."), message.value)
+                    self.assertEqual(len(node.args), 1, "extra values go in keyword details")
+                    messages.add(message.value)
+        self.assertGreater(len(messages), 40)
+        error = enc.AudioEncodeError("Fixed.", value=3)
+        self.assertIsInstance(error, ValueError)
+        self.assertEqual((str(error), error.details), ("Fixed.", {"value": 3}))
+        self.assertEqual(enc.AudioEncodeError("Plain.").details, {})
+
 
 class SabiTests(unittest.TestCase):
     def test_excerpt_window_fades_and_clamping(self):

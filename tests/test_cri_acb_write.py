@@ -434,8 +434,27 @@ class VerifyTests(unittest.TestCase):
             with self.subTest(name), self.assertRaises(enc.AudioEncodeError):
                 acbw.verify_cue(self.acb, self.awb, pcm)
         wrong_key = enc.encode_hca(self.pcm, key=enc.SIFAS_HCA_KEY + 2)
-        with self.assertRaises(enc.AudioEncodeError):
+        with self.assertRaises(enc.AudioEncodeError) as caught:
             acbw.verify_cue(self.acb, acbw.write_afs2([(0, wrong_key)]), self.pcm)
+        self.assertEqual(str(caught.exception), "The new audio does not decode.")
+        self.assertTrue(caught.exception.details["cause"])
+
+    def test_refusals_keep_numbers_out_of_the_message(self):
+        # The message is a fixed sentence (a translation key); the numbers are in details.
+        with self.assertRaises(enc.AudioEncodeError) as caught:
+            acbw.verify_cue(self.acb, self.awb, self.pcm[:-1])
+        self.assertEqual(str(caught.exception), "The new audio does not decode to the input's length and channels.")
+        self.assertEqual(caught.exception.details, {"samples": len(self.pcm), "channels": 2,
+                                                    "expectedSamples": len(self.pcm) - 1, "expectedChannels": 2})
+        with self.assertRaises(enc.AudioEncodeError) as caught:
+            acbw.verify_cue(self.acb, self.awb, self.pcm, snr_floor=200.0)
+        self.assertEqual(str(caught.exception), "The decoded audio differs too much from the input.")
+        self.assertEqual(caught.exception.details["snrFloorDb"], 200.0)
+        self.assertGreater(caught.exception.details["snrDb"], 40)
+        with self.assertRaises(enc.AudioEncodeError) as caught:
+            acbw.build_cue(b"not a cue sheet", self.awb, self.hca, sheet="music_1", beat=None)
+        self.assertEqual(str(caught.exception), "The template cue sheet cannot be read.")
+        self.assertIn("cause", caught.exception.details)
 
     def test_requires_the_bundled_decoder(self):
         self.assertTrue(acbw.encoder_available())
@@ -482,9 +501,9 @@ class RegistrationHelperTests(unittest.TestCase):
         cue = acbw.make_cue(song, template_acb, template_awb, sheet="music_93001", beat=beat, snr_floor=30.0)
         self.assertGreater(cue["snrDb"], 30.0)
         # The tone decodes well above the default floor but not at 200 dB.
-        with self.assertRaisesRegex(enc.AudioEncodeError, "floor"):
+        with self.assertRaisesRegex(enc.AudioEncodeError, "differs too much"):
             acbw.make_cue(song, template_acb, template_awb, sheet="music_93001", beat=beat, snr_floor=200.0)
-        with self.assertRaisesRegex(enc.AudioEncodeError, "floor"):
+        with self.assertRaisesRegex(enc.AudioEncodeError, "differs too much"):
             acbw.make_preview(song, template_acb, template_awb, sheet="music_93001_SABI", start_seconds=0.5,
                               beat=beat, length_samples=RATE, snr_floor=200.0)
         preview = acbw.make_preview(song, template_acb, template_awb, sheet="music_93001_SABI", start_seconds=0.5,
