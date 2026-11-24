@@ -63,6 +63,7 @@ assert.equal(uniforms(5).uBeatLength.value, 4, "seeking after an in-place edit r
 
 uniforms(6.5);
 assert.equal(light.material.visible, false, "no authored contribution during a gap");
+assert.equal(light.material.userData.mvHiddenUniforms, "stale", "a hidden penlight keeps the last clip's uniforms");
 uniforms(1);
 assert.equal(light.material.visible, true);
 

@@ -55,7 +55,7 @@ REPORT_SCHEMA = "sifas-mv-runtime-compare/2"
 EXACT_SCORE = 1000.0
 TYPES = ("camera", "aspect", "globals", "renderSettings", "lights", "visibility", "transforms", "materials", "post",
          "particles", "quality", "springs", "coverage")
-DIAGNOSTIC_TYPES = {"springs"}
+DIAGNOSTIC_TYPES = {"springs", "particles"}
 TIME_GLOBALS = {"_MusicTime", "_SelfTime", "_Time"}
 TIMESTAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")
 PROBE_BLOB = "rtdump-probe"
@@ -68,8 +68,30 @@ DEFAULT_TOLERANCES = {
     "stagePositionM": 1e-3, "stageRotationDeg": 0.1, "scaleRel": 1e-3, "bonePositionM": 5e-3, "boneRotationDeg": 0.5,
     "springRotationDeg": 5.0, "blendShapeWeight": 1.0, "authoredMatchDeg": 1e-3, "authoredFraction": 0.95,
     "beatAbs": None,          # None: globalAbs. Device dumps: 0.25 (the CRI beat callback lagged <= 0.18 beat on Redroid run 2)
+    "particleCountRel": 0.1, "particleCountAbs": 2,
 }
+# Unity Time.maximumDeltaTime default (1/3 s): a frame whose deltaTime is clamped to it advanced the director by
+# more than deltaTime (the director follows the music clock), so t - deltaTime is not the previous frame's time.
+MAX_DELTA_TIME = 1 / 3
+# Cameras besides the main camera that draw stage content into the MV picture (LiveCoreCameraManager.overlayCamera:
+# layer 20 overlay effects at qualities with StageOverlayEffect, cullingMask 0 otherwise).
+PICTURE_CAMERAS = {"camera:overlay"}
+# Material properties the LLAS lighting components write with Material.SetColor/SetFloat (LivePropAmbient,
+# LivePropRimlight, LiveCoreStageAmbient, LiveCoreMemberRimlight, LivePenlightMixer): the game dump reads them from
+# the material, so an editor shader uniform u<Name> is compared with _<Name>. AnimationTrack/Animator curves go
+# through MaterialPropertyBlocks, which the game dump does not read (header.limits.propertyBlocks false): the editor
+# lists the uniforms its curves drive (materials[].curveDriven) and those are reported as not comparable.
+SHADER_MATERIAL_PROPERTIES = {"_TintColor", "_AmbientColor", "_BlendColor", "_RimlightColor", "_RimlightDirection",
+                              "_RimglightIntensity", "_RimglightPower", "_BeatLength", "_RandomBrightness",
+                              "_RandomSwingIntensity", "_RandomDelay", "_RandomUp"}
+# AS/Member cheek floats are only read under the _CHEEK_ON keyword; with _CHEEK 0 the mixer keeps the last
+# applied floats (MemberCheekMixer.PostProcess), whose value depends on the last rendered frame inside the clip.
+CHEEK_FLOATS = {"_CheekIntensity", "_CheekTexArrayIndex"}
+# Editor shader uniforms named after their role rather than the Unity property (AS/FlashLight _Speed/_Length,
+# AS/General/Transparent and AS/FlashLight _TintColor). uTextureST is _MainTex's scale/offset (textureSTSpace).
+SHADER_UNIFORM_ALIASES = {"uTint": "_TintColor", "uSpeed": "_Speed", "uLength": "_Length"}
 BEAT_GLOBALS = {"_Beat"}
+VECTOR_GLOBALS = {"_RenderTextureResolution"}   # compared on .v (x, y), exact
 # worldToCamera is column-major: elements 12-14 are its translation in metres, compared with the
 # camera position tolerance; the other elements are unitless rotation and projective terms.
 W2C_TRANSLATION = (12, 13, 14)
@@ -302,6 +324,23 @@ class Conventions:
                 and path.count("/") >= 2:
             return "stage", "/".join(path.split("/")[2:])
         return scope, None
+
+    MEMBER_RUNTIME_MESHES = ((re.compile(r"/mesh_face/CombineFace$"), "Face"),
+                             (re.compile(r"/mesh_hair/Hair/[^/]+_Bone\d+$"), "Hair"),
+                             (re.compile(r"/mesh_body/Body/[^/]+_Bone\d+$"), "Body"))
+
+    @classmethod
+    def member_mesh_alias(cls, path, scope):
+        """Editor mesh name of a member renderer the game creates at runtime: LiveCoreMemberHead merges the face
+        meshes into CombineFace, and the hair/body SkinnedMeshRenderers are split per bone budget into
+        <suit>_head_BoneN / <suit>_body_BoneN below the Hair/Body GameObjects. The editor keeps the source meshes
+        (Face, Hair, Body). None when no rule applies."""
+        if not isinstance(path, str) or not re.match(r"^member\d+$", scope or ""):
+            return None
+        for pattern, mesh in cls.MEMBER_RUNTIME_MESHES:
+            if pattern.search(path):
+                return mesh
+        return None
 
     @staticmethod
     def editor_slot_name(slot):
@@ -551,6 +590,7 @@ class Comparison:
         self.join_methods = Counter()
         self.game_renderers = {}             # game renderer key -> (scope, relative path)
         self.coverage_sets = defaultdict(lambda: {"game": set(), "editor": set()})
+        self.blend_coverage = Counter()
         self.editor_index = {}
         for record in editor["records"]:
             if self.identity:
@@ -740,9 +780,22 @@ class Comparison:
                 values.update((event["start"], event["start"] + event["duration"]))
         return sorted(values)
 
+    def timing_uncertain(self, record, phase):
+        """Any record (frame or full part) whose Time.deltaTime was clamped to maximumDeltaTime while the director
+        followed the music clock: the pose phase t + phase * deltaTime is not the neighbouring frame's time, so the
+        record is timing-uncertain at every phase but 0. Each record is noted once."""
+        dt = (record.get("clock") or {}).get("deltaTime")
+        if self.identity or phase == 0 or not number(dt) or dt < MAX_DELTA_TIME - 1e-6:
+            return False
+        if record.get("id") not in self.notes["timing.clampedDeltaTime"]:
+            self.notes["timing.clampedDeltaTime"].append(record.get("id"))
+        return True
+
     def near_cut(self, record, phase, cuts):
         clock = record.get("clock") or {}
         t, dt = clock.get("directorTime"), clock.get("deltaTime") or 1 / 30
+        if self.timing_uncertain(record, phase):
+            return True
         if number(t) and any(abs(t - cut) <= dt + 1e-9 for cut in cuts):
             return True
         if record.get("kind") == "frame" and not self.identity:
@@ -876,6 +929,13 @@ class Comparison:
                 self.notes["globals.editorOnly"].append(key)
                 continue
             name = key.split(":", 1)[1]
+            if name in VECTOR_GLOBALS and vector(game_value.get("v")) and vector(editor_value.get("v")) \
+                    and min(len(game_value["v"]), len(editor_value["v"])) >= 2:
+                # Render-target size in pixels: exact.
+                error = max(abs(game_value["v"][index] - editor_value["v"][index]) for index in range(2))
+                self.add("globals", "globalVector", key, record, game_value["v"][:2], editor_value["v"][:2], int(error > 0), 0,
+                         exact=True, near_cut=near, field=editor_value.get("from"))
+                continue
             tol = max(self.tol["globalAbs"], dt) if name in TIME_GLOBALS else (self.tol["beatAbs"] or self.tol["globalAbs"]) if name in BEAT_GLOBALS else self.tol["globalAbs"]
             self.add("globals", "globalAbs", key, record, game_value["f"], editor_value["f"], abs(game_value["f"] - editor_value["f"]), tol,
                      near_cut=near, field=editor_value.get("from"))
@@ -926,6 +986,11 @@ class Comparison:
                              if entry["relative"] and Conventions.path_suffix(relative, entry["relative"])), reverse=True)
             flattened = [entry["key"] for entry in same_scope if entry["path"] is None and game_renderer.get("mesh") is not None
                          and Conventions.object_name(entry["mesh"]) == Conventions.object_name(game_renderer.get("mesh"))]
+            alias = Conventions.member_mesh_alias(game_renderer.get("path"), scope)
+            if not flattened and alias:
+                flattened = [entry["key"] for entry in same_scope if entry["path"] is None and entry["mesh"] == alias]
+                if len(flattened) == 1:
+                    self.notes["renderers.memberRuntimeMesh"].append(f"{game_renderer.get('mesh')} -> {alias}")
             if len(exact) == 1:
                 result = (exact[0], "path")
             elif len(exact) > 1:
@@ -969,11 +1034,16 @@ class Comparison:
         if bit is None:
             self.notes["visibility.layerUnknown"].append("layer or main camera cullingMask missing; drawn = enabled && active")
             return enabled and active, f"enabled={enabled} active={active} layer={layer} mask=?"
+        picture = False
         if not bit and enabled and active:
             drawn_by = sorted(name for name, other in others.items() if Conventions.culling_bit(other, layer))
             if drawn_by:
                 self.notes["visibility.otherCameraLayers"].append(f"layer {layer} excluded by camera:main, included by {', '.join(drawn_by)}")
-        return enabled and active and bit, f"enabled={enabled} active={active} layer={layer} mainMaskBit={int(bit)}"
+            picture = any(name in PICTURE_CAMERAS for name in drawn_by)
+            if picture:
+                self.notes["visibility.overlayCamera"].append(f"layer {layer} drawn by the overlay camera")
+        return enabled and active and (bit or picture), \
+            f"enabled={enabled} active={active} layer={layer} mainMaskBit={int(bit)}" + (" overlayCamera=1" if picture else "")
 
     def compare_renderers(self, record, partner, near):
         editor_renderers = by_key(partner.get("renderers"))
@@ -988,19 +1058,43 @@ class Comparison:
                 continue
             game_visible, why = self.game_drawn(game_renderer, record)
             editor_visible = editor_renderer.get("visible")
+            material_hidden = False
             if isinstance(editor_visible, bool):
+                # An editor renderer is drawn only when its node is visible and not culled and its materials are
+                # visible (three.js skips a mesh whose material.visible is false).
                 editor_visible = editor_visible and editor_renderer.get("culled") is not True
+                material_hidden = editor_visible and editor_renderer.get("materialVisible") is False
+                editor_visible = editor_visible and not material_hidden
             if isinstance(game_visible, bool) and isinstance(editor_visible, bool):
-                editor_why = f"visible={editor_renderer.get('visible')} culled={editor_renderer.get('culled') is True}"
-                self.add("visibility", "rendererVisible", key, record, game_visible, editor_visible,
-                         int(game_visible != editor_visible), 0, exact=True, near_cut=near,
-                         field=f"{match} ({self.joins[key][1]}; game {why}; editor {editor_why})" if why else match)
+                if game_visible and material_hidden and not self.identity:
+                    # The editor hides materials whose draw adds nothing (coloring tint alpha 0, a penlight without
+                    # clip input) while the game still draws them: the materials comparison checks the game's draw
+                    # adds nothing either (hidden material tint), so the renderer is not scored here.
+                    if match not in self.notes["visibility.materialHidden"]:
+                        self.notes["visibility.materialHidden"].append(match)
+                else:
+                    editor_why = (f"visible={editor_renderer.get('visible')} culled={editor_renderer.get('culled') is True} "
+                                  f"materialVisible={editor_renderer.get('materialVisible')}")
+                    self.add("visibility", "rendererVisible", key, record, game_visible, editor_visible,
+                             int(game_visible != editor_visible), 0, exact=True, near_cut=near,
+                             field=f"{match} ({self.joins[key][1]}; game {why}; editor {editor_why})" if why else match)
+            billboard_offscreen = (not self.identity and editor_renderer.get("axisBillboard") is True
+                                   and game_renderer.get("isVisible") is False)
+            if billboard_offscreen:
+                # AxisBillboard turns a node only while a camera renders it: an off-screen game cone keeps the
+                # rotation of the last frame it was drawn in, while the editor reports the live camera's turn.
+                self.notes["transforms.offscreenAxisBillboard"].append(match)
             if not self.identity and self.editor_catalog.get(match, {}).get("path") is None:
                 # The server baked this renderer's node transform into its vertices: the editor transform is identity.
                 self.notes["transforms.flattenedEditor"].append(match)
             else:
-                self.compare_transform("transforms", "renderer", key, record, game_renderer.get("transform") or {},
-                                       editor_renderer.get("transform") or {}, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
+                game_transform = dict(game_renderer.get("transform") or {})
+                editor_transform = dict(editor_renderer.get("transform") or {})
+                if billboard_offscreen:
+                    game_transform.pop("rotation", None)
+                    editor_transform.pop("rotation", None)
+                self.compare_transform("transforms", "renderer", key, record, game_transform,
+                                       editor_transform, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
             editor_slots = {item.get("slot"): item for item in editor_renderer.get("materials") or []}
             for slot in game_renderer.get("materials") or []:
                 editor_slot = editor_slots.get(slot.get("slot"))
@@ -1076,9 +1170,76 @@ class Comparison:
                 score, error = component, delta
         self.add("materials", "floatScore", key, record, game_value, editor_value, score, 1.0, near_cut=near, field=f"{name} (abs {error:.3g})")
 
+    def drawn_game_material(self, game_material):
+        """The game material with the properties its drawn variant reads: AS/Member reads the cheek floats only
+        under _CHEEK_ON. With _CHEEK 0, MemberCheekMixer.PostProcess keeps the floats of the last frame it applied
+        inside a cheek clip, which depend on the device frame grid and are never drawn: the drawn cheek intensity
+        is 0, which the editor's drawn intensity must match, and the texture-array index is not read."""
+        properties = game_material.get("properties") or {}
+        if self.identity or value_of(properties.get("_CHEEK")) != 0 or not CHEEK_FLOATS & set(properties):
+            return game_material
+        self.notes["materials.cheekKeywordOff"].extend(sorted(CHEEK_FLOATS & set(properties)))
+        drawn = {name: value for name, value in properties.items() if name not in CHEEK_FLOATS}
+        if "_CheekIntensity" in properties:
+            drawn["_CheekIntensity"] = {"t": "float", "v": 0.0, "from": "_CHEEK 0: no cheek drawn"}
+        return dict(game_material, properties=drawn)
+
+    @staticmethod
+    def drawn_editor_cheek(editor_material, editor_properties):
+        """An AS/Member editor material draws the cheek only under its _CHEEK_ON variant: without it the drawn
+        cheek intensity is 0 whatever the uniform holds."""
+        keywords = editor_material.get("keywords")
+        intensity = editor_properties.get("_CheekIntensity")
+        if editor_material.get("kind") == "member" and isinstance(keywords, list) and "_CHEEK_ON" not in keywords and \
+                isinstance(intensity, dict) and intensity.get("v") != 0:
+            editor_properties["_CheekIntensity"] = dict(intensity, v=0.0, **{"from": f"{intensity.get('from')} (no _CHEEK_ON: not drawn)"})
+
+    def editor_material_properties(self, editor_material, game_material, editor_properties):
+        """Unity properties of an editor material beyond its mapped `properties`, and the curve-driven ones removed.
+
+        Editor-built shader materials (kind shader) carry their uniforms in `values`: _<Name> uniforms, the
+        u<Name> lighting uniforms the LLAS C# components write with Material.Set* (SHADER_MATERIAL_PROPERTIES) and
+        the aliases in SHADER_UNIFORM_ALIASES; uTextureST is the _MainTex scale/offset in the space the editor
+        reports (textureSTSpace). Only properties the game material also has are compared. A uniform an
+        AnimationTrack/Animator curve drives (curveDriven) is a MaterialPropertyBlock value in the game, which the
+        game dump does not read (it reports the sharedMaterial base): it is listed as not comparable."""
+        game_properties = game_material.get("properties") or {}
+        curve = set(editor_material.get("curveDriven") or [])
+        if editor_material.get("kind") == "shader":
+            for uniform, held in (editor_material.get("values") or {}).items():
+                if not isinstance(held, dict):
+                    continue
+                if uniform == "uTextureST":
+                    space = editor_material.get("textureSTSpace")
+                    if "_MainTex" in game_properties and space in ("unity", "gltf") and vector(held.get("v"), 4):
+                        st = list(held["v"]) if space == "unity" else Conventions.texture_st(held["v"])
+                        entry = editor_properties.setdefault("_MainTex", {"t": "tex", "v": None, "from": None})
+                        entry.update(st=st, stFrom=uniform, stSpace=space)
+                    continue
+                unity = SHADER_UNIFORM_ALIASES.get(uniform) or (uniform if uniform.startswith("_") else None)
+                if unity is None and Conventions.material_property(uniform) in SHADER_MATERIAL_PROPERTIES:
+                    unity = Conventions.material_property(uniform)
+                if unity is None or unity not in game_properties or held.get("t") == "tex":
+                    continue
+                kind = "color" if held.get("t") == "vector" and (game_properties[unity] or {}).get("t") == "color" else held.get("t")
+                editor_properties.setdefault(unity, {"t": kind, "v": held.get("v"), "from": uniform})
+        label = editor_material.get("editorName") or editor_material.get("name")
+        for name in list(editor_properties):
+            entry = editor_properties[name]
+            if not isinstance(entry, dict) or not curve:
+                continue
+            if entry.get("from") in curve:
+                self.notes["materials.notComparableMPB"].append(f"{label}:{name} ({entry['from']})")
+                del editor_properties[name]
+            elif entry.get("stFrom") in curve:
+                # Only the scale/offset is curve-driven; the texture itself is still compared.
+                self.notes["materials.notComparableMPB"].append(f"{label}:{name}_ST ({entry['stFrom']})")
+                editor_properties[name] = {key: value for key, value in entry.items() if key not in ("st", "stFrom", "stSpace")}
+
     def compare_materials(self, record, partner, near):
         editor_materials = by_key(partner.get("materials"))
         for game_material in record.get("materials") or []:
+            game_material = self.drawn_game_material(game_material)
             for use in game_material.get("usedBy") or []:
                 renderer_key, _, slot = str(use).rpartition("#")
                 editor_renderer = self.renderer_map.get(renderer_key)
@@ -1094,7 +1255,26 @@ class Comparison:
                     unity = Conventions.material_property(name)
                     if unity:
                         editor_properties[unity] = prop
+                if not self.identity:
+                    self.drawn_editor_cheek(editor_material, editor_properties)
                 values = editor_material.get("values") or {}
+                key = f"material:{renderer_key}#{slot}"
+                if editor_material.get("visible") is False:
+                    label = f"{editor_material.get('editorName')} for {game_material.get('name')}"
+                    hidden_uniforms = editor_material.get("hiddenUniforms")
+                    if hidden_uniforms != "current":
+                        # Stale uniforms (a penlight without clip input keeps the last clip's values), or a dump that does
+                        # not say: only the claim that the draw adds nothing is checked against the game.
+                        if label not in self.notes["materials.hiddenStale"]:
+                            self.notes["materials.hiddenStale"].append(label)
+                        if hidden_uniforms == "stale":
+                            self.compare_hidden_draw(key, record, game_material, near)
+                        continue
+                    # Current uniforms (coloring hidden at tint alpha 0): compared like a drawn material.
+                    if label not in self.notes["materials.hiddenCurrent"]:
+                        self.notes["materials.hiddenCurrent"].append(label)
+                if not self.identity:
+                    self.editor_material_properties(editor_material, game_material, editor_properties)
                 if not self.identity and editor_material.get("kind") == "gltf" and vector(values.get("color"), 3):
                     # A glTF slot multiplies its texture by color*opacity, as AS/* shaders do by _TintColor.
                     opacity = values.get("opacity") if number(values.get("opacity")) else 1.0
@@ -1106,7 +1286,6 @@ class Comparison:
                         self.notes["materials.unmappedUniforms"].append(name)
                 for name in editor_material.get("editorOnly") or []:
                     self.notes["materials.editorOnlyUniforms"].append(name)
-                key = f"material:{renderer_key}#{slot}"
                 sampled = member_sampled_slots(editor_material)
                 self.compare_member_variant(key, record, game_material, editor_material, near)
                 for name, game_property in (game_material.get("properties") or {}).items():
@@ -1115,6 +1294,18 @@ class Comparison:
                         self.notes["materials.notModeled"].append(f"{editor_material.get('kind')}:{name}")
                         continue
                     self.compare_property(key, name, record, game_property, editor_property, near, sampled=name in sampled)
+
+    def compare_hidden_draw(self, key, record, game_material, near):
+        """A hidden editor material draws nothing. The AS effect shaders the editor hides (coloring, penlight) multiply
+        their output by _TintColor under SrcAlpha blending, so the game's draw adds nothing when its _TintColor alpha
+        is 0; without that property the claim is not measurable."""
+        tint = (game_material.get("properties") or {}).get("_TintColor")
+        alpha = tint.get("v")[3] if isinstance(tint, dict) and vector(tint.get("v"), 4) else None
+        if not number(alpha):
+            self.notes["materials.hiddenNotMeasurable"].append(f"{key}: the game material has no _TintColor")
+            return
+        self.add("materials", "hiddenTintAlpha", key, record, alpha, 0.0, abs(alpha), self.tol["color"], near_cut=near,
+                 field="_TintColor alpha (editor hides the material)")
 
     def compare_member_variant(self, key, record, game_material, editor_material, near):
         """AS/Member variant state: the keywords that select a compiled variant and the rim term."""
@@ -1164,21 +1355,47 @@ class Comparison:
                 if editor_bone:
                     self.compare_transform("transforms", "bone", bone["key"], record, bone, editor_bone,
                                            self.tol["bonePositionM"], self.tol["boneRotationDeg"], near)
-            editor_morphs = {}
-            for morph in editor_member.get("morphs") or []:
-                editor_morphs[morph.get("rendererKey")] = morph
-            for shape in member.get("blendShapes") or member.get("morphs") or []:
-                renderer = shape.get("rendererKey") if self.identity else self.renderer_map.get(shape.get("rendererKey"), shape.get("rendererKey"))
-                editor_shape = editor_morphs.get(renderer)
-                if not editor_shape:
+            self.compare_blend_shapes(record, member, editor_member, near)
+
+    def member_channels(self, entries, side):
+        """Blend shape weights (0-100) of one member by channel name across its renderers. The game merges the
+        face meshes into CombineFace (LiveCoreMemberHead); the editor keeps Face/Eye/Eye_Around/Mouth apart, so
+        renderer keys never join: a channel name (EyeBlendShape.*, MouthBlendShape.*, *EyeWhiteLineBlendShape.*)
+        is the same Unity blend shape on either side. Both sides list only non-zero weights."""
+        channels, renderers = {}, 0
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            weights = entry.get("weights") or {}
+            if weights or (number(entry.get("count")) and entry["count"] > 0):
+                renderers += 1
+            for name, weight in weights.items():
+                if not number(weight):
                     continue
-                unit = editor_shape.get("unit")
-                for name, weight in (shape.get("weights") or {}).items():
-                    editor_weight = Conventions.blend_weight((editor_shape.get("weights") or {}).get(name, 0.0), unit) if not self.identity \
-                        else (editor_shape.get("weights") or {}).get(name, 0.0)
-                    if number(weight):
-                        self.add("transforms", "blendShapeWeight", f"{renderer}:{name}", record, weight, editor_weight,
-                                 abs(weight - editor_weight), self.tol["blendShapeWeight"], near_cut=near)
+                value = Conventions.blend_weight(weight, entry.get("unit"))
+                if name in channels and abs(channels[name] - value) > self.tol["blendShapeWeight"]:
+                    self.notes["blendShapes.rendererConflict"].append(f"{side} {name}: {channels[name]:.4g} vs {value:.4g}")
+                channels[name] = max(channels.get(name, value), value)
+        return channels, renderers
+
+    def compare_blend_shapes(self, record, member, editor_member, near):
+        game, game_renderers = self.member_channels(member.get("blendShapes") or member.get("morphs"), "game")
+        editor, editor_renderers = self.member_channels(editor_member.get("morphs"), "editor")
+        counts = self.blend_coverage
+        counts["members"] += 1
+        counts["gameRenderers"] += game_renderers
+        counts["editorRenderers"] += editor_renderers
+        counts["gameChannels"] += len(game)
+        counts["editorChannels"] += len(editor)
+        if not game_renderers or not editor_renderers:
+            # No face renderer with blend shapes on one side: a 0 there is "not reported", not a weight.
+            self.notes["blendShapes.noFaceRenderer"].append(f"slot {member.get('slot')}: game {game_renderers}, editor {editor_renderers}")
+            return
+        for name in sorted(set(game) | set(editor)):
+            game_weight, editor_weight = game.get(name, 0.0), editor.get(name, 0.0)
+            counts["samples"] += 1
+            self.add("transforms", "blendShapeWeight", f"blendShape:member{member.get('slot')}:{name}", record, game_weight, editor_weight,
+                     abs(game_weight - editor_weight), self.tol["blendShapeWeight"], near_cut=near)
 
     def spring_match(self, bone, editor_bones):
         """Editor key of a game swing bone: 'spring:<path>' -> member:<slot>:<path below the member's
@@ -1242,12 +1459,40 @@ class Comparison:
             self.add("quality", "qualityValue", f"quality:{key}", record, game_value, editor_values[key],
                      int(not Conventions.same_quality(game_value, editor_values[key])), 0, exact=True, near_cut=near, field=name)
 
-    def compare_particles(self, record, partner):
+    @staticmethod
+    def particle_key(path):
+        """'/<template> [Timeline]/<path>' (a ControlTrack instance at the scene root) -> '<template>/<path>',
+        the editor's MVStudioParticleSystems.inspect() 'path'."""
+        match = re.match(r"^/(.+?) \[Timeline\]/(.*)$", path or "")
+        return f"{match.group(1)}/{match.group(2)}" if match else None
+
+    def compare_particles(self, record, partner, near=False):
         particles = record.get("particles")
         if isinstance(particles, list):
             self.notes["particles.game"].append({"record": record.get("id"), "systems": len(particles),
                                                   "playing": sum(1 for item in particles if item.get("isPlaying")),
                                                   "particles": sum(item.get("particleCount") or 0 for item in particles)})
+        if self.identity or not isinstance(particles, list) or not isinstance((partner or {}).get("particles"), list):
+            return
+        editor = {item.get("path"): item for item in partner["particles"] if isinstance(item, dict)}
+        for item in particles:
+            key = self.particle_key(item.get("path"))
+            if key is None or not item.get("isPlaying"):
+                continue          # SkillCutin and stopped systems; a game chunk lists only part of the systems
+            match = editor.get(key)
+            self.add("particles", "particleSystemPlaying", f"particles:{key}", record, True, match is not None,
+                     int(match is None), 0, exact=True, near_cut=near)
+            if match is None:
+                continue
+            game_count, editor_count = item.get("particleCount"), match.get("alive")
+            if number(game_count) and number(editor_count):
+                tol = max(self.tol["particleCountAbs"], self.tol["particleCountRel"] * max(game_count, editor_count))
+                self.add("particles", "particleCount", f"particles:{key}", record, game_count, editor_count,
+                         abs(game_count - editor_count), tol, near_cut=near,
+                         field=f"seed game {item.get('randomSeed')} editor {match.get('seed')}")
+            if number(item.get("randomSeed")) and number(match.get("seed")) and not item.get("useAutoRandomSeed"):
+                self.add("particles", "particleSeed", f"particles:{key}", record, item["randomSeed"], match["seed"],
+                         int(int(item["randomSeed"]) & 0xFFFFFFFF != int(match["seed"]) & 0xFFFFFFFF), 0, exact=True, near_cut=near)
 
     def census(self, records):
         for record in records:
@@ -1379,6 +1624,7 @@ class Comparison:
         frames = [record for record in records if record.get("kind") == "frame"]
         phase_info = self.calibrate(frames)
         phase = phase_info["chosen"]
+        self.phase = phase
         globals_phase = self.calibrate_globals(frames)
         phase_info["globals"] = globals_phase
         cuts = self.cuts(phase)
@@ -1405,14 +1651,15 @@ class Comparison:
                 self.compare_globals(record, self.partner(record, globals_phase) or partner, False)
                 self.compare_member_identity(record, partner)
                 continue
-            part = record.get("part")
+            # Full parts are not camera-derived: only a clamped deltaTime keeps them out of the ranking.
+            part, uncertain = record.get("part"), self.timing_uncertain(record, phase)
             handler = {"renderers": self.compare_renderers, "materials": self.compare_materials, "stageNodes": self.compare_stage_nodes,
                        "members": self.compare_members, "springs": self.compare_springs, "post": self.compare_post,
                        "quality": self.compare_quality}.get(part)
             if handler:
-                handler(record, partner, False)
+                handler(record, partner, uncertain)
             elif part == "particles":
-                self.compare_particles(record, partner)
+                self.compare_particles(record, partner, uncertain)
         # Camera hypothesis: the one with the lower median residual score (error / tolerance) over all frames.
         fitted, medians = None, {}
         if hypotheses:
@@ -1444,6 +1691,57 @@ class Comparison:
         self.coverage_sets["globals"]["editor"] |= editor_globals
         fov = self.fov_verdict(frames, phase)
         return self.report(phase_info, {"fitted": fitted, "medianResidual": medians}, joined, missing, time_errors, cuts, fov)
+
+    @staticmethod
+    def unavailable(records, field, nested=None):
+        """Reasons the game dump gives for a value it could not read: record.unavailable[field], and with nested
+        also record[nested][].unavailable[field] (a stripped class or an unregistered engine icall)."""
+        reasons = Counter()
+        for record in records:
+            holders = [record] + [item for item in (record.get(nested) or []) if isinstance(item, dict)] if nested else [record]
+            for holder in holders:
+                reason = (holder.get("unavailable") or {}).get(field) if isinstance(holder.get("unavailable"), dict) else None
+                if isinstance(reason, str) and reason:
+                    reasons[reason] += 1
+        return reasons
+
+    def negative_controls(self, frames):
+        """Game-only negative controls. A value the game dump reports unavailable (and never read) is not measurable:
+        the reason is reported instead of an empty list or a null that would read as 'nothing there'."""
+        def not_measurable(reasons):
+            return "not measurable: " + reasons.most_common(1)[0][0]
+
+        unavailable = {}
+        settings = next((record.get("renderSettings") for record in frames if isinstance(record.get("renderSettings"), dict)
+                         and "modeled" not in record.get("renderSettings")), None)
+        reasons = self.unavailable(frames, "renderSettings")
+        if reasons:
+            unavailable["renderSettings"] = {"reason": reasons.most_common(1)[0][0], "records": sum(reasons.values())}
+            if settings is None:
+                settings = not_measurable(reasons)
+        lights = [light for record in frames for light in (record.get("lights") or []) if isinstance(light, dict)]
+        lights_read = any(isinstance(record.get("lights"), list) for record in frames)
+        reasons = self.unavailable(frames, "lights")
+        light_count = len({light.get("key") for light in lights})
+        with_intensity = sorted({light.get("key") for light in lights if number(light.get("intensity")) and light["intensity"] > 0})
+        if reasons:
+            unavailable["lights"] = {"reason": reasons.most_common(1)[0][0], "records": sum(reasons.values())}
+            if not lights_read:
+                light_count = with_intensity = not_measurable(reasons)
+        renderer_records = [record for record in self.game["records"] if record.get("part") == "renderers"]
+        renderers = [item for record in renderer_records for item in (record.get("renderers") or []) if isinstance(item, dict)]
+        blocks = [item for item in renderers if isinstance(item.get("hasPropertyBlock"), bool)]
+        reasons = self.unavailable(renderer_records, "hasPropertyBlock", nested="renderers")
+        property_blocks = ({"renderers": len({item.get("key") for item in blocks}),
+                            "withPropertyBlock": sorted({item.get("key") for item in blocks if item["hasPropertyBlock"]})[:40]}
+                           if blocks else None)
+        if reasons:
+            unavailable["hasPropertyBlock"] = {"reason": reasons.most_common(1)[0][0], "records": sum(reasons.values())}
+            if property_blocks is None:
+                property_blocks = not_measurable(reasons)
+        return {"renderSettings": settings, "lights": light_count, "lightsWithIntensity": with_intensity,
+                "propertyBlocks": property_blocks, "unavailable": unavailable,
+                "info": "game-only negative controls: no SIFAS shader reads RenderSettings or Unity lights"}
 
     def timing(self):
         frames = [record for record in self.game["records"] if record.get("kind") == "frame"]
@@ -1502,6 +1800,35 @@ class Comparison:
                           if not any(found == relative or Conventions.path_suffix(found, relative) for found in present.get(scope, ())))
             entry.update(expected=len(expected["renderers"]), missingFromBoth=both[:50], missingFromBothCount=len(both))
         return entry
+
+    def part_coverage(self):
+        """Per game part (frame records under "frame"): how many records, how many joined an editor record at the
+        chosen phase, the director times they span and the samples they produced, so a part the game sampled only
+        early in the song (a preempted pass) or one that produced no sample is visible. Passes come from the game
+        trailer (parts sampled per pass, its window and whether it completed)."""
+        trailer = self.game.get("trailer") or {}
+        end = (trailer.get("coverage") or {}).get("directorLast")
+        frames = [(record.get("clock") or {}).get("directorTime") for record in self.game["records"] if record.get("kind") == "frame"]
+        if not number(end):
+            end = max((t for t in frames if number(t)), default=None)
+        samples = Counter(item["record"] for item in self.items)
+        parts = {}
+        for record in self.game["records"]:
+            part = "frame" if record.get("kind") == "frame" else record.get("part") or record.get("kind") or "other"
+            entry = parts.setdefault(part, {"records": 0, "joined": 0, "samples": 0, "tFirst": None, "tLast": None})
+            entry["records"] += 1
+            entry["joined"] += int(self.partner(record, getattr(self, "phase", 0)) is not None)
+            entry["samples"] += samples.get(record.get("id"), 0)
+            t = (record.get("clock") or {}).get("directorTime")
+            if number(t):
+                entry["tFirst"] = t if entry["tFirst"] is None else min(entry["tFirst"], t)
+                entry["tLast"] = t if entry["tLast"] is None else max(entry["tLast"], t)
+        for entry in parts.values():
+            entry["uncoveredTail"] = (end - entry["tLast"]) if number(end) and number(entry["tLast"]) else None
+        passes = [{name: item.get(name) for name in ("pass", "parts", "startedAt", "endedAt", "complete", "closed")}
+                  for item in trailer.get("passes") or [] if isinstance(item, dict)]
+        return {"songEnd": end, "parts": dict(sorted(parts.items())), "passes": passes,
+                "blendShapes": dict(self.blend_coverage)}
 
     def quality_validity(self):
         """Contract 5: the editor must have run at the game's quality (header.quality.values)."""
@@ -1608,12 +1935,7 @@ class Comparison:
                 notes[name] = values[:40]
         game_header = self.game.get("header") or {}
         frames = [record for record in self.game["records"] if record.get("kind") == "frame"]
-        lights = [light for record in frames for light in (record.get("lights") or []) if isinstance(light, dict)]
-        negative = {"renderSettings": next((record.get("renderSettings") for record in frames if isinstance(record.get("renderSettings"), dict)
-                                            and "modeled" not in record.get("renderSettings")), None),
-                    "lights": len({light.get("key") for light in lights}),
-                    "lightsWithIntensity": sorted({light.get("key") for light in lights if number(light.get("intensity")) and light["intensity"] > 0}),
-                    "info": "game-only negative controls: no SIFAS shader reads RenderSettings or Unity lights"}
+        negative = self.negative_controls(frames)
         per_type_top = {type_: [group for group in ranked if group["type"] == type_][:5] for type_ in TYPES}
         validity = self.quality_validity()
         report = {
@@ -1647,6 +1969,7 @@ class Comparison:
                         "gameQuality": (game_header.get("quality") or {}).get("values"), "validity": validity["status"]},
         }
         report["_worst"] = beyond if beyond else ranked[:100]
+        report["partCoverage"] = self.part_coverage()
         return report
 
 
@@ -1725,11 +2048,38 @@ def write_markdown(report, path):
                          (f", joined by {entry['joinedBy']}, editor renderers without a GameObject path {entry['editorFlattened']}"
                           if "joinedBy" in entry else "") +
                          (f", expected {entry['expected']}, missing from both {entry['missingFromBothCount']}" if "expected" in entry else ""))
-    lines += [f"- ambiguous renderer joins: {coverage['ambiguousRenderersCount']}", "",
+    lines += [f"- ambiguous renderer joins: {coverage['ambiguousRenderersCount']}", ""]
+    parts = report.get("partCoverage") or {}
+    if parts.get("parts"):
+        blend = parts.get("blendShapes") or {}
+        lines += ["### Coverage per game part", "", f"Song end {_fmt(parts.get('songEnd'))} s. A part whose last record is far "
+                  "before the end has no game sample there: later shots are pixel-only for it.", "",
+                  "| part | records | joined | samples | first t | last t | uncovered tail (s) |", "|---|---:|---:|---:|---:|---:|---:|"]
+        for name, entry in parts["parts"].items():
+            lines.append(f"| {name} | {entry['records']} | {entry['joined']} | {entry['samples']} | {_fmt(entry['tFirst'])} | "
+                         f"{_fmt(entry['tLast'])} | {_fmt(entry['uncoveredTail'])} |")
+        for item in parts.get("passes") or []:
+            lines.append(f"- pass {item.get('pass')}: {_fmt(item.get('startedAt'))}-{_fmt(item.get('endedAt'))} s, parts "
+                         f"{', '.join(item.get('parts') or [])}{'' if item.get('complete') else ' (incomplete' + (': ' + item['closed'] if item.get('closed') else '') + ')'}")
+        lines += ["", f"Blend shapes (per member slot, joined by channel name): {blend.get('samples', 0)} samples from "
+                  f"{blend.get('members', 0)} member records; non-zero channels game {blend.get('gameChannels', 0)}, editor "
+                  f"{blend.get('editorChannels', 0)}; face renderers game {blend.get('gameRenderers', 0)}, editor "
+                  f"{blend.get('editorRenderers', 0)}.", ""]
+    lines += [
               "## Negative controls", "", f"{report['negativeControls']['info']}; lights {report['negativeControls']['lights']}, "
               f"with intensity > 0: {report['negativeControls']['lightsWithIntensity']}.", "",
+              f"- RenderSettings: {_negative(report['negativeControls'].get('renderSettings'))}",
+              f"- MaterialPropertyBlocks (Renderer.HasPropertyBlock): {_negative(report['negativeControls'].get('propertyBlocks'))}", "",
               "## Timing", "", f"{report['timing']}", ""]
     Path(path).write_text("\n".join(lines) + "\n", "utf-8")
+
+
+def _negative(value):
+    if value is None:
+        return "not in the game dump"
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)[:400]
 
 
 def write_csv(groups, path):

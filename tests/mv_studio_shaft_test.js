@@ -100,6 +100,18 @@ async function run() {
   pointNear(root.getWorldPosition(new T.Vector3()).toArray(), [4, 17, -3]);
   pointNear(tint(mesh), [.6, .8, .4, 1]);
 
+  // The runtime value dump names the renderer's GameObject below the performer.
+  assert.equal(mesh.userData.mvGameObjectPath, "variant 0/native renderer");
+  // preview(eye) is read-only and equals the turn billboard() then applies.
+  stage.updateMatrixWorld(true);
+  const restQuaternion = mesh.quaternion.clone();
+  const previewed = controller.preview(subCamera.position);
+  assert.deepEqual([...previewed.keys()], [mesh]);
+  assert.ok(mesh.quaternion.equals(restQuaternion), "preview leaves the shaft alone");
+  controller.billboard(subCamera);
+  pointNear(previewed.get(mesh).toArray(), mesh.quaternion.toArray());
+  assert.equal(another.preview(subCamera.position).size, 0, "a hidden shaft has nothing to preview");
+
   // Each camera applies local +Z around the preserved up, despite nonuniform scale.
   for (const view of [camera, subCamera, camera]) {
     controller.billboard(view);

@@ -39,6 +39,9 @@
   // the display refresh rate instead of the preset's 30/60 fps, and the swing
   // physics step once per frame at that rate.
   let refreshRateMode = 0;
+  // Device option of the original client (off by default): the player's
+  // anti-aliasing setting lets Max and High 3D draw at the screen height.
+  let antiAliasingMode = false;
   const timelineLanes = new Map();
   const audio = document.createElement("audio");
   audio.preload = "metadata";
@@ -527,6 +530,10 @@
       else if (option.type === "number" && finite(value)) box.append(field(option.label || key, numberInput(value, data, update)));
       else if (value != null) box.append(field(option.label || key, make("output", text(value))));
     }
+    box.append(field("Anti-aliasing", checkInput(antiAliasingMode, { id: "mv-anti-aliasing" }, (value) => {
+      antiAliasingMode = value;
+      scene?.setAntiAliasing?.(antiAliasingMode);
+    })));
     if (!global.MVStudioPhysics) return;
     const refresh = make("select", null, { id: "mv-refresh-rate-mode" });
     replaceOptions(refresh, [{ id: 0, label: "Off" }, ...global.MVStudioPhysics.REFRESH_RATES.map((rate) => ({ id: rate, label: `${rate} Hz` }))],
@@ -783,6 +790,7 @@
         screenFade: byId("mv-screen-fade").checked });
       scene.setVisible(visible && !document.hidden);
       if (refreshRateMode) applyRefreshRateMode();
+      if (antiAliasingMode) scene.setAntiAliasing?.(true);
     }
     return scene;
   }

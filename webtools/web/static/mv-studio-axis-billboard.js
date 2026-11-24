@@ -69,6 +69,24 @@
       }
     }
 
+    // Read-only: the local rotation apply() would give each shown billboard for an eye
+    // position, from its authored rest rotation (no node, matrix or camera is written).
+    function preview(eyePosition) {
+      const result = new Map();
+      const up = new T.Vector3(), position = new T.Vector3(), direction = new T.Vector3();
+      const parentRotation = new T.Quaternion(), rotation = new T.Quaternion(), local = scratch(T);
+      for (const { node, rest } of entries) {
+        if (!shown(node)) continue;
+        const parent = node.parent;
+        worldRotation(parent, parentRotation);
+        up.set(0, 1, 0).applyQuaternion(rotation.multiplyQuaternions(parentRotation, rest)).normalize();
+        position.copy(node.position).applyMatrix4(parent.matrixWorld);
+        result.set(node, axisRotation(up, direction.subVectors(eyePosition, position), rotation, local)
+          ? parentRotation.clone().invert().multiply(rotation) : rest.clone());
+      }
+      return result;
+    }
+
     function reset() {
       for (const { node, rest } of entries) {
         node.quaternion.copy(rest);
@@ -76,7 +94,7 @@
       }
     }
 
-    return { nodes: entries.map(entry => entry.node), apply, reset, dispose: reset };
+    return { nodes: entries.map(entry => entry.node), apply, preview, reset, dispose: reset };
   }
 
   global.MVStudioAxisBillboard = { create, axisRotation, worldRotation, scratch };
