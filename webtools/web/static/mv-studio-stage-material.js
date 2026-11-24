@@ -461,8 +461,12 @@
     const hasEmissiveBinding = records.some(({meta}) => meta.emissive?.binding === stageModel);
     const singleTracks = new Map(), samples = new Map();
     let sourceTracks, ambientTrack, emissiveTrack, propProject;
+    // LiveCoreStageAmbient of MainStage: one last-written color per property.
+    const stageHolds = propertyNames.map(() => ({})), stageSamples = new Map();
+    const held = global.MVStudioLighting?.heldColor;
     return {
-      update(seconds, project, lighting) {
+      // frames: the scene's frame clock (MVStudioLighting.heldColor).
+      update(seconds, project, lighting, frames) {
         if (propProject !== project) {
           propProject = project;
           for (const {prop} of records) prop?.setProject(project);
@@ -487,7 +491,18 @@
           if (channel) record.material.uniforms.mainUVTransform.value.set(
             channel.x, channel.y, channel.z, 1 - channel.y - channel.w);
         }
-        const active = stageAmbient(project, seconds, ambientTrack);
+        let active = stageAmbient(project, seconds, ambientTrack);
+        // The base light also writes these components every frame (exact colors).
+        const holding = held && !lighting?.baseTrack;
+        if (holding && active) {
+          stageSamples.clear();
+          const activeAt = (time) => {
+            if (time === seconds) return active;
+            if (!stageSamples.has(time)) stageSamples.set(time, stageAmbient(project, time, ambientTrack));
+            return stageSamples.get(time);
+          };
+          active = stageHolds.map((hold, index) => held(hold, (time) => activeAt(time)?.[index] ?? null, seconds, frames));
+        } else for (const hold of stageHolds) hold.color = null;
         const emissive = stageEmissive(project, seconds, emissiveTrack);
         samples.clear();
         const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
@@ -509,9 +524,18 @@
             material.uniforms.emissiveIntensity.value = intensity;
           }
           if (prop) {
-            const sample = prop.sample(seconds);
-            material.uniforms.ambient.value.fromArray(sample?.ambient || meta.colors._AmbientColor);
-            material.uniforms.tint.value.fromArray(sample?.ambient ? sample.tint : meta.colors._TintColor);
+            // LivePropAmbientMixer.PostProcess (0x20f1480) writes the mixed colors, or
+            // the defaults without an input, through the prop's LiveCoreMemberAmbient.
+            const samples = new Map();
+            const sampleAt = (time) => {
+              if (!samples.has(time)) samples.set(time, prop.sample(time));
+              return samples.get(time);
+            };
+            const ambientAt = (time) => sampleAt(time)?.ambient || meta.colors._AmbientColor;
+            const tintAt = (time) => sampleAt(time)?.ambient ? sampleAt(time).tint : meta.colors._TintColor;
+            prop.holds ||= { ambient: {}, tint: {} };
+            material.uniforms.ambient.value.fromArray(holding ? held(prop.holds.ambient, ambientAt, seconds, frames) : ambientAt(seconds));
+            material.uniforms.tint.value.fromArray(holding ? held(prop.holds.tint, tintAt, seconds, frames) : tintAt(seconds));
             continue;
           }
           if (!meta.ambientDefaults) continue;

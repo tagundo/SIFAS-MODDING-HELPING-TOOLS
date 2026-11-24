@@ -54,6 +54,46 @@ project.quality.values.member_rim_light = false;
 assert.equal(sample(project, 1).member(2), null);
 console.log("Native MV base light crossfades, per-performer colors and quality gates passed");
 
+// UtilColor.CheckSame (0x2960e4c, squared RGBA distance < 1e-5): an ambient
+// component keeps the color it last wrote until the new one moves by sqrt(1e-5).
+{
+  const { heldColor, HOLD_EPSILON } = globalThis.MVStudioLighting;
+  assert.equal(HOLD_EPSILON, Math.fround(1e-5), "the float at 0x56f60fc");
+  const ramp = (time) => [0, 0, 1, .1 + .001 * time];
+  const hold = {};
+  assert.deepEqual(heldColor(hold, ramp, 2, null), ramp(2), "no frame clock: exact");
+  assert.deepEqual(heldColor(hold, ramp, 3, { advancing: true, history: [] }), ramp(2), "0.001 is not written");
+  assert.deepEqual(heldColor(hold, ramp, 6, { advancing: true, history: [] }), ramp(6), "0.004 is written");
+  assert.deepEqual(heldColor(hold, ramp, 8, { advancing: false, history: [0, 3, 5] }), ramp(5),
+    "a seek replays the rendered frames: 0 -> 3 (held 0), 5 written, 8 held");
+  assert.deepEqual(heldColor(hold, ramp, 8, { advancing: false, history: [] }), ramp(8), "a seek without frames: exact");
+  assert.equal(heldColor(hold, () => null, 9, { advancing: true, history: [] }), null);
+  assert.deepEqual(heldColor(hold, ramp, 9.5, { advancing: true, history: [] }), ramp(9.5), "no color restarts the hold");
+}
+
+async function testStageAmbientHold() {
+  const root = new T.Group(), texture = new T.Texture();
+  const node = new T.Mesh(new T.PlaneGeometry(), new T.MeshBasicMaterial({map: texture}));
+  const colors = {_AmbientColor: [0, 0, 0, 0], _TintColor: [1, 1, 1, 1], _BlendColor: [0, 0, 0, 0]};
+  node.geometry.userData.mvStageMaterial = {shader: "general", colors, ambientDefaults: colors, uvTransform: [1, 1, 0, 0]};
+  root.add(node);
+  const controller = await MVStudioStageMaterial.apply(T, root, {getDependency: async () => texture});
+  const clip = (start, alpha, fade) => ({start, duration: 2, values: {playableClass: "LiveStageAmbientClip",
+    colorSpecifiedType: 0, color: [0, .5, 1, alpha], tintColor: [1, 1, 1, 1], blendColor: [1, 1, 1, 0], ...fade}});
+  const ambient = track("LiveStageAmbientTrack", "/EntryPoint/Live/Stages/MainStage",
+    [clip(0, .2, {blendOut: 1}), clip(1, .21, {blendIn: 1})]);
+  const stageProject = {tracks: [ambient], quality: {values: {}}};
+  const alpha = () => node.material.uniforms.ambient.value.w;
+  controller.update(1.8, stageProject, {});
+  assert(Math.abs(alpha() - (.2 + .01 * .896)) < 1e-7, "exact without frame history");
+  controller.update(1.8, stageProject, {}, {advancing: false, history: [.5, 1.2, 1.6]});
+  assert(Math.abs(alpha() - (.2 + .01 * .648)) < 1e-7, "LiveCoreStageAmbient keeps the 1.6 s write");
+  controller.update(1.8, stageProject, {baseTrack: true}, {advancing: false, history: [.5, 1.2, 1.6]});
+  assert(Math.abs(alpha() - (.2 + .01 * .896)) < 1e-7, "a base light track also writes the component: exact");
+  controller.dispose();
+  console.log("Ambient component write threshold (UtilColor.CheckSame) holds on rendered frames passed");
+}
+
 async function testSingleStageAmbient() {
   const stage = "/EntryPoint/Live/Stages/MainStage";
   const plantBinding = stage + "/Model/Ambient/Ambient2", effectBinding = stage + "/Effect";
@@ -529,7 +569,7 @@ async function testWeightedStageMaterial() {
   console.log("Weighted native stage material selects Three skinning, opaque state and authored texture sampling.");
 }
 
-testSingleStageAmbient().then(testStageEmissive).then(testStageMainSampler).then(testStageAuxiliarySamplers)
+testStageAmbientHold().then(testSingleStageAmbient).then(testStageEmissive).then(testStageMainSampler).then(testStageAuxiliarySamplers)
   .then(testStageCubemapQuality).then(testWeightedStageMaterial).catch(error => {
     console.error(error);
     process.exitCode = 1;

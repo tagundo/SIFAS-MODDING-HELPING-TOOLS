@@ -210,14 +210,30 @@
       },
       // LivePropAmbientMixer / LivePropRimlightMixer: active clips write the
       // mixed values; otherwise the defaults return and rim intensity is zero.
-      update(seconds) {
+      // The ambient and tint go through the prop's LiveCoreMemberAmbient
+      // (LivePropAmbientMixer.PostProcess 0x20f1480 -> ApplyAmbientColor
+      // 0x2f670cc / ApplyTintColor / ApplyDefault*), which keeps its last written
+      // color until the new one moves by sqrt(1e-5) (MVStudioLighting.heldColor
+      // on the scene's frame clock `frames`). A base light track writes the same
+      // components every frame (`exact`), so its colors are not held.
+      update(seconds, frames = null, exact = false) {
         const samples = new Map();
-        for (const {fields, light, material, controller} of entries) {
-          if (!samples.has(controller)) samples.set(controller, controller?.sample(seconds) ?? null);
-          const sample = samples.get(controller), uniforms = material.uniforms;
+        const sampleAt = (controller, time) => {
+          let byTime = samples.get(controller);
+          if (!byTime) samples.set(controller, byTime = new Map());
+          if (!byTime.has(time)) byTime.set(time, controller?.sample(time) ?? null);
+          return byTime.get(time);
+        };
+        const held = !exact && global.MVStudioLighting?.heldColor;
+        for (const entry of entries) {
+          const {fields, light, material, controller} = entry;
+          const sample = sampleAt(controller, seconds), uniforms = material.uniforms;
           if (light.ambient) {
-            uniforms.uAmbientColor.value.fromArray(sample?.ambient || fields.ambient);
-            uniforms.uTintColor.value.fromArray(sample?.ambient ? sample.tint : fields.tint);
+            const ambientAt = (time) => sampleAt(controller, time)?.ambient || fields.ambient;
+            const tintAt = (time) => sampleAt(controller, time)?.ambient ? sampleAt(controller, time).tint : fields.tint;
+            entry.holds ||= {ambient: {}, tint: {}};
+            uniforms.uAmbientColor.value.fromArray(held ? held(entry.holds.ambient, ambientAt, seconds, frames) : ambientAt(seconds));
+            uniforms.uTintColor.value.fromArray(held ? held(entry.holds.tint, tintAt, seconds, frames) : tintAt(seconds));
           }
           if (light.rim && sample) {
             const rim = sample.rim;

@@ -381,6 +381,11 @@
     let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1, adaptivePreview = true;
     let lastShaftFrame = null, resetShafts = true;
+    // Client state that changes only on rendered frames (the ambient
+    // components' last written colors): an advancing
+    // playback frame continues it; a seek replays the rendered frame times it is
+    // given (seek's `history`) or, without them, uses exact values.
+    let pendingHistory = null, frameClock = { advancing: false, history: [] }, historyLighting = new Map();
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
     let antiAliasing = options?.antiAliasing === true;
@@ -1755,12 +1760,54 @@
       }
     }
 
-    function seek(time, value, deferDraw = false) {
+    // `history`: optional ascending director times of the frames the game rendered
+    // before `time` (a runtime dump's frame grid); only frame-stepped client state
+    // reads them.
+    function seek(time, value, deferDraw = false, history = null) {
       if (disposed) return;
       if ((value && value !== project) || (Number.isFinite(time) && Math.abs(time - currentTime) > 1e-9)) resetPhysics("seek");
       project = value || project;
       applyProject();
-      playbackFrame(time, undefined, deferDraw);
+      pendingHistory = Array.isArray(history) ? history : [];
+      try {
+        playbackFrame(time, undefined, deferDraw);
+      } finally {
+        pendingHistory = null;
+      }
+    }
+
+    function nextFrameClock(time) {
+      const advancing = pendingHistory === null && playing && Number.isFinite(time) && time >= currentTime - 1e-9;
+      if (advancing) return { advancing, history: [] };
+      const history = (pendingHistory || []).filter((value) => Number.isFinite(value) && value < time - 1e-9);
+      for (let index = 1; index < history.length; index++) {
+        if (history[index] < history[index - 1]) return { advancing: false, history: history.sort((a, b) => a - b) };
+      }
+      return { advancing: false, history };
+    }
+
+    // MVStudioLighting.sample at an earlier rendered frame of the frame clock.
+    function lightingAt(time, lighting) {
+      if (time === currentTime) return lighting;
+      if (!historyLighting.has(time)) historyLighting.set(time, global.MVStudioLighting?.sample(project, time) ?? null);
+      return historyLighting.get(time);
+    }
+
+    // LiveCoreMemberAmbient's ambient and tint writes (MVStudioLighting.heldColor)
+    // for a member or a member prop. A base light track also writes these
+    // components every frame, so its colors stay exact.
+    function heldLiveLighting(record, slot, value, valueAt, lighting) {
+      const holds = (record.lightingHolds ||= {})[slot] ||= { ambient: {}, tint: {} };
+      if (!value || lighting?.baseTrack || !global.MVStudioLighting?.heldColor) {
+        holds.ambient.color = holds.tint.color = null;
+        return value;
+      }
+      const held = { ...value };
+      for (const key of ["ambient", "tint"]) {
+        held[key] = value[key] ? global.MVStudioLighting.heldColor(holds[key], (time) => valueAt(time)?.[key] ?? null,
+          currentTime, frameClock) : (holds[key].color = null, value[key]);
+      }
+      return held;
     }
 
     function setPlaying(value) {
@@ -1780,6 +1827,8 @@
       if (disposed) return;
       captureFocusLag(Number.isFinite(frameTimestamp) && Number.isFinite(time) && time > currentTime + 1e-9);
       if (Number.isFinite(frameTimestamp) && time < currentTime - 1e-9) resetPhysics("clock-rewind");
+      frameClock = nextFrameClock(Number.isFinite(frameTimestamp) || pendingHistory !== null ? time : NaN);
+      historyLighting = new Map();
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
@@ -1830,8 +1879,8 @@
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.penlight?.update(currentTime, project);
       for (const record of records) {
-        record.stageMaterial?.update(currentTime, project, lighting);
-        record.stagePropLight?.update(currentTime);
+        record.stageMaterial?.update(currentTime, project, lighting, frameClock);
+        record.stagePropLight?.update(currentTime, frameClock, !!lighting?.baseTrack);
       }
       for (const record of records) record.stageColoring?.update(currentTime, project);
       for (const record of records) record.stageDisplay?.update(currentTime, project);
@@ -1845,7 +1894,8 @@
         // Keep sampling its transforms so other actors can still track it.
         const culled = memberCulledAt(record.position, currentTime);
         record.root.visible = record.actorVisible && !culled;
-        record.materials?.setLiveLighting?.(lighting?.member(record.position));
+        record.materials?.setLiveLighting?.(heldLiveLighting(record, "member", lighting?.member(record.position),
+          (time) => lightingAt(time, lighting)?.member(record.position), lighting));
         record.physics?.restorePose();
         record.constraints?.restorePose();
         record.nodeScaling?.resetHeight();
@@ -1904,7 +1954,10 @@
       for (const record of records) if (record.prop) {
         record.prop.bind(records.find((actor) => actor.group === actors && actor.position === record.propMember) || null);
         record.prop.evaluate(currentTime);
-        if (record.root.visible) record.propMaterial?.setLiveLighting?.(record.propLight?.sample(currentTime));
+        if (record.root.visible && record.propMaterial) {
+          record.propMaterial.setLiveLighting?.(heldLiveLighting(record, "prop", record.propLight?.sample(currentTime),
+            (time) => record.propLight?.sample(time), lighting));
+        }
       }
       advanceFocus();
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
