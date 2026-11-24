@@ -343,6 +343,8 @@
     const liveCamera = new T.PerspectiveCamera(42, 1, 0.02, 1000);
     // The game main camera's culling frustum at past frames (particle culling).
     const cullingCamera = new T.PerspectiveCamera(30, 1, 0.1, 1000);
+    // Scratch for the shaft anchor sample (shaftAnchorAt).
+    const anchorSample = [0, 0, 0];
     let cullingView = null;
     const stageCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const controls = new T.OrbitControls(editorCamera, renderer.domElement);
@@ -1563,6 +1565,29 @@
       return cullingCamera;
     }
 
+    // The main camera's world position at `time` (mainCameraAt), or false with no shot.
+    function mainCameraPositionAt(time, out) {
+      const camera = mainCameraAt(time);
+      if (!camera) return false;
+      out.setFromMatrixPosition(camera.matrixWorld);
+      return true;
+    }
+
+    // The world position of a member's Move node (the shaft anchor) at `time`
+    // from the dance alone (ViewerMotionTimeline sampleLocal): nothing is posed.
+    // Its ancestors keep their current transforms, which the timeline does not
+    // animate below the member root.
+    function shaftAnchorAt(record, time, out) {
+      const node = record.shaftAnchor;
+      const local = record.motion?.sampleLocal?.(node, "position", time, anchorSample);
+      out.fromArray(local || node.position.toArray(anchorSample));
+      if (node.parent) {
+        node.parent.updateWorldMatrix(true, false);
+        out.applyMatrix4(node.parent.matrixWorld);
+      }
+      return true;
+    }
+
     // Every camera that draws the particle layers at `time`: the main camera,
     // or while a LiveSplitScreenClip is active the enabled sub cameras plus
     // the main camera when the clip keeps it on (mv-studio-split.js camerasAt).
@@ -1998,8 +2023,12 @@
           if (!record.shaft && clips) {
             record.shaft = global.MVStudioShaft?.create(T, shaftTemplates, record.root, record.shaftAnchor);
           }
+          // A reset rebuilds a hidden shaft from its last drawn frame: the game's
+          // frame history when a seek handed one, else the spring clock's grid.
           record.shaft?.frame(settings.member_spot_light_area !== false ? clips : null,
-            currentTime, Math.max(0, elapsed), liveCamera, project, resetShafts || elapsed < 0 || elapsed > 0.25);
+            currentTime, Math.max(0, elapsed), liveCamera, project, resetShafts || elapsed < 0 || elapsed > 0.25,
+            { history: frameClock.advancing ? null : frameClock.history, rate: physicsRate(),
+              anchorAt: (time, out) => shaftAnchorAt(record, time, out), cameraAt: mainCameraPositionAt });
         }
         lastShaftFrame = timestamp;
         resetShafts = false;

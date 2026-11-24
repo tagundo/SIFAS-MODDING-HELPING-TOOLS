@@ -630,46 +630,71 @@
     var faceGroups = Object.keys(facialGroups).map(function (key) { return facialGroups[key]; });
     var gazeTrackGroups = Object.keys(gazeGroups).map(function (key) { return gazeGroups[key]; });
     var shapeGroups = Object.keys(morphGroups).map(function (key) { return morphGroups[key]; });
+    // The blended value of one group at `time` into `result` (false when no
+    // segment contributes). Nothing is written to the bound property.
+    function blendGroup(group, time, result) {
+      var values = group.values, total = 0; values.length = 0;
+      timedRecords(group.tracks, time, trackSegment).forEach(function (record) {
+        var sample = sampleSegment(record.segment, time), amount = sample.weight;
+        if (amount <= 0) return;
+        var local = sample.local;
+        // Facial clips are original poses (many have one key at the end).
+        if (record.staticPose) local = record.duration;
+        else {
+          var mode = sample.mode;
+          if (mode === 2 && record.duration) local = ((local % record.duration) + record.duration) % record.duration;
+          else if (mode === 3 && record.duration) { var phase = ((local % (2 * record.duration)) + 2 * record.duration) % (2 * record.duration); local = phase <= record.duration ? phase : 2 * record.duration - phase; }
+          else local = clamp(local, 0, record.duration);
+        }
+        // Each record owns an interpolant and its result buffer, so another
+        // track cannot overwrite this sample before this group is blended.
+        var entry = record.weightedSample;
+        entry.value = record.staticPose ? record.staticValue : record.interpolant.evaluate(local); entry.weight = amount;
+        values.push(entry); total += amount;
+      });
+      if (!values.length) return false;
+      var remainder = Math.max(0, 1 - total), denominator = total + remainder;
+      if (group.quaternion) {
+        var q = group.rotation.fromArray(group.base), next = group.nextRotation, accumulated = remainder;
+        values.forEach(function (entry) {
+          next.fromArray(entry.value);
+          if (!accumulated) q.copy(next); else q.slerp(next, entry.weight / (accumulated + entry.weight));
+          accumulated += entry.weight;
+        }); q.normalize().toArray(result);
+      } else {
+        for (var i = 0; i < result.length; i += 1) {
+          result[i] = group.base[i] * remainder;
+          values.forEach(function (entry) { result[i] += entry.value[i] * entry.weight; });
+          result[i] /= denominator;
+        }
+      }
+      return true;
+    }
     function evaluateGroups(collection, time, writes) {
       collection.forEach(function (group) {
-        var values = group.values, total = 0; values.length = 0;
-        timedRecords(group.tracks, time, trackSegment).forEach(function (record) {
-          var sample = sampleSegment(record.segment, time), amount = sample.weight;
-          if (amount <= 0) return;
-          var local = sample.local;
-          // Facial clips are original poses (many have one key at the end).
-          if (record.staticPose) local = record.duration;
-          else {
-            var mode = sample.mode;
-            if (mode === 2 && record.duration) local = ((local % record.duration) + record.duration) % record.duration;
-            else if (mode === 3 && record.duration) { var phase = ((local % (2 * record.duration)) + 2 * record.duration) % (2 * record.duration); local = phase <= record.duration ? phase : 2 * record.duration - phase; }
-            else local = clamp(local, 0, record.duration);
-          }
-          // Each record owns an interpolant and its result buffer, so another
-          // track cannot overwrite this sample before this group is blended.
-          var entry = record.weightedSample;
-          entry.value = record.staticPose ? record.staticValue : record.interpolant.evaluate(local); entry.weight = amount;
-          values.push(entry); total += amount;
-        });
-        if (!values.length) return;
-        var result = group.result, remainder = Math.max(0, 1 - total), denominator = total + remainder;
-        if (group.quaternion) {
-          var q = group.rotation.fromArray(group.base), next = group.nextRotation, accumulated = remainder;
-          values.forEach(function (entry) {
-            next.fromArray(entry.value);
-            if (!accumulated) q.copy(next); else q.slerp(next, entry.weight / (accumulated + entry.weight));
-            accumulated += entry.weight;
-          }); q.normalize().toArray(result);
-        } else {
-          for (var i = 0; i < result.length; i += 1) {
-            result[i] = group.base[i] * remainder;
-            values.forEach(function (entry) { result[i] += entry.value[i] * entry.weight; });
-            result[i] /= denominator;
-          }
-        }
-        group.binding.setValue(result, 0);
+        if (!blendGroup(group, time, group.result)) return;
+        group.binding.setValue(group.result, 0);
         if (writes) writes.push(group);
       });
+    }
+    // The dance's local position/quaternion/scale of `node` at `time`, without
+    // writing the pose (a side-effect-free sample for client state that a
+    // frame before the evaluated one left, e.g. a hidden member shaft). Null
+    // when no body segment animates that property at that time.
+    function sampleLocal(node, property, time, out) {
+      var group = null;
+      for (var index = 0; index < bodyGroups.length && !group; index += 1) {
+        var binding = bodyGroups[index].binding;
+        if ((binding.targetObject || binding.node) === node && binding.parsedPath && binding.parsedPath.propertyName === property) group = bodyGroups[index];
+      }
+      if (!group) return null;
+      var previous = sampleTime, result = out || new Array(group.base.length);
+      beginSample(time, true);
+      try {
+        return blendGroup(group, time, result) ? result : null;
+      } finally {
+        if (previous !== null) beginSample(previous, true);
+      }
     }
     var fallbackTargets = {};
     function targetsFor(kind, index) {
@@ -848,7 +873,7 @@
         "An original gaze target is unavailable in this single-model preview.");
     }
     return { warnings: warnings, compatibleSegments: used, compatibilityDetails: compatibilityDetails, invalidateTiming: invalidateTiming,
-      evaluatePose: evaluatePose, evaluateGaze: evaluateGaze, eyePosition: gaze.eyePosition,
+      evaluatePose: evaluatePose, evaluateGaze: evaluateGaze, eyePosition: gaze.eyePosition, sampleLocal: sampleLocal,
       animatedProperties: function (time) {
         beginSample(time, false);
         var owned = {};
