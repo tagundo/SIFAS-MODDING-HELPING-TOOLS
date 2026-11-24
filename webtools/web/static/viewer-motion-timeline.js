@@ -521,8 +521,7 @@
     // Live heads create playables only for MemberEyeClip / MemberLipSyncClip
     // AnimationIndex values (Initialize walks Enum.GetValues of that enum).
     function liveFacialId(kind, index) {
-      return kind === "mouth" ? index >= 0 && index <= 20 || index === 101 || index === 102 || index === 999 :
-        index >= 1 && index <= 5 || index >= 12 && index <= 25 || index === 101 || index === 102 || index === 900 || index === 999;
+      return LIVE_FACIAL_IDS[kind === "mouth" ? "mouth" : "eyes"].indexOf(index) >= 0;
     }
     var silentEvents = new Set(), fallbackIndexes = new Map();
     function resolveFacial(event, kind) {
@@ -932,6 +931,13 @@
       }
     };
   }
+  // MemberLipSyncClip / MemberEyeClip AnimationIndex values a live head creates
+  // playables for (mouth 0-20, 101, 102, 999; eyes 1-5, 12-25, 101, 102, 900, 999).
+  function idRange(first, last) { var ids = []; for (var id = first; id <= last; id += 1) ids.push(id); return ids; }
+  var LIVE_FACIAL_IDS = Object.freeze({
+    mouth: Object.freeze(idRange(0, 20).concat([101, 102, 999])),
+    eyes: Object.freeze(idRange(1, 5).concat(idRange(12, 25), [101, 102, 900, 999]))
+  });
   global.ViewerGaze = { create: createGaze, axes: gazeAxes };
-  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve };
+  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve, LIVE_FACIAL_IDS: LIVE_FACIAL_IDS };
 }(window));
