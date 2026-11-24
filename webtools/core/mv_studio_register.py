@@ -406,13 +406,21 @@ def _label(track):
     return str(track.get("label") or track.get("id") or "")
 
 
+def _editable(event):
+    """The posted clip's own editableValues (what its editor let the user change)."""
+    keys = event.get("editableValues")
+    return {key for key in keys if isinstance(key, str)} if isinstance(keys, list) else set()
+
+
 def normalize(original_tracks, tracks):
     """Return (tracks ready for export_timeline, report) or raise StructureError.
 
     Every non-``events`` track field goes back to the base parse except those in
-    ``mv_studio_timeline.EXPORTABLE_TRACK_FIELDS``. Event values outside the clip's
-    ``editableValues`` go back to the base, and extra keys are dropped. Added, removed or
-    reordered tracks or clips are refused with their track labels.
+    ``mv_studio_timeline.EXPORTABLE_TRACK_FIELDS``. A value is baked only when its key is
+    editable both in the base parse and in the posted clip (the editor only offers the
+    posted clip's keys, and ``timeline_fingerprint`` hashes exactly those); every other
+    value goes back to the base, and extra keys are dropped. Added, removed or reordered
+    tracks or clips are refused with their track labels.
     """
     if not isinstance(tracks, list) or any(not isinstance(track, dict) for track in tracks):
         raise ValueError(REQUEST)
@@ -449,7 +457,7 @@ def normalize(original_tracks, tracks):
             settings.append(_label(before))
         output, edited_preview = [], False
         for event, original in zip(events, before["events"]):
-            editable = set(original.get("editableValues") or ())
+            editable = set(original.get("editableValues") or ()) & _editable(event)
             values = event.get("values") if isinstance(event.get("values"), dict) else {}
             merged = {}
             for key, value in original["values"].items():
@@ -490,7 +498,13 @@ def count_edits(original_tracks, tracks):
 
 
 def _exportable_view(tracks):
-    """What reaches the game from the project's tracks: clip timing, names and editable values."""
+    """What can reach the game from the project's tracks: clip timing, names, the values of the
+    clip's own editableValues and the track fields in EXPORTABLE_TRACK_FIELDS.
+
+    It covers everything ``normalize`` bakes (a baked value's key is in the posted clip's
+    editableValues), so an unchanged view means an unchanged bake for the same original.
+    """
+    fields = tuple(getattr(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ()))
     view = []
     for track in tracks if isinstance(tracks, list) else ():
         if not isinstance(track, dict):
@@ -500,10 +514,10 @@ def _exportable_view(tracks):
             if not isinstance(event, dict):
                 continue
             values = event.get("values") if isinstance(event.get("values"), dict) else {}
-            editable = event.get("editableValues") if isinstance(event.get("editableValues"), list) else ()
             events.append([event.get("id"), event.get("start"), event.get("duration"), event.get("label"),
-                           {key: values[key] for key in editable if isinstance(key, str) and key in values}])
-        view.append([track.get("id"), events])
+                           {key: values[key] for key in sorted(_editable(event)) if key in values}])
+        settings = {field: track[field] for field in fields if field in track}
+        view.append([track.get("id"), events, settings] if settings else [track.get("id"), events])
     return view
 
 

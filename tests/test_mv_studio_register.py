@@ -473,6 +473,49 @@ class NormalizeTests(unittest.TestCase):
         self.assertNotEqual(first, register.timeline_fingerprint("android", "other:0:4096:4:7", tracks))
         self.assertLessEqual(len(first), 128)
 
+    def test_only_values_the_fingerprint_covers_are_baked(self):
+        """A clip whose saved editableValues lack a base-editable key (an older project) does not bake
+        that key, so a later update that changes only it cannot be skipped by an equal fingerprint."""
+        original = base_tracks()
+        stale = copy.deepcopy(original)
+        stale[1]["events"][0]["editableValues"] = ["clipIn"]
+        stale[1]["events"][0]["values"]["intensity"] = 2.5
+        normalized, report = register.normalize(original, stale)
+        self.assertEqual(normalized[1]["events"][0]["values"]["intensity"], 1.0)
+        self.assertEqual(normalized[1]["events"][0]["editableValues"], ["clipIn", "intensity"])
+        self.assertEqual(report["previewValues"], ["StageEffect/Bloom"])
+        self.assertEqual(register.count_edits(original, normalized)["clips"], 0)
+        identity = "tl:0:4096:4:7"
+        unedited = copy.deepcopy(stale)
+        unedited[1]["events"][0]["values"]["intensity"] = 1.0
+        self.assertEqual(register.timeline_fingerprint("android", identity, stale),
+                         register.timeline_fingerprint("android", identity, unedited),
+                         "A value that is not baked does not change the fingerprint")
+        # Every baked value is fingerprinted: two projects that bake differently never share a fingerprint.
+        for key, value in (("clipIn", 0.5), ("intensity", 2.0)):
+            edited = copy.deepcopy(original)
+            edited[1]["events"][0]["values"][key] = value
+            baked, _ = register.normalize(original, edited)
+            self.assertEqual(baked[1]["events"][0]["values"][key], value)
+            self.assertNotEqual(register.timeline_fingerprint("android", identity, edited),
+                                register.timeline_fingerprint("android", identity, original))
+
+    def test_exportable_track_fields_are_fingerprinted(self):
+        original = base_tracks()
+        muted = copy.deepcopy(original)
+        muted[1]["muted"] = True
+        identity = "tl:0:4096:4:7"
+        plain = register.timeline_fingerprint("android", identity, original)
+        self.assertEqual(plain, register.timeline_fingerprint("android", identity, muted))
+        with mock.patch.object(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ("muted",), create=True):
+            self.assertNotEqual(register.timeline_fingerprint("android", identity, original),
+                                register.timeline_fingerprint("android", identity, muted))
+            # Without an exportable field the view (and every stored fingerprint) is unchanged.
+            without = copy.deepcopy(original)
+            for track in without:
+                del track["muted"]
+            self.assertEqual(register.timeline_fingerprint("android", identity, without), plain)
+
     def test_shift_beat_moves_the_first_beat_by_the_offset(self):
         beat = {"bpm": 120.0, "startSample": 44100, "endSample": 441000}
         self.assertEqual(register.shift_beat(beat, 0.25), {"bpm": 120.0, "firstBeat": 0.75})
