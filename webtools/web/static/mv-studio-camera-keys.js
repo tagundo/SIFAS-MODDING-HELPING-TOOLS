@@ -1456,6 +1456,16 @@
     }
   }
 
+  // The shortcut a key press names. event.key wins when it is one of the Latin shortcut
+  // characters; otherwise (Korean or Japanese input on, where K gives "ㅏ" or "Process", or
+  // another non-Latin layout) the physical key in event.code decides.
+  const SHORTCUT_CODES = { KeyK: "k", KeyI: "i", KeyD: "d", BracketLeft: "[", BracketRight: "]" };
+  function shortcutKey(event) {
+    const key = String(event.key || "").toLowerCase();
+    if (/^[a-z[\]]$/.test(key) || key === "delete" || key === "backspace") return key;
+    return SHORTCUT_CODES[event.code] || key;
+  }
+
   const plugin = {
     id: "camera-keys",
     order: 8,
@@ -1527,11 +1537,11 @@
     keydown(ctx, event) {
       const tab = typeof ctx.activeTab === "function" ? ctx.activeTab() : "";
       if (!panelOpen() && tab !== "camera" && tab !== "edit") return false;
-      const key = String(event.key || "");
+      const key = shortcutKey(event);
       const command = event.ctrlKey || event.metaKey;
-      if (command && !event.altKey && !event.shiftKey && key.toLowerCase() === "d") { duplicateKey(ctx); return true; }
+      if (command && !event.altKey && !event.shiftKey && key === "d") { duplicateKey(ctx); return true; }
       if (command || event.altKey) return false;
-      switch (key.toLowerCase()) {
+      switch (key) {
         case "k": keyView(ctx); return true;
         case "i": addKey(ctx); return true;
         case "delete": case "backspace": return deleteKey(ctx) || !!targetKey(ctx);

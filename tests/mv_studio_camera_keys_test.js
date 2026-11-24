@@ -558,6 +558,27 @@ function keyLaneRefresh() {
   assert.deepEqual(log.refreshed, ['cam', 'cam', 'cam', 'cam'], 'a rebake that redraws the lane is not doubled');
 }
 
+// K/I/D/[/] by physical key when event.key is not Latin (Korean or Japanese input on).
+function imeShortcuts() {
+  const project = nativeProject();
+  const { ctx, at } = harness(project, { tab: 'camera' });
+  at(.5);
+  const press = (key, code, extra = {}) => plugin.keydown(ctx, { key, code, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...extra });
+  assert.equal(press('ㅑ', 'KeyI'), true, 'Hangul ㅑ on the I key adds a key');
+  assert.deepEqual(project.editor.camera.shots['cam:0'].keys.map((key) => key.frame), [30]);
+  at(1);
+  assert.equal(press('ㅇ', 'KeyD', { ctrlKey: true }), true, 'Ctrl+D on the D key duplicates');
+  assert.deepEqual(project.editor.camera.shots['cam:0'].keys.map((key) => key.frame), [30, 60]);
+  assert.equal(press('Process', 'BracketLeft'), true, 'an IME "Process" key on [ goes to the previous key');
+  near(ctx.time(), .5, 1e-12, 'at the previous key');
+  assert.equal(press('Process', 'BracketRight'), true);
+  near(ctx.time(), 1, 1e-12, '] goes to the next key');
+  assert.equal(press('ㅏ', 'KeyK'), true, 'Hangul ㅏ on the K key is Key current view');
+  assert.equal(press('ㅌ', 'KeyX'), false, 'other keys are left alone');
+  // A Latin key wins over its physical position (AZERTY and similar layouts).
+  assert.equal(press('a', 'KeyI'), false, 'event.key decides when it is Latin');
+}
+
 
 (async () => {
   unedited();
@@ -575,5 +596,6 @@ function keyLaneRefresh() {
   inspectorAndKeys();
   keyLaneRefresh();
   playheadGap();
+  imeShortcuts();
   console.log('mv studio camera keys tests passed');
 })().catch((error) => { console.error(error); process.exit(1); });
