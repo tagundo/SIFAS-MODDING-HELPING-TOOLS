@@ -1164,12 +1164,14 @@ def _open_saved(archive, entries):
         } for event in track["events"]) for track in project["tracks"])
     restore_emissive_tracks = any(mv_studio_timeline.needs_emissive_track_metadata(track) for track in project["tracks"])
     restore_camera_points = any(mv_studio_timeline.needs_camera_keyframe_check(track) for track in project["tracks"])
+    restore_editable_values = any(mv_studio_timeline.needs_editable_values_sync(track) for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
                                or restore_spotlight or restore_butterfly or restore_rain or restore_leaves or restore_momiji
                                or restore_confetti or restore_glow or restore_lens or restore_speed_back
                                or restore_display_lights or restore_falling
                                or restore_break or restore_finale_floor or restore_sparks_a or restore_sparks_b
-                               or restore_sparks_roop or restore_emissive_tracks or restore_camera_points):
+                               or restore_sparks_roop or restore_emissive_tracks or restore_camera_points
+                               or restore_editable_values):
         try:
             options = {}
             if restore_particles:
@@ -1215,6 +1217,9 @@ def _open_saved(archive, entries):
         else:
             if restore_emissive_tracks:
                 project["tracks"] = mv_studio_timeline.restore_emissive_track_metadata(project["tracks"], original["tracks"])
+            if isinstance(original.get("tracks"), list):
+                # Fields made editable after the project was saved (additions to the whitelist only).
+                project["tracks"] = mv_studio_timeline.sync_editable_values(project["tracks"], original["tracks"])
             if restore_camera_points and isinstance(original.get("tracks"), list):
                 # Unedited camera points saved before camera Euler rotation orders preview as the game does.
                 try:
