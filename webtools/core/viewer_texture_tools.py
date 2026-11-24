@@ -2,6 +2,9 @@
 
 Pixel images use top-left PNG coordinates. Writing restores Unity's vertical
 orientation and keeps object/material/UV identities and authored mip counts.
+A baked blush alone on an ASTC texture is the one exception to lossless RGBA32:
+it keeps the ASTC data and re-encodes only the blocks it changes
+(texture_block_splice), unless exact pixels are requested.
 """
 import base64
 import binascii
@@ -86,9 +89,8 @@ def catalogue_sources(inspected_sources, sources, automatic=()):
 # that texture as the head mainTexture at runtime), can take a baked blush.
 _MEMBERS = "LLAS.Components.Members"
 _PLATFORMS = {13: "android", 9: "ios"}
-CHEEK_UNAVAILABLE = ("No verified stock cheek_array is available. Open this costume with a head bundle that "
-                     "contains cheek_array (most costume bundles do), or open any such costume once so it is "
-                     "cached, then reopen this model.")
+CHEEK_UNAVAILABLE = ("No verified stock blush pattern (cheek_array) is available. Open another costume that "
+                     "contains it once (most costume bundles do) so it is kept automatically, then reopen this model.")
 
 
 def _cheek_cache_file():
@@ -189,7 +191,7 @@ def _blush_scan(groups):
                               if item is not None and item.type.name == "Transform"), None)
             face = transform is not None and child(transform, "Head_Face")
             return bool(face and child(face, "mesh_facedots"))
-        except (AttributeError, KeyError, TypeError, ValueError):
+        except Exception:  # an unreadable transform only drops the mask note
             return False
 
     rules, arrays, heads, tables = {}, [], {}, []
@@ -234,29 +236,39 @@ def _blush_scan(groups):
                 if main is not None and main.type.name == "Texture2D" and id(main) in located:
                     source, file_index = located[id(main)]
                     rules[(source, file_index, str(main.path_id))] = descriptor
-            except (AttributeError, KeyError, TypeError, ValueError):
+            except Exception:
+                # UnityPy raises many kinds of errors (TypeTreeError, struct.error,
+                # EOFError, ...) for a malformed MonoBehaviour. Skipping it only
+                # removes a blush offer; the texture tools keep working.
                 continue
     for obj, tree in tables:
-        # CommonCoreMember.ApplyAttachData: only attachType 1 (MaterialColor);
-        # a Texture2D becomes the mainTexture of the material named replaceBindName.
-        for data in tree.get("datas") or ():
-            if not isinstance(data, dict) or data.get("attachType") != 1:
-                continue
-            for item in data.get("replaceObjects") or ():
-                name = item.get("replaceBindName") if isinstance(item, dict) else None
-                target = lookup(obj, item.get("replaceObject")) if isinstance(name, str) and name else None
-                if target is None or target.type.name != "Texture2D" or id(target) not in located:
-                    continue
-                if name not in heads and not name.endswith("_head"):
-                    continue
-                head = heads.get(name, {})
-                source, file_index = located[id(target)]
-                rules.setdefault((source, file_index, str(target.path_id)), {
-                    "role": "attach", "material": name, "attachKey": str(data.get("attachName") or ""),
-                    "verifiedHead": name in heads, "matcap": head.get("matcap", False), "masked": head.get("masked", False),
-                    "recolourSuits": False,
-                    "platform": _PLATFORMS.get(getattr(target.assets_file, "_m_target_platform", None), "")})
+        try:
+            _attach_rules(obj, tree, lookup, located, heads, rules)
+        except Exception:  # as above: an unreadable table offers nothing
+            continue
     return rules, arrays
+
+
+def _attach_rules(obj, tree, lookup, located, heads, rules):
+    # CommonCoreMember.ApplyAttachData: only attachType 1 (MaterialColor);
+    # a Texture2D becomes the mainTexture of the material named replaceBindName.
+    for data in tree.get("datas") or ():
+        if not isinstance(data, dict) or data.get("attachType") != 1:
+            continue
+        for item in data.get("replaceObjects") or ():
+            name = item.get("replaceBindName") if isinstance(item, dict) else None
+            target = lookup(obj, item.get("replaceObject")) if isinstance(name, str) and name else None
+            if target is None or target.type.name != "Texture2D" or id(target) not in located:
+                continue
+            if name not in heads and not name.endswith("_head"):
+                continue
+            head = heads.get(name, {})
+            source, file_index = located[id(target)]
+            rules.setdefault((source, file_index, str(target.path_id)), {
+                "role": "attach", "material": name, "attachKey": str(data.get("attachName") or ""),
+                "verifiedHead": name in heads, "matcap": head.get("matcap", False), "masked": head.get("masked", False),
+                "recolourSuits": False,
+                "platform": _PLATFORMS.get(getattr(target.assets_file, "_m_target_platform", None), "")})
 
 
 def _resolve_cheek(arrays, source_names):
@@ -274,8 +286,16 @@ def _resolve_cheek(arrays, source_names):
     return None, {"available": False, "source": "", "sourceName": "", "sha256": "", "reason": CHEEK_UNAVAILABLE}
 
 
+def _safe_scan(groups):
+    """_blush_scan that can only remove the blush offer, never the catalogue."""
+    try:
+        return _blush_scan(groups)
+    except Exception:
+        return {}, []
+
+
 def _with_blush(catalogue, groups, sources):
-    rules, arrays = _blush_scan(groups)
+    rules, arrays = _safe_scan(groups)
     names = {}
     for index, _, objects, _ in groups:
         for obj in objects:
@@ -309,7 +329,7 @@ def cheek_payload(session):
     """The verified 524288-byte array for this session, or a TextureToolError."""
     payload = session.get("cheekPayload")
     if payload is None or not texture_blush.verify_payload(payload):
-        _, arrays = _blush_scan(_session_groups(session))
+        _, arrays = _safe_scan(_session_groups(session))
         payload, info = _resolve_cheek(arrays, {})
         if payload is None:
             _fail(info["reason"])
@@ -318,13 +338,21 @@ def cheek_payload(session):
 
 
 def checked_blush(value):
-    """Canonical recipe operation: {"layer": 0 | 1, "k": strength}."""
-    if not isinstance(value, dict) or set(value) != {"layer", "k"}:
+    """Canonical recipe operation: {"layer": 0 | 1, "k": strength[, "exact": true]}.
+
+    ``exact`` saves the baked texture as lossless RGBA32 instead of
+    re-encoding only the touched blocks of an ASTC texture.
+    """
+    if (not isinstance(value, dict) or not {"layer", "k"} <= set(value) or not set(value) <= {"layer", "k", "exact"}
+            or "exact" in value and type(value["exact"]) is not bool):
         _fail("The blush bake needs exactly a blush type and a strength.")
     try:
-        return {"layer": texture_blush.checked_layer(value["layer"]), "k": texture_blush.checked_k(value["k"])}
+        out = {"layer": texture_blush.checked_layer(value["layer"]), "k": texture_blush.checked_k(value["k"])}
     except texture_blush.BlushError as error:
         raise TextureToolError(str(error)) from error
+    if value.get("exact"):
+        out["exact"] = True
+    return out
 
 
 def cheek(token):
@@ -553,17 +581,95 @@ def _change_mask(before, after):
     return mask.point(lambda value: 255 if value else 0), alpha_mask
 
 
+def _splice_blush(obj, original, levels, before, layer, bounds, blush, block, deadline):
+    """Bake every authored ASTC level and re-encode only the touched blocks.
+
+    The texture keeps its format, size and mip count. Each level's blocks
+    without a changed texel keep their original bytes; the others are encoded
+    again from the exact bake. Every spliced level is decoded again and must
+    keep every texel outside those blocks and every alpha value.
+    """
+    from types import SimpleNamespace
+    from PIL import Image
+    from . import decode, texture_block_splice as splice
+    width, height = int(original.m_Width), int(original.m_Height)
+    layout = splice.level_layout(width, height, len(levels), block)
+    data = bytes(original.get_image_data())
+    if len(data) < layout[-1][2] + layout[-1][3]:
+        raise splice.SpliceUnavailable("The original ASTC data is shorter than its mip chain.")
+    out = bytearray(data)
+    changed_counts, block_counts, off_bake, worst, means, base = [], [], 0, [], [], None
+    for level, (source, (w, h, offset, size)) in enumerate(zip(levels, layout)):
+        authored = before if level == 0 else decode._android_image(source, deadline).convert("RGBA")
+        try:
+            if authored.size != (w, h):
+                _fail("An original mip has invalid image dimensions.")
+            pixels = authored.tobytes()
+            baked, changed, box = texture_blush.bake_rgba(pixels, w, h, layer, blush["k"], bounds)
+            blocks = splice.touched_blocks(pixels, baked, w, h, block, box)
+            changed_counts.append(changed)
+            block_counts.append(len(blocks))
+            if not blocks:
+                worst.append(0)
+                means.append(0.0)
+                if level == 0:
+                    base = pixels
+                continue
+            with Image.frombytes("RGBA", (w, h), baked) as baked_image:
+                spliced = splice.splice_level(data[offset:offset + size], w, h, block, baked_image, blocks, deadline)
+            proxy = SimpleNamespace(m_Width=w, m_Height=h, m_TextureFormat=original.m_TextureFormat, m_MipCount=1,
+                                    m_ImageCount=1, m_TextureDimension=2, m_StreamData=None, image_data=spliced,
+                                    object_reader=getattr(original, "object_reader", None),
+                                    get_image_data=lambda value=spliced: value)
+            with decode._android_image(proxy, deadline) as decoded, decoded.convert("RGBA") as rgba:
+                after = rgba.tobytes()
+            stats = splice.check_level(pixels, baked, after, w, h, block, blocks)
+            off_bake += stats["texelsOffBake"]
+            worst.append(stats["maxChannelError"])
+            means.append(stats["meanChannelError"])
+            out[offset:offset + size] = spliced
+            if level == 0:
+                base = after
+        finally:
+            if authored is not before:
+                authored.close()
+    if not any(changed_counts):
+        return None
+    payload = bytes(out)
+    tree = copy.deepcopy(obj.read_typetree())
+    tree["image data"] = payload
+    tree["m_CompleteImageSize"] = len(payload)
+    if "m_StreamData" in tree:
+        tree["m_StreamData"] = {"offset": 0, "size": 0, "path": ""}
+    obj.save_typetree(tree)
+    name = _format(int(tree["m_TextureFormat"]))
+    return {"name": str(tree.get("m_Name") or "Texture"), "width": width, "height": height,
+            "mipCount": len(levels), "sourceFormat": name, "resultFormat": name, "encodingChanged": False,
+            "encodingReason": ("Only the compressed blocks that hold baked cheek texels were re-encoded; "
+                               "every other block keeps its original bytes."),
+            "unchangedPixelsPreserved": True, "alphaChanged": False,
+            "blush": {"layer": blush["layer"], "k": blush["k"], "changedTexels": changed_counts, "encoding": "blocks",
+                      "reencodedBlocks": block_counts, "texelsOffBake": off_bake,
+                      "maxChannelError": worst, "meanChannelError": means},
+            "payloadSha256": hashlib.sha256(payload).hexdigest(), "baseSha256": hashlib.sha256(base).hexdigest()}
+
+
 def _write(obj, edited, blush=None, cheek=None):
-    """Write one edited texture as lossless RGBA32 with its authored mip count.
+    """Write one edited texture with its authored mip count.
 
     Painted texels propagate into the authored mips through their binary
     footprint; every other authored mip texel is kept. A blush bake is not a
     pixel edit: the shader rule is applied to each level in place, at each mip
     texel's own UV centre, after the paint, so mips are never regenerated and
     only texels whose rounded RGB changes are touched (alpha never).
+
+    Paint and every non-ASTC source are saved as lossless RGBA32. A bake alone
+    on an ASTC texture keeps the ASTC format: only the blocks holding changed
+    texels are re-encoded (_splice_blush), unless the bake asks for exact
+    pixels or the encoder is unavailable, which falls back to RGBA32.
     """
     from PIL import Image
-    from . import decode
+    from . import decode, texture_block_splice
     from .model_materials import _original_mips
     original = obj.read()
     count = int(getattr(original, "m_MipCount", 1) or 1)
@@ -574,12 +680,23 @@ def _write(obj, edited, blush=None, cheek=None):
     before = decode._android_image(original, deadline).convert("RGBA")
     mask, alpha_mask = _change_mask(before, edited)
     alpha_changed = alpha_mask.getbbox() is not None
-    before.close()
     painted = mask.getbbox() is not None
     if not painted and blush is None:
+        before.close()
         return None
     layer = texture_blush.layer_bytes(cheek, blush["layer"]) if blush is not None else None
     bounds = texture_blush.layer_bounds(layer) if layer is not None else None
+    fallback = ""
+    block = texture_block_splice.astc_block(_format(int(getattr(original, "m_TextureFormat", 0))))
+    try:
+        if blush is not None and not painted and not blush.get("exact") and block:
+            try:
+                return _splice_blush(obj, original, levels, before, layer, bounds, blush, block, deadline)
+            except texture_block_splice.SpliceUnavailable as error:
+                fallback = str(error)
+                deadline = time.monotonic() + 60
+    finally:
+        before.close()
     width, height = edited.size
     payload = bytearray()
     footprint = mask
@@ -637,7 +754,14 @@ def _write(obj, edited, blush=None, cheek=None):
               "unchangedPixelsPreserved": True, "alphaChanged": alpha_changed,
               "payloadSha256": hashlib.sha256(payload).hexdigest()}
     if blush is not None:
-        result["blush"] = {"layer": blush["layer"], "k": blush["k"], "changedTexels": baked}
+        result["blush"] = {"layer": blush["layer"], "k": blush["k"], "changedTexels": baked, "encoding": "lossless"}
+        if blush.get("exact"):
+            result["blush"]["exact"] = True
+            if source_format != 4:
+                result["encodingReason"] = "Exact baked pixels were requested, so the texture uses lossless RGBA32."
+        if fallback:
+            result["blush"]["fallback"] = fallback
+            result["encodingReason"] = fallback + " " + result["encodingReason"]
     return result
 
 
@@ -682,29 +806,40 @@ def apply_edits(raw, source_index, operations, catalogue, cheek=None):
     # identity and the exact edited base-level RGBA, including transparent RGB,
     # and that every written mip level survived byte for byte.
     _, _, reloaded = _objects(result)
-    written = {(row["texture"]["file"], row["texture"]["id"]): row["payloadSha256"] for row in changes}
+    written = {(row["texture"]["file"], row["texture"]["id"]): row for row in changes}
     for operation in selected:
         identity = operation["texture"]
         obj = reloaded.get((identity["file"], identity["id"]))
         if obj is None or obj.type.name != "Texture2D":
             _fail("The saved texture failed its original-identity reload check.")
         row = entries[(identity["source"], identity["file"], identity["id"])]
-        _, expected = _png(operation["png"], row)
-        if operation.get("blush") is not None:
-            baked, _ = texture_blush.bake_image(expected, texture_blush.layer_bytes(cheek, operation["blush"]["layer"]),
-                                                operation["blush"]["k"])
-            expected.close()
-            expected = baked
+        key = (identity["file"], identity["id"])
+        change = written.get(key)
         texture = obj.read()
         actual = decode._android_image(texture, time.monotonic() + 60).convert("RGBA")
         try:
-            if actual.size != expected.size or actual.tobytes() != expected.tobytes():
-                _fail("The saved texture pixels failed exact reload validation.")
-            key = (identity["file"], identity["id"])
-            if key in written and hashlib.sha256(bytes(texture.get_image_data())).hexdigest() != written[key]:
+            if change is not None and change.get("baseSha256"):
+                # Re-encoded ASTC blocks approximate the bake; the decoded base
+                # level must be the one verified while splicing.
+                if hashlib.sha256(actual.tobytes()).hexdigest() != change["baseSha256"]:
+                    _fail("The saved texture pixels failed exact reload validation.")
+            else:
+                _, expected = _png(operation["png"], row)
+                if operation.get("blush") is not None:
+                    baked, _ = texture_blush.bake_image(expected, texture_blush.layer_bytes(cheek, operation["blush"]["layer"]),
+                                                        operation["blush"]["k"])
+                    expected.close()
+                    expected = baked
+                try:
+                    if actual.size != expected.size or actual.tobytes() != expected.tobytes():
+                        _fail("The saved texture pixels failed exact reload validation.")
+                finally:
+                    expected.close()
+            if change is not None and hashlib.sha256(bytes(texture.get_image_data())).hexdigest() != change["payloadSha256"]:
                 _fail("The saved texture mip levels failed exact reload validation.")
         finally:
-            actual.close(); expected.close()
+            actual.close()
     for row in changes:
         row.pop("payloadSha256", None)
+        row.pop("baseSha256", None)
     return result, changes

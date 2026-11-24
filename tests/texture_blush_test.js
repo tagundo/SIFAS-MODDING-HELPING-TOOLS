@@ -68,6 +68,16 @@ check('invalid strengths, types and arrays are refused', () => {
   assert.throws(() => B.layerView(new Uint8Array(B.LAYER_BYTES), 0));
   assert.strictEqual(B.levelFor(1.65), 'medium'); assert.strictEqual(B.levelFor(1.7), null); assert.strictEqual(B.levelK('veryStrong'), 3);
 });
+check('recipe operations: exact is optional, canonical and compared', () => {
+  assert.deepStrictEqual(B.checkedOperation({ layer: 1, k: 2 }), { layer: 1, k: 2 });
+  assert.deepStrictEqual(B.checkedOperation({ layer: 0, k: 1.65, exact: true }), { layer: 0, k: 1.65, exact: true });
+  assert.deepStrictEqual(B.checkedOperation({ layer: 0, k: 1.65, exact: false }), { layer: 0, k: 1.65 });
+  [{ layer: 0 }, { layer: 0, k: 1, level: 'medium' }, { layer: 0, k: 1, exact: 1 }, { layer: 2, k: 1 }, { layer: 0, k: 0 }, null, [], 'x'].forEach(value => assert.throws(() => B.checkedOperation(value), JSON.stringify(value)));
+  assert.ok(B.sameOperation({ layer: 0, k: 1 }, { layer: 0, k: 1, exact: false })); assert.ok(!B.sameOperation({ layer: 0, k: 1 }, { layer: 0, k: 1, exact: true }));
+  assert.ok(B.sameOperation(null, null)); assert.ok(!B.sameOperation(null, { layer: 0, k: 1 }));
+  assert.deepStrictEqual(B.copyOperation({ layer: 1, k: 3, exact: true, extra: 1 }), { layer: 1, k: 3, exact: true }); assert.strictEqual(B.copyOperation(null), null);
+  assert.deepStrictEqual(B.LAYERS.map(layer => layer.hint), ['Round patches on both cheeks', 'Band across the nose and both cheeks']);
+});
 check('engine recordState is a pixel-free undo step and replaceImageData carries its custom state', () => {
   const engine = Engine.create({}), calls = [];
   const image = { width: 2, height: 2, data: new Uint8ClampedArray([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]) };
@@ -87,8 +97,8 @@ check('engine recordState is a pixel-free undo step and replaceImageData carries
 check('every blush panel string has Korean and Japanese wording', () => {
   const fs = require('fs'), vm = require('vm'), source = fs.readFileSync(path.join(product, 'webtools/web/static/viewer-texture-tools.js'), 'utf8');
   const words = vm.runInNewContext('(' + source.slice(source.indexOf('var WORDS = {') + 'var WORDS = '.length, source.indexOf('};', source.indexOf('var WORDS = {')) + 1) + ')');
-  const regions = [['// Baked cheek blush: one panel', 'var blushNotes'], ['// --- baked cheek blush', 'function blushState()'], ['function focusBlushTexture()', 'function initBlushChoice(']];
-  const texts = new Set(B.LEVELS.map(level => level.label).concat(B.LAYERS.map(layer => layer.label)));
+  const regions = [['// Baked cheek blush: one panel', '// End of the blush panel strings.'], ['// --- baked cheek blush', 'function blushState()'], ['function applyImported(', 'function finishPickerStack()']];
+  const texts = new Set(B.LEVELS.map(level => level.label).concat(B.LAYERS.map(layer => layer.label), B.LAYERS.map(layer => layer.hint)));
   regions.forEach(([from, to]) => {
     const start = source.indexOf(from), end = source.indexOf(to, start); assert.ok(start >= 0 && end > start, from);
     for (const match of source.slice(start, end).matchAll(/"((?:[^"\\]|\\.)*)"/g)) if (/^[A-Z0-9]/.test(match[1]) && /[a-z]/.test(match[1]) && !/^(AbortError)$/.test(match[1])) texts.add(match[1]);
@@ -97,7 +107,9 @@ check('every blush panel string has Korean and Japanese wording', () => {
   texts.add(server.reason); ['Choose a blush strength between 0 and 4.', 'Choose the Ppo or Akarame blush type.', 'The blush bake needs exactly a blush type and a strength.', 'Baked blush is available only for a head material\'s main texture or its recolour texture.'].forEach(text => texts.add(text));
   const missing = Array.from(texts).filter(text => !Array.isArray(words[text]) || words[text].length !== 2 || words[text].some(value => !value || value === text));
   assert.deepStrictEqual(missing, [], 'untranslated blush strings');
-  assert.ok(texts.size >= 35, 'the scan found the panel strings: ' + texts.size);
+  assert.ok(texts.size >= 45, 'the scan found the panel strings: ' + texts.size);
+  // One word per control: Korean 세기 (never 강도) and Japanese 強さ for the blush strength.
+  Array.from(texts).forEach(text => { assert.ok(!/강도/.test(words[text][0]) && !/強度/.test(words[text][1]), text); assert.ok(!/ 볼 픽셀/.test(words[text][0]), text); });
   assert.deepStrictEqual([server.ko, server.ja], ['홍조 굽기', '頬紅の焼き込み']);
   assert.deepStrictEqual(Array.from(words['Bake blush']), ['홍조 굽기', '頬紅の焼き込み']);
 });

@@ -355,7 +355,7 @@
       if (input.textures && input.textures.length) canonical.textures = input.textures.map(function (row) {
         var value = { texture: { source: row.texture.source, file: row.texture.file, id: row.texture.id },
           sourceSha256: row.sourceSha256, png: row.png, kind: row.kind };
-        if (row.blush) value.blush = { layer: row.blush.layer, k: row.blush.k };
+        if (row.blush) { value.blush = { layer: row.blush.layer, k: row.blush.k }; if (row.blush.exact) value.blush.exact = true; }
         return value;
       }).sort(function (a, b) {
         var order = a.texture.source - b.texture.source || a.texture.file - b.texture.file;

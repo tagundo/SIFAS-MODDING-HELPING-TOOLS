@@ -25,13 +25,25 @@
     { id: "strong", k: 2.3, label: "Strong" },
     { id: "veryStrong", k: 3.0, label: "Very strong" }
   ];
-  var LAYERS = [{ id: 0, label: "Standard (Ppo)" }, { id: 1, label: "Deep (Akarame)" }];
+  // Akarame is a different shape, not only a darker Ppo: the hint says so.
+  var LAYERS = [{ id: 0, label: "Standard (Ppo)", hint: "Round patches on both cheeks" },
+    { id: 1, label: "Deep (Akarame)", hint: "Band across the nose and both cheeks" }];
   var MAX_K = 4;
   function checkedK(value) {
     if (typeof value !== "number" || !Number.isFinite(value) || !(value > 0) || value > MAX_K) throw new Error("Choose a blush strength between 0 and " + MAX_K + ".");
     return value;
   }
   function checkedLayer(value) { if (value !== 0 && value !== 1) throw new Error("Choose the Ppo or Akarame blush type."); return value; }
+  // A recipe operation {layer, k[, exact: true]} (texture_blush / viewer_texture_tools.checked_blush):
+  // exact saves lossless RGBA32 instead of re-encoding only the touched ASTC blocks.
+  function checkedOperation(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The blush bake needs exactly a blush type and a strength.");
+    var keys = Object.keys(value).sort().join(",");
+    if (keys !== "k,layer" && keys !== "exact,k,layer" || keys !== "k,layer" && typeof value.exact !== "boolean") throw new Error("The blush bake needs exactly a blush type and a strength.");
+    var out = { layer: checkedLayer(value.layer), k: checkedK(value.k) }; if (value.exact) out.exact = true; return out;
+  }
+  function sameOperation(a, b) { return !a && !b || !!a && !!b && a.layer === b.layer && a.k === b.k && !!a.exact === !!b.exact; }
+  function copyOperation(value) { if (!value) return null; var out = { layer: value.layer, k: value.k }; if (value.exact) out.exact = true; return out; }
   function levelK(id) { for (var i = 0; i < LEVELS.length; i++) if (LEVELS[i].id === id) return LEVELS[i].k; throw new Error("Choose a supported blush level."); }
   function levelFor(k) { for (var i = 0; i < LEVELS.length; i++) if (LEVELS[i].k === k) return LEVELS[i].id; return null; }
   function layerBounds(layer) {
@@ -115,6 +127,6 @@
   }
   return { SIZE: SIZE, LAYER_BYTES: LAYER_BYTES, UV_SCALE: UV_SCALE, UV_OFFSET_V: UV_OFFSET_V, LEVELS: LEVELS, LAYERS: LAYERS, DEFAULT_LEVEL: "medium", DEFAULT_LAYER: 0, MAX_K: MAX_K,
     CHEEK_SHA256: "26de3c60f632112a8a9617cbaac04d390936a8da3849ddfd9e28fdc5b7a34b09",
-    checkedK: checkedK, checkedLayer: checkedLayer, levelK: levelK, levelFor: levelFor, layerBounds: layerBounds, sample: sample, factor: factor, bakeValue: bakeValue,
+    checkedK: checkedK, checkedLayer: checkedLayer, checkedOperation: checkedOperation, sameOperation: sameOperation, copyOperation: copyOperation, levelK: levelK, levelFor: levelFor, layerBounds: layerBounds, sample: sample, factor: factor, bakeValue: bakeValue,
     texelUv: texelUv, region: region, bakeRGBA: bakeRGBA, bakeImage: bakeImage, centre: centre, swatches: swatches, layerView: layerView };
 });

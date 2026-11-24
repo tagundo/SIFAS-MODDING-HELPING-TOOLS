@@ -21,26 +21,27 @@ function py(code, args = []) { return JSON.parse(execFileSync(python, ['-B', '-c
 const fixture = py(`
 import base64, hashlib, json, sys
 from pathlib import Path
-from test_viewer_texture_blush import head_fixture, synthetic_payload
+from test_viewer_texture_blush import head_fixture, recolour_images, synthetic_payload
 from webtools.core import texture_blush as tb, viewer_texture_tools as textures
 raw, images = head_fixture()
 payload = synthetic_payload()
 tb.CHEEK_SHA256 = hashlib.sha256(payload).hexdigest()
 Path(sys.argv[1]).write_bytes(raw)
 Path(sys.argv[2]).write_bytes(raw)
+Path(sys.argv[3]).write_bytes(head_fixture(attach=True)[0])
 cache = textures._cheek_cache_file(); cache.parent.mkdir(parents=True, exist_ok=True); cache.write_bytes(payload)
 print(json.dumps({"sha": tb.CHEEK_SHA256, "cache": str(cache), "width": images[0].width, "height": images[0].height,
-                  "rgba": base64.b64encode(images[0].tobytes()).decode()}))
-`, [path.join(models, 'ch0001_co0001.unity'), path.join(models, 'ch0001_co0001_copy.unity')]);
-const source = path.join(models, 'ch0001_co0001.unity'), second = path.join(models, 'ch0001_co0001_copy.unity');
-const original = Buffer.from(fixture.rgba, 'base64');
-function expected(layer, k) {
+                  "rgba": base64.b64encode(images[0].tobytes()).decode(), "recolour": base64.b64encode(recolour_images()[0].tobytes()).decode()}))
+`, [path.join(models, 'ch0001_co0001.unity'), path.join(models, 'ch0001_co0001_copy.unity'), path.join(models, 'ch0001_co0002.unity')]);
+const source = path.join(models, 'ch0001_co0001.unity'), second = path.join(models, 'ch0001_co0001_copy.unity'), recolourModel = path.join(models, 'ch0001_co0002.unity');
+const original = Buffer.from(fixture.rgba, 'base64'), recolour = Buffer.from(fixture.recolour, 'base64');
+function expected(layer, k, image = fixture.rgba) {
   return Buffer.from(py(`
 import base64, json, sys
 from test_viewer_texture_blush import synthetic_payload
 from webtools.core import texture_blush as tb
 out, changed, _ = tb.bake_rgba(base64.b64decode(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), tb.layer_bytes(synthetic_payload(), int(sys.argv[4])), float(sys.argv[5]))
-print(json.dumps(base64.b64encode(out).decode()))`, [fixture.rgba, String(fixture.width), String(fixture.height), String(layer), String(k)]), 'base64');
+print(json.dumps(base64.b64encode(out).decode()))`, [image, String(fixture.width), String(fixture.height), String(layer), String(k)]), 'base64');
 }
 async function startServer() {
   const s = net.createServer(); await new Promise(resolve => s.listen(0, '127.0.0.1', resolve)); const port = s.address().port; await new Promise(resolve => s.close(resolve));
@@ -84,11 +85,22 @@ async function main() {
     await tab.click();
     await page.waitForFunction(() => { const b = ModelViewer.getTextureTools().getState().blush; return b.rule && b.cheek.loaded && b.swatches && b.previewing; });
     let s = await state(page);
-    assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium' }); assert.equal(s.blush.cheek.source, 'cache');
+    assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', exact: false }); assert.equal(s.blush.cheek.source, 'cache');
     assert.equal(await page.locator('#viewer-texture-blush-level-medium').getAttribute('aria-checked'), 'true');
     assert.equal(await page.locator('#viewer-texture-blush-layer-0').getAttribute('aria-checked'), 'true');
     assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Preview, not applied yet: Medium \(k 1\.65\) · Standard \(Ppo\)$/);
-    assert.deepStrictEqual(s.blush.notes, ["The game's own song blush still appears on top during blush scenes.", "Android and iOS bundles are separate: bake each platform's file.", 'This file is the Android bundle.', 'Using the verified blush pattern saved from a costume you opened before.']);
+    assert.deepStrictEqual(s.blush.alerts, ["Android and iOS bundles are separate: bake each platform's file.", 'This file is the Android bundle.']);
+    assert.deepStrictEqual(s.blush.notes, ["The game's own song blush still appears on top during blush scenes.", 'Using the verified blush pattern saved from a costume you opened before.']);
+    assert.match(s.status, /^Pick a strength, check the 3D preview, then apply\.$/);
+    // The status and the platform alert sit inside the visible part of the settings scroller.
+    const layout = await page.evaluate(() => {
+      const box = document.querySelector('.viewer-texture-properties'), panel = document.getElementById('viewer-texture-blush-panel'), view = box.getBoundingClientRect();
+      const inside = id => { const r = document.getElementById(id).getBoundingClientRect(); return r.top >= view.top - 1 && r.bottom <= view.bottom + 1 && r.height > 0; };
+      return { status: inside('viewer-texture-blush-status'), alerts: inside('viewer-texture-blush-alerts'), order: Array.from(panel.children).map(e => e.id || e.className) };
+    });
+    assert.ok(layout.status && layout.alerts, JSON.stringify(layout));
+    assert.deepStrictEqual(layout.order.slice(1, 4), ['viewer-texture-blush-target', 'viewer-texture-blush-status', 'viewer-texture-blush-alerts']);
+    assert.match(await page.locator('#viewer-texture-blush-layer-1 .viewer-texture-blush-shape').textContent(), /^Band across the nose and both cheeks$/);
     const swatches = await page.evaluate(() => Array.from(document.querySelectorAll('#viewer-texture-blush-levels .viewer-texture-blush-level')).map(b => ({ id: b.dataset.blushLevel, colour: b.dataset.colour, text: b.textContent })));
     assert.deepStrictEqual(swatches.map(r => r.text), ['Very light', 'Light', 'Medium', 'Strong', 'Very strong']);
     assert.equal(new Set(swatches.map(r => r.colour)).size, 5, 'each level shows its own cheek-centre colour');
@@ -132,9 +144,30 @@ async function main() {
     // Advanced numeric strength.
     await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = true; });
     const field = page.locator('#viewer-texture-blush-k'); await field.fill('2.0'); await field.press('Tab'); await frames(page);
-    s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 2, level: 'custom' }); assert(same(await live(page), expected(1, 2)));
+    s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 2, level: 'custom', exact: false }); assert(same(await live(page), expected(1, 2)));
     await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.k === 2 && !s.pending; });
     report.cases.push({ name: 'apply, undo/redo, re-bake without compounding and advanced strength' });
+
+    // Keyboard undo/redo from the panel: a click on its text leaves focus on the page body.
+    await page.locator('#viewer-texture-blush-status').click(); await page.keyboard.press('Control+z'); await frames(page);
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 1.05 }, 'Ctrl+Z after a click in the panel');
+    await page.keyboard.press('Control+y'); await frames(page); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 });
+    await page.focus('#viewer-texture-blush-before'); await page.keyboard.press('Control+z'); await frames(page);
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 1.05 }, 'Ctrl+Z on a panel button');
+    await page.keyboard.press('Control+Shift+z'); await frames(page); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 });
+    await page.locator('#viewer-stage').click({ position: { x: 5, y: 5 } }).catch(() => {}); await page.keyboard.press('Control+z'); await frames(page);
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 }, 'a shortcut outside the tools is not taken');
+    report.cases.push({ name: 'Ctrl+Z, Ctrl+Y and Ctrl+Shift+Z from the blush panel' });
+
+    // Exact pixels is part of the operation: preview unchanged, Apply records it.
+    await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = true; });
+    await click(page, '#viewer-texture-blush-exact'); s = await state(page);
+    assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 2, level: 'custom', exact: true }); assert(s.blush.previewing); assert(same(await live(page), expected(1, 2)));
+    assert.match(s.blush.status, /exact pixels$/);
+    await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.exact && !s.pending; });
+    assert.deepStrictEqual((await page.evaluate(() => ModelViewer.getTextureTools().getEdits()))[0].blush, { layer: 1, k: 2, exact: true });
+    await click(page, '#viewer-texture-undo'); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 });
+    report.cases.push({ name: 'exact pixels option' });
 
     // Save through the product and check every authored mip of the written texture.
     await click(page, '#viewer-save');
@@ -164,7 +197,39 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
     await page.evaluate(rows => ModelViewer.restoreAuthoringState({ version: 1, savedSettingsEnabled: true, edits: [], unsupported: [], textures: rows }), [{ texture: edits[0].texture, sourceSha256: edits[0].sourceSha256, png: edits[0].png, kind: 'blush', blush: { layer: 0, k: 0.5 } }]);
     await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.k === 0.5 && !s.loading; });
     assert(same(await live(page), expected(0, 0.5)));
-    report.cases.push({ name: 'recipe restore' });
+    await click(page, '#viewer-texture-undo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 }, 'undoing a recipe restore brings back the previous bake');
+    assert(same(await live(page), expected(1, 2)));
+    await click(page, '#viewer-texture-redo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 0.5 });
+    // Restoring a recipe without this texture removes the bake, also undoably.
+    await page.evaluate(() => ModelViewer.restoreAuthoringState({ version: 1, savedSettingsEnabled: true, edits: [], unsupported: [], textures: [] }));
+    // (In the blush tab a face without a bake starts the default preview again.)
+    await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return !s.blush.committed && !s.loading && !s.editedTextures.length; });
+    await click(page, '#viewer-texture-undo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 0.5 });
+    report.cases.push({ name: 'recipe restore, with undo and redo of the bake' });
+
+    // Export PNG includes the bake; importing that PNG must not bake it twice.
+    const exported = await page.evaluate(() => ModelViewer.getTextureTools().exportPNG().then(() => document.getElementById('viewer-texture-saved-path') ? document.getElementById('viewer-texture-saved-path').textContent : null));
+    const savedPath = exported || await page.evaluate(() => { const e = Array.from(document.querySelectorAll('#viewer-texture-tools *')).find(n => !n.children.length && /\.png$/.test(n.textContent.trim()) && /[\\/]/.test(n.textContent)); return e && e.textContent.trim(); });
+    assert.ok(savedPath && fs.existsSync(savedPath), 'Export PNG wrote a file: ' + savedPath);
+    const exportedPixels = Buffer.from(py("import base64,json,sys;from PIL import Image;print(json.dumps(base64.b64encode(Image.open(sys.argv[1]).convert('RGBA').tobytes()).decode()))", [savedPath]), 'base64');
+    assert(exportedPixels.equals(expected(0, 0.5)), 'the exported PNG is the texture as the game shows it');
+    assert.equal(await page.evaluate(p => ModelViewer.getTextureTools().importPNGPath(p), savedPath), true);
+    await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return !s.pending && !s.loading; });
+    s = await state(page); assert.equal(s.blush.committed, null, 'the imported pixels replace the bake');
+    assert(same(await live(page), exportedPixels), 'single bake in the 3D view');
+    assert.match(s.status, /^The imported PNG is used as the final pixels/);
+    assert.equal(s.blush.status, 'No blush');
+    edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.equal(edits.length, 1); assert.equal(edits[0].blush, undefined); assert.equal(edits[0].kind, 'paint');
+    assert(pngPixels(edits[0].png).equals(exportedPixels));
+    await click(page, '#viewer-texture-undo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 0.5 }, 'undoing the import brings the bake back'); assert(same(await live(page), expected(0, 0.5)));
+    await click(page, '#viewer-texture-redo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
+    assert.equal((await state(page)).blush.committed, null); assert(same(await live(page), exportedPixels));
+    fs.rmSync(savedPath, { force: true });
+    report.cases.push({ name: 'Export PNG then Import PNG never bakes twice' });
 
     // Korean and Japanese labels.
     for (const [lang, tabText, medium, apply] of [['ko', '홍조 굽기', '보통', '홍조 적용'], ['ja', '頬紅の焼き込み', '普通', '頬紅を適用']]) {
@@ -174,6 +239,33 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       assert.deepStrictEqual(labels, { tab: tabText, medium, apply }, lang);
     }
     report.cases.push({ name: 'ko and ja labels' });
+
+    // A recolour face texture is previewed on the head it replaces in the game.
+    await page.selectOption('#lang-select', 'en');
+    await page.evaluate(file => openModelViewer([file]), recolourModel);
+    await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return ModelViewer.getState().loaded && !ModelViewer.getState().loading && s.textureCount > 1 && s.blush.cheek && !s.loading; });
+    await page.evaluate(() => { const s = document.getElementById('viewer-shader'); if (s.value !== 'sifas') { s.value = 'sifas'; s.dispatchEvent(new Event('change', { bubbles: true })); } });
+    await page.evaluate(() => ModelViewer.getTextureTools().openBlush());
+    await page.waitForFunction(() => { const b = ModelViewer.getTextureTools().getState().blush; return b.rule && b.rule.role === 'head' && b.cheek.loaded && b.previewing; });
+    s = await state(page); assert.ok(s.blush.alerts.includes('Recolour suits of this costume replace this texture in the game: bake their recolour texture too.'));
+    const attach = s.blush.eligible.find(row => row.role === 'attach'); assert.ok(attach, JSON.stringify(s.blush.eligible));
+    await page.evaluate(texture => ModelViewer.getTextureTools().selectTexture(texture), attach.texture);
+    await page.waitForFunction(() => { const b = ModelViewer.getTextureTools().getState().blush; return b.rule && b.rule.role === 'attach' && b.proxy && b.previewing; });
+    s = await state(page);
+    assert.match(s.status, /^Pick a strength, check the 3D preview, then apply\.$/);
+    assert.deepStrictEqual(s.blush.alerts.slice(0, 2), ["This recolour texture replaces the face texture of its recolour suit, so bake it as well as the costume's own face texture.", 'The 3D view shows this recolour texture on the face while this tab is open.']);
+    assert(same(await live(page), expected(0, 1.65, fixture.recolour)), 'the face shows the baked recolour texture');
+    await click(page, '#viewer-texture-blush-before'); assert(same(await live(page), recolour), 'Show before shows the recolour texture without the bake');
+    await click(page, '#viewer-texture-blush-before'); await click(page, '#viewer-texture-blush-apply');
+    await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && !s.pending; });
+    assert(same(await live(page), expected(0, 1.65, fixture.recolour)));
+    await page.evaluate(() => ModelViewer.getTextureTools().setTab('costume')); await frames(page);
+    s = await state(page); assert.equal(s.blush.proxy, null); const head = await live(page);
+    assert(!head || same(head, original), 'leaving the tab puts the costume face back');
+    await page.evaluate(() => ModelViewer.getTextureTools().setTab('blush'));
+    await page.waitForFunction(() => !!ModelViewer.getTextureTools().getState().blush.proxy); assert(same(await live(page), expected(0, 1.65, fixture.recolour)));
+    edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits.map(row => [row.texture.id, row.blush]), [[attach.texture.id, { layer: 0, k: 1.65 }]]);
+    report.cases.push({ name: 'recolour texture previewed on its head in 3D' });
 
     // Without a verified array the entry explains why and refuses to apply.
     fs.unlinkSync(fixture.cache);
@@ -185,6 +277,7 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
     assert(await page.locator('#viewer-texture-blush-apply').isDisabled());
     assert.equal(await page.evaluate(() => ModelViewer.getTextureTools().applyBlush()), false);
     assert(/cheek_array/.test(await page.locator('#viewer-texture-blush-status').textContent()) || /cheek_array/.test(s.blush.status));
+    assert(/cheek_array/.test(s.error) && !/Pick a strength/.test(s.status), 'the tool status explains instead of asking for a strength: ' + s.status + ' / ' + s.error);
     report.cases.push({ name: 'missing cheek array is explained', status: s.blush.status });
 
     assert.deepStrictEqual(errors, []); report.status = 'PASS';

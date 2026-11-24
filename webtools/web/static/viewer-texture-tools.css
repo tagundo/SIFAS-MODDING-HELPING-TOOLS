@@ -173,3 +173,8 @@
 .viewer-texture-blush-status { display: block; font-size: 12px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
 .viewer-texture-blush-notes { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.4; color: var(--muted); }
 .viewer-texture-blush-notes:empty { display: none; }
+/* Notes that change what to bake: right under the status, never below the fold. */
+.viewer-texture-blush-alerts { color: inherit; border-left: 2px solid var(--accent); padding-left: 18px; }
+.viewer-texture-tools button.viewer-texture-blush-layer { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; flex: 1 1 120px; min-height: 36px; text-align: left; }
+.viewer-texture-blush-shape { font-size: 10px; line-height: 1.25; color: var(--muted); font-weight: normal; }
+.viewer-texture-blush-advanced .viewer-texture-check { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; font-size: 11px; }

@@ -581,9 +581,11 @@ tools → Bake blush** appears when the model has a head material
 (`BodyPartManager.headMaterial`) or a recolour-suit texture bound to it, and
 opens that face texture.
 
-- Pick **Standard (Ppo)** (the stock default; 3105 of 3141 MV clips) or **Deep
-  (Akarame)**, then one of five strengths. The 3D view previews the choice at
-  once; **Show before** toggles it off; **Apply blush** is one undo step.
+- Pick **Standard (Ppo)** (the stock default, round patches on both cheeks; 3105
+  of 3141 MV clips) or **Deep (Akarame)** (a band across the nose and both
+  cheeks), then one of five strengths. The 3D view previews the choice at once;
+  **Show before** toggles it off; **Apply blush** is one undo step (the history
+  buttons, Ctrl+Z / Ctrl+Y and Ctrl+Shift+Z anywhere in the texture tools).
 - Each level shows the texture's own cheek-centre colour. Strength k is a
   permanent blush of intensity k (k = 1 is the strongest stock clip):
   Very light 0.5, Light 1.05, Medium 1.65 (default), Strong 2.3, Very strong 3.
@@ -594,15 +596,30 @@ opens that face texture.
   bilinearly with Clamp at `uv·2.22 + (0, −1.221)` (Unity v up), alpha
   untouched. Only texels whose rounded colour changes are written. Every authored
   mip is baked in place at its own texel centres; mips are never regenerated.
-  The texture is saved losslessly as RGBA32, like every texture-tool edit, so
-  every untouched texel keeps its exact decoded value.
+- Saving: an ASTC face keeps its format, size and mip count. In every level,
+  each compressed block without a changed texel keeps its original bytes; only
+  the blocks that contain one are encoded again from the exact bake (the app's
+  `astcenc`, LDR, exhaustive). ASTC is lossy, so texels inside those blocks
+  approximate the bake (on a real 1024² ASTC 6×6 face: 509 of 29 241 blocks at
+  full size, mean error 0.14 and at most 4 levels per channel). Each spliced
+  level is decoded again; the save is refused unless every texel outside the
+  re-encoded blocks and every alpha value is unchanged. **Advanced → Save exact
+  pixels** instead uses lossless RGBA32 like the other texture tools (every
+  texel exact, about nine times the texture data). Paint plus a bake, non-ASTC
+  formats and an `astcenc` without an encoder also use RGBA32; the save summary
+  says which encoding was used and why.
 - The recipe stores the bake as an operation on the original pixels, so applying
-  another strength replaces the bake instead of adding to it.
+  another strength replaces the bake instead of adding to it. **Export PNG**
+  writes the texture as the game shows it (bake included); **Import PNG** treats
+  the file as the final pixels and removes the bake operation in the same undo
+  step, so a retouched export is never baked twice.
 - The blush pattern is read from the costume bundle (or a verified copy cached
   from a costume you opened before, under `cache/viewer/cheek-array`) and checked
   against the stock array's SHA-256. No game texture data ships with the tools.
 - Recolour suits (`m_suit_attach`, key `c1`) replace the head texture at runtime:
-  open the attach bundle with the costume and bake its texture too. Matcap faces
+  open the attach bundle with the costume and bake its texture too. While the
+  blush tab edits a recolour texture, the 3D view shows it on the head material
+  it replaces; leaving the tab or choosing another texture restores the face. Matcap faces
   can look slightly different in game; the song blush still appears on top in
   blush scenes; masked heads never get the song blush. Android and iOS bundles
   are separate files.
