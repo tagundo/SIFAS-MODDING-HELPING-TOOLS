@@ -1362,7 +1362,11 @@
     const shot = ctx.project() ? playheadShot(ctx) : null;
     const key = signature(ctx, shot);
     if (!state.panel || state.panel.box !== box || state.panel.key !== key || !box.contains(state.panel.refs.root)) {
+      // A rebuild (a new mode or shot) keeps keyboard focus on the same control.
+      const active = global.document && document.activeElement;
+      const focused = active && box.contains(active) ? (active.dataset && active.dataset.mvCam ? `[data-mv-cam="${active.dataset.mvCam}"]` : active.id ? `#${active.id}` : null) : null;
       state.panel = { box, key, refs: build(ctx, box, shot) };
+      if (focused) box.querySelector(focused)?.focus({ preventScroll: true });
     }
     syncPanel(ctx);
   }
@@ -1408,13 +1412,17 @@
     projectChanged(ctx, info = {}) {
       const state = stateOf(ctx);
       hookScene(ctx);
-      if (info.reason === "load" || info.reason === "reload") {
-        if (info.reason === "load") { state.selected = null; state.differs = new WeakMap(); }
+      // A project as opened or saved already holds its bakes: nothing is rebaked on load.
+      if (info.reason === "load") {
+        state.selected = null;
+        state.differs = new WeakMap();
         state.panel = null;
         renderPanel(ctx);
         return;
       }
-      if (info.reason === "reimport") requestBake(ctx, { reason: "reimport" });
+      // An asset import (reload) or a costume re-import can change what layers bake (members,
+      // outfits); keys alone rebake to the same samples. Unedited shots are not visited.
+      if (info.reason === "reload" || info.reason === "reimport") { state.panel = null; requestBake(ctx, { reason: info.reason }); }
       else if (info.reason === "history") {
         const scope = bakeScope(ctx, info.command);
         if (scope) requestBake(ctx, { events: scope.events, reason: "history" });
