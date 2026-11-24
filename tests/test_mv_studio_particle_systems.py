@@ -156,6 +156,10 @@ class NormalizationTests(unittest.TestCase):
                                                "cycles": 3, "interval": 0.25, "probability": 1.0}])
         with self.assertRaises(systems._Unsupported):
             systems._emission({"enabled": True, "rateOverTime": constant(1.0), "rateOverDistance": constant(2.0)})
+        # The module's own switch rides along: the prewarm's rate carry emits only from an enabled module.
+        self.assertIs(emission["enabled"], True)
+        self.assertEqual(systems._emission({"enabled": False, "rateOverTime": constant(5.0)}),
+                         {"enabled": False, "rate": {"mode": 0, "scalar": 0.0, "min": 0.0}, "bursts": []})
 
     def test_shapes_and_modules(self):
         source = particle_system()
@@ -320,6 +324,9 @@ class NormalizationTests(unittest.TestCase):
                                                  (2, {"stopAction": 1}, True, False)):
             row = systems.culling(particle_system(cullingMode=culling, **fields), RENDERER)
             self.assertEqual((row["pauses"], row["bounds"] is not None), (pauses, bounded), (culling, fields))
+            # The flag itself rides along for the runtime's procedural prewarm cap, whatever the culling mode.
+            self.assertEqual(row["procedural"], systems.procedural(particle_system(cullingMode=culling, **fields)))
+        self.assertIs(systems.culling(particle_system(stopAction=1), RENDERER)["procedural"], False)
 
     def test_procedural_culling_bounds(self):
         # 0x1db800: the value range of a curve includes its overshoot between keys.
@@ -661,6 +668,7 @@ class OriginalTimelineTests(unittest.TestCase):
                                         "sub_dis_L/cloud_L", "sub_dis_L/cloud_R", "sub_dis_R/cloud_L", "sub_dis_R/cloud_R"])
         for path, row in rows.items():
             self.assertTrue(row["culling"]["pauses"], path)
+            self.assertTrue(row["culling"]["procedural"], path)
             self.assertEqual(row["culling"]["uniform"], path.startswith(("main_dis", "sub_dis")), path)
         # Size 17 billboards, no motion: 17 * 0.71 on every side.
         self.assertEqual([round(value, 4) for value in rows["light_01"]["culling"]["bounds"]], [-12.07] * 3 + [12.07] * 3)

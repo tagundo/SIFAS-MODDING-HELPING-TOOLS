@@ -265,8 +265,10 @@ def _main(source):
 
 
 def _emission(source):
+    # ``enabled`` tells the runtime whether the prewarm's rate carry can emit
+    # (0x65b770 runs only for an enabled module, and then even at rate 0).
     if not source.get("enabled"):
-        return {"rate": {"mode": 0, "scalar": 0.0, "min": 0.0}, "bursts": []}
+        return {"enabled": False, "rate": {"mode": 0, "scalar": 0.0, "min": 0.0}, "bursts": []}
     if not _constant(source["rateOverDistance"], 0):
         raise _Unsupported("EmissionModule.rateOverDistance")
     bursts = []
@@ -277,7 +279,7 @@ def _emission(source):
         bursts.append({"time": _number(burst.get("time"), 0, 1e5), "count": curve(burst["countCurve"]),
                        "cycles": cycles, "interval": _number(burst.get("repeatInterval", 0), 0, 1e5),
                        "probability": _number(burst.get("probability", 1), 0, 1)})
-    return {"rate": curve(source["rateOverTime"]), "bursts": bursts}
+    return {"enabled": True, "rate": curve(source["rateOverTime"]), "bursts": bursts}
 
 
 def _shape(source):
@@ -983,11 +985,21 @@ def culling(source, render_tree):
     ``pauses``: culling freezes this system's clock off screen. ``bounds``:
     the local box, or None with ``reason`` when it is not reproduced.
     ``uniform``: the View-alignment largest-scale rule applies.
+    ``procedural``: the procedural flag itself, which also changes how the
+    activation prewarm caps its emission (see the runtime's prewarm notes:
+    Simulate 0x1cbf64 runs the prewarm in procedural mode, 0x1ce4b0 flag 2,
+    where 0x1d7490 counts every particle of the prewarm's emission batches
+    against maxParticles until 0x1d7a94 rebuilds the live ones).
+
+    State +0x22 (set by script Emit/SetParticles 0x1d3294 / 0x1d366c /
+    0x1d4f3c, cleared by Play 0x1cc394) also turns procedural mode off; it
+    is ignored here because CustomControl clones never call those.
     """
     mode = source.get("cullingMode", 0)
     flag = procedural(source)
     pauses = mode == 2 or (mode == 0 and bool(source.get("looping")) and flag)
-    result = {"pauses": pauses, "bounds": None, "uniform": render_tree.get("m_RenderAlignment", 0) == 0}
+    result = {"pauses": pauses, "bounds": None, "uniform": render_tree.get("m_RenderAlignment", 0) == 0,
+              "procedural": flag}
     if not pauses:
         return result
     if not flag:

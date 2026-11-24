@@ -97,6 +97,57 @@ function testPrewarmedSteadyState() {
   assert.ok(cold.sample(1, 30).length <= 2, "without prewarm the first frame holds only its own births");
 }
 
+// Activation prewarm (Play(1) -> Simulate 0x1cbf64 -> 0x1d1e54 / 0x1ce4b0): step plan, rate carry and
+// the procedural batch cap. Game values (dump4 / dump3b, 12035): a procedural display kira_up
+// (rate 15, lifetime 1..10, max 40) holds 15 particles 0.886 s after activation, not a full pool;
+// a rate-0 burst cloud with maxParticles 2 holds none during its first loop, one with 10 holds one.
+function testPrewarmActivationBuildUp() {
+  const plan = P.prewarmSteps(12.5, 30);
+  assert.deepEqual(plan.steps.slice(0, 8), Array(8).fill(1), "1 s steps above 10 s, kept while above 5 s");
+  assert.equal(plan.steps[8], f32(.02));
+  assert.ok(plan.steps.slice(8).every(step => step === f32(.02)));
+  assert.ok(plan.remainder >= 0 && plan.remainder < f32(.02));
+  assert.deepEqual(P.prewarmSteps(8, 30).steps.slice(0, 3), [f32(.2), f32(.2), f32(.2)]);
+  assert.deepEqual(P.prewarmSteps(25, .5).steps.slice(0, 2), [.5, .5], "steps never exceed the duration");
+  assert.deepEqual(P.prewarmSteps(.01, 5), {steps: [], remainder: f32(.01)});
+
+  const procedural = {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true, procedural: true};
+  const kira = (flag, extra = {}) => system({main: {prewarm: true, duration: 50, lifetime: between(1, 10), maxParticles: 40},
+    emission: {enabled: true, rate: constant(15), bursts: []}, culling: {...procedural, procedural: flag}, ...extra});
+  const alive = (stream, frames) => stream.sample(frames, 30).filter(atom => atom.age <= 100).length;
+  const counts = flag => Array.from({length: 8}, (_, seed) => alive(P.create(kira(flag), 100 + seed), 27));
+  const mean = rows => rows.reduce((sum, value) => sum + value, 0) / rows.length;
+  // The procedural prewarm stops emitting once 40 particles were emitted (2.7 s of its 10 s), so most are
+  // dead at activation and the pool builds up again; a non-procedural prewarm keeps the pool full.
+  assert.ok(mean(counts(true)) < 24, `procedural prewarm build-up ${counts(true)}`);
+  assert.ok(mean(counts(false)) > 36, `non-procedural prewarm ${counts(false)}`);
+  assert.ok(alive(P.create(kira(true), 5), 300) >= 36, "the pool is full again later");
+
+  const cloud = (max, emission = {}) => system({main: {prewarm: true, duration: 10, lifetime: between(10, 10), maxParticles: max},
+    emission: {enabled: true, rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: .01, probability: 1}],
+      ...emission}, culling: procedural});
+  const loop = stream => [1, 9, 27, 150, 290, 301, 450].map(frames => alive(stream, frames));
+  // The prewarm's first step emits the burst plus the seeded carry (2 particles, ~10 s old at activation);
+  // its wrap at the loop end fires the burst again only if the batch cap leaves room.
+  assert.deepEqual(loop(P.create(cloud(10), 3)), [2, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(loop(P.create(cloud(2), 3)), [1, 0, 0, 0, 0, 1, 1], "maxParticles 2: an empty first loop");
+  // Older descriptors without the flag keep the live-particle cap.
+  const legacy = kira(true);
+  delete legacy.culling.procedural;
+  assert.ok(alive(P.create(legacy, 100), 27) > 36);
+  // The carry particle needs an enabled module: an enabled module at rate 0 without bursts emits it once,
+  // a disabled one never.
+  const idle = (enabled, lifetime) => P.create(system({main: {prewarm: true, duration: 10, lifetime: between(lifetime, lifetime),
+    maxParticles: 10}, emission: {enabled, rate: constant(0), bursts: []}, culling: procedural}), 3);
+  // Born at the end of the first (1 s) step of a 12 s prewarm, it is 11 s old at activation.
+  assert.equal(alive(idle(true, 12), 25), 1, "the carry particle of an enabled rate-0 module");
+  assert.equal(alive(idle(true, 12), 35), 0);
+  assert.equal(alive(idle(false, 12), 1), 0, "a disabled module emits nothing");
+  const unflagged = system({main: {prewarm: true, duration: 10, lifetime: between(12, 12), maxParticles: 10},
+    emission: {rate: constant(0), bursts: []}, culling: procedural});
+  assert.equal(alive(P.create(unflagged, 3), 1), 0, "an old descriptor's empty module counts as disabled");
+}
+
 function testBurstsCyclesAndExpiry() {
   const row = system({main: {looping: false, duration: 3, lifetime: constant(1.5)},
     emission: {rate: constant(0), bursts: [{time: 0, count: constant(5), cycles: 3, interval: .5, probability: 1}]}});
@@ -501,6 +552,7 @@ async function testCullingFreezesTheClockOffScreen() {
   testDrawOrderMatchesNativeLanes();
   testSeekMatchesPlayback();
   testPrewarmedSteadyState();
+  testPrewarmActivationBuildUp();
   testBurstsCyclesAndExpiry();
   testCurvesAndColorsOverLifetime();
   testOrbitalRadialAndBurstSpread();

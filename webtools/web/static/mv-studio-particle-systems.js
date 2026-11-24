@@ -17,9 +17,18 @@
   //  * Age runs from 0 to 100 at dt * 100 / lifetime per step (reciprocal
   //    refined as on ARM), curves are sampled at age * .01.
   //  * Rate emission carries its fraction across steps; newborns advance by
-  //    their fraction of the step. Prewarm replays one maximum lifetime with
-  //    .2 s steps while more than 5 s remain, then .02 s steps, and the
-  //    remainder runs after the first display frame's full steps.
+  //    their fraction of the step. Prewarm (Play(1) from playOnAwake 0x1cdaa4
+  //    -> Simulate 0x1cbf64 flags 3 -> 0x1d1e54, 0x1ce4b0) replays one maximum
+  //    lifetime of system time from the loop time that ends it at a loop
+  //    end: 1 s steps while more than 10 s remain, .2 s steps while more than
+  //    5 s remain, then Time.fixedDeltaTime (.02) steps, and the remainder
+  //    runs after the first display frame's full steps. Its rate carry starts
+  //    at 1 - (scan carry) + 1e-4, so an enabled module emits one extra
+  //    particle in the first step even at rate 0. A procedural system
+  //    (culling.procedural) prewarms in one procedural update whose emission
+  //    cap counts every particle emitted so far, live or dead; after the
+  //    prewarm the cap counts live particles again (per-frame updates run
+  //    non-procedurally, 0x1ce1b8).
   //  * The clone root sits at the world origin plus the clip offset; its
   //    systems use their own serialized random seeds.
   //
@@ -272,7 +281,8 @@
         (main.size3D && !(validCurve(main.sizeY) && validCurve(main.sizeZ))) ||
         (main.rotation3D && !(validCurve(main.rotationX) && validCurve(main.rotationY))) ||
         !validColor(main.color) || !finite(main.simulationSpeed) || main.simulationSpeed <= 0) return false;
-    if (!validCurve(emission.rate) || !Array.isArray(emission.bursts) || emission.bursts.length > 32 ||
+    if ((emission.enabled !== undefined && typeof emission.enabled !== "boolean") ||
+        !validCurve(emission.rate) || !Array.isArray(emission.bursts) || emission.bursts.length > 32 ||
         !emission.bursts.every(burst => finite(burst?.time) && validCurve(burst.count) &&
           Number.isInteger(burst.cycles) && finite(burst.interval) && finite(burst.probability))) return false;
     if (shape && !(Number.isInteger(shape.type) && vector(shape.position, 3) && vector(shape.rotation, 3) &&
@@ -312,7 +322,7 @@
 
   function validCulling(value) {
     return value === undefined || (!!value && typeof value.pauses === "boolean" && typeof value.uniform === "boolean" &&
-      (value.bounds === null || (vector(value.bounds, 6) && [0, 1, 2].every(axis => value.bounds[axis] <= value.bounds[axis + 3]))));
+      (value.procedural === undefined || typeof value.procedural === "boolean") && (value.bounds === null || (vector(value.bounds, 6) && [0, 1, 2].every(axis => value.bounds[axis] <= value.bounds[axis + 3]))));
   }
 
   function validSystem(system, textures) {
@@ -470,6 +480,31 @@
     }
   }
 
+  // 0x1d7490 step sizes of a prewarm of `horizon` system seconds (fixed
+  // step Time.fixedDeltaTime .02, TimeManager +0x48; the APK's TimeManager
+  // keeps Unity's .02): while more than 10 s remain, the previous step if
+  // above 1 s, else min(duration, 1); while more than 5 s remain, the
+  // previous step if above .2 s, else min(duration, .2); then the fixed step,
+  // until less than the last step is left. That remainder stays in the update
+  // accumulator (state +0) for the next frame.
+  function prewarmSteps(horizon, cycle) {
+    const steps = [];
+    let remainder = f32(horizon), last = fixedStep;
+    if (!(remainder >= fixedStep)) return {steps, remainder};
+    do {
+      let dt;
+      if (remainder > 10) dt = last > 1 ? last : f32(Math.min(cycle, 1));
+      else {
+        dt = remainder < fixedStep ? remainder : fixedStep;
+        if (remainder > 5) dt = last > catchUpStep ? last : f32(Math.min(cycle, catchUpStep));
+      }
+      steps.push(dt);
+      remainder = f32(remainder - dt);
+      last = dt;
+    } while (remainder >= last && steps.length < 100000);
+    return {steps, remainder};
+  }
+
   // system: one normalized ParticleSystem; seed: its effective random seed;
   // gravity: the world down axis in the emitter's simulation space.
   function create(system, seed, {gravity = [0, -1, 0], worldVelocity = null} = {}) {
@@ -485,6 +520,9 @@
       [compile(main.rotation)];
     const rate = compile(emission.rate);
     const bursts = emission.bursts.map(burst => ({...burst, count: compile(burst.count)}));
+    // An enabled EmissionModule (a descriptor older than the flag: one that can emit at all).
+    const emitting = typeof emission.enabled === "boolean" ? emission.enabled :
+      !zeroCurve(emission.rate) || emission.bursts.length > 0;
     const shape = makeShape(system.shape, native);
     const velocity = system.velocity && ["x", "y", "z"].map(axis => compile(system.velocity[axis]));
     const orbital = system.velocity?.orbital && ["orbitalX", "orbitalY", "orbitalZ", "orbitalOffsetX", "orbitalOffsetY",
@@ -710,8 +748,16 @@
       return found;
     }
 
+    // Particles the emission cap counts: the live ones, or during a
+    // procedural prewarm every particle emitted so far (state.batched).
+    const used = state => state.batched ?? state.active.length;
+
     function step(state, rawDt) {
-      let dt = f32(rawDt * speedScale);
+      simulate(state, f32(rawDt * speedScale));
+    }
+
+    // One update step of dt system seconds.
+    function simulate(state, dt) {
       const {active} = state;
       for (const atom of active) advance(atom, dt);
       cull(active);
@@ -736,16 +782,20 @@
       state.clock = clock;
       if (wrapped) state.loop++;
       if (!main.looping && next >= cycle) state.stopped = true;
-      const room = Math.max(0, main.maxParticles - active.length);
+      const room = Math.max(0, main.maxParticles - used(state));
       const regular = Math.min(requested, room);
       if (regular > 0) {
         const inverse = amount < clockBias ? 1 : f32(1 / amount);
         born(state, regular, index => f32(dt * Math.min(1, Math.max(birthBias, f32(f32(index + state.carry) * inverse)))),
           systemTime);
+        if (state.batched !== undefined) state.batched += regular;
       }
       for (const {count, elapsed} of pulses) {
-        const allowed = Math.min(count, Math.max(0, main.maxParticles - active.length));
-        if (allowed > 0) born(state, allowed, () => Math.max(birthBias, Math.min(dt, elapsed)), systemTime);
+        const allowed = Math.min(count, Math.max(0, main.maxParticles - used(state)));
+        if (allowed > 0) {
+          born(state, allowed, () => Math.max(birthBias, Math.min(dt, elapsed)), systemTime);
+          if (state.batched !== undefined) state.batched += allowed;
+        }
       }
     }
 
@@ -769,18 +819,27 @@
         carry = f32(combined - Math.trunc(combined));
         phase = next;
       }
-      warm = {...warm, clock: f32(start % cycle), carry: perSecond > 0 ? f32(f32(1 - carry) + clockBias) : 0};
-      remainder = horizon;
-      for (let dt = remainder > 5 ? catchUpStep : fixedStep; remainder >= dt; dt = remainder > 5 ? catchUpStep : fixedStep) {
-        step(warm, dt);
-        remainder = f32(remainder - dt);
-      }
+      // 0x1d1e54 seeds the carry with 1 - (the scan's carry) + 1e-4 whatever the
+      // rate: an enabled module emits that one extra particle in the first
+      // step even at rate 0 (0x65b770 adds the carry after its rate branch).
+      warm = {...warm, clock: f32(start % cycle), carry: emitting ? f32(f32(1 - carry) + clockBias) : 0};
+      // A procedural system prewarms in one procedural update (Simulate
+      // 0x1cbf64 -> 0x1ce4b0 with flag 2): 0x1d7490 appends emission batches
+      // and caps each step by the particles of every batch so far, live or
+      // dead, since only the closing 0x1d7a94 rebuilds the live ones.
+      if (system.culling?.procedural) warm.batched = 0;
+      const plan = prewarmSteps(horizon, cycle);
+      for (const dt of plan.steps) simulate(warm, dt);
+      remainder = plan.remainder;
+      delete warm.batched;
     }
     const layouts = new Map(), checkpointInterval = 2 * nativeStepRate;
 
     function layout(fps) {
       const grouped = nativeStepRate / fps;
-      let residue = f32(f32(1 / fps) + remainder);
+      // The prewarm's leftover system time runs after the first display
+      // frame's full steps, in the raw time step() scales back to it.
+      let residue = f32(f32(1 / fps) + f32(remainder / speedScale));
       for (let i = 0; i < grouped; i++) residue = f32(residue - nativeStep);
       const entry = {state: clone(warm), checkpoints: [warm], grouped, residue: main.prewarm && main.looping ? residue : 0};
       layouts.set(fps, entry);
@@ -1468,6 +1527,6 @@
   global.MVStudioParticleSystems = {
     apply, create, activeFrames, animatorTime, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
     nodePoses, eulerQuaternion, blendFactor, depthFunction, renderState, loadTexture, mainCameraMask, salts,
-    activationFrame, worldBox, cameraPlanes, boxVisible,
+    activationFrame, worldBox, cameraPlanes, boxVisible, prewarmSteps,
   };
 })(typeof window !== "undefined" ? window : globalThis);
