@@ -444,12 +444,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(register.jacket_preview(data["path"]))
             if route == "plan":
                 data = self._viewer_feature_request({"project"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 65536,
-                                                    optional_fields={"template", "target", "unbaked"})
+                                                    optional_fields={"template", "target", "unbaked", "soundtrackDuration"})
                 unbaked = data.get("unbaked", [])
                 if not isinstance(unbaked, list) or len(unbaked) > 4096:
                     raise ValueError(register.REQUEST)
                 return self._send_json(register.plan(root, data["project"], template=data.get("template"),
-                                                     target=data.get("target"), unbaked=unbaked, language=self._lang()))
+                                                     target=data.get("target"), unbaked=unbaked, language=self._lang(),
+                                                     soundtrack_duration=data.get("soundtrackDuration")))
             if route == "remove-plan":
                 data = self._viewer_feature_request({"region", "liveId"}, token=False, max_bytes=4096)
                 return self._send_json(register.remove_plan(root, region=data["region"], live_id=data["liveId"]))

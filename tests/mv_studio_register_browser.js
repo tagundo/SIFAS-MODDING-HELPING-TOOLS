@@ -92,6 +92,13 @@ async function nativeTimeline(page, server, panel, posted, log) {
   await page.locator('#mv-game-load').click();
   await page.waitForFunction(() => MVStudio.getState().project?.nativeTimeline === true);
   await page.locator('#mv-register-plan').filter({ hasText: '타임라인 변경 없음' }).waitFor();
+  // The soundtrack's import recorded no length (as for mp3/ogg/m4a/flac): the page measures it, and
+  // the plan then has the audio length warning, the preview start and the length in the caption.
+  await page.locator('#mv-register-plan').filter({ hasText: '음원이 MV보다 6초 깁니다' }).waitFor();
+  const measured = posted.filter((item) => item.url.endsWith('/registration-plan')).pop();
+  assert.equal(measured.body.soundtrackDuration, 10);
+  assert.equal(measured.body.project.soundtrack.duration, undefined);
+  assert.match(await page.locator('#mv-register-audio').textContent(), /프로젝트 음원 · 0:10/);
   await panel.locator(':scope > summary').click();
   const plans = () => posted.filter((item) => item.url.endsWith('/registration-plan')).length;
   const before = plans();

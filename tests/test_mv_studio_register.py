@@ -693,6 +693,26 @@ class PlanTests(Case):
         self.assertEqual(result["audio"]["default"], "project")
         self.assertEqual(result["audio"]["soundtrack"]["origin"], "project")
 
+    def test_a_measured_soundtrack_length_fills_the_preview_start_and_warning(self):
+        project = self.project()
+        # mp3/ogg/m4a/flac imports record no duration; the page measures it and sends it with the plan.
+        project["soundtrack"] = {"url": "/api/mv-studio/media/" + "c" * 32 + ".mp3", "offset": 0}
+        unknown = self.plan(project)
+        self.assertIsNone(unknown["audio"]["soundtrack"]["duration"])
+        self.assertIsNone(unknown["audio"]["previewStart"])
+        self.assertFalse([item for item in unknown["warnings"]
+                          if item["message"] in (register.AUDIO_LONGER, register.AUDIO_SHORTER)])
+        measured = self.plan(project, soundtrack_duration=34.5)
+        self.assertEqual(measured["audio"]["soundtrack"]["duration"], 34.5)
+        self.assertEqual(measured["audio"]["previewStart"], 14.5)
+        self.assertIn({"message": register.AUDIO_LONGER, "values": {"seconds": 30.5}}, measured["warnings"])
+        # A WAV import's own duration wins over the page's measurement.
+        project["soundtrack"]["duration"] = 4.0
+        self.assertEqual(self.plan(project, soundtrack_duration=34.5)["audio"]["soundtrack"]["duration"], 4.0)
+        for bad in (0, -1, float("nan"), "30", True, 10 ** 9):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "request is invalid"):
+                self.plan(project, soundtrack_duration=bad)
+
     def test_audio_defaults_and_offset_beat(self):
         project = self.project()
         project["soundtrack"] = {"url": "/api/mv-studio/media/" + "b" * 32 + ".wav", "offset": 0, "duration": 4.0,

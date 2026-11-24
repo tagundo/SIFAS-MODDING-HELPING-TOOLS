@@ -21,6 +21,8 @@
   const copy = (value) => JSON.parse(JSON.stringify(value));
   const text = (value) => String(value == null ? "" : value);
   let ctx = null, box = null;
+  // Soundtrack url -> length in seconds, measured here for formats whose import records none (all but WAV).
+  const durations = new Map(), probing = new Set();
   let state = fresh(), songs = { region: null, list: null, error: "", loading: null, encoder: false, managed: false };
 
   // revision counts project changes; planned is the revision the shown plan was made from.
@@ -102,7 +104,31 @@
     const body = { project, unbaked };
     if (state.template) body.template = state.template;
     if (state.target !== undefined) body.target = state.target;
+    const soundtrack = project.soundtrack, measured = soundtrack && durations.get(soundtrack.url);
+    if (measured && !Number.isFinite(soundtrack.duration)) body.soundtrackDuration = measured;
     return body;
+  }
+
+  // An mp3/ogg/m4a/flac soundtrack has no recorded length: read it from the media metadata, then
+  // check again so the plan fills the preview start and the audio length warning.
+  function probeDuration(plan) {
+    const soundtrack = plan.audio && plan.audio.soundtrack;
+    if (!soundtrack || Number.isFinite(soundtrack.duration) || durations.has(soundtrack.url) || probing.has(soundtrack.url)) return;
+    if (typeof global.Audio !== "function") return;
+    const url = soundtrack.url, media = new global.Audio();
+    probing.add(url);
+    const done = () => { probing.delete(url); media.removeAttribute("src"); media.load(); };
+    media.preload = "metadata";
+    media.addEventListener("loadedmetadata", () => {
+      const seconds = media.duration;
+      done();
+      if (!Number.isFinite(seconds) || seconds <= 0) return;
+      durations.set(url, Math.round(seconds * 1000) / 1000);
+      const project = ctx.project();
+      if (project && project.soundtrack && project.soundtrack.url === url) schedulePlan(0);
+    }, { once: true });
+    media.addEventListener("error", done, { once: true });
+    media.src = url;
   }
 
   function usePlan(plan, revision) {
@@ -111,6 +137,7 @@
     state.planError = "";
     applyDefaults(plan);
     if (plan.region && songs.region !== plan.region) loadSongs(plan.region);
+    probeDuration(plan);
   }
 
   async function runPlan() {
@@ -736,7 +763,10 @@
       radio.disabled = busy || !!choice.disabled;
       radio.addEventListener("change", () => { if (radio.checked) { state.audio = choice.value; draw(); } });
       let caption = t(choice.label);
-      if (choice.value === "project" && soundtrack) caption += ` · ${minutes((soundtrack.duration || 0) - (soundtrack.offset || 0))}`;
+      // The length is unknown until the page has measured a non-WAV soundtrack.
+      if (choice.value === "project" && soundtrack && Number.isFinite(soundtrack.duration)) {
+        caption += ` · ${minutes(soundtrack.duration - (soundtrack.offset || 0))}`;
+      }
       label.append(radio, make("span", caption));
       fieldset.append(label);
       if (choice.disabled && choice.note) fieldset.append(make("p", t(choice.note), { class: "mv-field-note" }));

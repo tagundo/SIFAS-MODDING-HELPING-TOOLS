@@ -25,7 +25,7 @@ if os.environ.get("ELICHIKA_DIR"):
 from http.server import ThreadingHTTPServer  # noqa: E402
 
 from test_mv_studio_register import (base_tracks, build_root, fake_export, fake_parse, stage_chart,  # noqa: E402
-                                     timeline_bytes)
+                                     timeline_bytes, wav_bytes)
 
 
 def stand_in_timelines():
@@ -50,6 +50,8 @@ def native_project(stock):
                                                  "assetId": 2101, "mvOnly": False, "registered": False})
     project["tracks"] = copy.deepcopy(base_tracks())
     project["duration"] = 4.0
+    # A 10 s soundtrack imported the way mp3/ogg/m4a/flac are: no recorded duration (the page measures it).
+    project["soundtrack"] = {"offset": 0, "url": mv_studio._media(wav_bytes(441000), "wav")}
     return mv_studio._register(project, stock["tl2101"])
 
 

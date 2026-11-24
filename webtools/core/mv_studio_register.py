@@ -46,6 +46,7 @@ JACKET_BYTES = 2 * 1024 * 1024
 JACKET_SOURCE_BYTES = 32 * 1024 * 1024
 JACKET_SOURCE_PIXELS = 64 * 1024 * 1024
 PCM_BYTES = 96 * 1024 * 1024
+MAX_AUDIO_SECONDS = 6 * 3600
 PREVIEW_IMAGE = 512
 # Part of every fingerprint: a new bake or encode rule makes the next update rebuild that part.
 FINGERPRINT_VERSION = "mv-studio-register-1"
@@ -614,21 +615,24 @@ def shift_beat(beat, offset, rate=SAMPLE_RATE):
     return result
 
 
-def _soundtrack(project):
+def _soundtrack(project, duration_hint=None):
+    """The project soundtrack for the plan. Only WAV imports record a duration; for other
+    formats the page measures it and sends it as ``duration_hint``."""
     track = project.get("soundtrack") if isinstance(project.get("soundtrack"), dict) else None
     if not track or not isinstance(track.get("url"), str):
         return None
     offset = track.get("offset", 0)
     offset = float(offset) if type(offset) in (int, float) and math.isfinite(offset) else 0.0
     duration = track.get("duration")
-    duration = float(duration) if type(duration) in (int, float) and math.isfinite(duration) else None
+    duration = float(duration) if type(duration) in (int, float) and math.isfinite(duration) else duration_hint
     return {"origin": track.get("origin") if track.get("origin") == "game" else "project", "offset": offset,
             "duration": duration, "url": track["url"]}
 
 
 def _preview_start(duration):
+    """20 s before the end, at most 60 s in; None while the audio length is unknown."""
     if not duration:
-        return 0.0
+        return None
     return float(min(60.0, max(0.0, round(duration - 20, 1))))
 
 
@@ -764,10 +768,23 @@ def _targets(listed, base):
             and song.get("templateAssetId") == base["assetId"]]
 
 
-def plan(repo_root, project, *, template=None, target=None, unbaked=(), language="en"):
-    """What a registration of ``project`` would do. Writes nothing and bakes nothing."""
+def _duration_hint(value):
+    if value is None:
+        return None
+    if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= MAX_AUDIO_SECONDS:
+        raise ValueError(REQUEST)
+    return float(value)
+
+
+def plan(repo_root, project, *, template=None, target=None, unbaked=(), language="en", soundtrack_duration=None):
+    """What a registration of ``project`` would do. Writes nothing and bakes nothing.
+
+    ``soundtrack_duration`` is the page's measured length of a soundtrack whose import did not
+    record one (anything but WAV); it fills the preview start and the audio length warning.
+    """
     live = store()
     mv_studio._document(project)
+    hint = _duration_hint(soundtrack_duration)
     result = {"region": None, "base": None, "song": None, "targets": [], "target": "new",
               "title": project["name"].strip()[:MAX_TITLE], "credit": "", "platforms": {}, "projectPlatform": None,
               "timeline": {"native": project.get("nativeTimeline") is True, "unchanged": True, "fingerprints": {}},
@@ -778,7 +795,7 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
     if base is None:
         result["blocked"].append({"message": CHOOSE_BASE})
         result["region"] = (template or {}).get("region") if isinstance(template, dict) else None
-        _audio_plan(result, project, None, repo_root, None)
+        _audio_plan(result, project, None, repo_root, None, hint)
         return result
     result["region"] = base["region"]
     if base.get("unknown"):
@@ -811,7 +828,7 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
         blob = _project_blob(project, base)
     except ValueError as error:
         result["blocked"].append({"message": str(error)})
-        _audio_plan(result, project, facts, repo_root, chosen)
+        _audio_plan(result, project, facts, repo_root, chosen, hint)
         return result
     result["projectPlatform"] = blob["platform"]
     result["timeline"]["kind"] = blob["kind"]
@@ -874,12 +891,12 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
         result["blocked"].append({"message": UNBAKED})
     if result["edits"]["follow"]:
         result["warnings"].append({"message": FOLLOW_NOTE})
-    _audio_plan(result, project, facts, repo_root, chosen)
+    _audio_plan(result, project, facts, repo_root, chosen, hint)
     return result
 
 
-def _audio_plan(result, project, facts, repo_root, song):
-    soundtrack = _soundtrack(project)
+def _audio_plan(result, project, facts, repo_root, song, duration_hint=None):
+    soundtrack = _soundtrack(project, duration_hint)
     encoder = result.get("encoder", False)
     if song is not None:
         default = "keep"
