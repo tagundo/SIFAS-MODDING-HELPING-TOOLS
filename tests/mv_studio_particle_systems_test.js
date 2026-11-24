@@ -149,6 +149,80 @@ function testPrewarmActivationBuildUp() {
   assert.equal(alive(P.create(unflagged, 3), 1), 0, "an old descriptor's empty module counts as disabled");
 }
 
+// The particles of a procedural prewarm come from its batches (libunity.so 0x1d7a94), checked against an
+// independent model of the client rule, which a unicorn emulation of 0x60fe08 reproduced: per batch, groups
+// of four InitialModule lanes draw the lifetime first; a group whose four lanes are all dead stops after that
+// one draw and keeps nothing; a kept group draws word, size, rotation and colour and keeps min(left, 4)
+// lanes, `left` going down only for kept groups; the ShapeModule lanes then run over the kept particles.
+function regenerated(row, seed, batches) {
+  const lanes = [0, 1, 2, 3].map(lane => ({initial: native.nativeRandom((seed + 367 * lane) >>> 0),
+    shape: native.nativeRandom((seed + 367 * lane) >>> 0)}));
+  const unit = draw => native.nativeUnit(draw());
+  const [low, high] = [f32(row.main.lifetime.min), f32(row.main.lifetime.scalar)];
+  const kept = [];
+  let skipped = 0, phantoms = 0;
+  for (const batch of batches) {
+    let left = batch.count;
+    for (let base = 0; base < batch.count; base += 4) {
+      const lives = lanes.map(({initial}) => Math.max(f32(1e-6), f32(low + f32(f32(high - low) * unit(initial)))));
+      const death = lives.map((life, lane) => f32(f32(life - batch.age) -
+        (base + lane < batch.rate ? f32(f32(batch.carry + base + lane) * batch.spacing) : 0)));
+      if (death.every(value => value <= 0)) {
+        skipped++;
+        continue;
+      }
+      const words = lanes.map(({initial}) => initial());
+      for (const {initial} of lanes) {
+        initial();  // size
+        initial();  // rotation
+        initial();  // colour
+      }
+      for (let lane = 0; lane < Math.min(left, 4); lane++) {
+        if (base + lane >= batch.count) phantoms++;
+        const inverse = native.nativeInverseLifetime(lives[lane]);
+        kept.push({word: words[lane], life: inverse, age: f32(Math.max(0, f32(1 - f32(death[lane] * inverse))) * 100)});
+      }
+      left -= 4;
+    }
+  }
+  for (let base = 0; base < kept.length; base += 4) {
+    lanes.forEach(({shape}, lane) => {
+      const box = row.shape.scale.map(span => f32(f32(unit(shape) - .5) * span));
+      if (kept[base + lane]) kept[base + lane].position = box;
+    });
+  }
+  return {kept, skipped, phantoms};
+}
+
+function testProceduralPrewarmRegeneration() {
+  const procedural = {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true, procedural: true};
+  const kira = (rate, max) => system({main: {prewarm: true, duration: 50, lifetime: between(1, 10), maxParticles: max},
+    emission: {enabled: true, rate: constant(rate), bursts: []}, culling: procedural});
+  let skippedAny = 0, phantomAny = 0;
+  for (const [rate, max, seed] of [[15, 40, 3127128034], [30, 60, 3127128034], [30, 60, 77], [30, 60, 2], [15, 40, 5]]) {
+    const row = kira(rate, max), stream = P.create(row, seed);
+    assert.ok(stream.batches.length > 3, "the procedural prewarm keeps its batches");
+    assert.equal(stream.batches.reduce((sum, batch) => sum + batch.count, 0), max, "the batch cap stops at maxParticles");
+    const {kept, skipped, phantoms} = regenerated(row, seed, stream.batches);
+    skippedAny += skipped;
+    phantomAny += phantoms;
+    const alive = kept.filter(entry => entry.age <= 100);
+    const atoms = stream.sample(0, 30);
+    assert.deepEqual(atoms.map(atom => atom.source.word).sort(), alive.map(entry => entry.word).sort(),
+      `kept words (rate ${rate}, seed ${seed})`);
+    const byWord = new Map(alive.map(entry => [entry.word, entry]));
+    for (const atom of atoms) {
+      const expected = byWord.get(atom.source.word);
+      assert.equal(atom.source.life, expected.life);
+      assert.equal(atom.age, expected.age);
+      assert.deepEqual(atom.source.position, expected.position);
+    }
+  }
+  assert.ok(skippedAny > 0 && phantomAny > 0, `cases cover skipped groups (${skippedAny}) and phantom lanes (${phantomAny})`);
+  // A non-procedural prewarm keeps no batches.
+  assert.equal(P.create(system({main: {prewarm: true}}), 5).batches, null);
+}
+
 // A prewarm whose step plan leaves a remainder, at simulationSpeed .5: 0x1d1e54 divides the prewarm time by
 // simulationSpeed, so the leftover is raw time remainder / speed, and the first display frame's update scales
 // 1/fps plus that leftover by the speed (0x1ce1f4). Every prewarmed particle ages speed / fps + remainder system
@@ -595,6 +669,7 @@ async function testCullingFreezesTheClockOffScreen() {
   testSeekMatchesPlayback();
   testPrewarmedSteadyState();
   testPrewarmActivationBuildUp();
+  testProceduralPrewarmRegeneration();
   testPrewarmRemainderAtSimulationSpeed();
   testBurstsCyclesAndExpiry();
   testCurvesAndColorsOverLifetime();
