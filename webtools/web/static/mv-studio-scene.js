@@ -2261,8 +2261,11 @@
           const key = D.keyFor("stageNode", { binding: tag.binding, path: tag.path });
           if (wanted && !wanted.has(key)) return;
           if (nodes.length >= maxNodes) { if (!truncated.includes("stageNodes")) truncated.push("stageNodes"); return; }
+          // An AxisBillboard node (or a child of one) reports the live camera's turn, as renderers do.
+          const turned = billboardOf({ owner: node }) !== null;
           nodes.push({ key, binding: tag.binding, crc: tag.path, name: D.nodeName(node), activeSelf: node.visible,
-            visible: D.effectiveVisible(node), ...D.decompose(node.matrixWorld, temp) });
+            visible: D.effectiveVisible(node), ...D.decompose(rendererWorld({ owner: node }), temp),
+            ...(turned ? { axisBillboard: true } : {}) });
         });
         return nodes;
       });

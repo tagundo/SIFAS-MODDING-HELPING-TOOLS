@@ -126,6 +126,28 @@ class RecordedPhaseTest(unittest.TestCase):
         self.assertTrue(C.Comparison(game, editor).timing_uncertain(game["records"][0], -1))
 
 
+class StageNodeBillboardTest(unittest.TestCase):
+    def test_axis_billboard_stage_node_rotation_is_not_compared(self):
+        # dump4 litB_05_bilcone: AxisBillboard.OnWillRenderObject keeps the turn of the last camera that drew it.
+        binding = "/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litB_All"
+        rel = "litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani/litB_05_bilcone"
+        key = C.Conventions.stage_node_key(binding, rel)
+        game, editor = documents([frame(5.0, 0.2)])
+        result = C.Comparison(game, editor)
+        record = {"id": "p3-stageNodes-00", "clock": {"directorTime": 89.422}, "stageNodes": [
+            {"binding": binding, "relPath": rel, "activeInHierarchy": True, "position": [16.165, 0.359, 2.31],
+             "rotation": [-0.015, 0.0461, 0.309, 0.9498], "lossyScale": [1, 1, 1]}]}
+        node = {"key": key, "name": "litB_05_bilcone", "visible": True, "axisBillboard": True,
+                "position": [-16.165, 0.359, 2.31], "rotation": [0.2124, 0.6529, -0.2249, 0.6914], "lossyScale": [1, 1, 1]}
+        result.compare_stage_nodes(record, {"stageNodes": [node]}, False)
+        metrics = sorted(item["metric"] for item in result.items if item["type"] == "transforms")
+        self.assertEqual(metrics, ["stageNodePositionM", "stageNodeScaleRel"])
+        self.assertEqual(result.notes["transforms.stageNodeAxisBillboard"], ["litB_05_bilcone"])
+        result.items.clear()
+        result.compare_stage_nodes(record, {"stageNodes": [dict(node, axisBillboard=None)]}, False)
+        self.assertIn("stageNodeRotationDeg", [item["metric"] for item in result.items])
+
+
 class ParticleTest(unittest.TestCase):
     def test_control_track_instance_path(self):
         self.assertEqual(C.Comparison.particle_key("/fx_dis_par_so2035_01 [Timeline]/root/left_dis/kira_up"),

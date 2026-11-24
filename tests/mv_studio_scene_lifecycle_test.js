@@ -71,6 +71,7 @@ function fixture(visible = true, options = {}) {
       mesh.name = `model-${id}`;
       mesh.bind(rig, new THREE.Matrix4());
       root.add(bone, mesh, auxiliary);
+      options.build?.(root, id);
       const info = { mesh, rig, bone, auxiliary, releases: 0, materialsReleased: 0 };
       rig.dispose = () => { info.releases++; };
       models.set(id, info);
@@ -126,6 +127,9 @@ function fixture(visible = true, options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-asset-dump.js'), 'utf8'), context);
   if (options.lighting) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-lighting.js'), 'utf8'), context);
+  }
+  if (options.axisBillboard) {
+    vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-axis-billboard.js'), 'utf8'), context);
   }
   const fades = [], shadows = [];
   if (options.memberShadow) {
@@ -687,6 +691,49 @@ async function checkAssetDump() {
   f.app.dispose();
 }
 
+// AxisBillboard turns its nodes only when the scene draws; a deferred seek's stage
+// node dump reports the turn the live camera's draw gives (as renderers do).
+async function checkAssetDumpStageBillboard() {
+  const binding = '/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litB_All';
+  let cone = null;
+  const f = fixture(true, { axisBillboard: true, build(root, id) {
+    if (id !== 82) return;
+    const zrot = new THREE.Object3D();
+    zrot.userData.mvStageNode = { binding, path: 11 };
+    zrot.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), 2.03);
+    zrot.position.set(-14.4, 10.2, -2.8);
+    cone = new THREE.Object3D();
+    cone.userData.mvStageNode = { binding, path: 12 };
+    cone.userData.mvAxisBillboard = 1;
+    zrot.add(cone);
+    root.add(zrot);
+  } });
+  const value = project(81);
+  value.duration = 12;
+  value.stage = { glb: address(82) };
+  value.tracks = [{ id: 'cam', label: 'Camera/MainCamera', kind: 'camera', nativeClass: 'AnimationTrack',
+    binding: '/EntryPoint/Live/Cameras/MainCamera', events: [{ id: 'cam:0', start: 0, duration: 10, values: { keyframes: [
+      { time: 0, position: [1, 2, 10], rotation: [0, 0, 0, 1], fov: 30 },
+      { time: 10, position: [5, 3, 0], rotation: [0, 0, 0, 1], fov: 30 }] } }] }];
+  await f.app.load(value);
+  const node = () => JSON.parse(JSON.stringify(f.app.assetDump({ sections: ['stageNodes'] }))).stageNodes
+    .find((entry) => entry.crc === 12);
+  f.app.seek(4, value, true);
+  const deferred = node();
+  f.app.seek(4, value);
+  const drawn = node();
+  deferred.rotation.forEach((component, index) => assert(Math.abs(component - drawn.rotation[index]) < 1e-6,
+    `deferred stage node rotation ${deferred.rotation} matches the drawn turn ${drawn.rotation}`));
+  assert(Math.abs(Math.abs(new THREE.Quaternion(...drawn.rotation).dot(cone.parent.quaternion)) - 1) > 1e-3,
+    'the billboard turned the cone away from its parent');
+  f.app.seek(8, value, true);
+  const later = node();
+  f.app.seek(8, value);
+  later.rotation.forEach((component, index) => assert(Math.abs(component - node().rotation[index]) < 1e-6,
+    'a later deferred seek follows the moved live camera'));
+  f.app.dispose();
+}
+
 // The member culler hides the actor root in the editor; the dump reports it as
 // "culled" with node visibility unchanged, and reading it changes nothing.
 async function checkAssetDumpCuller() {
@@ -777,6 +824,7 @@ function checkAssetDumpHelpers() {
   await checkNativeRenderHeight();
   await checkAdaptivePreview();
   await checkAssetDump();
+  await checkAssetDumpStageBillboard();
   await checkAssetDumpCuller();
   checkAssetDumpHelpers();
   await checkNativeCamera();
