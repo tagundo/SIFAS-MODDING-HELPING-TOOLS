@@ -788,6 +788,8 @@ async function checkAssetDumpStageBillboardDrawn() {
     add('hidden', 40, [0.4, 2, 0.4]);
     add('bare', 50, null, false);
     add('edge', 60, [6, 2, 0.01]);
+    // Deep rather than wide (sz > sx): only max(sx, sz) widens x past the 1 cm the cone has.
+    add('deep', 90, [0.01, 2, 6]);
     // A 12035 cone: the AxisBillboard node is a group whose renderer is a child mesh node of the same name.
     add('group', 70, null, false);
     const part = new THREE.Mesh(new THREE.BoxGeometry(.4, 2, .4), new THREE.MeshBasicMaterial());
@@ -827,6 +829,9 @@ async function checkAssetDumpStageBillboardDrawn() {
   // A 6 m wide, flat cone turned toward the camera from twice the half width: its own bounds stay outside the
   // right plane, the widened (6 x 2 x 6) bounds reach into the view.
   at('edge', 2 * halfWidth, -10);
+  // A 6 m deep, 1 cm wide cone at the same place: its own bounds (and x/z widened to sx) stay outside, the
+  // widened (6 x 2 x 6) bounds reach into the view.
+  at('deep', 2 * halfWidth, -10);
   cones.hidden.forEach((cone) => { cone.visible = false; });
   for (const holder of Object.values(holders).flat()) {
     holder.updateMatrix();   // the stage keeps matrixAutoUpdate off on its nodes
@@ -841,6 +846,7 @@ async function checkAssetDumpStageBillboardDrawn() {
   assert.equal(drawn(41), undefined, 'a hidden cone is not turned (MVStudioAxisBillboard skips it), so it reports nothing');
   assert.equal(drawn(51), false, 'a billboard without a renderer is never drawn');
   assert.equal(drawn(61), true, 'AxisBillboard.Start widens x/z to max(sx, sz)');
+  assert.equal(drawn(91), true, 'AxisBillboard.Start widens x/z to max(sx, sz) when sz is the larger side');
   assert.equal(drawn(71), true, 'the renderer on a child mesh node of the same name');
   assert.equal(drawn(81), false, "another GameObject's renderer below the billboard");
   assert.equal(nodes.get(20).axisBillboard, undefined, 'the parent is not a billboard');
