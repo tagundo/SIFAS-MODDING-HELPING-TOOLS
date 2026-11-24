@@ -27,7 +27,9 @@ import astc_standin
 import costume_part_transplant as cpt
 from webtools.core import decode, model_edits, model_viewer, texture_blush as tb, viewer_texture_tools as textures
 from webtools.core.model_materials import _original_mips
+from fsspec.implementations.local import LocalFileSystem
 from test_graft_shared_assets import add_component, pointer
+from test_model_edit_dependencies import external
 from test_texture_blush import blob_layer
 
 FIXTURE = Path(__file__).parent / "fixtures" / "viewer_persistence.unity"
@@ -177,6 +179,21 @@ def head_fixture(*, head=True, astc=False, attach=False):
 
 def synthetic_payload():
     return blob_layer() + blob_layer(darkest=(255, 210, 207))
+
+
+def external_shader_head(raw):
+    """The head material using the AS/Member shader of another bundle (CAB),
+    as every original costume does; the shader itself is not included."""
+    asset = UnityPy.load(raw).file
+    material = next(obj for obj in asset.objects.values() if obj.type.name == "Material")
+    shader = next(obj.path_id for obj in asset.objects.values() if obj.type.name == "Shader")
+    tree = material.read_typetree()
+    cab, path_id = model_viewer._NATIVE_MEMBER_SHADER
+    asset.externals.append(external(f"archive:/{cab.upper()}/{cab.upper()}"))
+    tree["m_Shader"] = {"m_FileID": len(asset.externals), "m_PathID": path_id}
+    material.save_typetree(tree)
+    del asset.objects[shader]
+    return asset.save()
 
 
 def levels_of(raw, name="ch0001_co0001_head"):
@@ -396,6 +413,53 @@ class BlushSessionTests(unittest.TestCase):
                 self.assertEqual(summary["blush"].get("fallback", ""), fallback)
                 self.assertEqual(summary["encodingReason"], (fallback + " " if fallback else "") + textures.SAVED_EXACT)
                 self.assertEqual(result["recipe"]["state"]["textures"][0]["blush"], {"layer": 1, "k": 2.3, "encoding": requested})
+
+    def test_the_cheek_pattern_never_makes_the_server_search_its_working_directory(self):
+        """Original heads use the AS/Member shader of another bundle. Reading
+        the cheek pattern for a model session must not make UnityPy list the
+        server's working directory (or the whole data folder) for it."""
+        raw = external_shader_head(head_fixture()[0])
+        checked, references = [], []
+        member, ref = model_viewer._as_member_material, model_viewer._ref
+
+        def as_member(scene, obj, tree):  # the real check still runs and follows the shader pointer
+            checked.append(member(scene, obj, tree))
+            return True
+
+        def follow(owner, pointer):
+            references.append(dict(pointer or {}))
+            return ref(owner, pointer)
+
+        with patch.object(model_viewer, "_as_member_material", as_member):
+            token, _ = self.open(raw)
+            catalogue, row = self.head(token)
+        self.assertEqual(row["blush"]["role"], "head")
+        self.assertFalse(catalogue["blush"]["cheek"]["available"])
+        # A working directory with files, one of them named like the shader CAB.
+        work = self.root / "work"
+        work.mkdir()
+        for index in range(64):
+            (work / f"unrelated-{index}.bin").write_bytes(b"unrelated")
+        (work / model_viewer._NATIVE_MEMBER_SHADER[0]).write_bytes(b"not a shader")
+        previous = Path.cwd()
+        os.chdir(work)
+        self.addCleanup(os.chdir, previous)
+        with patch.object(model_viewer, "_as_member_material", as_member), patch.object(model_viewer, "_ref", follow), \
+                patch.object(LocalFileSystem, "walk", side_effect=AssertionError("directory search")) as walk, \
+                patch.object(LocalFileSystem, "exists", return_value=False) as exists:
+            # No cached pattern: the session's bundle is scanned again, offline.
+            with self.assertRaisesRegex(textures.TextureToolError, "cheek_array"):
+                textures.cheek(token)
+            walk.assert_not_called()
+            exists.assert_not_called()
+        self.assertIn(model_viewer._NATIVE_MEMBER_SHADER[1], [value.get("m_PathID") for value in references],
+                      "the scan followed the external shader pointer")
+        # With a verified cached pattern the bundle is not scanned again at all.
+        self.cache(self.payload)
+        with patch.object(textures, "_session_groups", side_effect=AssertionError("rescan")) as rescan:
+            data = textures.cheek(token)
+            rescan.assert_not_called()
+        self.assertEqual(__import__("zlib").decompress(base64.b64decode(data["rgbaZlib"])), self.payload)
 
     def test_astc_keep_on_paint_or_a_non_astc_texture_saves_exact_pixels_and_says_why(self):
         cheek = tb.layer_bytes(self.payload, 0)

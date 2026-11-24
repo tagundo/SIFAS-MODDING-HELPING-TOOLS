@@ -337,10 +337,15 @@ def cheek_payload(session):
     """The verified 524288-byte array for this session, or a TextureToolError."""
     payload = session.get("cheekPayload")
     if payload is None or not texture_blush.verify_payload(payload):
-        _, arrays = _safe_scan(_session_groups(session))
-        payload, info = _resolve_cheek(arrays, {})
+        # Every verified array is the same bytes (CHEEK_SHA256), and opening a
+        # bundle that holds one keeps a copy in the cache (_resolve_cheek), so
+        # the bundle is scanned again only when no verified copy is cached.
+        payload = _read_cached_cheek()
         if payload is None:
-            _fail(info["reason"])
+            _, arrays = _safe_scan(_session_groups(session))
+            payload, info = _resolve_cheek(arrays, {})
+            if payload is None:
+                _fail(info["reason"])
         session["cheekPayload"] = payload
     return payload
 
