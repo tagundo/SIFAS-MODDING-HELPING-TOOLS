@@ -22,8 +22,20 @@
   // LiveMixerBase`2.ProcessFrame (0x2b3996c; its only landing pad ends in
   // _Unwind_Resume) or the DOF mixer catches it, so PostProcess, the only
   // writer of SetDepthOfFieldEnabled/Settings, is skipped and the camera keeps
-  // the depth of field the previous frame applied.
+  // the DepthOfFieldModel.Settings the previous frame wrote.
   const KEEP_PREVIOUS = Symbol("keep the previous frame's depth of field");
+
+  // DepthOfFieldComponent.CalculateFocalLength (0x2cce59c) resolves the lens
+  // when the camera renders, not when the settings are written: useCameraFov
+  // takes 0.012 / tan(Camera.fieldOfView / 2), otherwise the settings'
+  // focalLength (millimetres) / 1000. `settings` carries the unresolved lens
+  // (useCameraFov, clipFocalLength) that SetDepthOfFieldSettings (0x2f63aa8)
+  // stores; the result adds focalLength resolved at `fov`, or is null.
+  function resolveLens(settings, fov) {
+    if (!settings) return null;
+    const focal = settings.useCameraFov ? 0.012 / Math.tan(fov * Math.PI / 360) : settings.clipFocalLength / 1000;
+    return focal > 0 && Number.isFinite(focal) ? { ...settings, focalLength: focal } : null;
+  }
 
   function clipValue(value, key) {
     const native = value[key];
@@ -146,12 +158,16 @@
   }
 
   // memberDistance(slot, part): distance from the main camera rig to the
-  // member's BodyPartManager part. options: members (loaded slots in Members
+  // member's BodyPartManager part. fov: the main camera's current field of
+  // view, which resolves the lens. options: members (loaded slots in Members
   // order), performers (every slot the MV has), angle(slot, part)
   // (Vector3.Angle between the view axis and the part), state (createState(),
-  // persists the mode-2 transition), previous (the result the previous
-  // evaluated frame applied, returned on the client's exception path) and
-  // warn(message).
+  // persists the mode-2 transition), previous (a result of the previous
+  // evaluated frame; on the client's exception path its settings stay and its
+  // lens resolves again at `fov`) and warn(message).
+  // Result: null (no depth of field) or { distance, aperture, kernelSize,
+  // antiAura, useCameraFov, clipFocalLength (weighted clip focalLength, mm),
+  // focalLength (resolved, metres) }.
   function sample(project, time, fov, memberDistance, options = {}) {
     if (project?.quality?.values?.posteffect !== true || !global.MVStudioLighting?.nativeWeight) return null;
     const tracks = project.tracks.filter(track => !track.muted && track.binding === mainCamera &&
@@ -169,7 +185,7 @@
       if (enabled(clipValue(value, "useMemberDistance"))) {
         const member = typeof memberDistance === "function"
           ? memberFocus(value, localTime(event, time), memberDistance, options, state) : undefined;
-        if (member === KEEP_PREVIOUS) return options.previous ?? null;
+        if (member === KEEP_PREVIOUS) return resolveLens(options.previous, fov);
         if (Number.isFinite(member)) focus = member;
         else {
           options.warn?.(`A depth-of-field clip targets body part ${clipValue(value, "bodyPart")} of member ` +
@@ -189,10 +205,9 @@
     }
     const kernelSize = discrete && clipValue(discrete, "kernelSize");
     if (!discrete || ![0, 1, 2, 3].includes(kernelSize)) return null;
-    const focal = enabled(clipValue(discrete, "useCameraFov")) ? 0.012 / Math.tan(fov * Math.PI / 360) : focalLength / 1000;
-    return focal > 0 && Number.isFinite(focal) ? { distance, aperture, focalLength: focal,
-      kernelSize, antiAura: enabled(clipValue(discrete, "antiAura")) } : null;
+    return resolveLens({ distance, aperture, kernelSize, antiAura: enabled(clipValue(discrete, "antiAura")),
+      useCameraFov: enabled(clipValue(discrete, "useCameraFov")), clipFocalLength: focalLength }, fov);
   }
 
-  global.MVStudioDofFocus = { sample, createState, vectorAngle, CLIP_DEFAULTS };
+  global.MVStudioDofFocus = { sample, createState, resolveLens, vectorAngle, CLIP_DEFAULTS };
 })(typeof window !== "undefined" ? window : globalThis);

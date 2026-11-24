@@ -107,6 +107,21 @@ const close = (actual, expected, message) => assert(Math.abs(actual - expected) 
   close(focus(), 10 - 0.1, 'and keeps it on the frames after');
   assert.equal(warnings.length, 2);
   assert.match(warnings[1], /member 2, which this MV does not have/);
+  // The kept settings' lens resolves at the camera FOV of the frame being drawn
+  // (DepthOfFieldComponent.CalculateFocalLength reads Camera.fieldOfView).
+  const lensAt = (fov) => 0.012 / Math.tan(fov * Math.PI / 360);
+  const mainFov = () => scene.assetDump({ sections: ['cameras'] }).cameras.find(entry => entry.role === 'main').fieldOfView;
+  const keptFov = mainFov();
+  close(scene.assetDump({ sections: ['post'] }).post.dof.focalLength, lensAt(keptFov), 'the kept lens at the current FOV');
+  const secondShot = project.tracks[0].events[1];
+  secondShot.values.fov = 60;
+  scene.playbackFrame(2.7, 1300, true);
+  const widened = mainFov();
+  assert(Math.abs(widened - keptFov) > 10, `the camera FOV changes: ${keptFov} -> ${widened}`);
+  const keptDof = scene.assetDump({ sections: ['post'] }).post.dof;
+  close(keptDof.distance, 10 - 0.1, 'a FOV change keeps the previous focus distance');
+  close(keptDof.focalLength, lensAt(widened), 'a FOV change resolves the kept useCameraFov lens again');
+  secondShot.values.fov = 30;
   scene.seek(2.6, undefined, true);
   assert.equal(scene.assetDump({ sections: ['post'] }).post.dof, null, 'a seek has no earlier frame to keep');
   // A reload reports the project's notes again.

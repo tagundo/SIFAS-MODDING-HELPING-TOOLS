@@ -415,7 +415,9 @@
     let dofState = global.MVStudioDofFocus?.createState?.() ?? null, dofFrameState = dofState && { ...dofState };
     // The depth of field the last evaluated frame applied, and the one the
     // frame before it left. A frame on the client's exception path (a missing
-    // member or a body part partMap lacks) keeps dofPrevious.
+    // member or a body part partMap lacks) keeps dofPrevious's settings and
+    // resolves its lens at the current camera FOV, as
+    // DepthOfFieldComponent.CalculateFocalLength does at render time.
     let dofApplied = null, dofPrevious = null;
     const dofWarnings = new Set();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
