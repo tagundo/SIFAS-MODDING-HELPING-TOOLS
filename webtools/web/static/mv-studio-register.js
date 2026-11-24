@@ -927,8 +927,12 @@
   function resultBox(result) {
     const wrap = make("div", null, { class: "mv-register-result", id: "mv-register-result", role: "status" });
     const song = result.song;
-    if (!result.changed) wrap.append(make("p", t("No changes to apply.")));
-    else {
+    if (!result.changed) {
+      wrap.append(make("p", t("No changes to apply.")));
+      // A job that stopped the game server says what became of it, also when nothing changed.
+      const server = serverNote(result.restart);
+      if (server) wrap.append(make("p", t(server), { id: "mv-register-result-server" }));
+    } else {
       wrap.append(make("p", "✔ " + format(result.kind === "new" ? "Registered '{title}' ({id})." : "Updated '{title}' ({id}).",
         { title: song.title, id: song.liveId })));
       wrap.append(make("p", t(result.restart === "done" ? "The game server was restarted." :

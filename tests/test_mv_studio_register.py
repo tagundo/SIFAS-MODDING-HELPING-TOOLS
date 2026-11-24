@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import struct
 import sys
 import tempfile
 import threading
@@ -52,6 +53,10 @@ from webtools.core import mv_studio, mv_studio_register as register, mv_studio_t
 
 # The real server session and job lifecycle (Case replaces both with stand-ins).
 REAL_SERVER_SESSION, REAL_LIFECYCLE = register._server_session, register._lifecycle
+# The real native timeline reader and writer (Case replaces both with JSON stand-ins).
+REAL_PARSE, REAL_EXPORT = mv_studio_timeline.parse_timeline, mv_studio_timeline.export_timeline
+REAL_BLOB_PLATFORM = register._blob_platform
+REAL_VALIDATE = native._validate_timeline if mv_studio_live is not None else None
 
 SAMPLES = Path(os.environ.get("ELICHIKA_STUDIO_TIMELINE_DIR", "/unavailable-studio-samples"))
 NEEDS_STORE = unittest.skipUnless(mv_studio_live is not None, "The Elichika server app is not importable")
@@ -325,6 +330,11 @@ class Case(unittest.TestCase):
                 return self.local[name]
             if download and name in self.remote:
                 return self.remote[name]
+            published = self.root / "static" / name
+            if name.startswith("mvstudio_") and mv_studio_live is not None and published.is_file():
+                # A pack the store published (a registered song's timeline); its keystream is self-inverse.
+                return native.encrypt_bytes(published.read_bytes())[descriptor["head"]:
+                                                                    descriptor["head"] + descriptor["size"]]
             return None
 
         for target, name, value in ((register, "_load", load),
@@ -835,6 +845,97 @@ class RegisterJobTests(Case):
         self.assertEqual(summary, register.NO_CHANGES)
         self.assertEqual(mv_studio_live.describe_mv_song(self.root, region="gl", live_id=live_id)["platforms"],
                          {"android": "custom", "ios": "custom"})
+
+    def reopened(self, live_id, platform="android"):
+        """The project that 'Open' in the songs list makes: the song's own registered timeline, parsed."""
+        song = mv_studio_live.describe_mv_song(self.root, region="gl", live_id=live_id)
+        raw = register._registered_timelines(self.root, song)[platform]
+        source = {"kind": "game", "region": "gl", "platform": platform, "liveId": live_id, "assetId": song["assetId"],
+                  "mvOnly": True, "registered": True}
+        return self.project(platform=platform, source=source, tracks=fake_parse(raw, "reopen")["tracks"],
+                            native_bytes=raw)
+
+    @staticmethod
+    def float32_export(raw, name, tracks):
+        """The native writer stores 32-bit floats: a value read back is the float32 nearest the one written."""
+        def f32(value):
+            if type(value) is float:
+                return struct.unpack("<f", struct.pack("<f", value))[0]
+            if isinstance(value, list):
+                return [f32(item) for item in value]
+            if isinstance(value, dict):
+                return {key: f32(item) for key, item in value.items()}
+            return value
+        return fake_export(raw, name, f32(tracks))
+
+    def test_an_update_after_opening_the_song_keeps_it_without_a_bake_or_a_server_stop(self):
+        """Opening a registered song reads its values back as the float32 the game stores
+        (0.7 -> 0.699999988...), so the fingerprint of the posted project differs, yet nothing changed."""
+        stored = struct.unpack("<f", struct.pack("<f", 0.7))[0]
+        with mock.patch.object(register, "_export", side_effect=self.float32_export):
+            project = self.project()
+            project["tracks"][1]["events"][0]["values"]["intensity"] = 0.7
+            project["tracks"][2]["events"][0]["values"]["color"]["r"] = 0.1
+            first, _ = self.run_job(self.request(project), managed=True)
+            song = first.song()["song"]
+            live_id, sessions = song["liveId"], len(self.server_sessions)
+            self.assertEqual(song["platforms"], {"android": "custom", "ios": "custom"})
+            reopened = self.reopened(live_id)
+            self.assertEqual(reopened["tracks"][1]["events"][0]["values"]["intensity"], stored)
+            plan = register.plan(self.root, reopened)
+            self.assertNotEqual(plan["timeline"]["fingerprints"], song["fingerprints"])
+            self.assertEqual((plan["target"], plan["timeline"]["keep"], plan["timeline"]["bake"]),
+                             (live_id, ["android", "ios"], []), "The plan says the registered timelines stay")
+            update = {"mode": "update", "liveId": live_id, "jacket": {"kind": "keep"}, "audio": {"kind": "keep"},
+                      "platforms": self.panel_platforms(plan)}
+            EXPORTS.clear()
+            job, summary = self.run_job(self.request(reopened, **update), managed=True)
+            self.assertEqual(summary, register.NO_CHANGES)
+            self.assertEqual(EXPORTS, [], "Kept without a bake")
+            self.assertEqual(len(self.server_sessions), sessions, "A no-op update does not stop the server")
+            self.assertEqual((job.song()["changed"], job.song()["restart"]), (False, "none"))
+            # The registered value typed again: neither the fingerprint nor the parsed values match,
+            # but the bake gives exactly the bytes the song plays, so nothing is written.
+            reopened["tracks"][1]["events"][0]["values"]["intensity"] = 0.7
+            plan = register.plan(self.root, reopened)
+            self.assertEqual(plan["timeline"]["bake"], ["android", "ios"])
+            job, summary = self.run_job(self.request(reopened, **update), managed=True)
+            self.assertEqual(summary, register.NO_CHANGES)
+            self.assertEqual([export["base"]["platform"] for export in EXPORTS], ["android", "ios"])
+            self.assertEqual(len(self.server_sessions), sessions, "Equal bytes do not stop the server")
+            # A real change still bakes, stops the server and writes.
+            reopened["tracks"][1]["events"][0]["values"]["intensity"] = 0.9
+            job, summary = self.run_job(self.request(reopened, **update), managed=True)
+            self.assertEqual(job.song()["parts"], ["timeline"])
+            self.assertEqual(len(self.server_sessions), sessions + 1)
+        after = mv_studio_live.describe_mv_song(self.root, region="gl", live_id=live_id)
+        self.assertEqual(after["platforms"], {"android": "custom", "ios": "custom"})
+
+    def test_a_session_that_stopped_the_server_reports_it_without_changes(self):
+        project = self.edited(self.project())
+        first, _ = self.run_job(self.request(project), managed=True)
+        live_id = first.song()["song"]["liveId"]
+        linked = dict(project, registration={"region": "gl", "liveId": live_id})
+        # The store finds nothing to change only after the stop (the job could not tell beforehand).
+        with mock.patch.object(register, "_unchanged", return_value=False):
+            job, summary = self.run_job(self.request(linked, mode="update", liveId=live_id, jacket={"kind": "keep"},
+                                                     audio={"kind": "keep"}), managed=True)
+        self.assertEqual(summary, register.NO_CHANGES)
+        self.assertEqual(self.server_sessions[-1]["stop"], True)
+        self.assertEqual((job.song()["changed"], job.song()["restart"]), (False, "done"))
+        self.assertEqual(job.stages()[-1], "restart")
+
+    def test_restart_state_reports_what_the_session_did(self):
+        def session(**state):
+            return type("Session", (), {"was_running": True, "restarted": False, "restart_pending": False, **state})()
+        for current, managed, changed, expected in (
+                (session(restarted=True), True, False, "done"), (session(restart_pending=True), True, False, "pending"),
+                (session(), True, False, "stopped"), (session(was_running=False), True, False, "none"),
+                (None, True, False, "none"), (session(restarted=True), True, True, "done"),
+                (session(restart_pending=True), True, True, "pending"), (session(), True, True, "manual"),
+                (None, False, True, "manual"), (None, False, False, "none")):
+            with self.subTest(session=current and vars(type(current)), managed=managed, changed=changed):
+                self.assertEqual(register._restart_state(current, managed, changed), expected)
 
     def test_a_plan_made_before_an_edit_cannot_drop_the_edit(self):
         project = self.project()
@@ -1490,6 +1591,106 @@ class RealSampleTests(unittest.TestCase):
         for platform, output in outputs.items():
             native._validate_timeline(output, raw[platform], native.PLATFORMS[platform][1], time.monotonic() + 120)
         self.assertEqual(register._parse(outputs["android"])["tracks"], register._parse(outputs["ios"])["tracks"])
+
+
+
+@NEEDS_STORE
+@unittest.skipUnless((SAMPLES / "a-1203503-live_timeline.unity").is_file()
+                     and (SAMPLES / "i-1203503-live_timeline.unity").is_file(), "Original game samples are optional")
+class RealSampleUpdateTests(Case):
+    """Real 12035 originals as the base MV's stock (Android and iOS) through the real timeline parser
+    and writer, the store's validator and installation_server with a stand-in controller."""
+
+    def setUp(self):
+        super().setUp()
+        self.local["tl2101"] = (SAMPLES / "a-1203503-live_timeline.unity").read_bytes()
+        self.local["tl2101i"] = (SAMPLES / "i-1203503-live_timeline.unity").read_bytes()
+        from adminui import serverctl
+        self.serverctl = serverctl
+        self.addCleanup(serverctl.register_controller, None)
+        self.exports = []
+
+        def export(raw, name, tracks):
+            self.exports.append(name)
+            return REAL_EXPORT(raw, name, tracks)
+
+        for target, name, value in ((mv_studio_timeline, "parse_timeline", REAL_PARSE),
+                                    (mv_studio_timeline, "export_timeline", export),
+                                    (register, "_blob_platform", REAL_BLOB_PLATFORM),
+                                    (native, "_validate_timeline", REAL_VALIDATE),
+                                    (register, "_server_session", REAL_SERVER_SESSION),
+                                    (register, "_lifecycle", REAL_LIFECYCLE)):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def imported(self, raw, source):
+        """The project MV Studio's game import makes of a timeline (with its preview parse options)."""
+        path = self.temp / f"timeline-{len(list(self.temp.glob('timeline-*')))}.unity"
+        path.write_bytes(raw)
+        return self.project(platform=source["platform"], source=source, tracks=mv_studio._timeline(path)[1]["tracks"],
+                            native_bytes=raw)
+
+    def job(self, request):
+        """One register job with the app controlling the game server: (job, summary, controller calls)."""
+        controller = Controller()
+        self.serverctl.register_controller(controller)
+        try:
+            job = FakeJob()
+            summary = register.run_register(job, self.root, request)
+        finally:
+            self.serverctl.register_controller(None)
+        return job, summary, controller.calls
+
+    @staticmethod
+    def bloom(project):
+        return next(event for track in project["tracks"] if track["nativeClass"] == "LiveBloomTrack"
+                    for event in track["events"] if "intensity" in event["editableValues"])
+
+    def test_12035_update_after_opening_the_registered_song_never_stops_the_server(self):
+        stock = {"kind": "game", "region": "gl", "platform": "android", "liveId": 21, "assetId": 2101,
+                 "mvOnly": False, "registered": False}
+        project = self.imported(self.local["tl2101"], stock)
+        self.bloom(project)["values"]["intensity"] = 0.7
+        camera = next(event for track in project["tracks"] if track["kind"] == "camera" for event in track["events"]
+                      if "keyframes" in event["editableValues"])
+        for point in camera["values"]["keyframes"][:30]:
+            point["fov"] = point["fov"] + 2
+        job, _, calls = self.job(self.request(project, title="값 편집 곡"))
+        self.assertIn("stop", calls)
+        song = mv_studio_live.describe_mv_song(self.root, region="gl", live_id=job.song()["song"]["liveId"])
+        self.assertEqual(song["platforms"], {"android": "custom", "ios": "custom"})
+        registered = register._registered_timelines(self.root, song)
+        self.assertEqual(sorted(registered), ["android", "ios"])
+        # Open it from the songs list: the registered Android timeline, imported again.
+        reopened = self.imported(registered["android"], {
+            "kind": "game", "region": "gl", "platform": "android", "liveId": song["liveId"], "assetId": song["assetId"],
+            "mvOnly": True, "registered": True})
+        self.assertEqual(self.bloom(reopened)["values"]["intensity"], struct.unpack("<f", struct.pack("<f", 0.7))[0])
+        plan = register.plan(self.root, reopened)
+        self.assertNotEqual(plan["timeline"]["fingerprints"], song["fingerprints"], "The values came back as float32")
+        self.assertEqual((plan["target"], plan["timeline"]["keep"], plan["timeline"]["bake"]),
+                         (song["liveId"], ["android", "ios"], []))
+        update = {"mode": "update", "liveId": song["liveId"], "jacket": {"kind": "keep"}, "audio": {"kind": "keep"},
+                  "platforms": RegisterJobTests.panel_platforms(plan), "title": "값 편집 곡"}
+        exports = len(self.exports)
+        job, summary, calls = self.job(self.request(reopened, **update))
+        self.assertEqual(summary, register.NO_CHANGES)
+        self.assertEqual(calls, ["begin_job", "finish_job:True"], "No stop and no start")
+        self.assertEqual(len(self.exports), exports, "Kept without a bake")
+        self.assertEqual((job.song()["changed"], job.song()["restart"]), (False, "none"))
+        # The bloom value typed again as 0.7: the posted project no longer equals the registered
+        # timeline's values, but its bake gives the registered bytes exactly (no tolerance).
+        self.bloom(reopened)["values"]["intensity"] = 0.7
+        plan = register.plan(self.root, reopened)
+        self.assertEqual(plan["timeline"]["bake"], ["android", "ios"])
+        job, summary, calls = self.job(self.request(reopened, **update))
+        self.assertEqual(len(self.exports), exports + 2)
+        self.assertEqual(summary, register.NO_CHANGES)
+        self.assertEqual(calls, ["begin_job", "finish_job:True"], "No stop and no start")
+        after = mv_studio_live.describe_mv_song(self.root, region="gl", live_id=song["liveId"])
+        self.assertEqual((after["revision"], after["fingerprints"], after["platforms"]),
+                         (song["revision"], song["fingerprints"], song["platforms"]))
 
 
 if __name__ == "__main__":

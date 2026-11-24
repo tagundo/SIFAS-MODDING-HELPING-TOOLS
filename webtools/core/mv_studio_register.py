@@ -58,7 +58,8 @@ _TIMING = frozenset(mv_studio_timeline._CLIP_TIMING.values())
 _PCM_NAME = re.compile(r"[a-f0-9]{32}\.wav\Z")
 _PARSED = OrderedDict()
 _PARSED_LOCK = threading.Lock()
-_PARSED_ENTRIES = 3
+# A stock original, both registered timelines of the target song and the two bake checks.
+_PARSED_ENTRIES = 5
 # One registration or removal at a time in this process (the database guard covers other tools).
 _ACTIVE = threading.Lock()
 
@@ -528,6 +529,46 @@ def timeline_fingerprint(platform, base_identity, tracks):
     return _sha(FINGERPRINT_VERSION, "timeline", platform, base_identity, _canonical(_exportable_view(tracks)))
 
 
+def _registered_timelines(repo_root, song, platforms=PLATFORMS):
+    """{platform: plaintext bytes} of the timelines a registered song plays now, for its custom
+    platforms among ``platforms``: the song's own timeline key in the catalog, read locally. A pack
+    that cannot be read is left out (its platform is then baked and written as before)."""
+    key, region = song.get("timelineKey"), song.get("region")
+    result = {}
+    if not isinstance(key, str) or region not in REGIONS:
+        return result
+    root = Path(repo_root).resolve()
+    for platform in platforms:
+        if (song.get("platforms") or {}).get(platform) != "custom":
+            continue
+        try:
+            descriptor, _ = _first_catalog_row(root, region, platform, "en", "live_timeline", key)
+            raw = _load(repo_root, descriptor, download=False) if descriptor is not None else None
+        except (ValueError, OSError, sqlite3.Error):
+            raw = None
+        if raw is not None:
+            result[platform] = raw
+    return result
+
+
+def _carries(raw, tracks):
+    """True when the posted tracks hold exactly what a registered timeline holds.
+
+    Both go through ``normalize`` against that timeline's own parse, so the comparison covers
+    exactly what a bake writes (clip timing, names, the clips' editable values and the
+    exportable track fields) and nothing else. It is an exact comparison: a project opened from
+    the registered song carries its parsed values unchanged, so an update without edits keeps
+    the registered timeline without a bake.
+    """
+    try:
+        registered = _parse(raw, "registered")["tracks"]
+        posted, _ = normalize(registered, tracks)
+        stored, _ = normalize(registered, registered)
+    except (ValueError, KeyError, TypeError, OSError):
+        return False
+    return posted == stored
+
+
 # ---------------------------------------------------------------- preview-only content
 
 def _not_in_game(project, report, unbaked):
@@ -844,15 +885,24 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
     keep = []
     if blob["kind"] is not None:
         mod_raw = blob["raw"] if blob["kind"] == "mod" else None
+        registered = None
         for platform in PLATFORMS:
             descriptor = facts["timelines"].get(platform)
             if descriptor is None:
                 continue
             fingerprint = timeline_fingerprint(platform, _timeline_identity(descriptor, platform, blob), tracks)
             result["timeline"]["fingerprints"][platform] = fingerprint
-            if (chosen is not None and chosen.get("platforms", {}).get(platform) == "custom"
-                    and chosen.get("fingerprints", {}).get(platform) == fingerprint):
+            if chosen is None or chosen.get("platforms", {}).get(platform) != "custom":
+                continue
+            if chosen.get("fingerprints", {}).get(platform) == fingerprint:
                 keep.append(platform)
+            elif blob["kind"] != "mod":
+                # A project opened from the song carries the registered timeline's own (parsed)
+                # values: the same check as the register job's (_bake), no bake.
+                if registered is None:
+                    registered = _registered_timelines(repo_root, chosen)
+                if platform in registered and _carries(registered[platform], tracks):
+                    keep.append(platform)
         try:
             if stock_raw is None and mod_raw is None:
                 result["timeline"]["pending"] = True
@@ -1065,14 +1115,20 @@ def _guard(root):
 
 
 def _restart_state(session, is_managed, changed):
-    """none (nothing changed), done, pending (after the job), or manual (start the server yourself)."""
-    if not changed:
-        return "none"
-    if is_managed and getattr(session, "restart_pending", False):
-        return "pending"
-    if is_managed and getattr(session, "restarted", False):
-        return "done"
-    return "manual"
+    """The game server after the store step: done (restarted), pending (restarts after the job),
+    manual (start the server yourself to apply the change), stopped (this job stopped it and it
+    did not come back) or none (never stopped, and nothing to apply).
+
+    A session that stopped the managed server reports its real outcome even when the store
+    found nothing to change."""
+    if is_managed and session is not None:
+        if getattr(session, "restart_pending", False):
+            return "pending"
+        if getattr(session, "restarted", False):
+            return "done"
+        if not changed:
+            return "stopped" if getattr(session, "was_running", False) else "none"
+    return "manual" if changed else "none"
 
 
 def _timeline_identity(descriptor, platform, blob):
@@ -1113,6 +1169,11 @@ def _bake(job, progress, repo_root, project, base, facts, request, song):
     between platforms), except a mod project's own platform, whose base is the mod timeline.
     Both platforms receive the same normalized tracks. A platform whose result equals its
     stock gets no override.
+
+    An update also keeps a custom platform whose registered timeline the project carries
+    unchanged (``_carries``: a project opened from the song, no bake), and one whose baked
+    bytes equal the bytes the song plays now. Either way nothing is written for it, so an
+    update without changes never stops the game server.
     """
     from mv_studio_live import KEEP
     blob = _project_blob(project, base)
@@ -1122,16 +1183,29 @@ def _bake(job, progress, repo_root, project, base, facts, request, song):
     mod_raw = blob["raw"] if blob["kind"] == "mod" else None
     tracks = project["tracks"]
     wanted = request["platforms"]
-    timelines, originals, fingerprints, outputs = {}, {}, {}, {}
+    timelines, originals, fingerprints, baked = {}, {}, {}, {}
     normalized = None
     catalogued = {platform: facts["timelines"][platform] for platform in PLATFORMS if facts["timelines"].get(platform)}
     expected = {platform: timeline_fingerprint(platform, _timeline_identity(descriptor, platform, blob), tracks)
                 for platform, descriptor in catalogued.items()}
+
+    def keep(platform, fingerprint):
+        timelines[platform] = KEEP
+        if fingerprint:
+            fingerprints[platform] = fingerprint
+
     for platform, fingerprint in expected.items():
         if (song is not None and song["platforms"].get(platform) == "custom"
                 and song.get("fingerprints", {}).get(platform) == fingerprint):
-            timelines[platform] = KEEP
-            fingerprints[platform] = fingerprint
+            keep(platform, fingerprint)
+    registered = {}
+    if song is not None and len(timelines) < len(catalogued):
+        registered = _registered_timelines(repo_root, song, [platform for platform in catalogued
+                                                             if timelines.get(platform) is not KEEP])
+        if blob["kind"] != "mod":
+            for platform, raw in registered.items():
+                if _carries(raw, tracks):
+                    keep(platform, song.get("fingerprints", {}).get(platform))
     if len(timelines) == len(catalogued):
         return timelines, originals, fingerprints
 
@@ -1173,11 +1247,16 @@ def _bake(job, progress, repo_root, project, base, facts, request, song):
             raise
         if output == stock:
             continue  # Unchanged: this platform keeps the stock row and gets no pack.
+        baked[platform] = output
+        if registered.get(platform) == output:
+            # The song already plays exactly these bytes: keep them, nothing to write.
+            keep(platform, song.get("fingerprints", {}).get(platform))
+            originals.pop(platform, None)
+            continue
         timelines[platform] = output
         fingerprints[platform] = fingerprint
-        outputs[platform] = output
-    if len(outputs) == 2:
-        parsed = [_parse(outputs[platform], "verify")["tracks"] for platform in PLATFORMS]
+    if len(baked) == 2:
+        parsed = [_parse(baked[platform], "verify")["tracks"] for platform in PLATFORMS]
         if parsed[0] != parsed[1]:
             raise ValueError(PLATFORMS_DIFFER)
     return timelines, originals, fingerprints
