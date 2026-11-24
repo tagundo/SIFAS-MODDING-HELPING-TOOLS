@@ -10,8 +10,11 @@
    - a key diamond appears on the camera lane and drags frame-snapped;
    - Free camera → orbit → Key current view (K) → back in Game camera the pose equals
      the view (≤ 1e-3 m / 0.01°, same FOV); Ctrl+Z restores, Ctrl+Shift+Z redoes;
-   - the curve view renders; save → reopen keeps editor.camera and the baked samples;
-   - every camera editor string has Korean and Japanese copy.
+   - the curve view renders;
+   - a closed panel opened at another shot shows that shot;
+   - save → reopen keeps editor.camera and the baked samples;
+   - every camera editor string has Korean and Japanese copy, and the whole panel follows a
+     language switch (en, ja, back to ko).
 
    Real 12035 timeline (skipped unless ELICHIKA_STUDIO_TIMELINE_DIR holds
    a-1203503-live_timeline.unity; no game data in Git): an unedited project exports the
@@ -323,6 +326,19 @@ async function synthetic(browser, url) {
   assert.equal(await page.locator('#mv-event-fields [data-mv-field=duration]').count(), 0, 'duration locked');
   assert.equal(await page.locator('#mv-event-fields [data-mv-field=start]').count(), 1);
 
+  // Closed, the panel skips playhead updates; opened again elsewhere, it shows the playhead shot.
+  const header = () => page.locator('#mv-cam-shot').textContent();
+  await seek(page, 1);
+  await page.waitForFunction(() => document.getElementById('mv-cam-shot')?.textContent.startsWith('샷 1 / 2'));
+  await page.locator('#mv-panel-camera > summary').click();
+  assert.equal(await page.locator('#mv-panel-camera').evaluate((panel) => panel.open), false, 'closed');
+  await seek(page, shotStart + 2);
+  await page.locator('#mv-panel-camera > summary').click();
+  await page.waitForFunction(() => /^샷 2 \/ 2 · .* · 프레임 120 \/ 300/.test(document.getElementById('mv-cam-shot')?.textContent || ''));
+  const resultY = Number(await page.locator('#mv-camera-fields [data-mv-cam="absolute.y"]').inputValue());
+  const bakedY = (await state(page)).project.tracks[0].events[1].values.keyframes[120].position[1];
+  near(resultY, bakedY, 1e-4, 'the Result fields show the playhead shot');
+
   // Save → reopen keeps the editor layer and the baked samples.
   current = await state(page);
   await page.locator('#mv-save').click();
@@ -343,10 +359,20 @@ async function synthetic(browser, url) {
     const missing = strings.filter((text) => !['X', 'Y', 'Z'].includes(text) && !(text in table.strings));
     assert.deepEqual(missing, [], `${lang} copy for every camera editor string`);
   }
-  // English labels follow the language switch.
+  // The panel follows the language switch: its summary and every control in it.
   await page.locator('#lang-select').selectOption('en');
   await page.waitForFunction(() => document.querySelector('#mv-panel-camera > summary')?.textContent === 'Camera editor');
+  await page.waitForFunction(() => document.getElementById('mv-cam-key-view')?.textContent === 'Key current view');
+  assert.equal(await page.locator('#mv-cam-shot-mode option[value="offset"]').textContent(), 'Offset keys');
+  assert.match(await header(), /^Shot 2 \/ 2 · .* · Frame 120 \/ 300/);
+  assert.equal(await page.locator('#mv-camera-fields [data-mv-cam="offset.z"]').evaluate((input) => input.closest('label').textContent), 'Dolly');
+  await page.screenshot({ path: path.join(evidence, 'camera-panel-en.png') });
+  const japanese = await page.request.get(url + '/api/i18n?lang=ja').then((reply) => reply.json());
+  await page.locator('#lang-select').selectOption('ja');
+  await page.waitForFunction((text) => document.getElementById('mv-cam-key-view')?.textContent === text, japanese.strings['Key current view']);
+  assert.equal(await page.locator('#mv-cam-shot-mode option[value="offset"]').textContent(), japanese.strings['Offset keys']);
   await page.locator('#lang-select').selectOption('ko');
+  await page.waitForFunction(() => document.getElementById('mv-cam-key-view')?.textContent === '현재 시점 키 추가');
   assert.deepEqual(errors, []);
   await page.close();
 }

@@ -44,7 +44,8 @@
     let state = states.get(ctx);
     if (!state) {
       state = { selected: null, channels: ["x"], autoKey: false, space: "view", pending: null, controller: null, events: undefined,
-        scene: null, unsubscribe: null, panel: null, curves: null, differs: new WeakMap(), lastShot: null, helper: false };
+        scene: null, unsubscribe: null, panel: null, curves: null, differs: new WeakMap(), lastShot: null, helper: false,
+        toggle: null };
       states.set(ctx, state);
     }
     return state;
@@ -1095,10 +1096,13 @@
     return control;
   }
 
+  // What the built panel depends on: a change rebuilds it (syncPanel only refreshes values).
+  // The UI language is part of it, so a language switch rebuilds every label.
   function signature(ctx, shot) {
-    if (!shot) return "none|" + (ctx.project() ? ctx.project().nativeTimeline === true : "");
+    const language = [global.document && document.documentElement ? document.documentElement.lang : "", t(ctx, "Camera editor")].join("/");
+    if (!shot) return ["none", ctx.project() ? ctx.project().nativeTimeline === true : "", ctx.locked(), language].join("|");
     return [shot.event.id, shot.editable, shot.record ? shot.record.mode : "original", shot.record ? shot.record.space : "", shot.user,
-      ctx.locked()].join("|");
+      ctx.locked(), language].join("|");
   }
 
   function build(ctx, box, shot) {
@@ -1367,16 +1371,31 @@
 
   function renderInto(box, ctx) {
     const state = stateOf(ctx);
+    watchToggle(ctx, box);
     const shot = ctx.project() ? playheadShot(ctx) : null;
     const key = signature(ctx, shot);
     if (!state.panel || state.panel.box !== box || state.panel.key !== key || !box.contains(state.panel.refs.root)) {
-      // A rebuild (a new mode or shot) keeps keyboard focus on the same control.
+      // A rebuild (a new mode or shot) keeps keyboard focus on the same control. The new
+      // fields are filled before the focus moves, since syncPanel leaves a focused field alone.
       const active = global.document && document.activeElement;
       const focused = active && box.contains(active) ? (active.dataset && active.dataset.mvCam ? `[data-mv-cam="${active.dataset.mvCam}"]` : active.id ? `#${active.id}` : null) : null;
       state.panel = { box, key, refs: build(ctx, box, shot) };
+      syncPanel(ctx);
       if (focused) box.querySelector(focused)?.focus({ preventScroll: true });
+      return;
     }
     syncPanel(ctx);
+  }
+
+  // timeChanged skips a closed panel, so the panel catches up with the playhead when it opens.
+  function watchToggle(ctx, box) {
+    const state = stateOf(ctx);
+    const details = box && typeof box.closest === "function" ? box.closest("details") : null;
+    if (!details || state.toggle === details) return;
+    state.toggle = details;
+    details.addEventListener("toggle", () => {
+      if (details.open && !details.hidden && stateOf(ctx).toggle === details) renderPanel(ctx);
+    });
   }
 
   // ---- scene hooks: auto key and the frustum helper --------------------------------------------

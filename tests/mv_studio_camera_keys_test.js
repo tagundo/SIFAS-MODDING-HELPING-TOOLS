@@ -515,6 +515,8 @@ function inspectorAndKeys() {
   assert.equal(press('z', { ctrlKey: true }), false, 'undo stays the host shortcut');
 }
 
+// The panel's shot is the scene's (mainCameraAt): a gap between two shots is no shot; past the
+
 (async () => {
   unedited();
   offsetKey();
