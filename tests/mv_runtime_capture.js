@@ -3,7 +3,7 @@
    node tests/mv_runtime_capture.js --dump GAME.json.gz|job.log --manifest M.json --out DIR
         [--library DIR] [--server-root DIR] [--url URL] [--phases -1,0,1] [--preroll 3]
         [--software true] [--chromium PATH] [--keys FILE] [--batch 100] [--physics-order game|same-frame]
-        [--physics-grid game|clock|rule] [--suits dump|POSITION:SUIT,...]
+        [--physics-grid game|clock|rule] [--frame-history game|none] [--suits dump|POSITION:SUIT,...]
 
    The game dump (schema sifas-mv-runtime-dump/1, side "game") is read as a gzip
    or plain JSON document, or extracted from a GitHub job log (@@RTDUMP blobs;
@@ -19,8 +19,11 @@
    editor dresses every pinned slot so. Every game record is then evaluated at
    t = clock.directorTime + phase * clock.deltaTime for each phase: a plain
    deferred seek for pure parts, a fixed-step physics preroll ending exactly at
-   t for members and springs. The game steps its springs once per rendered
-   frame, so the preroll steps on the game's own frame times (gameFrameTimes:
+   t for members and springs. With --frame-history game (default) every seek
+   also hands the editor the game's rendered frame times before t
+   (gameFrameTimes), which the client state that changes only on rendered
+   frames reads (the cheek floats a finished clip leaves). The game steps its
+   springs once per rendered frame, so the preroll steps on the game's own frame times (gameFrameTimes:
    record frameCount, directorTime and deltaTime); --physics-grid clock uses
    the frame rate the game achieved (frames per director second, capped by the
    requested rate) and rule the requested rate, for A/B checks. The read-only
@@ -334,13 +337,18 @@ function gameClockRate(doc, qualityValues, device) {
 
 // ------------------------------------------------------------- browser side
 
+// The game's rendered frame times the seeks hand to the editor (--frame-history).
+async function setFrameHistory(page, times) {
+  await page.evaluate((times) => { mvFrameProbe.frameHistory = times; }, times || null);
+}
+
 async function evaluatePure(page, batch, keys) {
   return page.evaluate(({ batch, keys }) => {
     const scene = mvFrameProbe.scene;
     const now = () => performance.now();
     return batch.map((request) => {
       const start = now();
-      scene.seek(request.t, undefined, true);
+      scene.seek(request.t, undefined, true, mvFrameProbe.frameHistory || null);
       const seeked = now();
       const values = scene.assetDump({ sections: request.sections, filter: request.filter || undefined, keys: keys || undefined });
       return { id: request.id, values, seekMs: seeked - start, dumpMs: now() - seeked };
@@ -425,7 +433,7 @@ async function evaluatePhysics(page, request, preroll, rate, keys, grid = null, 
     const begin = performance.now(), time = request.t;
     const start = times.length ? times[0] : time;
     if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / stampRate, undefined, true);
-    scene.seek(start, undefined, true);
+    scene.seek(start, undefined, true, mvFrameProbe.frameHistory || null);
     scene.setPlaying(true);
     try {
       times.forEach((value, step) => scene.playbackFrame(value, step * 1000 / stampRate, true));
@@ -627,8 +635,10 @@ async function prepareLiveView(page, viewport) {
 }
 
 // Evaluates every game record at every phase; pure records in batches.
-async function capturePage(page, game, { phases, preroll, rate, batchSize = 100, keys = null, grid = null, stampRate = rate }) {
+async function capturePage(page, game, { phases, preroll, rate, batchSize = 100, keys = null, grid = null, stampRate = rate,
+  history = null }) {
   const requests = planRequests(game, phases);
+  await setFrameHistory(page, history);
   const results = new Map();
   const pureStart = Date.now();
   const pure = requests.filter((request) => !request.physics), physics = requests.filter((request) => request.physics);
@@ -682,6 +692,8 @@ async function run() {
   assert(SPRINGS.ORDERS.includes(order), '--physics-order is game or same-frame');
   const gridMode = options['physics-grid'] ?? 'game';
   assert(['game', 'clock', 'rule'].includes(gridMode), '--physics-grid is game, clock or rule');
+  const historyMode = options['frame-history'] ?? 'game';
+  assert(['game', 'none'].includes(historyMode), '--frame-history is game or none');
   const batchSize = Number(options.batch ?? 100);
   assert(Number.isInteger(batchSize) && batchSize > 0, '--batch is a positive integer');
   const manifest = capture.readManifest(options.manifest);
@@ -735,7 +747,10 @@ async function run() {
       const value = MVStudio.getState().project;
       return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [] };
     });
-    const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target });
+    const history = historyMode === 'game' ? gameFrameTimes(game) : null;
+    physics.frameHistory = history ? history.length : null;
+    const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target,
+      history });
     timing.importSeconds = importSeconds;
     const webgl = await capture.rendererInfo(page);
     const producer = { name: 'mv_runtime_capture.js', modtools: { commit: capture.gitHead(MODTOOLS), dirty: capture.gitDirty(MODTOOLS) },
@@ -767,5 +782,5 @@ if (require.main === module) run().catch((error) => { console.error(error.stack 
 module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planRequests, filterFor, stageNodeKey, editorRecord, rendererSelector,
   gameSuits, suitPlan, pinCostumes, checkCostumes,
   qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
-  gameFrames, gameFrameTimes, prerollTimes, memberMeshAlias,
+  gameFrames, gameFrameTimes, setFrameHistory, prerollTimes, memberMeshAlias,
   prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };
