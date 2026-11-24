@@ -769,6 +769,11 @@ def _float_range(pcm, start, stop):
     return out
 
 
+# src/VGAudio/Codecs/CriHca/CriHcaEncoder.cs (EncodeFrame: PcmToFloat, RunMdct,
+# EncodeIntensityStereo, CalculateScaleFactors, ScaleSpectra, CalculateFrameHeaderLength,
+# CalculateNoiseLevel, CalculateEvaluationBoundary, CalculateFrameResolutions,
+# QuantizeSpectra, PackFrame), run on ``frame_count`` frames at once. The HFR
+# steps are left out: the stock parameters have no HFR bands.
 def _encode_chunk(pcm, first_frame, frame_count):
     start = first_frame * SAMPLES_PER_FRAME
     stop = start + frame_count * SAMPLES_PER_FRAME

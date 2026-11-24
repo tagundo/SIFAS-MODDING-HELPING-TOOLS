@@ -311,6 +311,10 @@ class FrameTests(unittest.TestCase):
         used = enc._used_bits(costs, kept[:, None, :], headers, np.array([level]), np.array([0]))
         self.assertLessEqual(int(used[0]), 4096)
 
+    def test_frame_pipeline_names_its_upstream_function(self):
+        import inspect
+        self.assertIn("src/VGAudio/Codecs/CriHca/CriHcaEncoder.cs (EncodeFrame", inspect.getcomments(enc._encode_chunk))
+
     def test_rejects_unsupported_pcm(self):
         for bad in (np.zeros((10, 1), np.int16), np.zeros((10, 2), np.int32), np.zeros((0, 2), np.int16),
                     np.zeros(20, np.int16)):
