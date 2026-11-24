@@ -2,7 +2,7 @@
 
    node tests/mv_frame_capture.js --manifest frames.json --out DIR [--url http://127.0.0.1:PORT]
      [--server-root ../] [--library SUKUSTA_DIR] [--video game.mp4] [--chromium PATH] [--software true]
-     [--game-dump mv-runtime-dump.json.gz]
+     [--game-dump mv-runtime-dump.json.gz] [--frame-history game|none]
 
    The manifest names the original MV (region, platform, liveId, assetId), the game
    quality mode and the timeline times to render. Each frame is produced with the
@@ -23,6 +23,10 @@
    fallback when the game recorded none or it cannot be applied), so the spring
    clock's rule rate (frame_rate_60fps) and the render height follow the game run;
    capture.json quality records its source and status ("matched" or "invalid:quality").
+   With a game frame grid, --frame-history game (default) hands every frame's preroll
+   seek the game's rendered frame times, as mv_runtime_capture.js does, for the client
+   state that changes only on rendered frames; none leaves them out (capture.json
+   physics.frameHistory is the number of frames handed, or null).
 
    Members follow the client's MV deck chain; source.deck "original" picks the
    Original tab instead of Customize, source.player picks a local Elichika player of
@@ -393,10 +397,14 @@ function prerollPlan(time, preroll, rate, warmup = 0, grid = null, stampRate = r
 }
 
 // Playback over the preroll plan (prerollPlan), then one synchronous draw and readback at `time`.
-// Physics advances once per stepped frame.
-async function renderFrame(page, time, preroll, rate, warmup = 0, grid = null, stampRate = rate) {
+// Physics advances once per stepped frame. `history` (the game's rendered frame times, ascending, as
+// mv_runtime_capture.js hands its seeks with --frame-history game) goes to the seek that starts the
+// preroll, so the client state that changes only on rendered frames (the director's beat origin, the
+// ambient components' last written colors, the cheek floats a finished clip leaves) starts from the
+// frames the game drew before it; the preroll frames then advance it frame by frame.
+async function renderFrame(page, time, preroll, rate, warmup = 0, grid = null, stampRate = rate, history = null) {
   const plan = prerollPlan(time, preroll, rate, warmup, grid, stampRate);
-  const result = await page.evaluate(({ time, plan }) => {
+  const result = await page.evaluate(({ time, plan, history }) => {
     const scene = mvFrameProbe.scene;
     // A grid slower than 25 Hz (a device run's achieved rate, e.g. ~4.9 fps at Max 3D) would trip
     // the playback's slow-frame preview downscale and draw below the pinned size. A fixed-step
@@ -406,7 +414,7 @@ async function renderFrame(page, time, preroll, rate, warmup = 0, grid = null, s
     scene.resize(false);
     // The editor's own seek path resets physics only when the time changes.
     if (Math.abs(scene.inspect().time - plan.start) <= 1e-9) scene.seek(plan.start + plan.nudge, undefined, true);
-    scene.seek(plan.start, undefined, true);
+    scene.seek(plan.start, undefined, true, history);
     scene.setPlaying(true);
     try {
       plan.times.forEach((value, index) => scene.playbackFrame(value, plan.stamps[index], true));
@@ -418,7 +426,7 @@ async function renderFrame(page, time, preroll, rate, warmup = 0, grid = null, s
       scene.setPlaying(false);
       scene.setAdaptivePreview(true);
     }
-  }, { time, plan });
+  }, { time, plan, history: Array.isArray(history) ? history : null });
   return { ...result, steps: plan.steps, warmupSteps: plan.warmupSteps, prerollStart: plan.start, prerollSource: plan.source };
 }
 
@@ -441,6 +449,14 @@ function gameFrameGrid(manifest, gameDump = null) {
     return { source: 'game-dump', file: dump.file, times: grid };
   }
   return manifest.physics?.grid ? { source: 'manifest physics.grid', file: null, times: manifest.physics.grid } : null;
+}
+
+// The frame history the seeks hand the editor (--frame-history game|none, default game): the game's
+// rendered frame times of the frame grid (gameFrameGrid), as mv_runtime_capture.js --frame-history
+// game does; null without a game frame grid or with none.
+function frameHistory(grid, mode = 'game') {
+  assert(['game', 'none'].includes(mode), '--frame-history is game or none');
+  return mode === 'game' && grid?.times?.length ? grid.times : null;
 }
 
 // The quality the frames are drawn at. With a runtime dump of the same run (readGameDump) it is the
@@ -494,6 +510,7 @@ async function run() {
   const gameDump = options['game-dump'] ? readGameDump(options['game-dump']) : null;
   const grid = gameFrameGrid(manifest, gameDump);
   assert(!grid || manifest.game?.exporter !== 'fovmod', 'A game frame grid is for a real-time game run, not a FOVMOD export');
+  const history = frameHistory(grid, options['frame-history'] ?? 'game');
   let server = null, browser = null;
   try {
     const url = options.url || (server = await bootEditor(serverRoot, options.library, path.join(out, 'editor-server.log'))).url;
@@ -554,7 +571,7 @@ async function run() {
     const frames = [];
     for (const frame of wanted.sort((a, b) => a.time - b.time)) {
       const { png, state, steps, warmupSteps, prerollStart, prerollSource } = await renderFrame(page, frame.time, manifest.physics.preroll, rate,
-        physics.warmupSteps, grid?.times ?? null, stampRate);
+        physics.warmupSteps, grid?.times ?? null, stampRate, history);
       const file = frameName(frame.time);
       fs.writeFileSync(path.join(out, file), Buffer.from(png.slice(png.indexOf(',') + 1), 'base64'));
       assert.equal(state.canvas.width, renderWidth, 'The editor canvas width does not match the requested render size');
@@ -567,7 +584,8 @@ async function run() {
       project, soundtrack, physicsRate: rate,
       physics: { rate, reference: physics.source, order: physics.order, exportFps: physics.exportFps, device: physics.device,
         warmupSteps: physics.warmupSteps, ruleRate: stampRate,
-        grid: grid ? { source: grid.source, file: grid.file, frames: grid.times.length } : null },
+        grid: grid ? { source: grid.source, file: grid.file, frames: grid.times.length } : null,
+        frameHistory: history ? history.length : null },
       render: { width: renderWidth, height: renderHeight, aspect, antiAliasing, video: target },
       quality: { mode: quality.mode, values: quality.values, source: quality.source,
         ...(gameDump ? { file: gameDump.file, request: quality.request, status: quality.status, reasons: quality.reasons,
@@ -590,7 +608,7 @@ async function run() {
 
 module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, deckRequest, importOriginal, projectRecord, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty,
   videoFps, physicsReference, applyPhysicsReference, nativeRenderHeight, applyAntiAliasing, prerollPlan, readGameDump, gameFrameGrid, captureQuality,
-  MAX_DELTA_TIME };
+  frameHistory, MAX_DELTA_TIME };
 // Exported before run() starts: run() requires mv_runtime_capture.js (--game-dump), which requires this
 // module back and would otherwise keep its unfinished exports.
 if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });

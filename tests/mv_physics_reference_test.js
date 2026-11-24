@@ -114,7 +114,8 @@ function fakePage() {
   globalThis.mvFrameProbe = { scene: {
     time: -1, resize() { calls.push(['resize']); }, inspect() { return { time: this.time }; },
     setAdaptivePreview(value) { calls.push(['adaptive', value]); },
-    seek(time) { this.time = time; calls.push(['seek', time]); }, setPlaying(value) { calls.push(['playing', value]); },
+    seek(time, value, deferred, history) { this.time = time; calls.push(history ? ['seek', time, history] : ['seek', time]); },
+    setPlaying(value) { calls.push(['playing', value]); },
     playbackFrame(time, stamp, deferred) { this.time = time; calls.push(['frame', time, stamp, deferred]); },
   } };
   return { calls, evaluate: async (fn, args) => fn(args) };
@@ -207,6 +208,19 @@ function fakePage() {
     'clamped at 1/3 s; a repeated (pinned) time still steps one spring-clock interval');
   assert.equal(intervals.at(-1), 249, 'the drawn frame follows the last game frame by its own interval');
   assert.equal(gridFrames[0][2], 0);
+  assert.deepEqual(page.calls.filter(([kind]) => kind === 'seek'), [['seek', 46.8]], 'no frame history unless one is handed');
+  // --frame-history game: the preroll's seek hands the editor the game's rendered frame times, as the
+  // runtime capture's seeks do (the nudge seek before it and the frames after it do not).
+  page = fakePage();
+  globalThis.mvFrameProbe.scene.time = 46.8;
+  await capture.renderFrame(page, 49.649, 3, 4.87, 0, gameGrid, 60, gameGrid);
+  assert.deepEqual(page.calls.filter(([kind]) => kind === 'seek'), [['seek', 46.8 + 1 / 60], ['seek', 46.8, gameGrid]]);
+  assert(page.calls.filter(([kind]) => kind === 'frame').length === 14, 'the preroll frames themselves are unchanged');
+  assert.equal(capture.frameHistory({ source: 'game-dump', times: gameGrid }), gameGrid, 'game is the default');
+  assert.equal(capture.frameHistory({ source: 'game-dump', times: gameGrid }, 'none'), null);
+  assert.equal(capture.frameHistory(null), null, 'no grid, no history');
+  assert.equal(capture.frameHistory({ source: 'manifest physics.grid', times: [] }), null);
+  assert.throws(() => capture.frameHistory({ times: gameGrid }, 'all'), /--frame-history is game or none/);
   // A window the grid does not cover keeps the fixed-rate grid.
   assert.equal((await capture.renderFrame(fakePage(), 10, 3, 4.87, 0, gameGrid, 60)).prerollSource, 'fixed-rate');
   assert.equal(capture.prerollPlan(49.649, 3, 4.87).source, 'fixed-rate');
