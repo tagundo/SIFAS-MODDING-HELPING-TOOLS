@@ -475,6 +475,36 @@ class RegistrationHelperTests(unittest.TestCase):
                                   beat={"bpm": 120.0, "firstBeat": 0.3}, length_samples=5 * RATE, verify=False)
         self.assertEqual((short["startSample"], short["sampleCount"], short["snrDb"]), (3 * RATE, 5 * RATE, None))
 
+    def test_snr_floor_reaches_the_decode_check(self):
+        template_acb, template_awb = synthetic_template(enc.encode_hca(tone(1.0, 200)))
+        song = tone(3.0, 330, 440, level=0.3)
+        beat = {"bpm": 120.0, "firstBeat": 0.0}
+        cue = acbw.make_cue(song, template_acb, template_awb, sheet="music_93001", beat=beat, snr_floor=30.0)
+        self.assertGreater(cue["snrDb"], 30.0)
+        # The tone decodes well above the default floor but not at 200 dB.
+        with self.assertRaisesRegex(enc.AudioEncodeError, "floor"):
+            acbw.make_cue(song, template_acb, template_awb, sheet="music_93001", beat=beat, snr_floor=200.0)
+        with self.assertRaisesRegex(enc.AudioEncodeError, "floor"):
+            acbw.make_preview(song, template_acb, template_awb, sheet="music_93001_SABI", start_seconds=0.5,
+                              beat=beat, length_samples=RATE, snr_floor=200.0)
+        preview = acbw.make_preview(song, template_acb, template_awb, sheet="music_93001_SABI", start_seconds=0.5,
+                                    beat=beat, length_samples=RATE, snr_floor=-math.inf)
+        self.assertGreater(preview["snrDb"], 30.0)
+        # A floor that is not a number is refused before any encoding starts.
+        with patch.object(acbw, "encode_hca", side_effect=AssertionError("encoded")):
+            for floor in ("8", None, math.nan, True, [8.0]):
+                with self.subTest(floor=floor), self.assertRaises(enc.AudioEncodeError):
+                    acbw.make_cue(song, template_acb, template_awb, sheet="music_93001", beat=beat, snr_floor=floor)
+                with self.subTest(floor=floor), self.assertRaises(enc.AudioEncodeError):
+                    acbw.make_preview(song, template_acb, template_awb, sheet="music_93001_SABI", start_seconds=0.0,
+                                      beat=beat, snr_floor=floor)
+        with self.assertRaises(enc.AudioEncodeError):
+            acbw.verify_cue(cue["acb"], cue["awb"], song, snr_floor="8")
+        # Without verification the floor is not used.
+        unchecked = acbw.make_cue(song, template_acb, template_awb, sheet="music_93001", beat=beat, verify=False,
+                                  snr_floor=200.0)
+        self.assertIsNone(unchecked["snrDb"])
+
     def test_subkey_of_the_template_bank_keys_the_stream(self):
         template_hca = enc.encode_hca(tone(1.0, 200), subkey=0x51)
         template_acb, template_awb = synthetic_template(template_hca, subkey=0x51)

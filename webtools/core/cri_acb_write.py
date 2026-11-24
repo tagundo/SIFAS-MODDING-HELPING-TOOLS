@@ -13,6 +13,7 @@ written again is byte-identical. Nothing here reads or writes files except
 from dataclasses import dataclass
 import hashlib
 import math
+import numbers
 from pathlib import Path
 import struct
 import tempfile
@@ -601,13 +602,20 @@ def _build_cue(template_acb, template_awb, hca, sheet, beat, guid):
 # Decode-back verification
 # ---------------------------------------------------------------------------
 
+def _check_snr_floor(snr_floor):
+    if isinstance(snr_floor, bool) or not isinstance(snr_floor, numbers.Real) or math.isnan(snr_floor):
+        _fail("The decode quality floor must be a number of decibels.")
+
+
 def verify_cue(acb, awb, pcm, *, cue=None, snr_floor=SNR_FLOOR_DB, scratch_dir=None):
     """Decode ``cue`` with the bundled clHCA decoder and compare it with ``pcm``.
 
     ``pcm`` is the int16 ``(samples, channels)`` input of the encode. The
     decoded audio must have exactly the same length and channels and an SNR
-    of at least ``snr_floor`` dB. Returns ``{"frames", "snrDb", "decoder"}``.
+    of at least ``snr_floor`` dB (default ``SNR_FLOOR_DB``). Returns
+    ``{"frames", "snrDb", "decoder"}``.
     """
+    _check_snr_floor(snr_floor)
     pcm = np.asarray(pcm)
     if pcm.dtype != np.int16 or pcm.ndim != 2:
         _fail("The reference PCM must be int16 with shape (samples, channels).")
@@ -676,35 +684,41 @@ def encoder_available():
 
 
 def make_cue(pcm, template_acb, template_awb, *, sheet, beat, guid=None, progress=None, verify=True,
-             scratch_dir=None):
+             snr_floor=SNR_FLOOR_DB, scratch_dir=None):
     """Encode ``pcm`` and wrap it as cue ``sheet``: ``encode_hca`` + ``build_cue`` + ``verify_cue``.
 
-    The stream is keyed for the template bank's subkey. Returns ``{"acb",
-    "awb", "sampleCount", "snrDb"}`` (``snrDb`` is ``None`` without ``verify``).
+    The stream is keyed for the template bank's subkey. With ``verify`` the
+    result must decode at ``snr_floor`` dB or better (see ``verify_cue``).
+    Returns ``{"acb", "awb", "sampleCount", "snrDb"}`` (``snrDb`` is ``None``
+    without ``verify``).
     """
+    if verify:
+        _check_snr_floor(snr_floor)
     info = template_info(template_acb, template_awb)
     hca = encode_hca(pcm, subkey=info["subkey"], progress=progress)
     acb, awb = build_cue(template_acb, template_awb, hca, sheet=sheet, beat=beat, guid=guid)
     snr = None
     if verify:
-        snr = verify_cue(acb, awb, pcm, cue=sheet, scratch_dir=scratch_dir)["snrDb"]
+        snr = verify_cue(acb, awb, pcm, cue=sheet, snr_floor=snr_floor, scratch_dir=scratch_dir)["snrDb"]
     return {"acb": acb, "awb": awb, "sampleCount": int(len(pcm)), "snrDb": snr}
 
 
 def make_preview(pcm, template_acb, template_awb, *, sheet, start_seconds, beat, length_samples=None, guid=None,
-                 verify=True, scratch_dir=None):
+                 verify=True, snr_floor=SNR_FLOOR_DB, scratch_dir=None):
     """Build the ``_SABI`` preview cue from the song PCM.
 
     The excerpt starts at ``start_seconds`` (moved back to fit), lasts
     ``length_samples`` (default 20 s; pass ``template_info(stock_sabi)["sampleCount"]``
     to match a cached stock preview) and fades 0.5 s at both ends. ``beat``
     describes the whole song; it is shifted into the excerpt and used only
-    when the template has a beat table. Returns ``make_cue``'s result plus
-    ``startSample``.
+    when the template has a beat table. ``verify`` and ``snr_floor`` work as
+    in ``make_cue``. Returns ``make_cue``'s result plus ``startSample``.
     """
+    if verify:
+        _check_snr_floor(snr_floor)
     info = template_info(template_acb, template_awb)
     excerpt, start = sabi_excerpt(pcm, start_seconds, length_samples=length_samples)
     preview_beat = excerpt_beat(beat, start, len(excerpt)) if info["hasBeats"] else None
     result = make_cue(excerpt, template_acb, template_awb, sheet=sheet, beat=preview_beat, guid=guid, verify=verify,
-                      scratch_dir=scratch_dir)
+                      snr_floor=snr_floor, scratch_dir=scratch_dir)
     return {**result, "startSample": start}
