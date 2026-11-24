@@ -114,5 +114,41 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
   const pinned = capture.gameFrameTimes({ records: [clocked(10, 5 + 5e-10, 0.2), clocked(12, 5, 0.2)] });
   assert.deepEqual(pinned, [5 + 5e-10, 5 + 5e-10, 5 + 5e-10]);
 
+  // The director follows the millisecond music clock, so t - deltaTime misses the previous frame
+  // (12035 Max 3D: frame 9847 at 100.554 s, deltaTime 0.219193786, frame 9846 recorded at 100.335 s).
+  const at = (id, frameCount, directorTime, deltaTime, extra = {}) => ({ id, kind: 'frame', ...extra,
+    clock: { frameCount, directorTime, deltaTime } });
+  const neighbours = { records: [at('f0163', 9846, 100.335, 0.2), at('f0164', 9847, 100.554, 0.219193786),
+    at('p4-full', 9848, 100.78, 0.226, { kind: 'full', part: 'quality' }), at('f0200', 9900, 104, 0.3),
+    at('f0201', 9901, 104.9, 1 / 3), at('f0202', 9903, 105.5, 0.2), at('f0203', 9902, 105.3, 0.2)] };
+  assert.deepEqual([...capture.recordedFrameTimes(neighbours)].slice(0, 3), [[9846, 100.335], [9847, 100.554], [9848, 100.78]]);
+  const planned = new Map(capture.planRequests(neighbours, [-1, 0, 1]).map((request) => [request.id, request]));
+  const phase = (id) => [planned.get(id).t, planned.get(id).phaseSource];
+  assert.deepEqual(phase('f0164@-1'), [100.335, 'recorded']);
+  assert.deepEqual(phase('f0164@0'), [100.554, 'record']);
+  assert.deepEqual(phase('f0164@1'), [100.78, 'recorded']);
+  assert.equal(planned.get('f0163@-1').phaseSource, 'deltaTime', 'no record of frame 9845');
+  // A clamped deltaTime (1/3 s) hides the real interval: the recorded previous frame is used at any distance.
+  assert.deepEqual(phase('f0201@-1'), [104, 'recorded']);
+  // A neighbour on the wrong side of t or more than half a deltaTime away is not that frame's time.
+  assert.equal(planned.get('f0202@-1').phaseSource, 'recorded');
+  assert.deepEqual(phase('f0203@1'), [105.5, 'recorded']);
+  const sparse = new Map(capture.planRequests({ records: [at('a', 10, 0.5, 1 / 15), at('b', 11, 1, 1 / 15)] }, [-1])
+    .map((request) => [request.id, request]));
+  assert.deepEqual([sparse.get('b@-1').phaseSource, sparse.get('b@-1').t], ['deltaTime', 0.933],
+    'the director follows the millisecond music clock: the estimate is rounded to it');
+  // 12035 Max 3D f0089: frame 9614 at 46.934 s, deltaTime 0.186060965, no record of frame 9613: the
+  // previous frame is estimated at 46.748 s (the camera fov there matches the game to 1e-4 degrees).
+  const estimated = capture.planRequests({ records: [at('f0089', 9614, 46.934, 0.186060965)] }, [-1])[0];
+  assert.deepEqual([estimated.t, estimated.phaseSource], [46.748, 'deltaTime']);
+  const fractional = capture.planRequests({ records: [at('x', 5, 1.0005, 0.2)] }, [-1])[0];
+  assert(Math.abs(fractional.t - 0.8005) < 1e-12, 'a dump whose times are not whole milliseconds keeps the estimate');
+  const flipped = new Map(capture.planRequests({ records: [at('a', 10, 2, 0.2), at('b', 11, 1.9, 0.2)] }, [-1, 1])
+    .map((request) => [request.id, request]));
+  assert.equal(flipped.get('b@-1').phaseSource, 'deltaTime', 'a later neighbour is not the previous frame');
+  assert.equal(flipped.get('a@1').phaseSource, 'deltaTime');
+  const record = capture.editorRecord(planned.get('f0164@-1'), { values: { clock: { directorTime: 100.335 } }, seekMs: 1, dumpMs: 1 }, 30);
+  assert.deepEqual([record.clock.phaseSource, Math.round(record.clock.phaseSeconds * 1e9) / 1e9], ['recorded', -0.219]);
+
   console.log('MV_RUNTIME_CAPTURE_PASS viewport, stage-scene selector and pinned suits');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

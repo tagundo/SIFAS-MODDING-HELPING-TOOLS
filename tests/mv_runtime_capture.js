@@ -3,7 +3,7 @@
    node tests/mv_runtime_capture.js --dump GAME.json.gz|job.log --manifest M.json --out DIR
         [--library DIR] [--server-root DIR] [--url URL] [--phases -1,0,1] [--preroll 3]
         [--software true] [--chromium PATH] [--keys FILE] [--batch 100] [--physics-order game|same-frame]
-        [--physics-grid game|clock|rule] [--suits dump|POSITION:SUIT,...]
+        [--physics-grid game|clock|rule] [--frame-history game|none] [--suits dump|POSITION:SUIT,...]
 
    The game dump (schema sifas-mv-runtime-dump/1, side "game") is read as a gzip
    or plain JSON document, or extracted from a GitHub job log (@@RTDUMP blobs;
@@ -17,9 +17,16 @@
    member mapping's: "dump" pins the suit each game slot wore (frame
    members[].suitId), or list POSITION:SUIT pairs; the import fails unless the
    editor dresses every pinned slot so. Every game record is then evaluated at
-   t = clock.directorTime + phase * clock.deltaTime for each phase: a plain
-   deferred seek for pure parts, a fixed-step physics preroll ending exactly at
-   t for members and springs. The game steps its springs once per rendered
+   each phase: at the director time the dump recorded for frame
+   clock.frameCount + phase when a record of that frame exists (the director
+   follows the millisecond music clock, so t - deltaTime can miss the previous
+   frame by a few milliseconds), else at t = clock.directorTime + phase *
+   clock.deltaTime: a plain deferred seek for pure parts, a fixed-step physics
+   preroll ending exactly at t for members and springs. With --frame-history
+   game (default) every seek also hands the editor the game's rendered frame
+   times before t (gameFrameTimes), which the client state that changes only on
+   rendered frames reads (the director's beat origin, the ambient components'
+   last written colors). The game steps its springs once per rendered
    frame, so the preroll steps on the game's own frame times (gameFrameTimes:
    record frameCount, directorTime and deltaTime); --physics-grid clock uses
    the frame rate the game achieved (frames per director second, capped by the
@@ -288,8 +295,34 @@ function filterFor(record, renderers) {
   return null;
 }
 
+// Director time of every frame a record was taken in (frameCount -> seconds):
+// the frames whose time the dump knows exactly. Pre-start records (director 0)
+// are left out, as in gameFrames. planRequests uses a neighbour frame's time for
+// a phase when it lies on that side of t within half a deltaTime of
+// t + phase * deltaTime (any distance when deltaTime was clamped to
+// maximumDeltaTime, which hides the real frame interval). Without such a record
+// the estimate t + phase * deltaTime is rounded to the millisecond when every
+// recorded director time is a whole millisecond: LiveDirectorBase.Update
+// (0x2926e74) reads LiveMusicMachine.MusicPlayingTime, an int of milliseconds,
+// and the director follows it.
+function recordedFrameTimes(doc) {
+  const frames = new Map();
+  for (const record of doc.records || []) {
+    const clock = record.clock;
+    if (!Number.isInteger(clock?.frameCount) || !Number.isFinite(clock?.directorTime) || !(clock.directorTime > 0)) continue;
+    if (!frames.has(clock.frameCount)) frames.set(clock.frameCount, clock.directorTime);
+  }
+  return frames;
+}
+
+function millisecondClock(doc) {
+  const times = (doc.records || []).map((record) => record.clock?.directorTime).filter(Number.isFinite);
+  return times.length > 0 && times.every((time) => Math.abs(time * 1000 - Math.round(time * 1000)) < 1e-6);
+}
+
 function planRequests(doc, phases) {
   const renderers = rendererIndex(doc.records);
+  const recorded = recordedFrameTimes(doc), milliseconds = millisecondClock(doc);
   const requests = [];
   for (const record of doc.records) {
     const time = record.clock?.directorTime;
@@ -297,10 +330,18 @@ function planRequests(doc, phases) {
     const deltaTime = Number.isFinite(record.clock?.deltaTime) && record.clock.deltaTime > 0 ? record.clock.deltaTime : 1 / 30;
     const part = record.kind === 'full' ? record.part : null;
     const sections = record.kind === 'frame' ? FRAME_SECTIONS : ['clock', part];
+    const frame = record.clock?.frameCount;
+    const clamped = deltaTime >= MAX_DELTA_TIME - 1e-6;
+    const usable = (phase, value) => value !== undefined && Math.sign(value - time) === Math.sign(phase) &&
+      (clamped || Math.abs(value - (time + phase * deltaTime)) <= deltaTime / 2);
     for (const phase of phases) {
-      const t = time + phase * deltaTime;
+      const candidate = phase !== 0 && Number.isInteger(frame) && time > 0 ? recorded.get(frame + phase) : undefined;
+      const neighbour = usable(phase, candidate) ? candidate : undefined;
+      const phaseSource = phase === 0 ? 'record' : neighbour !== undefined ? 'recorded' : 'deltaTime';
+      const estimate = time + phase * deltaTime;
+      const t = neighbour ?? (milliseconds && phase !== 0 ? Math.round(estimate * 1000) / 1000 : estimate);
       if (t < 0) continue;
-      requests.push({ id: `${record.id}@${phase}`, source: record, phase, t, deltaTime, sections,
+      requests.push({ id: `${record.id}@${phase}`, source: record, phase, phaseSource, t, deltaTime, sections,
         physics: PHYSICS_PARTS.has(part), unknownPart: part !== null && !KNOWN_PARTS.has(part), filter: filterFor(record, renderers) });
     }
   }
@@ -334,13 +375,18 @@ function gameClockRate(doc, qualityValues, device) {
 
 // ------------------------------------------------------------- browser side
 
+// The game's rendered frame times the seeks hand to the editor (--frame-history).
+async function setFrameHistory(page, times) {
+  await page.evaluate((times) => { mvFrameProbe.frameHistory = times; }, times || null);
+}
+
 async function evaluatePure(page, batch, keys) {
   return page.evaluate(({ batch, keys }) => {
     const scene = mvFrameProbe.scene;
     const now = () => performance.now();
     return batch.map((request) => {
       const start = now();
-      scene.seek(request.t, undefined, true);
+      scene.seek(request.t, undefined, true, mvFrameProbe.frameHistory || null);
       const seeked = now();
       const values = scene.assetDump({ sections: request.sections, filter: request.filter || undefined, keys: keys || undefined });
       return { id: request.id, values, seekMs: seeked - start, dumpMs: now() - seeked };
@@ -425,7 +471,7 @@ async function evaluatePhysics(page, request, preroll, rate, keys, grid = null, 
     const begin = performance.now(), time = request.t;
     const start = times.length ? times[0] : time;
     if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / stampRate, undefined, true);
-    scene.seek(start, undefined, true);
+    scene.seek(start, undefined, true, mvFrameProbe.frameHistory || null);
     scene.setPlaying(true);
     try {
       times.forEach((value, step) => scene.playbackFrame(value, step * 1000 / stampRate, true));
@@ -581,7 +627,8 @@ function editorRecord(request, result, rate) {
   const record = { id: request.id, kind: source.kind, sourceRecord: source.id, phase: request.phase };
   if (source.kind === 'full') Object.assign(record, { pass: source.pass ?? null, part: source.part, chunk: source.chunk ?? 0 });
   record.clock = { directorTime: request.t, sourceDirectorTime: source.clock.directorTime, phase: request.phase,
-    phaseSeconds: request.phase * request.deltaTime, deltaTime: request.deltaTime, rate: values.clock?.rate ?? rate };
+    phaseSeconds: request.t - source.clock.directorTime, phaseSource: request.phaseSource ?? null, deltaTime: request.deltaTime,
+    rate: values.clock?.rate ?? rate };
   if (request.physics) record.clock.physicsRate = rate;
   if (Math.abs((values.clock?.directorTime ?? NaN) - request.t) > 1e-9) {
     (values.errors ||= []).push({ at: 'clock', error: `editor time ${values.clock?.directorTime} != requested ${request.t}` });
@@ -627,8 +674,10 @@ async function prepareLiveView(page, viewport) {
 }
 
 // Evaluates every game record at every phase; pure records in batches.
-async function capturePage(page, game, { phases, preroll, rate, batchSize = 100, keys = null, grid = null, stampRate = rate }) {
+async function capturePage(page, game, { phases, preroll, rate, batchSize = 100, keys = null, grid = null, stampRate = rate,
+  history = null }) {
   const requests = planRequests(game, phases);
+  await setFrameHistory(page, history);
   const results = new Map();
   const pureStart = Date.now();
   const pure = requests.filter((request) => !request.physics), physics = requests.filter((request) => request.physics);
@@ -682,6 +731,8 @@ async function run() {
   assert(SPRINGS.ORDERS.includes(order), '--physics-order is game or same-frame');
   const gridMode = options['physics-grid'] ?? 'game';
   assert(['game', 'clock', 'rule'].includes(gridMode), '--physics-grid is game, clock or rule');
+  const historyMode = options['frame-history'] ?? 'game';
+  assert(['game', 'none'].includes(historyMode), '--frame-history is game or none');
   const batchSize = Number(options.batch ?? 100);
   assert(Number.isInteger(batchSize) && batchSize > 0, '--batch is a positive integer');
   const manifest = capture.readManifest(options.manifest);
@@ -735,7 +786,10 @@ async function run() {
       const value = MVStudio.getState().project;
       return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [] };
     });
-    const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target });
+    const history = historyMode === 'game' ? gameFrameTimes(game) : null;
+    physics.frameHistory = history ? history.length : null;
+    const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target,
+      history });
     timing.importSeconds = importSeconds;
     const webgl = await capture.rendererInfo(page);
     const producer = { name: 'mv_runtime_capture.js', modtools: { commit: capture.gitHead(MODTOOLS), dirty: capture.gitDirty(MODTOOLS) },
@@ -767,5 +821,5 @@ if (require.main === module) run().catch((error) => { console.error(error.stack 
 module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planRequests, filterFor, stageNodeKey, editorRecord, rendererSelector,
   gameSuits, suitPlan, pinCostumes, checkCostumes,
   qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
-  gameFrames, gameFrameTimes, prerollTimes, memberMeshAlias,
+  gameFrames, gameFrameTimes, recordedFrameTimes, setFrameHistory, prerollTimes, memberMeshAlias,
   prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };

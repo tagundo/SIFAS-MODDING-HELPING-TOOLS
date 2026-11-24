@@ -112,7 +112,9 @@ async function run() {
       assert.equal(item.sourceRecord, sourceId);
       assert.equal(item.phase, Number(phase));
       const source = game.records.find((entry) => entry.id === sourceId);
-      assert(Math.abs(item.clock.directorTime - (source.clock.directorTime + item.phase * DT)) < 1e-12, `time of ${item.id}`);
+      // Whole-millisecond director times: the estimated neighbour frame is on the millisecond clock.
+      const estimate = Math.round((source.clock.directorTime + item.phase * DT) * 1000) / 1000;
+      assert(Math.abs(item.clock.directorTime - estimate) < 1e-12, `time of ${item.id}`);
       assert.equal(item.clock.sourceDirectorTime, source.clock.directorTime);
       assert.equal(item.kind, source.kind);
       assert(!item.errors, `${item.id}: ${JSON.stringify(item.errors)}`);

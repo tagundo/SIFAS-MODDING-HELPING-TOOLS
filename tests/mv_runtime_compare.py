@@ -783,9 +783,13 @@ class Comparison:
     def timing_uncertain(self, record, phase):
         """Any record (frame or full part) whose Time.deltaTime was clamped to maximumDeltaTime while the director
         followed the music clock: the pose phase t + phase * deltaTime is not the neighbouring frame's time, so the
-        record is timing-uncertain at every phase but 0. Each record is noted once."""
+        record is timing-uncertain at every phase but 0, unless the editor evaluated that phase at the director time the
+        dump recorded for the neighbouring frame (clock.phaseSource "recorded"). Each record is noted once."""
         dt = (record.get("clock") or {}).get("deltaTime")
         if self.identity or phase == 0 or not number(dt) or dt < MAX_DELTA_TIME - 1e-6:
+            return False
+        partner = self.partner(record, phase)
+        if ((partner or {}).get("clock") or {}).get("phaseSource") == "recorded":
             return False
         if record.get("id") not in self.notes["timing.clampedDeltaTime"]:
             self.notes["timing.clampedDeltaTime"].append(record.get("id"))

@@ -110,6 +110,22 @@ class ClampedDeltaTest(unittest.TestCase):
         self.assertEqual(result.notes["timing.clampedDeltaTime"], ["p1-particles-00"])
 
 
+class RecordedPhaseTest(unittest.TestCase):
+    def test_a_recorded_neighbour_frame_is_not_timing_uncertain(self):
+        # The capture evaluates phase -1 at the director time the dump recorded for frameCount - 1:
+        # a clamped deltaTime no longer hides that frame's time.
+        record = frame(5.0, 1 / 3)
+        partner = {"id": "e", "sourceRecord": "f5.0", "phase": -1,
+                   "clock": {"directorTime": 4.71, "phaseSource": "recorded"}}
+        game, editor = documents([record], [partner])
+        result = C.Comparison(game, editor)
+        self.assertFalse(result.timing_uncertain(game["records"][0], -1))
+        self.assertEqual(result.notes["timing.clampedDeltaTime"], [])
+        partner["clock"]["phaseSource"] = "deltaTime"
+        game, editor = documents([record], [partner])
+        self.assertTrue(C.Comparison(game, editor).timing_uncertain(game["records"][0], -1))
+
+
 class ParticleTest(unittest.TestCase):
     def test_control_track_instance_path(self):
         self.assertEqual(C.Comparison.particle_key("/fx_dis_par_so2035_01 [Timeline]/root/left_dis/kira_up"),
