@@ -282,6 +282,12 @@ async function run() {
     assert.equal(removal.body.liveId, 93000);
     assert.match(removal.body.reviewToken, /^[0-9a-f]{64}$/);
     assert.deepEqual(log().slice(removedAt).filter((call) => call === 'stop' || call === 'start'), ['stop', 'start']);
+    // The removal's outcome stays visible: the song, the restarted server and the backup made first.
+    const removedBox = page.locator('#mv-register-removed');
+    await removedBox.waitFor();
+    assert.match(await removedBox.textContent(), /'내 MV'\(93000\)를 삭제했습니다\./);
+    assert.equal(await page.locator('#mv-register-removed-server').textContent(), '게임 서버를 다시 시작했습니다.');
+    assert.match(await removedBox.textContent(), /백업: \S+/);
     assert.deepEqual(await page.evaluate(async () => (await (await fetch('/api/mv-studio/songs?region=gl')).json()).songs), []);
     // The panel is back to registering a new song.
     await page.locator('#mv-register-submit').filter({ hasText: 'MV 전용 곡으로 등록' }).waitFor();

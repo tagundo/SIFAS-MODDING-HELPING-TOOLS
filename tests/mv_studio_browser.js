@@ -198,6 +198,27 @@ async function registrationControls(page) {
   finishJob5 = true;
   await page.locator('#mv-register-error').filter({ hasText: '이 지역의 다른 곡이 이미 쓰고 있습니다' }).waitFor();
   assert.equal(await page.locator('#mv-register-error-server').textContent(), '게임 서버를 다시 시작했습니다.');
+  // Deleting on a standalone PC: the server was stopped and must be started again; the store's
+  // warning and the backup are shown with the result.
+  await page.route('**/api/mv-studio/songs/remove-plan?*', (route) => route.fulfill({ json: { reviewToken: 'a'.repeat(64),
+    summary: { users: { u_live_mv_deck: 2 } }, blocked: [] } }));
+  await page.route('**/api/mv-studio/songs/remove-job?*', (route) => route.fulfill({ json: { job_id: 'remove1' } }));
+  const notCleaned = "The song was removed, but players' records for it could not be cleaned. The game ignores records of songs it no longer has.";
+  await page.route('**/api/jobs/remove1/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-stage', stage: 'remove', label: 'Removing the song from the game', index: 2, total: 3 },
+    { type: 'mv-song-removed', liveId: 93000, region: 'gl', title: '옛 등록 곡', restart: 'stopped', warnings: [notCleaned],
+      backup: '/backups/mv-studio-remove-93000', managed: false },
+    { type: 'done', status: 'done', summary: 'ok' }]) }));
+  await page.locator('[data-mv-song="93000"] [data-mv-song-action=remove]').click();
+  await page.locator('#mv-register-remove-dialog [data-mv-remove=confirm]').click();
+  const removed = page.locator('#mv-register-removed');
+  await removed.waitFor();
+  assert.match(await removed.textContent(), /'옛 등록 곡'\(93000\)를 삭제했습니다\./);
+  assert.equal(await page.locator('#mv-register-removed-server').textContent(), '게임 서버를 멈췄습니다. 다시 시작하세요.');
+  assert.match(await removed.textContent(), /플레이어 기록을 정리하지 못했습니다/);
+  assert.match(await removed.textContent(), /백업: \/backups\/mv-studio-remove-93000/);
+  await page.unroute('**/api/mv-studio/songs/remove-plan?*');
+  await page.unroute('**/api/mv-studio/songs/remove-job?*');
   modBase = false;
   await page.unroute('**/api/mv-studio/registration-plan?*');
   await page.unroute('**/api/mv-studio/songs?*');

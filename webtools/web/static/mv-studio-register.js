@@ -405,6 +405,8 @@
     if (state.job) return;
     const controller = new AbortController(), current = state;
     state.job = { controller, stage: "Writing to the game catalog", index: 0, total: 1, id: null };
+    state.result = state.removed = state.failed = null;
+    state.error = "";
     draw();
     try {
       const receipt = await call("register-job", { mode: "update", region: song.region, liveId: song.liveId, addPlaceholder: true },
@@ -434,6 +436,8 @@
     state.removing = null;
     const controller = new AbortController(), current = state;
     state.job = { controller, stage: "Removing the song from the game", index: 0, total: 1, id: null };
+    state.result = state.removed = state.failed = null;
+    state.error = "";
     draw();
     try {
       const receipt = await call("songs/remove-job", { region: pending.song.region, liveId: pending.song.liveId,
@@ -572,6 +576,7 @@
     if (!plan) {
       nodes.push(make("p", t(state.planError || (state.planning ? "Checking what reaches the game…" : "Open this panel to check what reaches the game.")),
         { class: state.planError ? "mv-register-error" : "mv-field-note", id: "mv-register-status" }));
+      if (state.removed) nodes.push(removedBox(state.removed));
       nodes.push(songsSection());
       return nodes;
     }
@@ -616,6 +621,7 @@
     const only = otherPlatformBox();
     if (only) nodes.push(only);
     if (state.result) nodes.push(resultBox(state.result));
+    if (state.removed) nodes.push(removedBox(state.removed));
     nodes.push(songsSection(), chartsSection(plan, busy));
     return nodes;
   }
@@ -904,6 +910,18 @@
     return wrap;
   }
 
+  // The removal's outcome: the song, the game server's state (on PC/Termux the server was
+  // stopped and must be started again), store warnings and the backup made first.
+  function removedBox(removed) {
+    const wrap = make("div", null, { class: "mv-register-result", id: "mv-register-removed", role: "status" });
+    wrap.append(make("p", "✔ " + format("Removed '{title}' ({id}).", { title: removed.title, id: removed.liveId })));
+    const server = serverNote(removed.restart);
+    if (server) wrap.append(make("p", t(server), { id: "mv-register-removed-server" }));
+    for (const warning of removed.warnings || []) wrap.append(make("p", t(warning), { class: "mv-field-note" }));
+    if (removed.backup) wrap.append(make("p", format("Backup: {path}", { path: removed.backup }), { class: "mv-field-note mv-register-path" }));
+    return wrap;
+  }
+
   function songsSection() {
     const details = make("details", null, { id: "mv-register-songs", class: "mv-register-songs" });
     details.open = !!songs.open;
@@ -1049,6 +1067,7 @@
 #mv-panel-register .mv-register-actions button { flex: 1 1 auto; }
 #mv-panel-register button[aria-pressed=true] { border-color: var(--accent, #39f); box-shadow: inset 0 0 0 1px var(--accent, #39f); }
 #mv-panel-register input[type=text], #mv-panel-register input[type=search] { min-width: 0; }
+#mv-panel-register .mv-register-path { overflow-wrap: anywhere; }
 `;
 
   const plugin = {
@@ -1125,7 +1144,7 @@
     "Android will play the original MV. Continue?", "Android and iOS will play the original MV. Continue?",
     "Preparing the project", "Decoding the soundtrack", "Registered '{title}' ({id}).", "Updated '{title}' ({id}).",
     "No changes to apply.", "The game server was restarted.", "The game server restarts when this job finishes.",
-    "The game server was stopped. Start it again.",
+    "The game server was stopped. Start it again.", "Removed '{title}' ({id}).", "Backup: {path}",
     "Restart the game server to apply it.", "In game: Live → song list → {title} → MV", "Registered MV-only songs ({count})",
     "Loading…", "No MV-only songs are registered in this region.", "Updated {date}",
     "Not visible in the game (no Advanced chart)", "Base MV unknown", "Original MV on iOS", "Original MV on Android", "Open", "Fix",
