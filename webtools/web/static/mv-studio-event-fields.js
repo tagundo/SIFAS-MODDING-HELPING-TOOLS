@@ -381,10 +381,10 @@
   }
 
   // One labelled row. A single input sits in a <label>; several inputs form a group.
-  function row(ctx, key, spec, controls, { wide = false, group = false } = {}) {
+  function row(ctx, key, spec, controls, { wide = false, group = false, kind = "" } = {}) {
     const id = `mv-value-${String(key).replace(/[^A-Za-z0-9_-]/g, "_")}-${++serial}`;
-    const element = ctx.make(group ? "div" : "label", null, { class: "mv-field mv-value-field" + (wide ? " mv-value-wide" : ""),
-      "data-mv-value": key });
+    const element = ctx.make(group ? "div" : "label", null, { class: "mv-field mv-value-field" + (wide ? " mv-value-wide" : "") +
+      (kind ? " mv-value-" + kind : ""), "data-mv-value": key });
     const caption = ctx.make("span", null, { class: "mv-value-label", id });
     caption.append(ctx.make("span", ctx.t(labelOf(key, spec))));
     if (spec.badge === "not-previewed") caption.append(badge(ctx));
@@ -452,7 +452,7 @@
     range.addEventListener("pointercancel", () => info.gesture.end());
     const pair = ctx.make("span", null, { class: "mv-value-slider" });
     pair.append(range, box);
-    return row(ctx, info.key, spec, [pair], { group: true });
+    return row(ctx, info.key, spec, [pair], { group: true, kind: "slider-row" });
   }
 
   function colorControl(ctx, info, spec) {
