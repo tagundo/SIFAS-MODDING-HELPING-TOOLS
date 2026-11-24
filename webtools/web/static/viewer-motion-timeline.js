@@ -111,6 +111,35 @@
     else if (!eyeCandidates.length && faceCandidates.length === 1) face = faceCandidates[0];
     else if (!eyeCandidates.length && !faceCandidates.length && headCandidates.length === 1) face = headCandidates[0];
     (animations || []).forEach(function (clip) { byName[clip.name] = clip; });
+    // The six LiveMemberEyeContact clips play whole in the head graph's gaze
+    // mixer, the top override layer of LiveCoreMemberHead.animationLayerMixer
+    // (lip-sync, eye, gaze inputs at weight 1, InitializeDefault 0x2f67e18).
+    // Besides the iris bones they bind the eyelid shape they share with
+    // eye_003 (EyeBlendShape.eye_facial_003_006_011). A glTF weights channel
+    // repeats every target of its mesh, so only the indices the source clip
+    // binds (clip metadata morphTargets) take part; older exports without
+    // that list keep the iris-only gaze.
+    function gazeMorphRecords(entry, clip, track, binding, mesh) {
+      if (!mesh || !mesh.morphTargetInfluences || !Array.isArray(entry.morphTargets) || binding.propertyIndex !== undefined) return [];
+      var owner = mesh, id;
+      while (owner && (!owner.userData || owner.userData.elichika_node === undefined)) owner = owner.parent;
+      id = owner && owner.userData.elichika_node;
+      var bound = entry.morphTargets.filter(function (row) { return row && row.node === id && Array.isArray(row.indices); })[0];
+      var size = mesh.morphTargetInfluences.length;
+      if (!bound || track.getValueSize() !== size) return [];
+      var value = track.createInterpolant().evaluate(clip.duration), result = [];
+      bound.indices.forEach(function (index) {
+        if (!Number.isInteger(index) || index < 0 || index >= size || typeof value[index] !== "number" || !isFinite(value[index]) ||
+            typeof mesh.morphTargetInfluences[index] !== "number" || !isFinite(mesh.morphTargetInfluences[index])) return;
+        result.push({ key: mesh.uuid + ":morph:" + index, node: mesh, property: "morph", index: index, value: [value[index]] });
+      });
+      return result;
+    }
+    function readGroup(group) { return group.property === "morph" ? [group.node.morphTargetInfluences[group.index]] : group.node[group.property].toArray(); }
+    function writeGroup(group, value) {
+      if (group.property === "morph") group.node.morphTargetInfluences[group.index] = value[0];
+      else group.node[group.property].fromArray(value);
+    }
     var aliases = options.aliases || (info.expressionCatalog && info.expressionCatalog.gaze && info.expressionCatalog.gaze.clips) || [];
     for (var direction = 6; direction <= 11; direction += 1) {
       var candidates = (info.clips || []).filter(function (entry) {
@@ -127,6 +156,10 @@
         clip.tracks.forEach(function (track) {
           var binding = T.PropertyBinding.create(root, track.name); binding.bind();
           var node = binding.targetObject || binding.node, property = binding.parsedPath && binding.parsedPath.propertyName;
+          if (options.morphs && property === "morphTargetInfluences") {
+            gazeMorphRecords(entry, clip, track, binding, node).forEach(function (record) { records.push(record); });
+            return;
+          }
           if (!node || !node.isBone || node.userData && node.userData.viewerHelper || !/^(?:Left|Right)Eye(?:[12]|_Root)$/.test(name(node)) ||
               ["position", "quaternion", "scale"].indexOf(property) < 0) return;
           var value = Array.prototype.slice.call(track.createInterpolant().evaluate(clip.duration));
@@ -143,7 +176,7 @@
       }
       poses[direction] = prepared[0];
       prepared[0].forEach(function (record) {
-        if (!groups[record.key]) groups[record.key] = { node: record.node, property: record.property, base: record.node[record.property].toArray() };
+        if (!groups[record.key]) groups[record.key] = { node: record.node, property: record.property, index: record.index, base: readGroup(record) };
       });
     }
     var rotationPath = [], worldQuaternion = new T.Quaternion(), direction = new T.Vector3(), facePosition = new T.Vector3();
@@ -194,7 +227,7 @@
           group.node.quaternion.copy(q.normalize());
         } else {
           for (var i = 0; i < result.length; i += 1) { result[i] = group.base[i] * remainder; entries.forEach(function (entry) { result[i] += entry.value[i] * entry.weight; }); result[i] /= Math.max(1, total); }
-          group.node[group.property].fromArray(result);
+          writeGroup(group, result);
         }
       });
       return requested && Object.keys(contributions).length > 0 || neutral && Object.keys(groups).length > 0;
@@ -203,7 +236,7 @@
       eyePosition: function (result) { return nativeEye && nativeEye.getWorldPosition(result); },
       restorePose: function () {
         if (!gazeWrites) return;
-        gazeWrites.forEach(function (group) { group.node[group.property].fromArray(group.base); });
+        gazeWrites.forEach(function (group) { writeGroup(group, group.base); });
         gazeWrites.length = 0;
       },
       evaluate: function (requests, context) {
@@ -212,9 +245,9 @@
           Object.keys(values).forEach(function (id) { combined[id] = (combined[id] || 0) + values[id] * clamp(number(request.weight, 1), 0, 1); }); });
         return apply(combined, false);
       },
-      properties: function () { var result = {}; Object.keys(groups).forEach(function (key) { var group = groups[key], id = group.node.userData && group.node.userData.elichika_node;
+      properties: function () { var result = {}; Object.keys(groups).forEach(function (key) { var group = groups[key], id = group.property === "morph" ? undefined : group.node.userData && group.node.userData.elichika_node;
         if (id !== undefined) { if (!result[String(id)]) result[String(id)] = {}; result[String(id)][group.property] = true; } }); return result; },
-      operations: function () { return Object.keys(groups).map(function (key) { var group = groups[key], node = group.node.userData && group.node.userData.elichika_node;
+      operations: function () { return Object.keys(groups).filter(function (key) { return groups[key].property !== "morph"; }).map(function (key) { var group = groups[key], node = group.node.userData && group.node.userData.elichika_node;
         return { node: node, kind: group.property, value: group.node[group.property].toArray(), source: "expression" }; }).filter(function (operation) { return Number.isInteger(operation.node); }); },
       getState: function () { return { available: Object.keys(poses).length > 0, directions: Object.keys(poses).map(Number), weights: Object.assign({}, lastWeights), missingTargets: missingTargets.slice(), warnings: warnings.slice() }; }
     };
@@ -468,7 +501,8 @@
     // retained motion belongs to another character, use this face's verified
     // endpoints instead of writing the old character's absolute iris positions.
     var gaze = createGaze(root, animations, info, {
-      aliases: retargetedGaze ? modelGaze.clips : (descriptor.facialClips || []).concat(faceTables.eyes || []), restorePose: restoreFace
+      aliases: retargetedGaze ? modelGaze.clips : (descriptor.facialClips || []).concat(faceTables.eyes || []), restorePose: restoreFace,
+      morphs: true
     });
     // Live heads create playables only for MemberEyeClip / MemberLipSyncClip
     // AnimationIndex values (Initialize walks Enum.GetValues of that enum).
