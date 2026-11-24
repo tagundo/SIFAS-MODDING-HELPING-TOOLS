@@ -1883,6 +1883,7 @@
     // colors stay exact there (unevidenced choice).
     function heldLiveLighting(record, slot, value, valueAt, lighting) {
       const holds = (record.lightingHolds ||= {})[slot] ||= { ambient: {}, tint: {} };
+      value = heldRim(holds, value, valueAt);
       if (!value || lighting?.baseTrack || !global.MVStudioLighting?.heldColor) {
         holds.ambient.color = holds.tint.color = null;
         return value;
@@ -1893,6 +1894,31 @@
           currentTime, frameClock) : (holds[key].color = null, value[key]);
       }
       return held;
+    }
+
+    // LiveRimlightMixer / LivePropRimlightMixer.PostProcess apply colour,
+    // sharpness and direction only in a frame an input ran; otherwise they
+    // only ApplyIntensity(0) (mv_studio_member_rim_test). The rimlight keeps
+    // the colour, power and direction of the last frame a clip wrote (the
+    // previous playing frame, or after a seek the last frame of the frame
+    // clock's history with an active clip), and LiveCoreMemberRimlight.ResetAll's
+    // state (SifasMaterial's live default) before any.
+    function heldRim(holds, value, valueAt) {
+      const written = (rim) => Array.isArray(rim?.color) && Array.isArray(rim?.direction) && Number.isFinite(rim?.power);
+      if (written(value?.rim)) {
+        holds.rim = value.rim;
+        return value;
+      }
+      if (!frameClock.advancing) {
+        holds.rim = null;
+        for (let index = frameClock.history.length - 1; index >= 0 && !holds.rim; index--) {
+          const rim = valueAt(frameClock.history[index])?.rim;
+          if (written(rim)) holds.rim = rim;
+        }
+      }
+      if (!holds.rim) return value;
+      return { ...(value || {}), rim: { color: holds.rim.color, direction: holds.rim.direction, power: holds.rim.power,
+        intensity: value?.rim?.intensity ?? 0 } };
     }
 
     function setPlaying(value) {
