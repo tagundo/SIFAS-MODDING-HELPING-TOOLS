@@ -30,6 +30,8 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
       out.pick = F.pickColor({ r: 2, g: 1, b: .5, a: 1 }, '#00ff00', 2);
       out.back = F.colorParts(F.pickColor({ r: 0, g: 0, b: 0, a: .25 }, '#ff8040', 2));
       out.scaled = F.scaleColor({ r: 2, g: 1, b: .5, a: .5 }, 3);
+      out.scaledDark = F.scaleColor({ r: .5, g: .25, b: 0, a: 1 }, 2);
+      out.scaledBlack = F.scaleColor({ r: 0, g: 0, b: 0, a: 1 }, 2);
       out.ldr = F.colorParts({ r: .5, g: .25, b: 0, a: 1 });
 
       const make = (tag, label, attrs = {}) => {
@@ -73,6 +75,16 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
             { id: 'prop:0', start: 0, duration: 2, label: 'P', editableValues: ['color'],
               values: { asset: 'cab:9', playableClass: 'LivePropAmbientClip', color: { r: 2, g: 1, b: .5, a: 1 },
                 tintColor: { r: 1, g: 1, b: 1, a: 1 }, colorSpecifiedType: 0, memberPosition: 1 } }] },
+          // Real 12007 colours whose brightest channel is below 1 (k = 1), and a black one.
+          { id: 'ambient', kind: 'lighting', events: [
+            { id: 'ambient:0', start: 0, duration: 2, label: 'A0', editableValues: ['color'],
+              values: { asset: 'cab:10', playableClass: 'LiveStageSingleAmbientClip',
+                color: { r: 0.2110869288444519, g: 0.13960783183574677, b: 0.6980392336845398, a: 0.501960813999176 } } },
+            { id: 'ambient:1', start: 2, duration: 2, label: 'A1', editableValues: ['color'],
+              values: { asset: 'cab:11', playableClass: 'LiveStageSingleAmbientClip', color: { r: 0, g: 0, b: 0, a: .5 } } }] },
+          { id: 'grey', kind: 'stage', events: [
+            { id: 'grey:0', start: 0, duration: 2, label: 'G0', editableValues: ['tintColor'],
+              values: { asset: 'cab:12', playableClass: 'LiveColoringClip', tintColor: { r: .75, g: .75, b: .75, a: 1 } } }] },
         ] };
       const history = MVStudioEditHistory.create({ getProject: () => project });
       const ctx = {
@@ -157,6 +169,25 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
       red.value = '0.25';
       red.dispatchEvent(new Event('change', { bubbles: true }));
       out.propExact = { value: { ...find('prop:0').event.values.color }, shown: propIntensity.value, steps: history.size().undo - propBefore };
+
+      // Brightest channel below 1 (k = 1): an entry above 1 sets the brightest channel to it,
+      // so the box shows the entry and the same entry again writes nothing. Black: nothing.
+      out.dark = {};
+      for (const [id, key, entries] of [['ambient:0', 'color', ['1.2', '1.2']], ['grey:0', 'tintColor', ['2', '2']],
+        ['ambient:1', 'color', ['3', '3']]]) {
+        const element = control(id, key);
+        const box = element.querySelector('.mv-color-intensity');
+        const start = history.size().undo;
+        const rows = out.dark[id] = [{ shown: box.value, swatch: element.querySelector('input[type=color]').value }];
+        for (const entry of entries) {
+          box.value = entry;
+          box.dispatchEvent(new Event('change', { bubbles: true }));
+          rows.push({ value: { ...find(id).event.values[key] }, shown: box.value, steps: history.size().undo - start,
+            swatch: element.querySelector('input[type=color]').value });
+        }
+        if (history.size().undo > start) history.undo();
+        rows.push({ undone: { ...find(id).event.values[key] }, steps: history.size().undo - start });
+      }
 
       // Bloom threshold: real MVs use negative thresholds, so the box keeps them and accepts them.
       const threshold = control('bloom:0', 'threshold');
@@ -245,6 +276,8 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
     assert.deepEqual(result.pick, { r: 0, g: 2, b: 0, a: 1 }, 'picking #00ff00 keeps ×2');
     assert.deepEqual(result.back, { hex: '#ff8040', k: 2 });
     assert.deepEqual(result.scaled, { r: 3, g: 1.5, b: .75, a: .5 });
+    assert.deepEqual(result.scaledDark, { r: 2, g: 1, b: 0, a: 1 }, 'the brightest channel becomes the intensity');
+    assert.equal(result.scaledBlack, null, 'black has no hue to scale');
     assert.deepEqual(result.ldr, { hex: '#804000', k: 1 });
 
     assert.deepEqual(result.hidden, [null, null, null], 'identity keys are hidden from the list');
@@ -279,6 +312,26 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
     ], 'an intensity below 1 clamps to 1 once: no compounding, and the box shows the stored intensity');
     assert.deepEqual(result.propExact, { value: { r: .25, g: .5, b: .25, a: 1 }, shown: '1', steps: 2 },
       'channels below 1 stay editable in the exact values');
+    const ambient = { r: 0.2110869288444519, g: 0.13960783183574677, b: 0.6980392336845398, a: 0.501960813999176 };
+    const ambientAt12 = { r: 0.36288, g: 0.24, b: 1.2, a: ambient.a };
+    assert.deepEqual(result.dark['ambient:0'], [
+      { shown: '1', swatch: '#3624b2' },
+      { value: ambientAt12, shown: '1.2', steps: 1, swatch: '#4d33ff' },
+      { value: ambientAt12, shown: '1.2', steps: 1, swatch: '#4d33ff' },
+      { undone: ambient, steps: 0 },
+    ], 'real 12007 ambient colour: 1.2 sets the brightest channel to 1.2, the box shows 1.2, a repeat writes nothing');
+    assert.deepEqual(result.dark['grey:0'], [
+      { shown: '1', swatch: '#bfbfbf' },
+      { value: { r: 2, g: 2, b: 2, a: 1 }, shown: '2', steps: 1, swatch: '#ffffff' },
+      { value: { r: 2, g: 2, b: 2, a: 1 }, shown: '2', steps: 1, swatch: '#ffffff' },
+      { undone: { r: .75, g: .75, b: .75, a: 1 }, steps: 0 },
+    ], 'real 12007 tint {.75,.75,.75}: 2 gives {2,2,2} once');
+    assert.deepEqual(result.dark['ambient:1'], [
+      { shown: '1', swatch: '#000000' },
+      { value: { r: 0, g: 0, b: 0, a: .5 }, shown: '1', steps: 0, swatch: '#000000' },
+      { value: { r: 0, g: 0, b: 0, a: .5 }, shown: '1', steps: 0, swatch: '#000000' },
+      { undone: { r: 0, g: 0, b: 0, a: .5 }, steps: 0 },
+    ], 'a black colour has no hue to scale: nothing is written and the box goes back to 1');
     assert.deepEqual(result.threshold, { min: '-100', shown: '-1.72', typed: -3, back: -1.72 },
       'a negative native bloom threshold is shown, kept and can be typed back');
 

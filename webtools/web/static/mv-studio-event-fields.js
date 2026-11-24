@@ -278,10 +278,15 @@
     return { r: round((rgb >> 16 & 255) / 255 * k), g: round((rgb >> 8 & 255) / 255 * k), b: round((rgb & 255) / 255 * k), a: value.a };
   }
 
-  // The same hue at another intensity.
+  // The same hue at another intensity: the brightest channel becomes the intensity, so
+  // for an intensity of 1 or more the result's k is that intensity. For an HDR colour this
+  // is rgb / k * intensity; a colour whose brightest channel is below 1 is scaled the same
+  // way. A black colour has no hue to scale: null.
   function scaleColor(value, intensity) {
-    const k = colorParts(value).k;
-    return { r: round(value.r / k * intensity), g: round(value.g / k * intensity), b: round(value.b / k * intensity), a: value.a };
+    const brightest = Math.max(value.r, value.g, value.b);
+    if (!(brightest > 0)) return null;
+    return { r: round(value.r / brightest * intensity), g: round(value.g / brightest * intensity),
+      b: round(value.b / brightest * intensity), a: value.a };
   }
 
   // Distinct values of the field on this track (or anywhere in the timeline) for the
@@ -462,13 +467,15 @@
     const swatch = ctx.make("input", null, { type: "color", class: "mv-color-swatch", "data-mv-field": info.path, "aria-label": label });
     // k = max(1, r, g, b) is never below 1, so the box is not either (an entry below 1
     // clamps to 1); a darker colour is picked on the swatch or typed in the exact values.
+    // An entry sets the brightest channel to it, so the box then shows the entry and the
+    // same entry again writes nothing. A black colour has no hue to scale: nothing is
+    // written and the box goes back to its value.
     const intensity = numberBox(ctx, 1, { min: 1, max: 1000, class: "mv-color-intensity", "data-mv-field": info.path + ".intensity",
       "aria-label": ctx.format("{label}: intensity", { label }),
-      title: ctx.t("Intensity (×): HDR multiplier of the swatch colour, 1 or more. Pick a darker colour on the swatch.") },
+      title: ctx.t("Intensity (×): the colour's brightest channel, shown as 1 when it is lower. An entry of 1 or more scales the colour so that channel equals it. Pick a darker colour on the swatch.") },
     (next) => {
       pickIntensity = null;
-      if (next === colorParts(state).k) show();
-      else write(scaleColor(state, next));
+      write(next === colorParts(state).k ? null : scaleColor(state, next));
     });
     const boxes = {};
     for (const channel of CHANNELS) {
