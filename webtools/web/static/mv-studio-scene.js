@@ -2330,14 +2330,54 @@
           const key = D.keyFor("stageNode", { binding: tag.binding, path: tag.path });
           if (wanted && !wanted.has(key)) return;
           if (nodes.length >= maxNodes) { if (!truncated.includes("stageNodes")) truncated.push("stageNodes"); return; }
-          // An AxisBillboard node (or a child of one) reports the live camera's turn, as renderers do.
-          const turned = billboardOf({ owner: node }) !== null;
+          // An AxisBillboard node (or a child of one) reports the live camera's turn, as renderers do,
+          // and whether the live camera draws that billboard (axisBillboardDrawn, when known).
+          const billboard = billboardOf({ owner: node });
+          const drawn = billboard ? billboardDrawn(billboard) : null;
           nodes.push({ key, binding: tag.binding, crc: tag.path, name: D.nodeName(node), activeSelf: node.visible,
             visible: D.effectiveVisible(node), ...D.decompose(rendererWorld({ owner: node }), temp),
-            ...(turned ? { axisBillboard: true } : {}) });
+            ...(billboard ? { axisBillboard: true } : {}), ...(typeof drawn === "boolean" ? { axisBillboardDrawn: drawn } : {}) });
         });
         return nodes;
       });
+
+      // Whether the live camera draws an AxisBillboard, so that its OnWillRenderObject (0x27bf944) turned it toward
+      // that camera in the frame the dump shows: the node is shown, has a renderer, and its AxisBillboard.Start
+      // bounds (0x27bf774: the mesh bounds widened to (max(sx, sz), sy, max(sx, sz)) about their center) under the
+      // reported turn meet the live camera's frustum (Unity culls a renderer by its world bounds). null (unknown)
+      // while a split clip is active, since the sub cameras turn it too and the frame's last draw is not modelled,
+      // and for billboards the editor turns by another rule (the member shaft). The camera culling mask is not
+      // checked: the 12035 cones are on layer 14, which the main camera's mask 0x0C0BC013 draws (dump4 renderer
+      // and camera records); other stages are assumed alike (unevidenced).
+      function billboardDrawn(node) {
+        cache.billboardDrawn ||= new Map();
+        if (cache.billboardDrawn.has(node)) return cache.billboardDrawn.get(node);
+        let drawn = null;
+        const tagged = records.some((record) => record.axisBillboard?.nodes?.includes(node));
+        if (tagged && activeSplitGazeCameras === null) {
+          drawn = false;
+          const meshes = rendererEntries().filter((entry) => entry.owner === node).flatMap((entry) => entry.meshes);
+          if (D.effectiveVisible(node) && meshes.length) {
+            const box = new T.Box3(), part = new T.Box3(), local = new T.Matrix4(), inverse = new T.Matrix4().copy(node.matrixWorld).invert();
+            for (const mesh of meshes) {
+              if (!mesh.geometry) continue;
+              if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+              part.copy(mesh.geometry.boundingBox);
+              if (mesh !== node) part.applyMatrix4(local.multiplyMatrices(inverse, mesh.matrixWorld));
+              box.union(part);
+            }
+            if (!box.isEmpty()) {
+              const center = box.getCenter(new T.Vector3()), size = box.getSize(new T.Vector3()), side = Math.max(size.x, size.z);
+              box.setFromCenterAndSize(center, size.set(side, size.y, side)).applyMatrix4(rendererWorld({ owner: node }));
+              const view = new T.Matrix4().fromArray(viewOf(liveCamera).view);
+              drawn = new T.Frustum().setFromProjectionMatrix(new T.Matrix4().multiplyMatrices(liveCamera.projectionMatrix, view))
+                .intersectsBox(box);
+            }
+          }
+        }
+        cache.billboardDrawn.set(node, drawn);
+        return drawn;
+      }
       read("members", "members", () => {
         const wanted = Array.isArray(filter.bones) ? new Set(filter.bones) : null;
         const result = [];

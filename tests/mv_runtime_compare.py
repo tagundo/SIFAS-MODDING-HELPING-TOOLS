@@ -104,7 +104,10 @@ W2C_TRANSLATION = (12, 13, 14)
 # (0x27bf944) turns the Transform about its own up axis (RunAxisBillboardY 0x27bfc14) only when Camera.current is a
 # target or, with split screen on, one of LiveSplitScreenEffect.SubCameraTransforms: a cone no target camera draws
 # keeps the turn of its last draw while its Animator parents move on. Its up axis (the beam) is the parents' and
-# is compared on every sample; the turn about it is draw history.
+# is compared on every sample; the turn about it is draw history. A game renderers record says whether the camera
+# drew it (isVisible); a stage node record does not, so a billboard stage node keeps the whole comparison only where
+# the editor reports that the live camera draws it (axisBillboardDrawn, with the live camera's turn), and is compared
+# on its up axis elsewhere.
 AXIS_BILLBOARD_CLASS = "LLAS.Components.AxisBillboard.AxisBillboard"
 
 
@@ -1405,7 +1408,13 @@ class Comparison:
                 role = self.axis_billboard_role(f"{binding}/{rel}" if rel else binding)
                 if role is None and editor_node.get("axisBillboard") is True:
                     role = "flagged"     # the editor's flag (a billboard or below one) without the serialized components
-            if role:
+            if role and editor_node.get("axisBillboardDrawn") is True:
+                # The editor reports the live camera's turn and that the live camera draws this billboard (its
+                # AxisBillboard.Start bounds meet the frustum): the game's OnWillRenderObject turned it toward that
+                # camera in the frame the record shows, so the whole transform is compared.
+                if editor_node.get("name") not in self.notes["transforms.stageNodeAxisBillboardDrawn"]:
+                    self.notes["transforms.stageNodeAxisBillboardDrawn"].append(editor_node.get("name"))
+            elif role:
                 # A stage node record has no draw state: the turn is the last target camera's draw (AXIS_BILLBOARD_CLASS).
                 if editor_node.get("name") not in self.notes["transforms.stageNodeAxisBillboard"]:
                     self.notes["transforms.stageNodeAxisBillboard"].append(editor_node.get("name"))

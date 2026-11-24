@@ -448,6 +448,32 @@ class AxisBillboardUpAxisTest(unittest.TestCase):
         self.assertIsNone(result.axis_billboard_role("/EntryPoint/Live/Members/Member1/" + self.REL))
         self.assertIn("stageNodeRotationDeg", self.stage(result, rel="litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani"))
 
+    def test_drawn_billboard_stage_node_compares_its_full_turn(self):
+        # The editor reports the live camera's turn and that the live camera draws the cone: the game turned it
+        # toward that camera in the frame the record shows, so the whole rotation is compared.
+        result = self.comparison(self.KEYS)
+        game_turn = C.Conventions.quaternion(self.GAME["rotation"])
+        items = self.stage(result, axisBillboardDrawn=True, rotation=game_turn)
+        self.assertEqual(sorted(items), ["stageNodePositionM", "stageNodeRotationDeg", "stageNodeScaleRel"])
+        self.assertLess(items["stageNodeRotationDeg"]["error"], 1e-3)
+        self.assertEqual(result.notes["transforms.stageNodeAxisBillboardDrawn"], ["litB_05_bilcone"])
+        self.assertNotIn("transforms.stageNodeAxisBillboard", result.notes)
+        # A turn toward another camera is caught (92 deg about the beam).
+        result = self.comparison(self.KEYS)
+        self.assertGreater(self.stage(result, axisBillboardDrawn=True)["stageNodeRotationDeg"]["score"], 900)
+        # Not drawn (or unknown): the up axis only.
+        for drawn in (False, None):
+            result = self.comparison(self.KEYS)
+            self.assertEqual(sorted(self.stage(result, axisBillboardDrawn=drawn)),
+                             ["stageNodePositionM", "stageNodeScaleRel", "stageNodeUpAxisDeg"])
+        # Below a drawn billboard the whole transform follows the reported turn; without keys the editor flag
+        # with the drawn report compares the whole transform too.
+        result = self.comparison(self.KEYS)
+        self.assertEqual(sorted(self.stage(result, rel=self.REL + "/child", axisBillboardDrawn=True)),
+                         ["stageNodePositionM", "stageNodeRotationDeg", "stageNodeScaleRel"])
+        result = self.comparison(None)
+        self.assertIn("stageNodeRotationDeg", self.stage(result, axisBillboard=True, axisBillboardDrawn=True))
+
     def test_off_screen_billboard_renderer_compares_its_up_axis(self):
         result = self.comparison(self.KEYS)
         result.joins["renderer:cone"] = ("renderer:effect:litB_05_bilcone", "path")

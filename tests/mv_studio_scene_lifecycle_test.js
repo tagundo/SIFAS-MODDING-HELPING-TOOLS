@@ -764,6 +764,74 @@ async function checkAssetDumpStageBillboard() {
   f.app.dispose();
 }
 
+// A stage node dump says whether the live camera draws each AxisBillboard
+// (axisBillboardDrawn): shown, with a renderer, and its AxisBillboard.Start
+// bounds (x/z widened to max(sx, sz)) under the reported turn in the frustum.
+async function checkAssetDumpStageBillboardDrawn() {
+  const binding = '/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litB_All';
+  const holders = {}, cones = {};
+  const f = fixture(true, { axisBillboard: true, build(root, id) {
+    if (id !== 82) return;
+    const add = (name, path, size, mesh = true) => {
+      const holder = new THREE.Object3D();
+      holder.userData.mvStageNode = { binding, path };
+      const cone = mesh ? new THREE.Mesh(new THREE.BoxGeometry(...size), new THREE.MeshBasicMaterial()) : new THREE.Object3D();
+      cone.userData.mvStageNode = { binding, path: path + 1 };
+      cone.userData.mvAxisBillboard = 1;
+      holder.add(cone);
+      root.add(holder);
+      (holders[name] ||= []).push(holder);   // every parse of the stage model
+      (cones[name] ||= []).push(cone);
+    };
+    add('front', 20, [0.4, 2, 0.4]);
+    add('behind', 30, [0.4, 2, 0.4]);
+    add('hidden', 40, [0.4, 2, 0.4]);
+    add('bare', 50, null, false);
+    add('edge', 60, [6, 2, 0.01]);
+    const child = new THREE.Object3D();
+    child.userData.mvStageNode = { binding, path: 22 };
+    cones.front.at(-1).add(child);
+  } });
+  const value = project(81);
+  value.duration = 12;
+  value.stage = { glb: address(82) };
+  value.tracks = [{ id: 'cam', label: 'Camera/MainCamera', kind: 'camera', nativeClass: 'AnimationTrack',
+    binding: '/EntryPoint/Live/Cameras/MainCamera', events: [{ id: 'cam:0', start: 0, duration: 10, values: { keyframes: [
+      { time: 0, position: [1, 2, 10], rotation: [0, 0, 0, 1], fov: 30 },
+      { time: 10, position: [5, 3, 0], rotation: [0, 0, 0, 1], fov: 30 }] } }] }];
+  await f.app.load(value);
+  f.app.seek(4, value, true);
+  const camera = f.app.assetDump({ sections: ['cameras'] }).cameras.find((entry) => entry.key === 'camera:main');
+  const toWorld = new THREE.Matrix4().fromArray(camera.worldToCamera).invert();
+  // Camera space looks down -z; the frustum's half width at depth 10 is 10 tan(fov/2) aspect.
+  const halfWidth = 10 * Math.tan(camera.fieldOfView * Math.PI / 360) * camera.aspect;
+  const at = (name, x, z) => holders[name].forEach((holder) => holder.position.copy(new THREE.Vector3(x, 0, z).applyMatrix4(toWorld)));
+  at('front', 0, -10);
+  at('behind', 0, 10);
+  at('hidden', 0, -10);
+  at('bare', 0, -10);
+  // A 6 m wide, flat cone turned toward the camera from twice the half width: its own bounds stay outside the
+  // right plane, the widened (6 x 2 x 6) bounds reach into the view.
+  at('edge', 2 * halfWidth, -10);
+  cones.hidden.forEach((cone) => { cone.visible = false; });
+  for (const holder of Object.values(holders).flat()) {
+    holder.updateMatrix();   // the stage keeps matrixAutoUpdate off on its nodes
+    holder.parent.updateMatrixWorld(true);
+  }
+  const nodes = new Map(JSON.parse(JSON.stringify(f.app.assetDump({ sections: ['stageNodes'] }))).stageNodes
+    .map((entry) => [entry.crc, entry]));
+  const drawn = (crc) => nodes.get(crc)?.axisBillboardDrawn;
+  assert.equal(drawn(21), true, 'a cone in front of the live camera is drawn');
+  assert.equal(drawn(22), true, 'a node below a drawn billboard reports its billboard');
+  assert.equal(drawn(31), false, 'a cone behind the camera is not drawn');
+  assert.equal(drawn(41), undefined, 'a hidden cone is not turned (MVStudioAxisBillboard skips it), so it reports nothing');
+  assert.equal(drawn(51), false, 'a billboard without a renderer is never drawn');
+  assert.equal(drawn(61), true, 'AxisBillboard.Start widens x/z to max(sx, sz)');
+  assert.equal(nodes.get(20).axisBillboard, undefined, 'the parent is not a billboard');
+  assert.equal(drawn(20), undefined);
+  f.app.dispose();
+}
+
 // The member culler hides the actor root in the editor; the dump reports it as
 // "culled" with node visibility unchanged, and reading it changes nothing.
 async function checkAssetDumpCuller() {
@@ -855,6 +923,7 @@ function checkAssetDumpHelpers() {
   await checkAdaptivePreview();
   await checkAssetDump();
   await checkAssetDumpStageBillboard();
+  await checkAssetDumpStageBillboardDrawn();
   await checkAssetDumpCuller();
   checkAssetDumpHelpers();
   await checkNativeCamera();
