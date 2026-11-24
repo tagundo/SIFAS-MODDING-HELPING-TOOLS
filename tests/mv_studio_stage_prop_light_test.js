@@ -95,6 +95,22 @@ async function run() {
   close(uniforms.uAmbientColor.value.toArray(), [1, 1, 1, 0], "default ambient");
   close(uniforms.uTintColor.value.toArray(), [1, 1, 1, 1], "default tint");
   assert.equal(uniforms.uRimglightIntensity.value, 0);
+  // LivePropRimlightMixer.PostProcess writes colour, sharpness and direction only in a frame a clip
+  // ran: the instance keeps the last written rim (the previous playing frame, or the frame history's
+  // last written frame after a seek), and its copied material values before any write.
+  const rimState = () => [uniforms.uRimlightColor.value.toArray(), uniforms.uRimlightDirection.value.toArray(),
+    uniforms.uRimglightPower.value, uniforms.uRimglightIntensity.value];
+  const copied = [[1, 1, 1, 1], [.5, 0, 0], 3, 0], written = [[1, 1, 1, 0], [-2, 0, 0], 11, 0];
+  assert.deepEqual(rimState(), copied, "a seek without frame history has no earlier write to keep");
+  controller.update(6, {advancing: false, history: [1, 5.5]});
+  assert.deepEqual(rimState(), written, "the history's last frame with a clip holds the rim");
+  controller.update(6, {advancing: false, history: [5.2, 5.5]});
+  assert.deepEqual(rimState(), copied, "a history without a clip frame keeps the copied values");
+  controller.update(4.9, {advancing: false, history: []});
+  controller.update(6, {advancing: true, history: []});
+  assert.deepEqual(rimState(), written, "a playing frame holds the previous frame's write");
+  controller.update(6.5, {advancing: true, history: []});
+  assert.deepEqual(rimState(), written);
 
   // LiveCoreMemberAmbient keeps its last written color until the mixed color moves
   // by sqrt(1e-5) (UtilColor.CheckSame): the material depends on the rendered frames.
@@ -123,6 +139,10 @@ async function run() {
   controller.update(1);
   close(uniforms.uAmbientColor.value.toArray(), [1, 1, 1, 0], "gated ambient");
   assert.equal(uniforms.uRimglightIntensity.value, 0);
+  // A muted rim track writes nothing in the whole run: the copied values stay, never an earlier
+  // evaluation's (dump2 q40 microphone: colour 1, direction 0, power 3).
+  controller.update(1, {advancing: false, history: [.2, .5, .8]});
+  assert.deepEqual(rimState(), copied);
   project.quality.values.prop_ambient = true;
   project.quality.values.prop_rim_light = true;
 
@@ -166,7 +186,7 @@ async function run() {
   controller.dispose();
   assert.equal(prop.material, original);
   assert.equal(await apply(T, new T.Group(), parser), null);
-  console.log("Stage prop lighting: stage bindings, AS/Rimlight/Opaque inputs, rim, defaults, gates, instanced General/Opaque.");
+  console.log("Stage prop lighting: stage bindings, AS/Rimlight/Opaque inputs, rim, defaults, rim holds, gates, instanced General/Opaque.");
 }
 
 run().catch(error => {

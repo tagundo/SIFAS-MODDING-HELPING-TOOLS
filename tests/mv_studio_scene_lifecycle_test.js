@@ -564,6 +564,39 @@ async function checkMemberRimQuality() {
   f.app.dispose();
 }
 
+// LiveRimlightMixer.PostProcess applies colour, sharpness and direction only in a frame a clip ran,
+// otherwise only ApplyIntensity(0): between clips the rim keeps the last written values (intensity 0),
+// from the previous playing frame or, after a seek, from the frame history; before any write, and on a
+// plain seek, SifasMaterial's live default (LiveCoreMemberRimlight.ResetAll) stays.
+async function checkMemberRimHold() {
+  const f = fixture(true, { lighting: true }), value = project(59);
+  value.quality = { values: { member_rim_light: true, base_light: true } };
+  const clip = (start, sharpness, x) => ({ start, duration: 1, values: { playableClass: 'LiveRimlightClip', colorSpecifiedType: 0,
+    color: [.5, .25, 1, 1], intensity: .6, sharpness, direction: { x, y: 1, z: 0 } } });
+  value.tracks.push({ nativeClass: 'LiveRimlightTrack', binding: '/EntryPoint/Live/Members/Member1', events: [clip(0, 4, 2), clip(2, 9, -3)] });
+  await f.app.load(value);
+  const info = f.models.get(59);
+  // The scene runs in the fixture's own realm: compare plain copies.
+  const rim = () => JSON.parse(JSON.stringify(info.liveLighting?.rim ?? null));
+  f.app.seek(.5, value, true);
+  assert.deepEqual(rim(), { color: [.5, .25, 1, 1], intensity: .6, power: 5, direction: [2, 1, 0, 0] }, 'a clip writes everything');
+  f.app.seek(1.5, value, true);
+  assert.deepEqual(rim(), { intensity: 0 }, 'a plain seek between clips has no earlier frame to hold');
+  f.app.seek(1.5, value, true, [.3, .9, 1.2]);
+  assert.deepEqual(rim(), { color: [.5, .25, 1, 1], direction: [2, 1, 0, 0], power: 5, intensity: 0 },
+    'after a seek with the frame history the last frame a clip ran holds colour, power and direction');
+  f.app.seek(1.6, value, true, [1.1, 1.2]);
+  assert.deepEqual(rim(), { intensity: 0 }, 'a history without a written frame holds nothing');
+  f.app.seek(2.5, value, true);
+  f.app.setPlaying(true);
+  f.app.playbackFrame(3.2, 100, true);
+  assert.deepEqual(rim(), { color: [.5, .25, 1, 1], direction: [-3, 1, 0, 0], power: 10, intensity: 0 }, 'a playing frame holds the previous one');
+  f.app.playbackFrame(3.4, 200, true);
+  assert.deepEqual(rim().direction, [-3, 1, 0, 0], 'and keeps holding it');
+  f.app.setPlaying(false);
+  f.app.dispose();
+}
+
 // A member prop's ambient mixer writes its LiveCoreMemberAmbient every frame, shown or not: the
 // CheckSame hold steps on hidden frames too, and the material takes the held color while shown.
 async function checkMemberPropHold() {
@@ -1009,6 +1042,7 @@ function checkAssetDumpHelpers() {
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
   await checkMemberRimQuality();
+  await checkMemberRimHold();
   await checkMemberPropHold();
   await checkOriginalEndHold();
   await checkShadowPrefabRelease();
