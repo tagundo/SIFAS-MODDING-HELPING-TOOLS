@@ -50,6 +50,9 @@ except ImportError:
 from webtools import i18n  # noqa: E402
 from webtools.core import mv_studio, mv_studio_register as register, mv_studio_timeline  # noqa: E402
 
+# The real server session and job lifecycle (Case replaces both with stand-ins).
+REAL_SERVER_SESSION, REAL_LIFECYCLE = register._server_session, register._lifecycle
+
 SAMPLES = Path(os.environ.get("ELICHIKA_STUDIO_TIMELINE_DIR", "/unavailable-studio-samples"))
 NEEDS_STORE = unittest.skipUnless(mv_studio_live is not None, "The Elichika server app is not importable")
 TIMELINE_SIZE = 4096
@@ -391,8 +394,7 @@ class Case(unittest.TestCase):
 
     def run_job(self, request, *, managed=False):
         job = FakeJob()
-        with mock.patch.object(register, "managed", return_value=managed), \
-                mock.patch.object(register, "_release"):
+        with mock.patch.object(register, "managed", return_value=managed):
             summary = register.run_register(job, self.root, request)
         return job, summary
 
@@ -894,7 +896,7 @@ class RegisterJobTests(Case):
         review = register.remove_plan(self.root, region="gl", live_id=live_id)
         self.assertEqual(review["blocked"], [])
         job = FakeJob()
-        with mock.patch.object(register, "managed", return_value=False), mock.patch.object(register, "_release"):
+        with mock.patch.object(register, "managed", return_value=False):
             summary = register.run_remove(job, self.root, register.validate_remove(
                 {"region": "gl", "liveId": live_id, "reviewToken": review["reviewToken"]}))
         self.assertEqual(summary, register.REMOVED.replace("{title}", "내 MV").replace("{id}", str(live_id)))
@@ -908,7 +910,7 @@ class RegisterJobTests(Case):
     def test_cancel_before_the_database_step_writes_nothing(self):
         job = FakeJob()
         job.cancel_event.set()
-        with mock.patch.object(register, "managed", return_value=False), mock.patch.object(register, "_release"):
+        with mock.patch.object(register, "managed", return_value=False):
             summary = register.run_register(job, self.root, self.request(self.edited(self.project())))
         self.assertEqual(summary, register.CANCELLED)
         self.assertEqual(self.songs(), [])
@@ -969,6 +971,207 @@ class RegisterJobTests(Case):
             again, summary = self.run_job(self.request(self.project(), mode="update", liveId=live_id, audio=audio,
                                                        jacket={"kind": "keep"}))
         self.assertEqual((summary, calls), (register.NO_CHANGES, []))
+
+
+class Controller:
+    """The app's server controller as adminui.serverctl drives it. ``deferred`` behaves like the
+    Android/macOS job reservation: start() inside a job only asks for a restart, finish_job runs it."""
+
+    def __init__(self, *, deferred=False, on_start=None, begin=True):
+        self.running, self.calls, self.deferred, self.requested = True, [], deferred, False
+        self.on_start, self.begin = on_start, begin
+
+    def is_running(self):
+        return self.running
+
+    def stop(self):
+        self.calls.append("stop")
+        self.running = False
+        return True
+
+    def start(self):
+        self.calls.append("start")
+        if self.on_start:
+            self.on_start()
+        if self.deferred:
+            self.requested = True
+        else:
+            self.running = True
+        return True
+
+    def restart_is_pending(self):
+        return self.deferred and self.requested
+
+    def finish(self):
+        self.calls.append("finish")
+
+    def begin_job(self):
+        self.calls.append("begin_job")
+        return self.begin
+
+    def finish_job(self, successful):
+        self.calls.append(f"finish_job:{successful}")
+        if successful and self.requested:
+            self.running = True
+        self.requested = False
+        return True
+
+
+@NEEDS_STORE
+class JobLifecycleTests(Case):
+    """Real installation_server / whole_job_server with a stand-in controller, under the plain
+    webtools job manager and the app's guarded one."""
+
+    def setUp(self):
+        super().setUp()
+        from adminui import serverctl
+        self.serverctl = serverctl
+        self.addCleanup(serverctl.register_controller, None)
+        for name, value in (("_server_session", REAL_SERVER_SESSION), ("_lifecycle", REAL_LIFECYCLE)):
+            patcher = mock.patch.object(register, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def controller(self, **options):
+        controller = Controller(**options)
+        self.serverctl.register_controller(controller)
+        return controller
+
+    def run_with(self, manager, body):
+        job = manager.create("mv_test")
+        manager.run_async(job, body)
+        for _ in range(400):
+            if job.is_done:
+                break
+            threading.Event().wait(0.05)
+        events = [job.event_at(index, 0) for index in range(job.event_count)]
+        return job, events
+
+    def plain(self):
+        from webtools.jobs import JobManager
+        return JobManager()
+
+    def guarded(self):
+        from adminui.jobs import JobManager
+        patcher = mock.patch.object(register, "_guarded_manager", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return JobManager(root=self.root)
+
+    def registered(self):
+        controller = Controller()
+        self.serverctl.register_controller(controller)
+        job = FakeJob()
+        register.run_register(job, self.root, self.request(self.edited(self.project())))
+        self.serverctl.register_controller(None)
+        return job.song()["song"]["liveId"]
+
+    def racing_remove(self, live_id):
+        """The review goes out of date between the job's own check and the removal (a player's record)."""
+        real = mv_studio_live.remove_mv_song
+
+        def remove(*args, **kwargs):
+            with closing(sqlite3.connect(self.root / "userdata.db")) as database, database:
+                database.execute("INSERT INTO u_live_mv_deck VALUES (2, ?, NULL)", (live_id,))
+            return real(*args, **kwargs)
+        return mock.patch.object(mv_studio_live, "remove_mv_song", side_effect=remove)
+
+    def remove_request(self, live_id):
+        review = register.remove_plan(self.root, region="gl", live_id=live_id)
+        return register.validate_remove({"region": "gl", "liveId": live_id, "reviewToken": review["reviewToken"]})
+
+    def failed(self, events):
+        return [event for event in events if event["type"] == "mv-failed"]
+
+    def test_an_out_of_date_review_is_refused_before_the_server_stops(self):
+        live_id = self.registered()
+        request = self.remove_request(live_id)
+        # A player's record changes after the review was taken (the game server kept running).
+        with closing(sqlite3.connect(self.root / "userdata.db")) as database, database:
+            database.execute("INSERT INTO u_live_mv_deck VALUES (3, ?, NULL)", (live_id,))
+        controller = self.controller()
+        job, events = self.run_with(self.plain(), lambda job: register.run_remove(job, self.root, request))
+        self.assertEqual((events[-1]["status"], events[-1]["summary"]), ("error", register.REVIEW_OUT_OF_DATE))
+        self.assertNotIn("stop", controller.calls)
+        self.assertTrue(controller.running)
+        self.assertEqual(len(mv_studio_live.list_mv_songs(self.root, region="gl")), 1)
+
+    def test_a_refusal_after_the_stop_restarts_the_managed_server(self):
+        live_id = self.registered()
+        request = self.remove_request(live_id)
+        controller = self.controller()
+        with self.racing_remove(live_id):
+            job, events = self.run_with(self.plain(), lambda job: register.run_remove(job, self.root, request))
+        self.assertEqual((events[-1]["status"], events[-1]["summary"]), ("error", register.REVIEW_OUT_OF_DATE))
+        self.assertEqual(self.failed(events), [{"type": "mv-failed", "message": register.REVIEW_OUT_OF_DATE,
+                                                "restart": "done"}])
+        self.assertEqual(controller.calls[:3], ["begin_job", "stop", "start"])
+        self.assertTrue(controller.running, "Nothing was written, so the game server runs again")
+        self.assertEqual(len(mv_studio_live.list_mv_songs(self.root, region="gl")), 1)
+        self.assertFalse(register.busy())
+
+    def test_a_refusal_under_the_app_job_manager_lets_the_app_restart_the_server(self):
+        live_id = self.registered()
+        request = self.remove_request(live_id)
+        controller = self.controller(deferred=True)
+        manager = self.guarded()
+        with self.racing_remove(live_id):
+            job, events = self.run_with(manager, lambda job: register.run_remove(job, self.root, request))
+        self.assertEqual(self.failed(events), [{"type": "mv-failed", "message": register.REVIEW_OUT_OF_DATE,
+                                                "restart": "pending"}])
+        self.assertEqual(events[-1]["status"], "done", "The job ends normally so the app runs the restart")
+        self.assertIn("finish_job:True", controller.calls)
+        self.assertTrue(controller.running)
+        self.assertEqual(len(mv_studio_live.list_mv_songs(self.root, region="gl")), 1)
+
+    def test_an_unexpected_failure_after_the_stop_reports_the_stopped_server(self):
+        controller = self.controller()
+        with mock.patch.object(mv_studio_live, "register_mv_song", side_effect=sqlite3.OperationalError("disk I/O error")):
+            job, events = self.run_with(self.plain(), lambda job: register.run_register(
+                job, self.root, self.request(self.edited(self.project()))))
+        self.assertEqual(events[-1]["status"], "error")
+        self.assertEqual(self.failed(events), [{"type": "mv-failed", "message": "disk I/O error", "restart": "stopped"}])
+        self.assertEqual(controller.calls[:2], ["begin_job", "stop"])
+        self.assertNotIn("start", controller.calls)
+        self.assertFalse(controller.running)
+
+    def test_a_cancel_during_the_restart_keeps_the_registration_and_the_restart(self):
+        for deferred, manager in ((False, self.plain), (True, self.guarded)):
+            with self.subTest(deferred=deferred):
+                holder = {}
+                controller = self.controller(deferred=deferred, on_start=lambda: holder["job"].cancel_event.set())
+                chosen = manager()
+                job = chosen.create("mv_register")
+                holder["job"] = job
+                request = self.request(self.edited(self.project()))
+                chosen.run_async(job, lambda job: register.run_register(job, self.root, request))
+                for _ in range(400):
+                    if job.is_done:
+                        break
+                    threading.Event().wait(0.05)
+                events = [job.event_at(index, 0) for index in range(job.event_count)]
+                self.assertEqual(events[-1]["status"], "done", events[-1])
+                self.assertTrue(any(event["type"] == "mv-song" for event in events))
+                self.assertTrue(controller.running, controller.calls)
+
+    def test_a_job_the_app_refuses_before_its_body_does_not_hold_the_slot(self):
+        self.controller(begin=False)
+        manager = self.guarded()
+        job, events = self.run_with(manager, lambda job: register.run_register(
+            job, self.root, self.request(self.project())))
+        self.assertEqual(events[-1]["status"], "error")
+        self.assertFalse(register.busy())
+        self.assertTrue(register.reserve())
+        register.release()
+
+    def test_a_second_job_is_refused_while_one_runs(self):
+        self.assertTrue(register.reserve())
+        try:
+            with self.assertRaisesRegex(ValueError, "Another MV registration or removal is running"):
+                register.run_register(FakeJob(), self.root, self.request(self.project()))
+            self.assertTrue(register.busy(), "The refused job leaves the running job's slot alone")
+        finally:
+            register.release()
 
 
 @NEEDS_STORE

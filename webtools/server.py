@@ -429,7 +429,6 @@ class Handler(BaseHTTPRequestHandler):
         except ImportError:
             return self._send_json({"error": register.NO_ELICHIKA}, status=501)
         root = Path.cwd()
-        reserved = False
         try:
             self._require_local_tools_host("Open 3D MV at the local app address before changing the game catalog.")
             self._mv_same_origin()
@@ -460,20 +459,22 @@ class Handler(BaseHTTPRequestHandler):
                     optional_fields={"project", "liveId", "region", "template", "title", "credit", "jacket", "audio",
                                      "platforms", "download", "unbaked", "addPlaceholder"})
                 request = register.validate_register(root, data)
-                body, tool = (lambda job: register.run_register(job, root, request, language=self._lang())), "mv_register"
+                # Read now: the job thread outlives this request (the handler may serve another one).
+                language = self._lang()
+                body, tool = (lambda job: register.run_register(job, root, request, language=language)), "mv_register"
             else:
                 data = self._viewer_feature_request({"region", "liveId", "reviewToken"}, token=False, max_bytes=4096)
                 request = register.validate_remove(data)
                 body, tool = (lambda job: register.run_remove(job, root, request)), "mv_remove"
-            if not register.reserve():
+            # The job body takes the one-job slot itself (a job manager may refuse a job before
+            # calling it); a running job answers 409 here already.
+            if register.busy():
                 return self._send_json({"error": register.BUSY}, status=409)
-            reserved = True
             # Another tool holding the database lease answers 409 now instead of failing in the job.
             with database_maintenance.guard(root):
                 pass
             job = MANAGER.create(tool)
             MANAGER.run_async(job, body)
-            reserved = False
             return self._send_json({"job_id": job.id})
         except PermissionError as error:
             return self._send_json({"error": str(error)}, status=403)
@@ -481,9 +482,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": str(error)}, status=409)
         except (OSError, ValueError, TypeError, OverflowError, SQLiteError) as error:
             return self._send_json({"error": str(error)}, status=400)
-        finally:
-            if reserved:
-                register.release()
 
     def _serve_file(self, fpath: Path, content_type=None):
         if not fpath.is_file():

@@ -25,7 +25,6 @@ import hashlib
 import io
 import json
 import math
-import os
 from pathlib import Path
 import re
 import sqlite3
@@ -117,6 +116,7 @@ JACKET_IMAGE = "The jacket must be a PNG, JPEG or another image this app can ope
 JACKET_SOURCE = "The jacket image is larger than this app can open."
 CANCELLED = "MV registration was cancelled."
 REMOVE_CANCELLED = "Removing the MV-only song was cancelled."
+REVIEW_OUT_OF_DATE = "The removal review is out of date. Review the song again before removing it."
 REGISTERED = "Registered '{title}' ({id})."
 UPDATED = "Updated '{title}' ({id})."
 NO_CHANGES = "No changes to apply."
@@ -144,8 +144,8 @@ MESSAGES = (
     ORIGINAL_MISSING_IOS, ORIGINAL_MISSING_ANDROID, OTHER_PLATFORM_FAILED_IOS, OTHER_PLATFORM_FAILED_ANDROID,
     PLATFORMS_DIFFER, STALE, UNBAKED, TITLE, CREDIT, PLATFORMS_CHOICE, REQUEST, MODE, KEEP_NEW, AUDIO_KIND, ENCODER,
     BPM_REQUIRED, BEAT, PREVIEW_START, PCM_MISSING, PCM_SIZE, AUDIO_TEMPLATE, JACKET_KIND, JACKET_CROP, JACKET_BOX,
-    JACKET_IMAGE, JACKET_SOURCE, CANCELLED, REMOVE_CANCELLED, REGISTERED, UPDATED, NO_CHANGES, REMOVED, RESTARTED,
-    RESTART_PENDING, RESTART_MANUAL, STOPPED_MANUAL, NOT_TRACK_SETTINGS, NOT_VALUES, NOT_STAGE, NOT_PERFORMERS,
+    JACKET_IMAGE, JACKET_SOURCE, CANCELLED, REMOVE_CANCELLED, REVIEW_OUT_OF_DATE, REGISTERED, UPDATED, NO_CHANGES,
+    REMOVED, RESTARTED, RESTART_PENDING, RESTART_MANUAL, STOPPED_MANUAL, NOT_TRACK_SETTINGS, NOT_VALUES, NOT_STAGE, NOT_PERFORMERS,
     NOT_POSITIONS, NOT_COSTUMES, NOT_QUALITY, NOT_UNBAKED, FOLLOW_NOTE, AUDIO_LONGER, AUDIO_SHORTER, OFFSET_BASE,
     EDITS_PENDING,
     *STAGES.values(),
@@ -1004,7 +1004,7 @@ def validate_remove(data):
     if (not isinstance(data, dict) or set(data) != {"region", "liveId", "reviewToken"}
             or data["region"] not in REGIONS or not _identity(data["liveId"])
             or not isinstance(data["reviewToken"], str) or not re.fullmatch(r"[0-9a-f]{64}", data["reviewToken"])):
-        raise ValueError("The removal review is out of date. Review the song again before removing it.")
+        raise ValueError(REVIEW_OUT_OF_DATE)
     return data
 
 
@@ -1270,6 +1270,91 @@ def _clear_late_cancel(job):
         job.log("Cancel arrived after the game catalog was being written; the change was kept.")
 
 
+class _Refused(Exception):
+    """The store refused after the game server was stopped. Each store call is one transaction,
+    so nothing was written; ``restart`` is the game server's state afterwards."""
+
+    def __init__(self, error, restart):
+        super().__init__(str(error))
+        self.error, self.restart = error, restart
+
+
+class _Failed(Exception):
+    """An unexpected failure after the game server was stopped; the server stays stopped."""
+
+    def __init__(self, error, restart):
+        super().__init__(str(error))
+        self.error, self.restart = error, restart
+
+
+def _refused_state(session, is_managed):
+    """The game server after a refused store call: none (never stopped, or was not running),
+    done, pending (after the job), or stopped (start it again)."""
+    if session is None:
+        return "none"
+    if not is_managed:
+        return "stopped"
+    if getattr(session, "restart_pending", False):
+        return "pending"
+    if getattr(session, "restarted", False):
+        return "done"
+    return "stopped" if getattr(session, "was_running", False) else "none"
+
+
+def _store_step(job, progress, repo_root, *, stage, stop, restart, is_managed, call):
+    """Run one store call under the database guard, with the game server stopped when ``stop``.
+
+    A refusal (a ValueError from the store, or the database guard being busy) means nothing
+    was written: the server session then ends normally, so a managed game server restarts,
+    and the refusal is raised as _Refused with the server's state. Any other failure after the
+    stop keeps the server stopped (installation_server's rule) and is raised as _Failed.
+    Returns (store result, server session or None).
+    """
+    from database_maintenance import BusyError, LockError
+    session, refusal = None, None
+    try:
+        with ExitStack() as stack:
+            if stop:
+                progress.stage("stop")
+                session = stack.enter_context(_server_session(job, stop=True, restart=restart))
+            progress.stage(stage)
+            try:
+                with _guard(Path(repo_root)):
+                    result = call()
+            except (ValueError, BusyError, LockError) as error:
+                refusal = error
+                job.log(f"The game catalog was not changed: {error}")
+            else:
+                _clear_late_cancel(job)
+    except Exception as error:
+        if session is None:
+            raise
+        stopped = not is_managed or getattr(session, "was_running", False)
+        raise _Failed(error, "stopped" if stopped else "none") from error
+    if refusal is not None:
+        raise _Refused(refusal, _refused_state(session, is_managed))
+    return result, session
+
+
+def _finish(job, lifecycle, body):
+    """Run a job body; report a failure after the server stop with the server's state.
+
+    A store refusal whose restart waits for the end of the job (the app's job reservation)
+    ends the job normally, so the app restarts the game server; the page reports the refusal
+    from the mv-failed event. Every other failure is raised.
+    """
+    try:
+        summary = body()
+    except (_Refused, _Failed) as failure:
+        job.emit({"type": "mv-failed", "message": str(failure.error), "restart": failure.restart})
+        if isinstance(failure, _Failed) or failure.restart != "pending":
+            raise failure.error from failure.error.__cause__
+        summary = str(failure.error)
+    if lifecycle is not None:
+        lifecycle.successful = True
+    return summary
+
+
 def _guarded_manager():
     """True when the app's guarded job manager (adminui.jobs) runs this job: it already holds
     whole_job_server and the database guard for the whole job."""
@@ -1294,17 +1379,19 @@ def _lifecycle(stack, job):
 
 def run_register(job, repo_root, request, *, language="en"):
     """Job body of POST /api/mv-studio/register-job. Returns the summary line."""
+    if not reserve():
+        raise ValueError(BUSY)
     try:
         with ExitStack() as stack:
             lifecycle = _lifecycle(stack, job)
-            summary = _register(job, repo_root, request, language)
-            if lifecycle is not None:
-                lifecycle.successful = not job.should_stop()
-            return summary
+            summary = _finish(job, lifecycle, lambda: _register(job, repo_root, request, language))
+        # The catalog step is over: a cancel that arrived since (during the restart) changed nothing.
+        _clear_late_cancel(job)
+        return summary
     except _Cancelled:
         return CANCELLED
     finally:
-        _release()
+        release()
 
 
 def _register(job, repo_root, request, language):
@@ -1313,7 +1400,7 @@ def _register(job, repo_root, request, language):
     progress = _Progress(job, ["check"])
     progress.stage("check")
     if request["mode"] == "fix":
-        song = live.describe_mv_song(repo_root, region=request["region"], live_id=request["liveId"])
+        live.describe_mv_song(repo_root, region=request["region"], live_id=request["liveId"])
         return _write(job, progress, repo_root, live, is_managed, request["region"], "update",
                       {"live_id": request["liveId"], "add_placeholder": True})
     project = request["project"]
@@ -1358,20 +1445,10 @@ def _register(job, repo_root, request, language):
 
 
 def _write(job, progress, repo_root, live, is_managed, region, mode, arguments, *, noop=False):
-    root = Path(repo_root)
-    stop = is_managed and not noop
-    session = None
-    with ExitStack() as stack:
-        if stop:
-            progress.stage("stop")
-            session = stack.enter_context(_server_session(job, stop=True, restart=True))
-        progress.stage("write")
-        with _guard(root):
-            if mode == "new":
-                result = live.register_mv_song(repo_root, region=region, log=job.log, **arguments)
-            else:
-                result = live.update_mv_song(repo_root, region=region, log=job.log, **arguments)
-        _clear_late_cancel(job)
+    write = live.register_mv_song if mode == "new" else live.update_mv_song
+    result, session = _store_step(job, progress, repo_root, stage="write", stop=is_managed and not noop, restart=True,
+                                  is_managed=is_managed,
+                                  call=lambda: write(repo_root, region=region, log=job.log, **arguments))
     changed = bool(result.get("changed", True))
     restart = _restart_state(session, is_managed, changed)
     if restart in ("done", "pending"):
@@ -1387,51 +1464,65 @@ def _write(job, progress, repo_root, live, is_managed, region, mode, arguments, 
 
 
 def run_remove(job, repo_root, request):
-    """Job body of POST /api/mv-studio/songs/remove-job: always stops the game server first."""
+    """Job body of POST /api/mv-studio/songs/remove-job: always stops the game server for the removal."""
+    if not reserve():
+        raise ValueError(BUSY)
     try:
         with ExitStack() as stack:
             lifecycle = _lifecycle(stack, job)
-            live = store()
-            is_managed = managed()
-            progress = _Progress(job, ["check", "stop", "remove"])
-            progress.stage("check")
-            song = live.describe_mv_song(repo_root, region=request["region"], live_id=request["liveId"])
-            progress.check()
-            progress.stage("stop")
-            with _server_session(job, stop=True, restart=is_managed) as session:
-                progress.stage("remove")
-                with _guard(Path(repo_root)):
-                    result = live.remove_mv_song(repo_root, region=request["region"], live_id=request["liveId"],
-                                                 review_token=request["reviewToken"], log=job.log)
-                _clear_late_cancel(job)
-            restart = "stopped" if not is_managed else _restart_state(session, True, True)
-            if restart in ("done", "pending"):
-                progress.stage("restart")
-            job.emit({"type": "mv-song-removed", "liveId": request["liveId"], "region": request["region"],
-                      "title": song["title"], "restart": restart, "warnings": result.get("warnings", []),
-                      "backup": result.get("backup"), "managed": is_managed})
-            job.progress(len(progress.stages), len(progress.stages))
-            if lifecycle is not None:
-                lifecycle.successful = not job.should_stop()
-            return REMOVED.replace("{title}", song["title"]).replace("{id}", str(request["liveId"]))
+            summary = _finish(job, lifecycle, lambda: _remove(job, repo_root, request))
+        _clear_late_cancel(job)
+        return summary
     except _Cancelled:
         return REMOVE_CANCELLED
     finally:
-        _release()
+        release()
+
+
+def _remove(job, repo_root, request):
+    live = store()
+    is_managed = managed()
+    region, live_id = request["region"], request["liveId"]
+    progress = _Progress(job, ["check", "stop", "remove"])
+    progress.stage("check")
+    song = live.describe_mv_song(repo_root, region=region, live_id=live_id)
+    # Checked again by the store with the server stopped; checking here first refuses an out-of-date
+    # review or a song in use while the game server keeps running.
+    review = live.plan_remove_mv_song(repo_root, region=region, live_id=live_id)
+    if review["review_token"] != request["reviewToken"]:
+        raise ValueError(REVIEW_OUT_OF_DATE)
+    if review["blocked"]:
+        raise ValueError(review["blocked"][0])
+    progress.check()
+    result, session = _store_step(
+        job, progress, repo_root, stage="remove", stop=True, restart=is_managed, is_managed=is_managed,
+        call=lambda: live.remove_mv_song(repo_root, region=region, live_id=live_id,
+                                         review_token=request["reviewToken"], log=job.log))
+    restart = "stopped" if not is_managed else _restart_state(session, True, True)
+    if restart in ("done", "pending"):
+        progress.stage("restart")
+    job.emit({"type": "mv-song-removed", "liveId": live_id, "region": region, "title": song["title"],
+              "restart": restart, "warnings": result.get("warnings", []), "backup": result.get("backup"),
+              "managed": is_managed})
+    job.progress(len(progress.stages), len(progress.stages))
+    return REMOVED.replace("{title}", song["title"]).replace("{id}", str(live_id))
+
+
+def busy():
+    """True while a registration or removal job body runs (the routes answer 409 BUSY)."""
+    return _ACTIVE.locked()
 
 
 def reserve():
-    """Take the one-job-at-a-time slot; False when a registration or removal is already running."""
+    """Take the one-job-at-a-time slot; False when a registration or removal is already running.
+
+    Only a job body takes it (run_register, run_remove), and releases it in its own ``finally``:
+    a job manager that refuses a job before calling its body (the guarded manager's
+    whole_job_server or database guard) never leaves the slot held.
+    """
     return _ACTIVE.acquire(blocking=False)
 
 
-def _release():
-    try:
-        _ACTIVE.release()
-    except RuntimeError:
-        pass
-
-
 def release():
-    """Give the slot back when a reserved job could not start."""
-    _release()
+    """Give back a slot taken with ``reserve``."""
+    _ACTIVE.release()
