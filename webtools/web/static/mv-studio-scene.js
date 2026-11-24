@@ -381,6 +381,11 @@
     let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1, adaptivePreview = true;
     let lastShaftFrame = null, resetShafts = true;
+    // Client state that changes only on rendered frames (the cheek floats
+    // MemberCheekMixer leaves after a clip): an advancing playback frame
+    // continues it; a seek replays the rendered frame times it is given (seek's
+    // `history`) or, without them, uses exact values.
+    let pendingHistory = null, frameClock = { advancing: false, history: [] };
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
     let antiAliasing = options?.antiAliasing === true;
@@ -1755,12 +1760,30 @@
       }
     }
 
-    function seek(time, value, deferDraw = false) {
+    // `history`: optional ascending director times of the frames the game rendered
+    // before `time` (a runtime dump's frame grid); only frame-stepped client state
+    // reads them.
+    function seek(time, value, deferDraw = false, history = null) {
       if (disposed) return;
       if ((value && value !== project) || (Number.isFinite(time) && Math.abs(time - currentTime) > 1e-9)) resetPhysics("seek");
       project = value || project;
       applyProject();
-      playbackFrame(time, undefined, deferDraw);
+      pendingHistory = Array.isArray(history) ? history : [];
+      try {
+        playbackFrame(time, undefined, deferDraw);
+      } finally {
+        pendingHistory = null;
+      }
+    }
+
+    function nextFrameClock(time) {
+      const advancing = pendingHistory === null && playing && Number.isFinite(time) && time >= currentTime - 1e-9;
+      if (advancing) return { advancing, history: [] };
+      const history = (pendingHistory || []).filter((value) => Number.isFinite(value) && value < time - 1e-9);
+      for (let index = 1; index < history.length; index++) {
+        if (history[index] < history[index - 1]) return { advancing: false, history: history.sort((a, b) => a - b) };
+      }
+      return { advancing: false, history };
     }
 
     function setPlaying(value) {
@@ -1782,6 +1805,7 @@
       const continuing = Number.isFinite(frameTimestamp) && Number.isFinite(time) && time > currentTime + 1e-9;
       captureFocusLag(continuing);
       if (Number.isFinite(frameTimestamp) && time < currentTime - 1e-9) resetPhysics("clock-rewind");
+      frameClock = nextFrameClock(Number.isFinite(frameTimestamp) || pendingHistory !== null ? time : NaN);
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
@@ -1856,7 +1880,7 @@
         if (record.motion) {
           record.motion.evaluatePose(currentTime, { split: activeSplitGazeCameras !== null });
           record.motion.applyVisibility(currentTime);
-          if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime));
+          if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime, frameClock));
         } else if (record.mixer) record.mixer.setTime(currentTime);
         record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), currentTime);
       }
