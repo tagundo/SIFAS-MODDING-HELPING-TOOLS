@@ -123,6 +123,7 @@ async function registrationControls(page) {
   assert(await page.locator('#mv-register-submit').isDisabled(), 'Project audio needs its BPM first');
   assert.match(await page.locator('#mv-register-plan').textContent(), /카메라 1컷 수정/);
   assert.match(await page.locator('#mv-register-plan').textContent(), /게임에 들어가지 않음: 멤버 위치/);
+  assert.doesNotMatch(await page.locator('#mv-register-plan').textContent(), /의상/, 'The outfit hint belongs to the costume note only');
   assert(!(await page.locator('#mv-register-download').isChecked()));
   await page.locator('#mv-register-bpm').fill('120');
   await page.locator('#mv-register-first-beat').fill('0.5');

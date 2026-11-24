@@ -808,7 +808,6 @@
       const label = t("Not in the game:") + " " + t(note.message) + (note.labels && note.labels.length ? " " + note.labels.join(", ") : "");
       item("warn", label);
     }
-    if ((plan.notInGame || []).length) item("warn", t("Choose outfits in the game's MV deck."));
     for (const warning of plan.warnings || []) item("warn", message(warning));
     for (const blocked of plan.blocked || []) {
       item("blocked", message(blocked) + (blocked.labels && blocked.labels.length ? " " + blocked.labels.join(", ") : ""));
@@ -1137,7 +1136,7 @@
     "Camera: {count} shots edited (follow camera included)", "Values: {values} · clip timing: {timing}",
     "Applied on Android and iOS", "Applied on {platform}", "Download (about {size} MB)", "No {platform} original",
     "{platform}: the registered timeline stays", "Register for Android only", "Register for iOS only",
-    "{platform} has no original in this region: it plays the base MV.", "Not in the game:", "Choose outfits in the game's MV deck.",
+    "{platform} has no original in this region: it plays the base MV.", "Not in the game:",
     "Checking what reaches the game…", "Open this panel to check what reaches the game.", "Region: {region}", "New song",
     "Update {title} ({id})", "Register as", "Songs registered from this base MV: {songs}", "Not chosen", "Game region", "Search MV",
     "Song", "Stage", "Use this base MV", "Continue", "Cancel", "iOS will play the original MV. Continue?",

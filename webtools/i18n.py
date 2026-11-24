@@ -2802,7 +2802,6 @@ _MV_REGISTER_TRANSLATIONS = {
     "{platform} has no original in this region: it plays the base MV.": (
         "이 지역에는 {platform} 원본이 없어 기본 MV가 재생됩니다.", "この地域には{platform}の元データがないため、ベースMVが再生されます。"),
     "Not in the game:": ("게임에 들어가지 않음:", "ゲームには入らないもの："),
-    "Choose outfits in the game's MV deck.": ("의상은 게임의 MV 덱에서 고르세요.", "衣装はゲームのMVデッキで選んでください。"),
     "Checking what reaches the game…": ("게임 반영 점검 중…", "ゲームへの反映をチェック中…"),
     "Open this panel to check what reaches the game.": (
         "이 패널을 열면 게임에 반영되는 내용을 점검합니다.", "このパネルを開くとゲームに反映される内容をチェックします。"),
