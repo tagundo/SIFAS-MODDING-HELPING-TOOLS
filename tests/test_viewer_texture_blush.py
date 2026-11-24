@@ -669,6 +669,73 @@ class RealBundleTests(unittest.TestCase):
         self.export_both(lambda folder: astc_standin.write(folder))
 
 
+REAL_ASTCENC = os.environ.get("REAL_ASTCENC_BIN", "")
+
+
+@unittest.skipUnless(REAL_ASTCENC and os.path.isfile(REAL_ASTCENC),
+                     "set REAL_ASTCENC_BIN to a real astcenc 4.8 (the encoder the apps ship) to check the astc-keep save with it")
+class RealAstcencTests(unittest.TestCase):
+    """The opt-in astc-keep save with the real ARM astcenc CLI, not the test stand-in.
+
+    The product calls ``astcenc -cl IN.png OUT.astc BxB -exhaustive -decode_unorm8 -j N``
+    and ``astcenc -dl IN.astc OUT.tga -j N``; this checks the real CLI accepts
+    both and that the spliced texture keeps every untouched block and texel.
+    """
+
+    def test_version_and_arguments(self):
+        import subprocess
+        version = subprocess.run([REAL_ASTCENC, "-version"], capture_output=True, text=True, timeout=30)
+        self.assertRegex(version.stdout + version.stderr, r"astcenc v4\.\d+\.\d+")
+        from webtools.core import texture_block_splice as splice
+        with patch.dict(os.environ, {"ASTCENC_BIN": REAL_ASTCENC}), patch.object(splice.subprocess, "run", wraps=splice.subprocess.run) as run:
+            image = smooth_images()[0].crop((0, 0, 14, 9))  # partial blocks on both axes
+            blocks = splice.encode(image, 6, time.monotonic() + 120)
+        self.assertEqual(len(blocks), 3 * 2 * 16)
+        self.assertEqual(run.call_count, 1, "-decode_unorm8 is accepted: no retry without it")
+        arguments = run.call_args.args[0]
+        self.assertEqual(arguments[1], "-cl")
+        self.assertEqual(arguments[4:], ["6x6", "-exhaustive", "-decode_unorm8", "-j", arguments[-1]])
+
+    @unittest.skipUnless(astc_standin.available(), "building the synthetic ASTC head needs astc-encoder-py")
+    def test_astc_keep_on_a_synthetic_head(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        payload = synthetic_payload()
+        with patch.object(tb, "CHEEK_SHA256", hashlib.sha256(payload).hexdigest()), \
+                patch.dict(os.environ, {"SUKUSTA_DIR": str(root / "library"), "ASTCENC_BIN": REAL_ASTCENC}):
+            target = textures._cheek_cache_file()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            raw, _ = head_fixture(astc=True)
+            path = root / "costume.unity"
+            path.write_bytes(raw)
+            prepared = model_viewer.prepare([str(path)], rigged=True, face_context={"enabled": False, "allow_download": False})
+            token = secrets.token_hex(16)
+            model_edits.register_session(token, [str(path)], prepared["rig"])
+            row = next(row for row in textures.inspect(token)["textures"] if row["name"] == "ch0001_co0001_head")
+            _, before = levels_of(raw)
+            result = model_edits.export(token, {"version": 1, "savedSettingsEnabled": True, "edits": [], "textures": [
+                {"texture": row["texture"], "sourceSha256": row["sourceSha256"], "png": uri(before[0]), "kind": "blush",
+                 "blush": {"layer": 0, "k": 3.0, "encoding": "astc-keep"}}]}, root / "output")
+            check_astc_keep(self, raw, Path(result["preview_paths"][0]).read_bytes(), result["summary"][0]["textureEdits"][0],
+                            tb.layer_bytes(payload, 0), 3.0)
+
+    @unittest.skipUnless(os.environ.get("REAL_MV_SAMPLES"), "set REAL_MV_SAMPLES to a folder with costume bundles")
+    def test_astc_keep_on_the_real_head(self):
+        real = RealBundleTests("test_astc_head_saves_exact_pixels_by_default_or_keeps_its_blocks")
+        real.setUp()
+        try:
+            summary, figures = real.export_both(lambda folder: REAL_ASTCENC)
+        finally:
+            real.doCleanups()
+        # astcenc 4.8.0 exhaustive on ch0212_co0001_head, k 1.65 (Ppo): re-encoded blocks per level
+        # 509/140/44/14/4/2/1/1, error per channel at most 4 at full size and 25 in the 16x16 mip.
+        self.assertEqual(summary["blush"]["reencodedBlocks"], [509, 140, 44, 14, 4, 2, 1, 1, 0, 0, 0])
+        self.assertLessEqual(summary["blush"]["maxChannelError"][0], 8)
+        self.assertLess(summary["blush"]["meanChannelError"][0], 0.5)
+
+
 @unittest.skipUnless(os.environ.get("REAL_SUIT_BUNDLES"), "set REAL_SUIT_BUNDLES to the suit bundle folder")
 class RealAttachTests(unittest.TestCase):
     def test_recolour_suit_head_texture_is_offered_with_its_costume(self):

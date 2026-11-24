@@ -616,7 +616,9 @@ opens that face texture.
   every texel outside the re-encoded blocks and every alpha value is unchanged.
   Paint on the same texture, a non-ASTC texture and an `astcenc` without an
   encoder also save exact pixels. After saving, the save status says which mode
-  each baked face used and, for a fallback, why.
+  each baked face used and, for a fallback, why. The tests use a stand-in
+  encoder; `REAL_ASTCENC_BIN=/path/to/astcenc` (4.8.0) runs the astc-keep save
+  with the real CLI as well (with `REAL_MV_SAMPLES`, on a real head too).
 - The recipe stores the bake as `blush: {layer, k, encoding}` with encoding
   `exact` (default; a row without the field loads as exact) or `astc-keep`.
   It is an operation on the original pixels, so applying

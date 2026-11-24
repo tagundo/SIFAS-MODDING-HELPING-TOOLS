@@ -88,7 +88,11 @@ def encode(image, block, deadline):
     """Raw ASTC blocks of an RGBA image whose first row is block row 0.
 
     Uses the app's astcenc (ASTCENC_BIN), the same tool that decodes these
-    textures. Tools without an encoder raise SpliceUnavailable.
+    textures. Tools without an encoder raise SpliceUnavailable. The command
+    line ``-cl IN.png OUT.astc BxB -exhaustive -decode_unorm8 -j N`` is the
+    one ARM astcenc 4.8.0 (the version the apps build) accepts; set
+    REAL_ASTCENC_BIN to run tests/test_viewer_texture_blush.py
+    RealAstcencTests against such a binary.
     """
     binary = os.environ.get("ASTCENC_BIN")
     if not binary or not os.path.isfile(binary):
