@@ -711,11 +711,13 @@
     }
     const original = history.originals.get(event.id);
     if (!original) return;
-    const target = eventTarget(track, event);
+    const target = eventTarget(track, event), values = copy(original.values || {});
     const changes = [{ target, path: ["start"], after: original.start }, { target, path: ["duration"], after: original.duration },
-      { target, path: ["label"], after: original.label }, { target, path: ["values"], after: copy(original.values || {}) }];
-    changes.push(...extrapolationWrites(track, new Map([[event.id, { start: original.start, duration: original.duration,
-      postMode: original.values && finite(original.values.postExtrapolationMode) ? original.values.postExtrapolationMode : undefined }]])));
+      { target, path: ["label"], after: original.label }, { target, path: ["values"], after: values }];
+    // A gated track's times are recomputed on the reverted state: the original's own
+    // stored times are stale once a neighbour has been retimed since it was captured.
+    const reverted = { ...event, start: original.start, duration: original.duration, values: copy(values) };
+    changes.push(...extrapolationWrites({ ...track, events: track.events.map((item) => item === event ? reverted : item) }, new Map()));
     edit({ label: "Revert clip", changes });
   }
 

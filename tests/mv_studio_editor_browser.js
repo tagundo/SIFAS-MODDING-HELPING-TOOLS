@@ -466,6 +466,33 @@ async function run() {
     await page.locator('#mv-timeline-label').click();
     await page.keyboard.press('Control+z');
     assert.equal(findEvent((await state(page)).project, shot.id).start, moved.start);
+
+    // Revert on a gated track: the previous shot's stored original post time is stale
+    // since the move, so the revert writes the recomputed one and the gate still holds.
+    const cameraTrack = original.tracks.find((track) => track.label === 'CameraMotion/Camera1');
+    const gated = () => page.evaluate((id) => MVStudioTimelineInteract.extrapolationGate(
+      MVStudio.getState().project.tracks.find((track) => track.id === id)), cameraTrack.id);
+    const undoBase = (await state(page)).history.undo;
+    await page.locator(`.mv-clip[data-event="${previous.id}"]`).click();
+    await label.fill('첫 컷');
+    await label.press('Tab');
+    await page.waitForFunction((id) => document.querySelector(`.mv-clip[data-event="${id}"]`)?.textContent === '첫 컷', previous.id);
+    await page.locator('#mv-revert-clip').click();
+    current = await state(page);
+    assert.equal(current.history.undoLabel, 'Revert clip');
+    const reverted = findEvent(current.project, previous.id);
+    assert.equal(reverted.label, cameraTrack.events[0].label, 'the name is reverted');
+    assert(Math.abs(reverted.values.postExtrapolationTime - (moved.start - reverted.start - reverted.duration)) < 1e-9,
+      `the hold still reaches the moved cut: ${reverted.values.postExtrapolationTime}`);
+    assert.notEqual(reverted.values.postExtrapolationTime, cameraTrack.events[0].values.postExtrapolationTime);
+    assert.equal(await gated(), true, 'the camera track still passes the extrapolation gate after a revert');
+    assert.equal(await page.locator(`.mv-clip[data-event="${previous.id}"]`).getAttribute('data-edited'), null, 'the reverted shot is not marked edited');
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    await page.keyboard.press('Control+z');
+    assert.equal((await state(page)).history.undo, undoBase);
+    assert.equal(await gated(), true);
+
     const edited = (await state(page)).project;
 
     // ---- Costume re-import keeps the edits; the tablist is inert while it runs -----------------
