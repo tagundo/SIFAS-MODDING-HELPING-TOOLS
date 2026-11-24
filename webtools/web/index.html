@@ -518,8 +518,6 @@
               <button id="mv-rewind" type="button" data-i18n="Go to start" disabled>Go to start</button>
               <button id="mv-play" type="button" data-i18n="Play" disabled>Play</button>
               <output id="mv-time">0:00.00 / 0:00.00</output>
-              <button id="mv-undo" class="mv-history-button" type="button" aria-keyshortcuts="Control+Z Meta+Z" aria-label="Undo" disabled><span aria-hidden="true">↶</span></button>
-              <button id="mv-redo" class="mv-history-button" type="button" aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y" aria-label="Redo" disabled><span aria-hidden="true">↷</span></button>
             </div>
             <label class="mv-seek-label"><span data-i18n="Playhead">Playhead</span><input id="mv-seek" type="range" min="0" max="0" value="0" step="0.001" disabled></label>
             <label class="mv-zoom-label"><span data-i18n="Timeline scale">Timeline scale</span><select id="mv-zoom">
@@ -527,6 +525,10 @@
               <option value="16">16 px/s</option><option value="48">48 px/s</option><option value="96">96 px/s</option>
             </select></label>
             <div id="mv-timeline-nav" class="mv-timeline-nav" hidden>
+              <div class="mv-history-controls">
+                <button id="mv-undo" class="mv-history-button" type="button" aria-keyshortcuts="Control+Z Meta+Z" aria-label="Undo" disabled><span aria-hidden="true">↶</span></button>
+                <button id="mv-redo" class="mv-history-button" type="button" aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y" aria-label="Redo" disabled><span aria-hidden="true">↷</span></button>
+              </div>
               <div id="mv-timeline-tabs" class="mv-timeline-tabs" role="tablist" aria-label="Timeline categories" data-i18n-aria-label="Timeline categories"></div>
               <label class="mv-track-search"><span class="sr-only" data-i18n="Search tracks">Search tracks</span><input id="mv-track-search" type="search" maxlength="120" autocomplete="off" placeholder="Search tracks" data-i18n-ph="Search tracks"></label>
               <div id="mv-member-filter" class="mv-member-filter" role="radiogroup" aria-label="Members" data-i18n-aria-label="Members" hidden></div>

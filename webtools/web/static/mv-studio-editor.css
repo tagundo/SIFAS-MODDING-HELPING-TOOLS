@@ -7,7 +7,7 @@
 .mv-timeline-toolbar > .mv-timeline-nav { flex-basis: 100%; }
 .mv-timeline-nav {
   display: grid;
-  grid-template: "tabs tabs" auto "members search" auto / minmax(0, 1fr) minmax(8rem, 15rem);
+  grid-template: "history tabs tabs" auto "members members search" auto / max-content minmax(0, 1fr) minmax(6.5rem, 15rem);
   align-items: center;
   gap: 4px 10px;
   min-width: 0;
@@ -55,8 +55,9 @@
 .mv-timeline-toolbar .mv-track-search { grid-area: search; min-width: 0; }
 .mv-track-search input { flex: 1 1 auto; min-width: 0; width: 100%; }
 
-/* Undo / redo. */
-#tab-mv .mv-history-button { min-width: 36px; padding-inline: 6px; font-size: 1.05rem; line-height: 1; }
+/* Undo / redo, next to the tabs (the Edit tab lists what they change). */
+.mv-history-controls { grid-area: history; display: flex; gap: 4px; padding-inline-end: 6px; border-inline-end: 1px solid var(--line); }
+#tab-mv .mv-history-button { min-width: 34px; min-height: 32px; padding: 2px 6px; font-size: 1.05rem; line-height: 1; }
 
 /* Rows that are not tracks. */
 .mv-lane-label.mv-lane-group { min-height: 22px; padding-block: 2px; background: var(--panel2); color: var(--muted); font-size: .72rem; font-weight: 600; }
@@ -70,6 +71,7 @@
 .mv-lane-separator > span, .mv-lane-hint > span { position: sticky; left: 0; display: inline-block; padding: 4px 8px; }
 .mv-lane-separator { background: var(--panel2); color: var(--muted); font-weight: 600; text-transform: none; }
 .mv-lane-hint { color: var(--muted); }
+.mv-lane-text { min-width: 0; }
 .mv-lane-path { color: var(--muted); }
 .mv-lane-name { font-weight: 600; }
 .mv-lane-label.mv-lane-edited { box-shadow: inset 3px 0 0 #f2b84b; }
@@ -149,6 +151,9 @@
   #tab-mv .mv-clip.mv-clip-resizable::before { width: 12px; }
 }
 
+@media (max-width: 720px) {
+  .mv-timeline-nav { grid-template-columns: max-content minmax(0, 1fr) minmax(6.5rem, 36%); }
+}
 /* Short landscape: one transport row, then tabs, search and chips share one row. */
 @media (min-width: 540px) and (max-height: 480px) {
   .mv-timeline-toolbar {
@@ -158,6 +163,6 @@
   }
   .mv-timeline-toolbar > :is(h3, .mv-controls, .mv-seek-label, .mv-zoom-label) { grid-area: auto; }
   .mv-timeline-toolbar > .mv-timeline-nav { grid-area: auto; grid-column: 1 / -1; }
-  .mv-timeline-nav { grid-template: "tabs search members" auto / minmax(0, 1fr) minmax(7rem, 10rem) minmax(0, max-content); }
+  .mv-timeline-nav { grid-template: "history tabs search members" auto / max-content minmax(0, 1fr) minmax(7rem, 10rem) minmax(0, max-content); }
   #tab-mv .mv-tab, #tab-mv .mv-chip { min-height: 28px; padding-block: 1px; }
 }

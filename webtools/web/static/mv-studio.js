@@ -592,9 +592,10 @@
     return { label, changes };
   }
 
-  // move/resize rules of a clip: lock state, the editable flags, then every plugin.
-  function clipRules(track, event) {
-    if (ctx.locked()) return { move: false, resize: false, reason: t("Wait for the current MV task to finish.") };
+  // move/resize rules of a clip: the editable flags, then every plugin. A drag also
+  // waits for a running MV task (transient: not drawn on the clips or the inspector).
+  function clipRules(track, event, transient = false) {
+    if (transient && ctx.locked()) return { move: false, resize: false, reason: t("Wait for the current MV task to finish.") };
     if (track.editable === false || event.editable === false) return { move: false, resize: false, reason: t("This clip's timing cannot be edited.") };
     const rules = { move: true, resize: true, reason: "" }, reasons = [];
     for (const result of callPlugins("clipConstraints", track, event)) {
@@ -994,7 +995,7 @@
       snapTargets: () => clipSnapTargets(trackId, eventId),
       allowed: () => {
         const found = findEvent(trackId, eventId);
-        return found ? clipRules(found.track, found.event) : { move: false, resize: false };
+        return found ? clipRules(found.track, found.event, true) : { move: false, resize: false };
       },
       setRange: (range, { phase, mode }) => {
         const found = findEvent(trackId, eventId);
@@ -1096,9 +1097,14 @@
   function laneLabel(track) {
     const full = text(track.label || kinds[track.kind] || track.kind);
     const label = make("p", null, { class: "mv-lane-label", title: text(track.binding || track.label), "data-track": text(track.id) });
-    const cut = full.lastIndexOf("/");
-    if (cut > 0) label.append(make("span", full.slice(0, cut + 1), { class: "mv-lane-path" }), make("span", full.slice(cut + 1), { class: "mv-lane-name" }));
-    else label.append(make("span", full, { class: "mv-lane-name" }));
+    const cut = full.lastIndexOf("/"), body = make("span", null, { class: "mv-lane-text" });
+    if (cut > 0) {
+      // The group path is muted and may wrap after each "/" (<wbr> adds no text).
+      const group = make("span", null, { class: "mv-lane-path" });
+      for (const part of full.slice(0, cut).split("/")) group.append(part + "/", document.createElement("wbr"));
+      body.append(group, make("span", full.slice(cut + 1), { class: "mv-lane-name" }));
+    } else body.append(make("span", full, { class: "mv-lane-name" }));
+    label.append(body);
     return label;
   }
 
@@ -1162,6 +1168,15 @@
     if (refocus) box.querySelector('[aria-checked="true"]')?.focus({ preventScroll: true });
   }
 
+  // Tracks that hold edited clips, plus the plugin lanes of the Edit tab.
+  let lastEditSignature = "";
+  function editSignature() {
+    if (!project) return "";
+    const edited = history.editedEvents();
+    const ids = project.tracks.filter((track) => track.events.some((event) => edited.has(event.id))).map((track) => track.id);
+    return ids.join("\n") + "|" + (activeTab === "edit" ? extraLanes("edit").map((lane) => lane.id).join("\n") : "");
+  }
+
   function extraLanes(tab) {
     const lanes = [];
     for (const list of callPlugins("extraLanes", tab)) if (Array.isArray(list)) lanes.push(...list.filter((lane) => lane && lane.id != null));
@@ -1207,6 +1222,7 @@
     const plan = Tabs.plan(project.tracks, { tab: activeTab, member: preferredMember, search: searchText,
       editableOnly: activeTab !== "edit" && editableOnly, group: groupFilter, edited: history.editedEvents(), extra: extraLanes(activeTab) });
     lastPlan = plan;
+    lastEditSignature = editSignature();
     groupFilter = plan.group;
     const decorate = [];
     for (const row of plan.rows) {
@@ -1324,7 +1340,8 @@
       if (target.kind === "track") { structure = true; timing.add(target.track); }
       if (target.kind !== "event") continue;
       const key = change.path[0];
-      if (key === "start" || key === "duration") timing.add(target.track);
+      // Timing and the clip name redraw the lane; value edits only toggle its marks.
+      if (key === "start" || key === "duration" || key === "label") timing.add(target.track);
       if (selected && selected.track === target.track && selected.event === target.event) {
         selectedTouched = true;
         if (key !== "values" || change.path.length === 1) selectedTiming = true;
@@ -1337,7 +1354,9 @@
       selectedTouched = selectedTiming = true;
     }
     seek(time, kinds.has("soundtrack"), false);
-    const editTab = activeTab === "edit" && (tracks.size || kinds.has("editor"));
+    // The Edit tab lists tracks by edit state: rebuild it only when that set changes
+    // (a slider drag on an already edited clip keeps its lanes).
+    const editTab = activeTab === "edit" && (tracks.size || kinds.has("editor")) && editSignature() !== lastEditSignature;
     if (editTab || structure) renderTimeline();
     else {
       for (const id of tracks) {
@@ -1415,8 +1434,11 @@
         quality: renderQuality, registration: renderRegistration, warnings: renderWarnings })[key]?.();
       return;
     }
+    // A plugin panel whose availability changed is shown or hidden first.
+    const available = availablePanels().includes(key), node = panelNode(key);
+    if (node && node.hidden === (available && !hidden.includes(key))) renderPanelMenu();
     const box = byId("mv-" + key + "-fields");
-    if (!box || typeof panel.plugin.render !== "function") return;
+    if (!box || !available || typeof panel.plugin.render !== "function") return;
     try { panel.plugin.render(box, ctx); } catch (error) { console.error(error); }
   }
 
@@ -1477,13 +1499,20 @@
       scene: () => scene || null,
       t, make, button, field, numberInput, checkInput, format,
       renderTimeline: () => { if (history) history.invalidate(); renderTimeline(); },
+      // For writes made outside history (a camera bake): redraws the lane, the edited
+      // marks, the Edit tab when its track set changed, tab counts and the clip header.
       refreshLane: (trackId) => {
         if (!project) return;
         history.invalidate();
-        const track = project.tracks.find((item) => item.id === trackId);
-        if (track && timelineLanes.has(trackId)) refreshTimelineLane(track);
-        renderTimelineTabs();
-        syncTrackControls();
+        if (activeTab === "edit" && editSignature() !== lastEditSignature) { renderTimeline(); }
+        else {
+          const track = project.tracks.find((item) => item.id === trackId);
+          if (track && timelineLanes.has(trackId)) refreshTimelineLane(track);
+          renderTimelineTabs();
+          syncTrackControls();
+        }
+        const header = byId("mv-event-header"), active = activeEvent();
+        if (header && active && active.track.id === trackId && byId("mv-event-fields").contains(header)) renderEventHeader(header, active.track, active.event);
       },
       renderPanel, renderEvent: () => renderEvent(),
       report,
