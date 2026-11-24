@@ -179,8 +179,39 @@
     "Import a PNG to start painting, or choose a model texture.": ["PNG를 불러와 그리거나 모델 텍스쳐를 선택하세요.", "PNGを読み込むか、モデルのテクスチャを選択してください。"],
     "Image changes ready. Use Export PNG to save.": ["이미지 편집이 준비됐습니다. PNG 저장으로 내보내세요.", "画像を編集しました。PNGで書き出してください。"],
     "Include this costume's face/mouth edits when saving a Mod ZIP to save these face textures.": ["이 얼굴 텍스쳐를 모드에 넣으려면 저장할 때 ‘이 코스튬의 얼굴·입 편집 포함’을 켜세요.", "この顔テクスチャをModに保存するには、この衣装の顔・口の編集を含める設定を有効にしてください。"],
-    "The texture source changed. Reload the original model.": ["텍스쳐 원본이 달라졌습니다. 원본 모델을 다시 열어 주세요.", "テクスチャの元データが変わりました。元モデルを開き直してください。"]
+    "The texture source changed. Reload the original model.": ["텍스쳐 원본이 달라졌습니다. 원본 모델을 다시 열어 주세요.", "テクスチャの元データが変わりました。元モデルを開き直してください。"],
+    // Baked cheek blush (texture-blush.js). Every string is shown in the blush panel or its status.
+    "Bake blush": ["홍조 굽기", "頬紅の焼き込み"], "Blush type": ["홍조 종류", "頬紅の種類"],
+    "Standard (Ppo)": ["기본(Ppo)", "標準（Ppo）"], "Deep (Akarame)": ["진한(Akarame)", "濃いめ（Akarame）"],
+    "Very light": ["아주 약하게", "ごく薄く"], "Light": ["약하게", "薄く"], "Medium": ["보통", "普通"], "Strong": ["진하게", "濃く"], "Very strong": ["아주 진하게", "とても濃く"],
+    "Custom": ["직접 입력", "カスタム"], "No blush": ["홍조 없음", "頬紅なし"],
+    "Apply blush": ["홍조 적용", "頬紅を適用"], "Remove blush": ["홍조 제거", "頬紅を外す"], "Show before": ["적용 전 보기", "適用前を表示"],
+    "Advanced": ["고급 설정", "詳細設定"], "Strength value": ["강도 값", "強度の値"],
+    "1 = the strongest blush the game uses in songs.": ["1은 게임 곡에서 쓰는 가장 진한 홍조와 같습니다.", "1 はゲームの楽曲で使われる最も濃い頬紅と同じです。"],
+    "Changes only the cheek pixels, exactly the way the game draws its blush, and saves them losslessly.": ["게임이 홍조를 그리는 방식 그대로 볼 픽셀만 바꾸고 손실 없이 저장합니다.", "ゲームが頬紅を描くのと同じ方法で頬のピクセルだけを変え、可逆で保存します。"],
+    "Pick a strength, check the 3D preview, then apply.": ["세기를 고르고 3D 미리보기를 확인한 뒤 적용하세요.", "強さを選んで3Dプレビューを確認し、適用してください。"],
+    "Face texture": ["얼굴 텍스쳐", "顔テクスチャ"], "Recolour face texture": ["리컬러 얼굴 텍스쳐", "カラー違いの顔テクスチャ"],
+    "Preview, not applied yet": ["미리보기 · 아직 적용 안 됨", "プレビュー・未適用"], "Applied": ["적용됨", "適用済み"], "Showing before": ["적용 전 표시 중", "適用前を表示中"],
+    "Loading the blush pattern…": ["홍조 무늬를 불러오는 중…", "頬紅パターンを読み込み中…"],
+    "Choose a face texture to bake a blush.": ["홍조를 구울 얼굴 텍스쳐를 선택하세요.", "頬紅を焼き込む顔テクスチャを選択してください。"],
+    "Blush applied. Save model edits or a Mod ZIP to export.": ["홍조를 적용했습니다. 모델 편집 저장 또는 모드 ZIP으로 내보내세요.", "頬紅を適用しました。モデル編集やMod ZIPで保存してください。"],
+    "Blush removed.": ["홍조를 제거했습니다.", "頬紅を外しました。"],
+    "The game's own song blush still appears on top during blush scenes.": ["곡의 홍조 장면에서는 게임 자체 홍조가 그 위에 더해집니다.", "楽曲の頬紅シーンでは、ゲーム本来の頬紅がさらに重なります。"],
+    "Android and iOS bundles are separate: bake each platform's file.": ["Android와 iOS 번들은 따로입니다. 플랫폼별 파일에 각각 적용하세요.", "AndroidとiOSのバンドルは別です。それぞれのファイルに適用してください。"],
+    "This file is the Android bundle.": ["이 파일은 Android 번들입니다.", "このファイルはAndroid用バンドルです。"], "This file is the iOS bundle.": ["이 파일은 iOS 번들입니다.", "このファイルはiOS用バンドルです。"],
+    "Recolour suits of this costume replace this texture in the game: bake their recolour texture too.": ["이 의상의 리컬러 의상은 게임에서 이 텍스쳐를 바꿔 씁니다. 리컬러 텍스쳐에도 적용하세요.", "この衣装のカラー違いはゲーム内でこのテクスチャを差し替えます。カラー違いのテクスチャにも適用してください。"],
+    "This recolour texture replaces the face texture of its recolour suit, so bake it as well as the costume's own face texture.": ["이 리컬러 텍스쳐는 리컬러 의상의 얼굴 텍스쳐를 대신하므로, 의상 본래 얼굴 텍스쳐와 함께 적용하세요.", "このテクスチャはカラー違い衣装の顔テクスチャを置き換えるため、元の顔テクスチャと一緒に適用してください。"],
+    "This face uses a matcap, so it can look slightly different in the game.": ["이 얼굴은 매트캡을 써서 게임에서는 조금 다르게 보일 수 있습니다.", "この顔はマットキャップを使うため、ゲームでは少し違って見えることがあります。"],
+    "Masked heads never show the game's blush, so baking is the only way to add one.": ["가면을 쓴 머리에는 게임 홍조가 나오지 않으므로 굽기가 유일한 방법입니다.", "マスクを着けた頭にはゲームの頬紅が出ないため、焼き込みが唯一の方法です。"],
+    "Using the verified blush pattern saved from a costume you opened before.": ["전에 연 의상에서 저장해 둔 검증된 홍조 무늬를 사용합니다.", "以前開いた衣装から保存した検証済みの頬紅パターンを使います。"],
+    "No verified stock cheek_array is available. Open this costume with a head bundle that contains cheek_array (most costume bundles do), or open any such costume once so it is cached, then reopen this model.": ["검증된 기본 cheek_array가 없습니다. cheek_array가 든 얼굴 번들(대부분의 의상 번들에 있음)과 함께 열거나, 그런 의상을 한 번 열어 저장해 둔 뒤 이 모델을 다시 여세요.", "検証済みの標準 cheek_array がありません。cheek_array を含む顔バンドル（ほとんどの衣装バンドルに含まれます）と一緒に開くか、そのような衣装を一度開いて保存してから、このモデルを開き直してください。"],
+    "Baked blush is available only for a head material's main texture or its recolour texture.": ["홍조 굽기는 머리 재질의 메인 텍스쳐나 그 리컬러 텍스쳐에만 쓸 수 있습니다.", "頬紅の焼き込みは頭マテリアルのメインテクスチャかそのカラー違いテクスチャにのみ使えます。"],
+    "Choose a blush strength between 0 and 4.": ["홍조 강도는 0보다 크고 4 이하로 정하세요.", "頬紅の強度は0より大きく4以下にしてください。"],
+    "Choose the Ppo or Akarame blush type.": ["홍조 종류를 Ppo 또는 Akarame 중에서 고르세요.", "頬紅の種類を Ppo か Akarame から選んでください。"],
+    "The blush bake needs exactly a blush type and a strength.": ["홍조 굽기에는 홍조 종류와 강도만 있어야 합니다.", "頬紅の焼き込みには種類と強度だけが必要です。"],
+    "This model has no head texture that can take a baked blush.": ["이 모델에는 홍조를 구울 수 있는 머리 텍스쳐가 없습니다.", "このモデルには頬紅を焼き込める頭テクスチャがありません。"]
   };
+  var LOCAL_FIRST = { "Light": true };
   function create(options) {
     options = options || {};
     var document = global.document, holder = options.holder || document && document.getElementById("viewer-texture-tool-slot");
@@ -193,7 +224,9 @@
     var modelRebindOwner = {}, rebindingModel = false;
     var statusText = "", error = "", performance = { previewsStarted: 0, previewsDiscarded: 0, textureUploads: 0, maskOverlays: 0, encodes: 0 };
     function t(text) {
-      var translated = options.translate && options.translate(text); if (translated && translated !== text) return translated;
+      // "Light" is also the viewer's background-brightness label; the blush
+      // level of that name keeps its own wording.
+      var translated = !LOCAL_FIRST[text] && options.translate && options.translate(text); if (translated && translated !== text) return translated;
       var lang = document.documentElement.lang || global.SIFAS_LANG || "en", pair = WORDS[text];
       return pair ? pair[lang.slice(0, 2) === "ko" ? 0 : lang.slice(0, 2) === "ja" ? 1 : -1] || text : text;
     }
@@ -233,7 +266,7 @@
     var expanded = false, expandAnchor = null, pickerStackCleanup = null, expandButton = button(content, "Expand editor", function () { setExpanded(!expanded); }, "viewer-texture-expand");
     expandButton.setAttribute("aria-pressed", "false");
     var tabButtons = {};
-    [["costume", "Costume color"], ["skin", "Skin tone"], ["paint", "Paint"]].forEach(function (pair) {
+    [["costume", "Costume color"], ["skin", "Skin tone"], ["paint", "Paint"], ["blush", "Bake blush"]].forEach(function (pair) {
       var button = node("button", tabs, pair[1]); button.type = "button"; button.id = "viewer-texture-tab-" + pair[0]; button.setAttribute("role", "tab"); tabButtons[pair[0]] = button; listen(button, "click", function () { setTab(pair[0]); });
     });
     var textureLabel = node("label", content, "Texture", "viewer-texture-field"); var textureSelect = node("select", textureLabel); textureSelect.id = "viewer-texture-select"; textureSelect.setAttribute("aria-label", t("Texture"));
@@ -319,6 +352,37 @@
     var projectActions = node("div", layerPanel, null, "viewer-texture-actions"), projectFile = node("input", layerPanel); projectFile.type = "file"; projectFile.accept = "application/json,.json"; projectFile.hidden = true;
     var projectOpenButton = button(projectActions, "Open layer project", chooseProject, "viewer-texture-project-open"), projectSaveButton = button(projectActions, "Save layer project", saveProject, "viewer-texture-project-save");
     node("p", layerPanel, "Opening a project replaces this texture's layers and can be undone.", "viewer-texture-hint");
+    // Baked cheek blush: one panel, defaults that work, named levels with the
+    // resulting cheek-centre colour, a live 3D preview and one Apply.
+    var B = global.TextureBlush, blushInfo = null, cheek = null, cheekPromise = null, cheekError = "";
+    var blushChoice = { layer: B ? B.DEFAULT_LAYER : 0, k: B ? B.levelK(B.DEFAULT_LEVEL) : 1, level: B ? B.DEFAULT_LEVEL : "medium" }, blushPending = false, blushBefore = false, blushSwatches = null;
+    var blushPanel = node("div", content, null, "viewer-texture-panel viewer-texture-blush"); blushPanel.id = "viewer-texture-blush-panel"; blushPanel.hidden = true;
+    node("p", blushPanel, "Changes only the cheek pixels, exactly the way the game draws its blush, and saves them losslessly.", "viewer-texture-hint");
+    var blushTarget = node("output", blushPanel, null, "viewer-texture-blush-target"); blushTarget.id = "viewer-texture-blush-target";
+    var blushTypes = node("div", blushPanel, null, "viewer-texture-blush-group"); blushTypes.setAttribute("role", "radiogroup"); blushTypes.id = "viewer-texture-blush-types";
+    var blushTypeTitle = node("span", blushTypes, "Blush type", "viewer-texture-blush-heading"); blushTypeTitle.id = "viewer-texture-blush-type-title"; blushTypes.setAttribute("aria-labelledby", blushTypeTitle.id);
+    var blushTypeButtons = (B ? B.LAYERS : []).map(function (row) {
+      var item = button(blushTypes, row.label, function () { chooseBlushType(row.id); }, "viewer-texture-blush-layer-" + row.id); item.setAttribute("role", "radio"); item.dataset.blushLayer = String(row.id); return item;
+    });
+    var blushLevels = node("div", blushPanel, null, "viewer-texture-blush-group viewer-texture-blush-levels"); blushLevels.setAttribute("role", "radiogroup"); blushLevels.id = "viewer-texture-blush-levels";
+    var blushLevelTitle = node("span", blushLevels, "Strength", "viewer-texture-blush-heading"); blushLevelTitle.id = "viewer-texture-blush-level-title"; blushLevels.setAttribute("aria-labelledby", blushLevelTitle.id);
+    var blushBase = node("div", blushLevels, null, "viewer-texture-blush-base"), blushBaseSwatch = node("span", blushBase, null, "viewer-texture-blush-swatch"); node("span", blushBase, "No blush");
+    blushBase.id = "viewer-texture-blush-base"; blushBaseSwatch.setAttribute("aria-hidden", "true");
+    var blushLevelButtons = (B ? B.LEVELS : []).map(function (level) {
+      var item = node("button", blushLevels, null, "viewer-texture-blush-level"); item.type = "button"; item.id = "viewer-texture-blush-level-" + level.id; item.setAttribute("role", "radio"); item.dataset.blushLevel = level.id;
+      var swatch = node("span", item, null, "viewer-texture-blush-swatch"); swatch.setAttribute("aria-hidden", "true"); node("span", item, level.label, "viewer-texture-blush-name");
+      listen(item, "click", function () { chooseBlushLevel(level.id); }); return { node: item, swatch: swatch, level: level };
+    });
+    var blushAdvanced = node("details", blushPanel, null, "viewer-texture-blush-advanced"); node("summary", blushAdvanced, "Advanced");
+    var blushKField = number(blushAdvanced, "Strength value", blushChoice.k, 0.05, B ? B.MAX_K : 4, 0.05, "viewer-texture-blush-k");
+    var blushCustomSwatch = node("span", blushKField.parentNode, null, "viewer-texture-blush-swatch"); blushCustomSwatch.setAttribute("aria-hidden", "true");
+    node("p", blushAdvanced, "1 = the strongest blush the game uses in songs.", "viewer-texture-hint");
+    var blushActions = node("div", blushPanel, null, "viewer-texture-actions viewer-texture-blush-actions");
+    var applyBlushButton = button(blushActions, "Apply blush", function () { applyBlush(); }, "viewer-texture-blush-apply"); applyBlushButton.classList.add("viewer-texture-primary");
+    var blushBeforeButton = button(blushActions, "Show before", function () { setBlushBefore(!blushBefore); }, "viewer-texture-blush-before"); blushBeforeButton.setAttribute("aria-pressed", "false");
+    var removeBlushButton = button(blushActions, "Remove blush", function () { removeBlush(); }, "viewer-texture-blush-remove");
+    var blushStatus = node("output", blushPanel, null, "viewer-texture-blush-status"); blushStatus.id = "viewer-texture-blush-status"; blushStatus.setAttribute("aria-live", "polite");
+    var blushNotes = node("ul", blushPanel, null, "viewer-texture-blush-notes"); blushNotes.id = "viewer-texture-blush-notes";
     var adjustmentActions = node("div", content, null, "viewer-texture-actions");
     var applyButton = button(adjustmentActions, "Apply color", applyPreview, "viewer-texture-apply"), cancelButton = button(adjustmentActions, "Cancel preview", cancelPreview, "viewer-texture-cancel");
     var compare = check(adjustmentActions, "Compare original", false, "viewer-texture-compare");
@@ -394,7 +458,7 @@
       var sizeHandle = node("div", stage, null, "viewer-texture-canvas-resizer"); sizeHandle.id = "viewer-texture-canvas-resizer"; sizeHandle.tabIndex = 0; sizeHandle.setAttribute("role", "separator"); sizeHandle.setAttribute("aria-orientation", "horizontal"); sizeHandle.setAttribute("aria-label", t("Resize texture canvas"));
       var dockHandle = node("div", workbench, null, "viewer-texture-inspector-resizer"); dockHandle.id = "viewer-texture-inspector-resizer"; dockHandle.tabIndex = 0; dockHandle.setAttribute("role", "separator"); dockHandle.setAttribute("aria-orientation", "vertical"); dockHandle.setAttribute("aria-label", t("Resize tool settings"));
       var inspector = node("details", workbench, null, "viewer-texture-inspector"); inspector.id = "viewer-texture-inspector"; inspector.open = true; node("summary", inspector, "Color and layers");
-      var properties = node("div", inspector, null, "viewer-texture-properties"); move(properties, [colorPanel, skinPanel, paintPanel, adjustmentActions]);
+      var properties = node("div", inspector, null, "viewer-texture-properties"); move(properties, [colorPanel, skinPanel, paintPanel, blushPanel, adjustmentActions]);
       paintPanel.insertBefore(layerPanel, paintPanel.firstChild);
       [["add", "+"], ["duplicate", "⧉"], ["remove", "−"], ["up", "↑"], ["down", "↓"], ["merge", "⇩"]].forEach(function (row) { compact(layerButtons[row[0]], row[1]); });
       var modelOptions = node("details", properties, null, "viewer-texture-model-options"); node("summary", modelOptions, "Model selection"); move(modelOptions, [sceneSelect.parentNode]);
@@ -447,9 +511,9 @@
     function refreshToolstrip() {
       if (!workspace.inspector) return;
       var chosen = activeTab === "paint" ? paintTool.value : selectTool.value, uvAvailable = !!(active && !active.standalone && bindings(active).length), blocked = !active || !active.engine || !canEdit(active) || !!loading || !!pendingRestore;
-      selectTool.parentNode.hidden = activeTab === "paint"; paintTool.parentNode.hidden = activeTab !== "paint"; colorLabel.hidden = activeTab !== "paint"; compare.parentNode.hidden = activeTab === "paint";
+      selectTool.parentNode.hidden = activeTab === "paint" || activeTab === "blush"; selectionMode.parentNode.hidden = activeTab === "blush"; paintTool.parentNode.hidden = activeTab !== "paint"; colorLabel.hidden = activeTab !== "paint"; compare.parentNode.hidden = activeTab === "paint" || activeTab === "blush";
       workspace.floatingBar.hidden = !floating(active);
-      toolButtons.forEach(function (item) { var pressed = item.tool === chosen, disabled = blocked || item.tool.indexOf("select-uv-") === 0 && !uvAvailable; item.node.hidden = item.paintOnly && activeTab !== "paint"; if (item.node.disabled !== disabled) item.node.disabled = disabled; if (item.node.getAttribute("aria-pressed") !== String(pressed)) item.node.setAttribute("aria-pressed", String(pressed)); item.node.classList.toggle("active", pressed); });
+      toolButtons.forEach(function (item) { var pressed = item.tool === chosen, disabled = blocked || item.tool.indexOf("select-uv-") === 0 && !uvAvailable; item.node.hidden = item.paintOnly && activeTab !== "paint" || activeTab === "blush" && item.tool !== "pan"; if (item.node.disabled !== disabled) item.node.disabled = disabled; if (item.node.getAttribute("aria-pressed") !== String(pressed)) item.node.setAttribute("aria-pressed", String(pressed)); item.node.classList.toggle("active", pressed); });
       [selectTool, paintTool].forEach(function (select) { Array.from(select.options).forEach(function (option) { if (option.value.indexOf("select-uv-") === 0 && option.disabled !== !uvAvailable) option.disabled = !uvAvailable; }); });
       if (workspace.lastTool !== chosen) {
         workspace.lastTool = chosen;
@@ -531,18 +595,29 @@
       if (!canRestoreTexture()) return;
       var entry = request.entry, previousKind = entry.kind;
       try {
-        entry.kind = activeTab;
+        entry.kind = activeTab === "blush" ? previousKind : activeTab;
         // The engine keeps the complete prior stack as one undoable operation.
-        // Never pass history:false or change the loaded original image.
-        replaceImage(entry, entry.original, { label: "Restore original texture" });
+        // Never pass history:false or change the loaded original image. A
+        // baked blush is removed in that same undo step.
+        var previousBlush = entry.blush ? { layer: entry.blush.layer, k: entry.blush.k } : null;
+        replaceImage(entry, entry.original, { label: "Restore original texture", custom: previousBlush ? function (redo) { setEntryBlush(entry, redo ? null : previousBlush); } : undefined });
+        if (previousBlush) setEntryBlush(entry, null);
         cancelPreview(); closeTextureRestore(); say("Original texture restored. Undo restores your edited layers.");
       } catch (err) { entry.kind = previousKind; say("", err.message); }
       refreshButtons();
     }
-    function displayed(entry) { return compare.checked && entry.original ? entry.original : entry.engine && (entry.engine.getDisplayImage ? entry.engine.getDisplayImage() : entry.preview || entry.engine.getImage(false)); }
+    function displayed(entry) {
+      if (compare.checked && entry.original) return entry.original;
+      if (!entry.engine) return null;
+      // The blush tab draws its own bake as the canvas override; bake from the
+      // committed layers there so a preview is never baked twice.
+      var params = blushParams(entry), image = params && entry === active && activeTab === "blush" ? entry.engine.getImage(false) : entry.engine.getDisplayImage ? entry.engine.getDisplayImage() : entry.preview || entry.engine.getImage(false);
+      return params && image ? bakeFor(image, params) : image;
+    }
     function upload(entry) {
       if (!entry || !entry.engine || entry.standalone) return;
-      if (compare.checked || !entry.modified && !entry.preview && !entry.strokePreview && !floating(entry)) restoreLive(entry);
+      if (entry === active) syncBlushCanvas();
+      if (compare.checked || !entry.modified && !entry.preview && !entry.strokePreview && !floating(entry) && !blushParams(entry)) restoreLive(entry);
       else liveImage(entry, displayed(entry));
     }
     function removeOverlays() {
@@ -765,14 +840,20 @@
     function touchEntry(entry) {
       if (!entry || !entry.engine || suppressed || entry.loading) return;
       entry.preview = null; entry.previewMask = null; entry.strokePreview = false; sequence++; entry.encodeGeneration = (entry.encodeGeneration || 0) + 1;
-      entry.modified = !equalPixels(entry.engine.getImage(false), entry.original); entry.kind = entry.nextKind || activeTab; entry.nextKind = null; entry.used = Date.now(); entry.encodeError = null;
-      var generation = entry.encodeGeneration, born = epoch;
+      // A baked blush is a recipe operation on top of these pixels, never part
+      // of them: the PNG keeps the unbaked layers so a re-bake never compounds.
+      entry.pixelModified = !equalPixels(entry.engine.getImage(false), entry.original); entry.modified = entry.pixelModified || !!entry.blush;
+      entry.kind = entry.nextKind || (activeTab === "blush" ? entry.kind : activeTab); entry.nextKind = null; entry.used = Date.now(); entry.encodeError = null;
       upload(entry); changed();
       if (!entry.modified || entry.standalone) { entry.encoding = false; if (!entry.modified) entry.png = null; if (entry.standalone) say("Image changes ready. Use Export PNG to save."); return; }
-      entry.encoding = true; refreshButtons(); say("Preparing exact texture pixels…");
+      encodeEntry(entry);
+    }
+    function encodeEntry(entry) {
+      var generation = entry.encodeGeneration = (entry.encodeGeneration || 0) + 1, born = epoch;
+      entry.encoding = true; entry.encodeError = null; refreshButtons(); say("Preparing exact texture pixels…");
       encode(entry.engine.getImage()).then(function (png) {
         if (disposed || born !== epoch || generation !== entry.encodeGeneration) return;
-        entry.png = png; entry.encoding = false; evict(); say("Texture edits ready. Save model edits or a Mod ZIP to export."); changed();
+        entry.png = png; entry.encoding = false; evict(); say(entry.blush && !entry.pixelModified ? "Blush applied. Save model edits or a Mod ZIP to export." : "Texture edits ready. Save model edits or a Mod ZIP to export."); changed();
       }).catch(function (err) { if (born === epoch && generation === entry.encodeGeneration) { entry.encoding = false; entry.encodeError = err.message; say("", err.message); changed(); } });
     }
     function selectionChanged(entry) {
@@ -869,7 +950,13 @@
       if (active && active.pane) active.pane.hidden = true;
       active = entries.get(key(identity)) || { record: record, loading: false, encoding: false, modified: false, kind: "paint", png: null, sourceSha256: "", seeds: [], exclusions: [], used: Date.now() };
       entries.set(key(identity), active); textureSelect.value = key(identity); removeOverlays(); var selected = active;
-      return load(record).then(function (entry) { if (entry !== active) { if (entry.pane) entry.pane.hidden = true; return entry; } entry.pane.hidden = false; say("Choose faces or a texture region before applying color."); updateInformation(); updateTone(); refreshButtons(); return entry; });
+      return load(record).then(function (entry) {
+        if (entry !== active) { if (entry.pane) entry.pane.hidden = true; return entry; }
+        entry.pane.hidden = false;
+        if (activeTab === "blush") { initBlushChoice(entry); upload(entry); say(blushRule(entry) ? "Pick a strength, check the 3D preview, then apply." : "Choose a face texture to bake a blush."); }
+        else say("Choose faces or a texture region before applying color.");
+        updateInformation(); updateTone(); refreshButtons(); return entry;
+      });
     }
     function syncBrush() {
       if (sceneMode === "brush") modelCursor.hidden = true;
@@ -878,11 +965,20 @@
       active.engine.setBrush({ size: brushSize.value(), opacity: opacity.value() / 100, softness: softness.value() / 100, color: rgb, tolerance: Math.round(tolerance.value() * 255), contiguous: connected.checked, fill: filled.checked });
       active.engine.setSelectionMode(selectionMode.value);
     }
-    function selectCanvasTool() { if (active && active.engine) active.engine.setTool(activeTab === "paint" ? paintTool.value : (sceneMode === "skin" || sceneMode === "exclude") && activeTab === "skin" ? "picker" : selectTool.value); refreshToolstrip(); }
+    function selectCanvasTool() { if (active && active.engine) active.engine.setTool(activeTab === "paint" ? paintTool.value : activeTab === "blush" ? "pan" : (sceneMode === "skin" || sceneMode === "exclude") && activeTab === "skin" ? "picker" : selectTool.value); refreshToolstrip(); }
     function setTab(tab) {
-      if (["costume", "skin", "paint"].indexOf(tab) < 0) return;
+      if (["costume", "skin", "paint", "blush"].indexOf(tab) < 0) return;
       if (floating(active) && tab !== activeTab) { say("Apply or cancel moved pixels first."); return; }
-      cancelPreview(); activeTab = tab; colorPanel.hidden = tab !== "costume"; skinPanel.hidden = tab !== "skin"; paintPanel.hidden = tab !== "paint"; applyButton.hidden = tab === "paint"; cancelButton.hidden = tab === "paint";
+      if (tab === "blush" && compare.checked) { compare.checked = false; if (active && active.engine && active.engine.setDisplayOverride) active.engine.setDisplayOverride(null); }
+      var entering = tab === "blush" && activeTab !== "blush";
+      cancelPreview(); activeTab = tab; colorPanel.hidden = tab !== "costume"; skinPanel.hidden = tab !== "skin"; paintPanel.hidden = tab !== "paint"; blushPanel.hidden = tab !== "blush"; applyButton.hidden = tab === "paint" || tab === "blush"; cancelButton.hidden = tab === "paint";
+      if (entering) {
+        initBlushChoice(active); if (workspace.inspector) workspace.inspector.open = true;
+        // The panel sits in the settings column: bring it into view with the tab.
+        if (blushPanel.scrollIntoView && section.open) blushPanel.scrollIntoView({ block: "nearest" });
+      }
+      if (tab === "blush") focusBlushTexture();
+      if (active) upload(active); else syncBlushCanvas();
       targetLabel.hidden = tab !== "costume" || colorMode.value !== "colorize";
       Object.keys(tabButtons).forEach(function (name) { tabButtons[name].setAttribute("aria-selected", String(name === tab)); tabButtons[name].classList.toggle("active", name === tab); });
       if (active && active.engine && !active.userSelected) { suppressed++; if (tab === "paint") active.engine.clearSelection(); else active.engine.selectNone(); suppressed--; updateOverlay(); }
@@ -954,6 +1050,7 @@
     }
     function cancelPreview() {
       sequence++; if (previewTimer) global.clearTimeout(previewTimer); previewTimer = null;
+      if (blushPending || blushBefore) { blushPending = false; blushBefore = false; if (active) upload(active); }
       entries.forEach(function (entry) { entry.previewStamp = null; if (entry.preview) { entry.preview = null; if (entry.engine) entry.engine.setPreviewImage(null); upload(entry); } }); refreshButtons();
     }
     function applyPreview() {
@@ -996,13 +1093,171 @@
       if (!active || !active.engine) { information.textContent = ""; return; }
       var state = active.engine.getState(); information.textContent = state.width + " × " + state.height + " · " + t("Selected pixels") + ": " + (state.selectionActive ? state.selectedPixels.toLocaleString() : state.width * state.height) + " · " + t("Zoom") + ": " + (Math.round(state.view.zoom * 1000) / 10) + "% · " + t("Saved changes") + ": " + getEdits().length + (selectionAutoHidden && state.selectionActive ? " · " + t("Selection kept; tint hidden.") : "");
     }
-    function hasPending() { return !!(loading || pendingRestore || restoringDocuments || previewTimer || previewJobs || brushStroke || Array.from(entries.values()).some(function (e) { return e.encoding || e.encodeError || e.preview || floating(e); })); }
+    function hasPending() { return !!(loading || pendingRestore || restoringDocuments || previewTimer || previewJobs || brushStroke || blushPreviewPending() || Array.from(entries.values()).some(function (e) { return e.encoding || e.encodeError || e.preview || floating(e); })); }
+    // --- baked cheek blush -------------------------------------------------
+    function blushRule(entry) { return entry && !entry.standalone && entry.record && entry.record.blush || null; }
+    function blushRecords() { return catalogue.filter(function (row) { return row.blush && row.available !== false; }); }
+    function cheekAvailable() { return !!(blushInfo && blushInfo.cheek && blushInfo.cheek.available); }
+    function sameBlush(a, b) { return !a && !b || !!a && !!b && a.layer === b.layer && a.k === b.k; }
+    function selectedBlush() { return { layer: blushChoice.layer, k: blushChoice.k }; }
+    function validBlush(value) {
+      if (!B || !value || typeof value !== "object" || Object.keys(value).sort().join(",") !== "k,layer") return false;
+      try { B.checkedLayer(value.layer); B.checkedK(value.k); return true; } catch (_) { return false; }
+    }
+    function blushEditable(entry) { return !!(B && blushRule(entry) && entry.engine && canEdit(entry) && cheekAvailable() && !loading && !pendingRestore && !floating(entry)); }
+    // What the 3D view and the canvas show: the unapplied choice while it is
+    // previewed in the blush tab, nothing while "Show before" is pressed,
+    // otherwise the applied bake.
+    function blushParams(entry) {
+      if (!B || !cheek || !blushRule(entry)) return null;
+      if (entry === active && activeTab === "blush" && canEdit(entry)) { if (blushBefore) return null; if (blushPending) return selectedBlush(); }
+      return entry.blush || null;
+    }
+    function blushPreviewPending() { return !!(activeTab === "blush" && blushPending && active && blushRule(active) && cheek && !sameBlush(active.blush, selectedBlush())); }
+    function bakeFor(image, params) { return B.bakeImage(image, cheek.layers[params.layer], params.k, cheek.bounds[params.layer]); }
+    function syncBlushCanvas() {
+      var entry = active; if (!entry || !entry.engine || !entry.engine.setDisplayOverride || entry.standalone) return;
+      if (activeTab === "blush" && blushRule(entry) && !compare.checked) {
+        var params = blushParams(entry);
+        if (params || entry.blushOverride) entry.engine.setDisplayOverride(params ? bakeFor(entry.engine.getImage(false), params) : null);
+        entry.blushOverride = !!params;
+      } else if (entry.blushOverride) { entry.blushOverride = false; if (!compare.checked) entry.engine.setDisplayOverride(null); }
+    }
+    function loadCheek() {
+      if (cheekPromise) return cheekPromise;
+      if (!B || cheek || !cheekAvailable() || !currentToken || !blushRecords().length) return Promise.resolve(cheek);
+      var born = epoch;
+      cheekPromise = api("/api/viewer/texture/cheek", { token: currentToken }).then(function (data) {
+        if (disposed || born !== epoch) throw abort();
+        // 256x512 RGBA: both stock layers in Unity row order (server-verified hash).
+        var image = exact(data), payload = new Uint8Array(image.data.buffer, image.data.byteOffset, image.data.byteLength), layers = [B.layerView(payload, 0), B.layerView(payload, 1)];
+        cheek = { source: data.source, layers: layers, bounds: layers.map(B.layerBounds) }; cheekError = ""; blushSwatches = null;
+        entries.forEach(function (entry) { if (entry.blush || entry === active) upload(entry); });
+        refreshButtons(); return cheek;
+      }).catch(function (err) { if (err.name !== "AbortError" && born === epoch) { cheekError = err.message; refreshButtons(); } return null; })
+        .finally(function () { if (born === epoch) cheekPromise = null; });
+      return cheekPromise;
+    }
+    // The blush tab always works on a face texture: open the head's own one
+    // (before a recolour texture) when another texture is active.
+    function focusBlushTexture() {
+      loadCheek();
+      var target = !blushRule(active) && blushRecords().sort(function (a, b) { return (a.blush.role === "head" ? 0 : 1) - (b.blush.role === "head" ? 0 : 1); })[0];
+      if (target && !floating(active)) selectTexture(target.texture).catch(function (err) { if (err.name !== "AbortError") say("", err.message); });
+      else say(blushRule(active) ? "Pick a strength, check the 3D preview, then apply." : "Choose a face texture to bake a blush.");
+    }
+    function initBlushChoice(entry) {
+      if (!B) return;
+      var committed = entry && entry.blush;
+      if (committed) { blushChoice = { layer: committed.layer, k: committed.k, level: B.levelFor(committed.k) || "custom" }; blushPending = false; }
+      else { blushChoice = { layer: B.DEFAULT_LAYER, k: B.levelK(B.DEFAULT_LEVEL), level: B.DEFAULT_LEVEL }; blushPending = !!blushRule(entry); }
+      blushBefore = false; blushSwatches = null; blushKField.value = String(blushChoice.k);
+    }
+    function blushChoiceChanged() { blushPending = true; blushBefore = false; blushKField.value = String(blushChoice.k); if (active) upload(active); refreshButtons(); }
+    function chooseBlushLevel(id) { if (!blushEditable(active)) return false; blushChoice.k = B.levelK(id); blushChoice.level = id; blushChoiceChanged(); return true; }
+    function chooseBlushType(layer) { if (!blushEditable(active)) return false; blushChoice.layer = B.checkedLayer(layer); blushChoiceChanged(); return true; }
+    function setBlushStrength(value) {
+      if (!blushEditable(active)) return false;
+      var k = typeof value === "number" ? value : Number(String(value).trim());
+      try { B.checkedK(k); } catch (err) { say("", err.message); return false; }
+      blushChoice.k = k; blushChoice.level = B.levelFor(k) || "custom"; blushChoiceChanged(); return true;
+    }
+    function setBlushBefore(value) { blushBefore = !!value && !!blushRule(active); if (active) upload(active); refreshButtons(); return blushBefore; }
+    function setEntryBlush(entry, value) {
+      entry.blush = value ? { layer: value.layer, k: value.k } : null;
+      if (entry === active) { if (value) blushChoice = { layer: value.layer, k: value.k, level: B.levelFor(value.k) || "custom" }; blushPending = false; blushBefore = false; blushKField.value = String(blushChoice.k); }
+      entry.modified = !!entry.pixelModified || !!entry.blush;
+      if (!entry.modified) { entry.encodeGeneration = (entry.encodeGeneration || 0) + 1; entry.encoding = false; entry.encodeError = null; entry.png = null; }
+      else if (!entry.png && !entry.encoding && entry.engine) encodeEntry(entry);
+      upload(entry); changed();
+    }
+    // One click: the choice becomes the texture's bake (an undo step of its
+    // own). Re-baking replaces the operation; the pixels never compound.
+    function applyBlush() {
+      var entry = active;
+      if (!blushEditable(entry)) { if (blushRule(entry) && !cheekAvailable()) say("", blushInfo && blushInfo.cheek && blushInfo.cheek.reason || "Choose a face texture to bake a blush."); return false; }
+      var next = selectedBlush(); try { B.checkedK(next.k); } catch (err) { say("", err.message); return false; }
+      if (sameBlush(entry.blush, next)) { blushPending = false; blushBefore = false; upload(entry); refreshButtons(); return false; }
+      var previous = entry.blush ? { layer: entry.blush.layer, k: entry.blush.k } : null;
+      try { entry.engine.recordState("Bake blush", function (redo) { setEntryBlush(entry, redo ? next : previous); }); } catch (err) { say("", err.message); return false; }
+      setEntryBlush(entry, next); say("Blush applied. Save model edits or a Mod ZIP to export."); return true;
+    }
+    function removeBlush() {
+      var entry = active; if (!entry || !entry.engine || !canEdit(entry) || !entry.blush || loading || pendingRestore || floating(entry)) return false;
+      var previous = { layer: entry.blush.layer, k: entry.blush.k };
+      try { entry.engine.recordState("Remove blush", function (redo) { setEntryBlush(entry, redo ? null : previous); }); } catch (err) { say("", err.message); return false; }
+      setEntryBlush(entry, null); say("Blush removed."); return true;
+    }
+    function rgbText(colour) { return "rgb(" + colour[0] + ", " + colour[1] + ", " + colour[2] + ")"; }
+    function levelName(choice) {
+      var level = B.LEVELS.filter(function (row) { return row.id === choice.level; })[0];
+      return t(level ? level.label : "Custom") + " (k " + Math.round(choice.k * 1000) / 1000 + ")";
+    }
+    function blushNote(list, key) { var item = document.createElement("li"); item.dataset.note = key; item.textContent = t(key); list.push(item); }
+    function refreshBlush() {
+      if (!B || !tabButtons.blush) return;
+      var records = blushRecords(), entry = active, rule = blushRule(entry), editable = blushEditable(entry);
+      tabButtons.blush.hidden = !records.length;
+      if (activeTab !== "blush") return;
+      var shown = blushPending ? blushChoice : entry && entry.blush ? { layer: entry.blush.layer, k: entry.blush.k, level: B.levelFor(entry.blush.k) || "custom" } : null;
+      var layerIndex = shown ? shown.layer : blushChoice.layer;
+      blushTarget.textContent = rule ? t(rule.role === "attach" ? "Recolour face texture" : "Face texture") + ": " + entry.record.name : t("Choose a face texture to bake a blush.");
+      blushTypeButtons.forEach(function (item) { var on = Number(item.dataset.blushLayer) === layerIndex; item.setAttribute("aria-checked", String(on)); item.disabled = !editable; });
+      if (rule && cheek && entry.engine) {
+        var stamp = layerStamp(entry) + ":" + layerIndex + ":" + blushChoice.k;
+        if (!blushSwatches || blushSwatches.entry !== entry || blushSwatches.stamp !== stamp) blushSwatches = { entry: entry, stamp: stamp, value: B.swatches(entry.engine.getImage(false), cheek.layers[layerIndex], B.LEVELS.map(function (level) { return level.k; }).concat([blushChoice.k])) };
+      } else blushSwatches = null;
+      var colours = blushSwatches && blushSwatches.value.colours;
+      blushLevelButtons.forEach(function (row, index) {
+        var on = !!shown && shown.level === row.level.id, colour = colours && colours[index];
+        row.node.setAttribute("aria-checked", String(on)); row.node.disabled = !editable;
+        row.swatch.style.background = colour ? rgbText(colour) : ""; row.node.dataset.colour = colour ? hex(colour) : "";
+        row.node.title = t(row.level.label) + " · k " + row.level.k + (colour ? " · " + hex(colour) : "");
+      });
+      blushBaseSwatch.style.background = blushSwatches ? rgbText(blushSwatches.value.base) : ""; blushBase.dataset.colour = blushSwatches ? hex(blushSwatches.value.base) : "";
+      blushCustomSwatch.style.background = colours ? rgbText(colours[colours.length - 1]) : "";
+      blushKField.disabled = !editable; if (document.activeElement !== blushKField) blushKField.value = String(shown ? shown.k : blushChoice.k);
+      applyBlushButton.disabled = !editable || !blushPending || sameBlush(entry.blush, selectedBlush());
+      removeBlushButton.disabled = !(entry && entry.blush && entry.engine && canEdit(entry) && !loading && !floating(entry));
+      blushBeforeButton.disabled = !(rule && cheek && (blushPending || entry.blush)); blushBeforeButton.setAttribute("aria-pressed", String(blushBefore));
+      var text = "";
+      if (!rule) text = t("Choose a face texture to bake a blush.");
+      else if (!cheekAvailable()) text = t(blushInfo && blushInfo.cheek && blushInfo.cheek.reason || "This model has no head texture that can take a baked blush.");
+      else if (!cheek) text = cheekError ? t(cheekError) : t("Loading the blush pattern…");
+      else if (blushBefore) text = t("Showing before");
+      else if (blushPreviewPending()) text = t("Preview, not applied yet") + ": " + levelName(blushChoice) + " · " + t(B.LAYERS[blushChoice.layer].label);
+      else if (entry.blush) text = t("Applied") + ": " + levelName({ level: B.levelFor(entry.blush.k) || "custom", k: entry.blush.k }) + " · " + t(B.LAYERS[entry.blush.layer].label);
+      else text = t("No blush");
+      blushStatus.textContent = text; blushStatus.classList.toggle("viewer-texture-error", !!rule && (!cheekAvailable() || !!cheekError));
+      var notes = [];
+      if (rule) {
+        if (rule.role === "attach") blushNote(notes, "This recolour texture replaces the face texture of its recolour suit, so bake it as well as the costume's own face texture.");
+        if (rule.recolourSuits) blushNote(notes, "Recolour suits of this costume replace this texture in the game: bake their recolour texture too.");
+        if (rule.masked) blushNote(notes, "Masked heads never show the game's blush, so baking is the only way to add one.");
+        else blushNote(notes, "The game's own song blush still appears on top during blush scenes.");
+        if (rule.matcap) blushNote(notes, "This face uses a matcap, so it can look slightly different in the game.");
+        blushNote(notes, "Android and iOS bundles are separate: bake each platform's file.");
+        if (rule.platform === "android") blushNote(notes, "This file is the Android bundle."); else if (rule.platform === "ios") blushNote(notes, "This file is the iOS bundle.");
+        if (blushInfo && blushInfo.cheek && blushInfo.cheek.source === "cache") blushNote(notes, "Using the verified blush pattern saved from a costume you opened before.");
+      }
+      var signature = notes.map(function (item) { return item.dataset.note; }).join("|") + ":" + (document.documentElement.lang || "");
+      if (blushNotes.dataset.signature !== signature) { blushNotes.textContent = ""; notes.forEach(function (item) { blushNotes.appendChild(item); }); blushNotes.dataset.signature = signature; }
+    }
+    function blushState() {
+      var entry = active, rule = blushRule(entry);
+      return { tabVisible: !!tabButtons.blush && !tabButtons.blush.hidden, eligible: blushRecords().map(function (row) { return Object.assign({ texture: Object.assign({}, row.texture) }, row.blush); }),
+        rule: rule ? Object.assign({}, rule) : null, cheek: blushInfo && blushInfo.cheek ? Object.assign({}, blushInfo.cheek, { loaded: !!cheek, error: cheekError }) : null,
+        committed: entry && entry.blush ? Object.assign({}, entry.blush) : null, choice: Object.assign({}, blushChoice), pending: blushPending, before: blushBefore,
+        previewing: blushPreviewPending(), displayed: entry ? blushParams(entry) : null,
+        swatches: blushSwatches ? { base: blushSwatches.value.base.slice(), colours: blushSwatches.value.colours.map(function (colour) { return colour.slice(); }), point: Object.assign({}, blushSwatches.value.point) } : null,
+        status: blushStatus.textContent, notes: Array.from(blushNotes.children).map(function (item) { return item.dataset.note; }) };
+    }
     function refreshButtons() {
       if (disposed) return;
       restoreTextureButton.disabled = restoreTextureConfirm.disabled = !canRestoreTexture();
       if (textureRestoreRequest && (textureRestoreRequest.entry !== active || textureRestoreRequest.epoch !== epoch || textureRestoreRequest.stamp !== layerStamp(textureRestoreRequest.entry))) closeTextureRestore();
       var state = active && active.engine && active.engine.getState(); undoButton.disabled = !state || !state.undoCount || !!loading || !canEdit(active); redoButton.disabled = !state || !state.redoCount || !!loading || !canEdit(active);
-      applyButton.disabled = !state || !canEdit(active) || !validSelection(active) || !!incompleteAdjustment() || !!loading || !!previewTimer || !!previewJobs || !!(active && active.encoding) || !!brushStroke || !!floating(active); cancelButton.disabled = !previewTimer && !(active && active.preview) && !previewJobs;
+      applyButton.disabled = !state || !canEdit(active) || !validSelection(active) || !!incompleteAdjustment() || !!loading || !!previewTimer || !!previewJobs || !!(active && active.encoding) || !!brushStroke || !!floating(active); cancelButton.disabled = !previewTimer && !(active && active.preview) && !previewJobs && !blushPreviewPending();
       labels.forEach(function (pair) { if (pair[0] === applyButton) pair[0].textContent = t(activeTab === "skin" ? "Apply skin tone" : "Apply color"); });
       var blocked = !!active && !canEdit(active); lastEditable = !blocked; readonlyNote.hidden = !(active && !active.standalone && options.isReadOnly && options.isReadOnly());
       [colorL, colorC, colorH, colorStrength, skinL, skinC, skinH, skinStrength, tolerance, feather].forEach(function (control) { control.field.disabled = control.range.disabled = blocked; });
@@ -1013,10 +1268,15 @@
       refreshToolstrip();
       if (pending !== notifiedPending) { notifiedPending = pending; if (options.onPendingChange) options.onPendingChange(pending); else if (options.onChange) options.onChange(); }
       if (options.onSelectionChange) options.onSelectionChange(canClearSelection());
+      refreshBlush();
     }
     function getEdits() {
-      if (pendingRestore) return pendingRestore.map(function (row) { return Object.assign({}, row, { texture: Object.assign({}, row.texture) }); });
-      return Array.from(entries.values()).filter(function (entry) { return !entry.standalone && entry.modified && entry.png; }).map(function (entry) { return { texture: Object.assign({}, entry.record.texture), sourceSha256: entry.sourceSha256, png: entry.png, kind: entry.kind }; });
+      if (pendingRestore) return pendingRestore.map(function (row) { var copy = Object.assign({}, row, { texture: Object.assign({}, row.texture) }); if (row.blush) copy.blush = Object.assign({}, row.blush); return copy; });
+      return Array.from(entries.values()).filter(function (entry) { return !entry.standalone && entry.modified && entry.png; }).map(function (entry) {
+        var row = { texture: Object.assign({}, entry.record.texture), sourceSha256: entry.sourceSha256, png: entry.png, kind: entry.pixelModified ? entry.kind === "blush" ? "paint" : entry.kind : entry.blush ? "blush" : entry.kind };
+        if (entry.blush) row.blush = { layer: entry.blush.layer, k: entry.blush.k };
+        return row;
+      });
     }
     function applyImported(entry, image, born) {
       if (born !== epoch || entry !== active || !canEdit(entry) || floating(entry)) return false;
@@ -1187,7 +1447,8 @@
       if (active.preview || previewTimer || previewJobs) { say("Apply or cancel the color preview first."); return Promise.resolve(false); }
       var entry = active, name = (entry.record.name || "texture").replace(/[\\/:*?"<>|]/g, "_") + ".png";
       say("Saving PNG…");
-      return encode(entry.engine.getImage()).then(function (png) {
+      // A PNG is the texture as the game will show it: include an applied bake.
+      return encode(entry.blush && cheek && blushRule(entry) ? bakeFor(entry.engine.getImage(false), entry.blush) : entry.engine.getImage()).then(function (png) {
         return api("/api/texture/editor/save", { png: png, name: name }).then(function (saved) {
           if (!saved || typeof saved.path !== "string" || typeof saved.url !== "string" || !/^\/api\/download\?/.test(saved.url)) throw new Error("The PNG was not saved to a downloadable file.");
           savedPath.textContent = saved.path; savedDownload.href = saved.url; savedDownload.download = saved.name || name; savedFile.hidden = false; say("PNG saved on this device.");
@@ -1342,6 +1603,7 @@
       genericMaps.forEach(function (map, material) { material.map = map; material.needsUpdate = true; }); genericMaps.clear();
       entries.clear(); catalogue = []; active = standalone || null; if (standalone) { entries.set("-1:0:standalone", standalone); catalogue.push(standalone.record); if (standalone.pane) standalone.pane.hidden = false; }
       pendingRestore = null; cataloguePromise = null; restoringDocuments = 0; loading = 0; previewJobs = 0; currentToken = null; lastModel = null; geometryCache = new WeakMap();
+      blushInfo = null; cheek = null; cheekPromise = null; cheekError = ""; blushPending = false; blushBefore = false; blushSwatches = null;
       rebuildTextureSelect(); information.textContent = ""; toneEstimate.textContent = ""; say(standalone ? "Image changes ready. Use Export PNG to save." : "Open a model to edit textures."); revision++; if (!silent && options.onChange) options.onChange(); refreshButtons();
     }
     function rebuildTextureSelect() {
@@ -1360,8 +1622,11 @@
       var prepared = r.metadata && r.metadata.editing && r.metadata.editing.textures;
       cataloguePromise = (prepared && Array.isArray(prepared.textures) ? Promise.resolve(prepared) : api("/api/viewer/texture/inspect", { token: token })).then(function (data) {
         if (disposed || born !== epoch) return;
-        catalogue = data.textures || []; var standalone = entries.get("-1:0:standalone"); if (standalone) catalogue.unshift(standalone.record); rebuildTextureSelect();
+        catalogue = data.textures || []; blushInfo = data.blush || null; var standalone = entries.get("-1:0:standalone"); if (standalone) catalogue.unshift(standalone.record); rebuildTextureSelect();
         say("Choose faces or a texture region before applying color.");
+        if (activeTab === "blush" && !blushRecords().length) setTab("costume");
+        else if (activeTab === "blush") focusBlushTexture();
+        loadCheek();
       }).catch(function (err) { if (err.name !== "AbortError" && born === epoch) say("", err.message); }).finally(function () { if (born === epoch) { loading = Math.max(0, loading - 1); cataloguePromise = null; } refreshButtons(); });
       return cataloguePromise;
     }
@@ -1388,7 +1653,7 @@
           identities.add(key(record.texture)); plans.push({ entry: entry, record: record });
         });
         return { owner: modelRebindOwner, epoch: born, sourceModel: sourceModel, sourceToken: sourceToken,
-          model: nextRuntime.model, token: token, catalogue: data.textures, plans: plans, used: false };
+          model: nextRuntime.model, token: token, catalogue: data.textures, blush: data.blush || null, plans: plans, used: false };
       });
     }
     function detachModelForRebind(plan) {
@@ -1402,7 +1667,7 @@
       if (!rebindingModel || !plan || plan.owner !== modelRebindOwner || plan.used || plan.epoch !== epoch || r.model !== plan.model || token !== plan.token) throw new Error("The texture documents could not be bound to the new model.");
       var retained = new Map(); entries.forEach(function (entry, identity) { if (entry.standalone) retained.set(identity, entry); });
       plan.plans.forEach(function (row) { row.entry.record = row.record; row.entry.uvSelectionData = row.entry.uvSelectionSignature = null; retained.set(key(row.record.texture), row.entry); });
-      entries = retained; catalogue = plan.catalogue.slice();
+      entries = retained; catalogue = plan.catalogue.slice(); blushInfo = plan.blush;
       var standalone = entries.get("-1:0:standalone"); if (standalone) catalogue.unshift(standalone.record);
       currentToken = plan.token; lastModel = plan.model; plan.used = true; rebindingModel = false; epoch++;
       rebuildTextureSelect();
@@ -1424,7 +1689,7 @@
         var mask = entry.engine ? entry.engine.getMask() : entry.savedMask ? clone ? new Uint8Array(entry.savedMask) : entry.savedMask : null;
         if (project) project.layers.forEach(function (layer) { if (!arrays.has(layer.image.data)) { arrays.add(layer.image.data); bytes += layer.image.data.byteLength; } });
         if (mask && !arrays.has(mask)) { arrays.add(mask); bytes += mask.byteLength; }
-        documents.push({ texture: Object.assign({}, entry.record.texture), sourceSha256: entry.sourceSha256, sourceName: entry.record.sourceName || "", project: project || null, mask: mask, view: entry.engine ? entry.engine.getView() : entry.savedView ? Object.assign({}, entry.savedView) : null, png: entry.png, modified: !!entry.modified, kind: entry.kind, userSelected: !!entry.userSelected, seeds: entry.seeds.map(function (point) { return point.slice(); }), exclusions: entry.exclusions.map(function (point) { return point.slice(); }) });
+        documents.push({ texture: Object.assign({}, entry.record.texture), sourceSha256: entry.sourceSha256, sourceName: entry.record.sourceName || "", project: project || null, mask: mask, view: entry.engine ? entry.engine.getView() : entry.savedView ? Object.assign({}, entry.savedView) : null, png: entry.png, modified: !!entry.modified, pixelModified: !!entry.pixelModified, blush: entry.blush ? { layer: entry.blush.layer, k: entry.blush.k } : null, kind: entry.kind, userSelected: !!entry.userSelected, seeds: entry.seeds.map(function (point) { return point.slice(); }), exclusions: entry.exclusions.map(function (point) { return point.slice(); }) });
       });
       return { version: 1, token: currentToken, epoch: epoch, activeTexture: active && !active.standalone ? Object.assign({}, active.record.texture) : null, documents: documents, bytes: bytes };
     }
@@ -1435,7 +1700,7 @@
         var chain = Promise.resolve();
         snapshot.documents.forEach(function (row) { chain = chain.then(function () {
           if (born !== epoch) throw abort();
-          if (!row || !key(row.texture) || row.texture.source < 0 || retained.has(key(row.texture)) || !/^[a-f0-9]{64}$/.test(row.sourceSha256 || "") || typeof row.modified !== "boolean" || ["costume", "skin", "paint"].indexOf(row.kind) < 0 || row.png !== null && (typeof row.png !== "string" || row.png.indexOf("data:image/png;base64,") !== 0) || row.modified && !row.png) throw new Error("Invalid texture document snapshot.");
+          if (!row || !key(row.texture) || row.texture.source < 0 || retained.has(key(row.texture)) || !/^[a-f0-9]{64}$/.test(row.sourceSha256 || "") || typeof row.modified !== "boolean" || ["costume", "skin", "paint", "blush"].indexOf(row.kind) < 0 || row.blush !== undefined && row.blush !== null && !validBlush(row.blush) || row.png !== null && (typeof row.png !== "string" || row.png.indexOf("data:image/png;base64,") !== 0) || row.modified && !row.png) throw new Error("Invalid texture document snapshot.");
           retained.add(key(row.texture));
           var candidates = catalogue.filter(function (record) { return record.available !== false && record.texture.file === row.texture.file && record.texture.id === row.texture.id && (!record.sourceSha256 || record.sourceSha256 === row.sourceSha256); }), exactMatch = candidates.filter(function (record) { return same(record.texture, row.texture); });
           var record = exactMatch.length === 1 ? exactMatch[0] : candidates.length === 1 ? candidates[0] : null;
@@ -1455,7 +1720,7 @@
             var image = row.png ? decodePatch(entry, row.png) : Promise.resolve(entry.original);
             return image.then(function (value) { if (born !== epoch) throw abort(); if (value.width !== entry.original.width || value.height !== entry.original.height) throw new Error("Invalid texture document snapshot."); plans.push({ row: row, record: record, entry: entry, image: value }); });
           });
-        }); }); return chain;
+        }); }); return chain.then(function () { return snapshot.documents.some(function (row) { return row && row.blush; }) ? loadCheek() : null; });
       }).then(function () {
         if (born !== epoch) throw abort();
         // All identities, immutable hashes and payload dimensions have passed.
@@ -1465,7 +1730,7 @@
           if (entry.standalone || wanted.has(key(entry.record.texture))) return;
           entry.encodeGeneration = (entry.encodeGeneration || 0) + 1; entry.encoding = false; entry.encodeError = null;
           if (entry.engine && entry.original) { suppressed++; try { if (floating(entry)) entry.engine.cancelFloating(); replaceImage(entry, entry.original, { history: false }); } finally { suppressed--; } }
-          entry.savedProject = null; entry.png = null; entry.modified = false; restoreLive(entry);
+          entry.savedProject = null; entry.png = null; entry.modified = false; entry.pixelModified = false; entry.blush = null; restoreLive(entry);
         });
         plans.forEach(function (plan) {
           var entry = plan.entry, row = plan.row;
@@ -1476,6 +1741,7 @@
             entry.engine.setMask(row.mask || null, { history: false }); if (row.view) entry.engine.setView(row.view);
           } finally { suppressed--; }
           entry.savedProject = null; entry.modified = !!row.modified; entry.png = row.png || null; entry.kind = row.kind || "paint"; entry.userSelected = row.userSelected; entry.stats = null; entry.featherCache = null;
+          entry.blush = row.blush ? { layer: row.blush.layer, k: row.blush.k } : null; entry.pixelModified = typeof row.pixelModified === "boolean" ? row.pixelModified : !!row.modified && !entry.blush;
           entry.seeds = (row.seeds || []).map(function (point) { return point.slice(); }); entry.exclusions = (row.exclusions || []).map(function (point) { return point.slice(); });
           if (entry === active && compare.checked && entry.engine.setDisplayOverride) entry.engine.setDisplayOverride(entry.original);
           upload(entry);
@@ -1490,11 +1756,11 @@
       var identities = new Set();
       for (var index = 0; index < rows.length; index++) {
         var value = rows[index], identity = value && key(value.texture);
-        if (!identity || value.texture.source < 0 || value.texture.file < 0 || identities.has(identity) || typeof value.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sourceSha256) || typeof value.png !== "string" || value.png.indexOf("data:image/png;base64,") !== 0 || ["costume", "skin", "paint"].indexOf(value.kind) < 0) return Promise.reject(new Error("Invalid texture recipe."));
+        if (!identity || value.texture.source < 0 || value.texture.file < 0 || identities.has(identity) || typeof value.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sourceSha256) || typeof value.png !== "string" || value.png.indexOf("data:image/png;base64,") !== 0 || ["costume", "skin", "paint", "blush"].indexOf(value.kind) < 0 || value.blush !== undefined && !validBlush(value.blush) || value.kind === "blush" && !value.blush) return Promise.reject(new Error("Invalid texture recipe."));
         identities.add(identity);
       }
       var ready = refresh();
-      pendingRestore = rows.map(function (row) { return Object.assign({}, row, { texture: Object.assign({}, row.texture) }); }); var retained = pendingRestore, born = epoch, plans = [];
+      pendingRestore = rows.map(function (row) { var copy = Object.assign({}, row, { texture: Object.assign({}, row.texture) }); if (row.blush) copy.blush = { layer: row.blush.layer, k: row.blush.k }; return copy; }); var retained = pendingRestore, born = epoch, plans = [];
       loading++; refreshButtons();
       return ready.then(function () {
         var chain = Promise.resolve();
@@ -1512,7 +1778,7 @@
             });
           });
         }); });
-        return chain;
+        return chain.then(function () { return rows.some(function (row) { return row.blush; }) ? loadCheek() : null; });
       }).then(function () {
         if (born !== epoch || pendingRestore !== retained) throw abort();
         cancelPreview(); var wanted = new Set(plans.map(function (p) { return key(p.entry.record.texture); }));
@@ -1522,14 +1788,15 @@
           entry.encodeGeneration = (entry.encodeGeneration || 0) + 1; entry.encoding = false; entry.encodeError = null;
           if (wanted.has(key(entry.record.texture))) return;
           if (entry.engine && entry.original) { suppressed++; try { replaceImage(entry, entry.original, { label: "Restore original texture" }); } finally { suppressed--; } }
-          entry.savedProject = null; entry.png = null; entry.modified = false; entry.preview = null; restoreLive(entry);
+          entry.savedProject = null; entry.png = null; entry.modified = false; entry.pixelModified = false; entry.blush = null; entry.preview = null; restoreLive(entry);
         });
         plans.forEach(function (plan) {
           var entry = plan.entry;
           if (!plan.same) { suppressed++; try { replaceImage(entry, plan.image, { label: "Restore texture" }); } finally { suppressed--; } }
-          entry.png = plan.row.png; entry.kind = plan.row.kind || "paint"; entry.modified = !equalPixels(plan.image, entry.original); upload(entry);
+          entry.png = plan.row.png; entry.kind = plan.row.kind || "paint"; entry.blush = plan.row.blush ? { layer: plan.row.blush.layer, k: plan.row.blush.k } : null;
+          entry.pixelModified = !equalPixels(plan.image, entry.original); entry.modified = entry.pixelModified || !!entry.blush; upload(entry);
         });
-        pendingRestore = null; evict(); updateOverlay(); changed();
+        pendingRestore = null; if (active && activeTab === "blush") initBlushChoice(active); evict(); updateOverlay(); changed();
       }).catch(function (err) {
         if (born === epoch && pendingRestore === retained) { pendingRestore = null; evict(); changed(); }
         if (err.name !== "AbortError" && born === epoch) say("", err.message); throw err;
@@ -1549,6 +1816,8 @@
     listen(layerOpacity, "input", function () { layerOpacityValue.textContent = Math.round(+layerOpacity.value) + "%"; });
     listen(layerOpacity, "change", function () { var value = +layerOpacity.value / 100; layerOperation(function () { var state = active.engine.getState(); return active.engine.setLayerOpacity(state.activeLayerId || state.activeLayer, value); }); });
     listen(colorMode, "change", function () { targetLabel.hidden = colorMode.value !== "colorize"; schedulePreview(); }); listen(targetColor, "input", schedulePreview);
+    listen(blushKField, "change", function () { if (!setBlushStrength(blushKField.value)) blushKField.value = String(blushChoice.k); });
+    listen(blushKField, "input", function () { var value = Number(blushKField.value); if (blushKField.value.trim() && Number.isFinite(value) && value > 0 && value <= (B ? B.MAX_K : 4)) setBlushStrength(value); });
     [sourceTone, targetTone].forEach(function (item) { listen(item, "change", schedulePreview); });
     [connected, sampleGate].forEach(function (item) { listen(item, "change", function () { syncBrush(); if (active && active.seeds.length) growSelection(active); }); });
     [paintColor, paintAlpha, filled].forEach(function (item) { listen(item, "input", syncBrush); });
@@ -1572,10 +1841,12 @@
     return {
       getEdits: getEdits, restoreEdits: restoreEdits, captureDocuments: captureDocuments, restoreDocuments: restoreDocuments, prepareModelRebind: prepareModelRebind, commitModelRebind: commitModelRebind, hasPending: hasPending, getRevision: function () { return revision; }, refresh: refresh, reset: reset,
       beforeModelDispose: function (rebind) { if (rebind) detachModelForRebind(rebind); else reset(true, true); }, beforeRender: function () { attachScene(); if (lastEditable !== (!active || canEdit(active))) refreshButtons(); flushLiveUpdate(); overlays.forEach(function (row) { row.mesh.geometry = row.original.geometry; row.mesh.morphTargetInfluences = row.original.morphTargetInfluences; row.mesh.morphTargetDictionary = row.original.morphTargetDictionary; }); },
-      getState: function () { return { available: !!currentToken || !!(active && active.standalone), token: currentToken, activeTexture: active ? Object.assign({}, active.record.texture) : null, activeTab: activeTab, sceneMode: sceneMode, standalone: !!(active && active.standalone), expanded: expanded, pending: hasPending(), loading: loading, preview: !!(active && active.preview), revision: revision, editedTextures: getEdits().map(function (row) { return { texture: row.texture, kind: row.kind }; }), textureCount: catalogue.length, sourceSha256: active && active.sourceSha256 || "", selection: active && active.engine ? active.engine.getState() : null, lastModelSelection: active && active.lastModelSelection || null, lastUVSelection: active && active.lastUVSelection || null, workspace: { inspectorOpen: workspace.inspector.open, preferences: Object.assign({}, workspacePreferences) }, status: statusText, error: error, performance: Object.assign({ loadedTextureBytes: Array.from(entries.values()).reduce(function (total, entry) { return total + entryBytes(entry); }, 0), loadedEngines: Array.from(entries.values()).filter(function (entry) { return !!entry.engine; }).length }, performance) }; },
+      getState: function () { return { available: !!currentToken || !!(active && active.standalone), token: currentToken, activeTexture: active ? Object.assign({}, active.record.texture) : null, activeTab: activeTab, sceneMode: sceneMode, standalone: !!(active && active.standalone), expanded: expanded, pending: hasPending(), loading: loading, preview: !!(active && active.preview), revision: revision, editedTextures: getEdits().map(function (row) { return { texture: row.texture, kind: row.kind }; }), textureCount: catalogue.length, sourceSha256: active && active.sourceSha256 || "", selection: active && active.engine ? active.engine.getState() : null, lastModelSelection: active && active.lastModelSelection || null, lastUVSelection: active && active.lastUVSelection || null, workspace: { inspectorOpen: workspace.inspector.open, preferences: Object.assign({}, workspacePreferences) }, blush: blushState(), status: statusText, error: error, performance: Object.assign({ loadedTextureBytes: Array.from(entries.values()).reduce(function (total, entry) { return total + entryBytes(entry); }, 0), loadedEngines: Array.from(entries.values()).filter(function (entry) { return !!entry.engine; }).length }, performance) }; },
       getSceneMode: function () { return sceneMode; }, canClearSelection: canClearSelection, clearSelection: clearSelection, setCanvasTool: setCanvasTool, undo: undo, redo: redo, handleShortcut: handleShortcut, selectTexture: selectTexture, setTab: setTab, setSceneMode: setSceneMode, selectFaces: selectFaces, preparePreview: preparePreview, applyPreview: applyPreview, cancelPreview: cancelPreview, importPNG: importPNG, importPNGPath: importPNGPath, exportPNG: exportPNG, openPaint: openPaint, openImage: openImage, setExpanded: setExpanded,
       openProject: openProject, openProjectPath: openProjectPath, importProject: importProject, saveProject: saveProject, getProject: function (copy) { return active && active.engine && active.engine.getProject ? active.engine.getProject(copy !== false) : null; },
       changeLayer: changeLayer, clipboardAction: clipboardAction,
+      openBlush: function () { section.open = true; setTab("blush"); return true; }, chooseBlushLevel: chooseBlushLevel, chooseBlushType: chooseBlushType, setBlushStrength: setBlushStrength,
+      setBlushBefore: setBlushBefore, applyBlush: applyBlush, removeBlush: removeBlush,
       updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); units.forEach(function (pair) { pair[0].textContent += pair[1]; }); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor"); toolButtons.forEach(function (item) { item.node.title = t(item.name); item.node.setAttribute("aria-label", t(item.name)); }); section.querySelectorAll(".viewer-texture-icon-button:not(.viewer-texture-svg-button)").forEach(function (item) { item.title = item.textContent; }); workspace.settingsButton.setAttribute("aria-label", t("Color and layers")); showSelection.parentNode.title = t("Color adjustments hide selection tint without clearing the selection."); workspace.resizer.setAttribute("aria-label", t("Resize texture canvas")); workspace.dockResizer.setAttribute("aria-label", t("Resize tool settings")); if (uvControl) uvControl.updateLanguage(); updateInformation(); updateTone(); refreshButtons(); if (statusText || error) say(statusText, error); },
       dispose: function () { if (disposed) return; reset(false, true); disposed = true; listeners.forEach(function (remove) { remove(); }); finishPickerStack(); if (expanded) setExpanded(false); if (uvControl) uvControl.dispose(); if (processor) processor.dispose(); modelCursor.remove(); section.remove(); }
     };

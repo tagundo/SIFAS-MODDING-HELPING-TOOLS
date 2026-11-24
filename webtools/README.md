@@ -571,6 +571,42 @@ textures are reported above the model. Supported raw and ASTC texture images
 retain their original dimensions and pixels. Android includes the ASTC decoder;
 desktop users can point `ASTCENC_BIN` at an executable `astcenc`/`astcdec` CLI.
 
+### Bake blush (홍조 굽기)
+
+In Live and Navi the game ignores a costume's own blush settings: it binds the
+APK's shared `cheek_array` and only the song's cheek clips drive the blush
+(median intensity 0.255, maximum 1.0). The per-costume way to get a stronger
+blush is to bake it into that costume's head texture. **Texture and color
+tools → Bake blush** appears when the model has a head material
+(`BodyPartManager.headMaterial`) or a recolour-suit texture bound to it, and
+opens that face texture.
+
+- Pick **Standard (Ppo)** (the stock default; 3105 of 3141 MV clips) or **Deep
+  (Akarame)**, then one of five strengths. The 3D view previews the choice at
+  once; **Show before** toggles it off; **Apply blush** is one undo step.
+- Each level shows the texture's own cheek-centre colour. Strength k is a
+  permanent blush of intensity k (k = 1 is the strongest stock clip):
+  Very light 0.5, Light 1.05, Medium 1.65 (default), Strong 2.3, Very strong 3.
+  Neighbouring levels differ by CIEDE2000 4.6–5.0 at the darkest stock texel on
+  a typical cheek (4.2 or more on every head sampled); the strongest keeps
+  every channel far from 0. **Advanced** accepts any k up to 4.
+- The bake is the shader's own rule: RGB × (1 + k·(cheek − 1)), cheek sampled
+  bilinearly with Clamp at `uv·2.22 + (0, −1.221)` (Unity v up), alpha
+  untouched. Only texels whose rounded colour changes are written. Every authored
+  mip is baked in place at its own texel centres; mips are never regenerated.
+  The texture is saved losslessly as RGBA32, like every texture-tool edit, so
+  every untouched texel keeps its exact decoded value.
+- The recipe stores the bake as an operation on the original pixels, so applying
+  another strength replaces the bake instead of adding to it.
+- The blush pattern is read from the costume bundle (or a verified copy cached
+  from a costume you opened before, under `cache/viewer/cheek-array`) and checked
+  against the stock array's SHA-256. No game texture data ships with the tools.
+- Recolour suits (`m_suit_attach`, key `c1`) replace the head texture at runtime:
+  open the attach bundle with the costume and bake its texture too. Matcap faces
+  can look slightly different in game; the song blush still appears on top in
+  blush scenes; masked heads never get the song blush. Android and iOS bundles
+  are separate files.
+
 Three.js r128 and its matching controls/loader are bundled under `static/vendor`
 with their MIT license, so rendering scripts work offline. The local server converts
 selected Unity data to a self-contained GLB in a bounded, temporary memory cache.

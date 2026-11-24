@@ -156,3 +156,20 @@
   .viewer-texture-tools.viewer-texture-expanded { height: var(--texture-editor-height, calc(100dvh - 24px)); }
   @media (max-width: 759px) { .viewer-texture-expanded { height: var(--texture-editor-height, calc(100dvh - 12px)) !important; } }
 }
+/* Baked cheek blush: named levels, each with its cheek-centre colour. */
+.viewer-texture-blush-target { display: block; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+.viewer-texture-blush-group { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-width: 0; }
+.viewer-texture-blush-heading { flex: 1 0 100%; font-size: 11px; color: var(--muted); }
+.viewer-texture-blush-levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
+.viewer-texture-blush-levels > .viewer-texture-blush-heading, .viewer-texture-blush-levels > .viewer-texture-blush-base { grid-column: 1 / -1; }
+.viewer-texture-tools button.viewer-texture-blush-level { display: flex; align-items: center; gap: 6px; min-height: 36px; text-align: left; }
+.viewer-texture-blush-swatch { flex: 0 0 auto; display: inline-block; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel2); box-sizing: border-box; }
+.viewer-texture-blush-base { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.viewer-texture-blush-advanced > summary { cursor: pointer; padding: 4px 0; font-size: 11px; }
+.viewer-texture-blush-advanced .viewer-texture-field { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.viewer-texture-blush-advanced .viewer-texture-field > input[type="number"] { width: 84px; flex: 0 0 84px; }
+.viewer-texture-tools button.viewer-texture-primary { border-color: var(--accent); font-weight: 600; }
+.viewer-texture-tools button[role="radio"][aria-checked="true"] { border-color: var(--accent); background: var(--panel); box-shadow: inset 0 -2px var(--accent); }
+.viewer-texture-blush-status { display: block; font-size: 12px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.viewer-texture-blush-notes { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.4; color: var(--muted); }
+.viewer-texture-blush-notes:empty { display: none; }

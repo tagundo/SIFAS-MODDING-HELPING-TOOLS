@@ -1120,7 +1120,9 @@ def edit_source_state(session, index, state):
         blob = model_outlines.apply_edits(blob, index, state["outlines"], session["outlines"], original_raw=source["raw"])
     if state.get("textures"):
         from . import viewer_texture_tools
-        blob, texture_changes = viewer_texture_tools.apply_edits(blob, index, state["textures"], session["textures"])
+        cheek = (viewer_texture_tools.cheek_payload(session)
+                 if any(row.get("blush") is not None and row["texture"]["source"] == index for row in state["textures"]) else None)
+        blob, texture_changes = viewer_texture_tools.apply_edits(blob, index, state["textures"], session["textures"], cheek=cheek)
         session.setdefault("textureWriteSummary", {})[index] = texture_changes
     return blob, meshes
 

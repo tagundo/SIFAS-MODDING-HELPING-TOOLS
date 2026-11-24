@@ -81,7 +81,7 @@
       var authored = editingState(), lightweight = Object.assign({}, authored);
       // Pixel payloads are immutable cached strings. A revision is enough for
       // frequent UI updates; serialize PNGs only for a concrete save operation.
-      if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256 }; });
+      if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256, blush: row.blush || null }; });
       var fingerprint = JSON.stringify([lightweight, mesh, c.textureTools && c.textureTools.getRevision ? c.textureTools.getRevision() : 0]);
       var accessories = c.accessories || {}, accessoryBlocked = !!authored.accessoryUnclip && (accessories.pending || accessories.error);
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) { lastPackage = null; clearThumbnail(); }
@@ -200,6 +200,7 @@
         if (authored.textures.some(function (row) { return row.kind === "costume"; })) kinds.push(translate("Costume colour"));
         if (authored.textures.some(function (row) { return row.kind === "skin"; })) kinds.push(translate("Skin tone"));
         if (authored.textures.some(function (row) { return row.kind === "paint"; })) kinds.push(translate("Texture painting"));
+        if (authored.textures.some(function (row) { return !!row.blush; })) kinds.push(translate("Baked blush"));
       }
       if (authored.outlines && authored.outlines.length) kinds.push(translate("Outlines"));
       if (authored.physics && authored.physics.length) kinds.push(translate("Physics"));
@@ -352,8 +353,10 @@
       }).sort(function (a, b) { return a.id.localeCompare(b.id); });
       if (input.accessoryUnclip) canonical.accessoryUnclip = { strength: numeric(input.accessoryUnclip.strength), overlap: numeric(input.accessoryUnclip.overlap), closeGaps: input.accessoryUnclip.closeGaps };
       if (input.textures && input.textures.length) canonical.textures = input.textures.map(function (row) {
-        return { texture: { source: row.texture.source, file: row.texture.file, id: row.texture.id },
+        var value = { texture: { source: row.texture.source, file: row.texture.file, id: row.texture.id },
           sourceSha256: row.sourceSha256, png: row.png, kind: row.kind };
+        if (row.blush) value.blush = { layer: row.blush.layer, k: row.blush.k };
+        return value;
       }).sort(function (a, b) {
         var order = a.texture.source - b.texture.source || a.texture.file - b.texture.file;
         if (order) return order;

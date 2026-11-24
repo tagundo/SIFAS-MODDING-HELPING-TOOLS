@@ -144,7 +144,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_mv_studio(path.rsplit("/", 1)[1])
             if path in ("/api/viewer/mesh/inspect", "/api/viewer/mesh/data", "/api/viewer/mesh/export"):
                 return self._api_viewer_mesh(path.rsplit("/", 1)[1])
-            if path in ("/api/viewer/texture/inspect", "/api/viewer/texture/data", "/api/viewer/texture/decode"):
+            if path in ("/api/viewer/texture/inspect", "/api/viewer/texture/data", "/api/viewer/texture/decode", "/api/viewer/texture/cheek"):
                 return self._api_viewer_texture(path.rsplit("/", 1)[1])
             if path == "/api/texture/editor/decode":
                 return self._api_viewer_texture("image")
@@ -866,13 +866,15 @@ class Handler(BaseHTTPRequestHandler):
     def _api_viewer_texture(self, operation):
         from webtools.core import viewer_texture_tools
         try:
-            fields = {"inspect": {"token"}, "data": {"token", "texture"},
+            fields = {"inspect": {"token"}, "data": {"token", "texture"}, "cheek": {"token"},
                       "decode": {"token", "texture", "png"}, "image": {"png"}}[operation]
             params = self._viewer_feature_request(fields, max_bytes=(12 * 1024 * 1024 if operation in ("decode", "image") else 64 * 1024), token=operation != "image")
             if operation == "inspect":
                 result = viewer_texture_tools.inspect(params["token"])
             elif operation == "data":
                 result = viewer_texture_tools.data(params["token"], params["texture"])
+            elif operation == "cheek":
+                result = viewer_texture_tools.cheek(params["token"])
             elif operation == "decode":
                 result = viewer_texture_tools.decode(params["token"], params["texture"], params["png"])
             else:

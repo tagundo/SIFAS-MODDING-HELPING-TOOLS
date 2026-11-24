@@ -9,12 +9,13 @@ import copy
 import hashlib
 import io
 import re
+import secrets
 import threading
 import time
 import zlib
 from collections import OrderedDict
 
-from . import model_edits
+from . import model_edits, texture_blush
 
 MAX_PNG_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_PNG_BYTES = 12 * 1024 * 1024
@@ -73,7 +74,274 @@ def catalogue_sources(inspected_sources, sources, automatic=()):
                 rows.append(_record(obj, index, file_index, source["name"], source["sha256"], index in automatic))
                 if len(rows) > MAX_TEXTURES:
                     _fail("The selected model has too many textures for pixel editing.")
-    return {"textures": rows, "originalsPreserved": True}
+    groups = [(index, info["env"], info["objects"].values(),
+               lambda obj, info=info: info["file_indices"][id(obj.assets_file)]) for info, index in inspected_sources]
+    return _with_blush({"textures": rows, "originalsPreserved": True}, groups, sources)
+
+
+# --- cheek blush bake --------------------------------------------------------
+# A head material is BodyPartManager.headMaterial (the client's CombineFace
+# material, LiveCoreMemberHead.InitializeDefault). Its _MainTex, or a suit's
+# MemberAttachTable texture bound to it (CommonCoreMember.ApplyAttachData sets
+# that texture as the head mainTexture at runtime), can take a baked blush.
+_MEMBERS = "LLAS.Components.Members"
+_PLATFORMS = {13: "android", 9: "ios"}
+CHEEK_UNAVAILABLE = ("No verified stock cheek_array is available. Open this costume with a head bundle that "
+                     "contains cheek_array (most costume bundles do), or open any such costume once so it is "
+                     "cached, then reopen this model.")
+
+
+def _cheek_cache_file():
+    from .viewer_cache import viewer_cache_root
+    return viewer_cache_root() / "cheek-array" / (texture_blush.CHEEK_SHA256 + ".rgba")
+
+
+def _read_cached_cheek():
+    import os
+    try:
+        path = _cheek_cache_file()
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            payload = stream.read(texture_blush.CHEEK_PAYLOAD_BYTES + 1)
+    except (OSError, ValueError):
+        return None
+    return payload if texture_blush.verify_payload(payload) else None
+
+
+def _remember_cheek(payload):
+    """Keep a verified copy in the user's own viewer cache (never the repo)."""
+    import os
+    if not texture_blush.verify_payload(payload) or _read_cached_cheek() is not None:
+        return
+    try:
+        path = _cheek_cache_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + "." + secrets.token_hex(6) + ".tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    except OSError:
+        pass
+
+
+def _array_payload(obj):
+    try:
+        texture = obj.read()
+        stream = getattr(texture, "m_StreamData", None)
+        if stream is not None and getattr(stream, "size", 0):
+            return None
+        data = texture.image_data
+        return bytes(data) if isinstance(data, (bytes, bytearray)) else None
+    except Exception:
+        return None
+
+
+def _blush_scan(groups):
+    """Eligible head textures and cheek array candidates; metadata reads only.
+
+    ``groups`` holds (source index, environment, objects, file-index function).
+    Returns ({(source, file, id): descriptor}, [Texture2DArray objects]).
+    """
+    import ntpath
+    from types import SimpleNamespace
+    located, by_name = {}, {}
+    for index, _, objects, file_of in groups:
+        for obj in objects:
+            located[id(obj)] = (index, file_of(obj))
+            by_name[(ntpath.basename(str(obj.assets_file.name)).casefold(), obj.path_id)] = obj
+
+    def lookup(owner, pointer):
+        if not isinstance(pointer, dict) or type(pointer.get("m_PathID")) is not int or not pointer["m_PathID"]:
+            return None
+        file_id = pointer.get("m_FileID", 0)
+        if file_id == 0:
+            return owner.assets_file.objects.get(pointer["m_PathID"])
+        externals = getattr(owner.assets_file, "externals", ()) or ()
+        if type(file_id) is not int or not 1 <= file_id <= len(externals):
+            return None
+        return by_name.get((ntpath.basename(str(externals[file_id - 1].path)).casefold(), pointer["m_PathID"]))
+
+    def script(obj, tree):
+        target = lookup(obj, tree.get("m_Script"))
+        if target is None or target.type.name != "MonoScript":
+            return None
+        value = target.read_typetree()
+        return value.get("m_ClassName"), value.get("m_Namespace")
+
+    def child(transform, name):
+        for pointer in transform.read_typetree().get("m_Children") or ():
+            node = lookup(transform, pointer)
+            owner = node is not None and lookup(node, node.read_typetree().get("m_GameObject"))
+            if owner and owner.read_typetree().get("m_Name") == name:
+                return node
+        return None
+
+    def masked(head_all):
+        # CommonCoreMemberHead.GetFaceDots: headAll.transform.Find("Head_Face/mesh_facedots").
+        try:
+            components = head_all.read_typetree().get("m_Component") or ()
+            transform = next((item for item in (lookup(head_all, row.get("component")) for row in components)
+                              if item is not None and item.type.name == "Transform"), None)
+            face = transform is not None and child(transform, "Head_Face")
+            return bool(face and child(face, "mesh_facedots"))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return False
+
+    rules, arrays, heads, tables = {}, [], {}, []
+    for index, env, objects, _ in groups:
+        scene = SimpleNamespace(env=env, tree=lambda obj: obj.read_typetree())
+        for obj in objects:
+            if obj.type.name == "Texture2DArray":
+                arrays.append(obj)
+            if obj.type.name != "MonoBehaviour":
+                continue
+            try:
+                tree = obj.read_typetree()
+                if "headMaterial" not in tree and "datas" not in tree:
+                    continue
+                kind = script(obj, tree)
+                if kind == ("MemberAttachTable", _MEMBERS):
+                    tables.append((obj, tree))
+                    continue
+                if kind != ("BodyPartManager", _MEMBERS):
+                    continue
+                material = lookup(obj, tree.get("headMaterial"))
+                if material is None or material.type.name != "Material":
+                    continue
+                material_tree = material.read_typetree()
+                from .model_viewer import _as_member_material  # only once a head is found
+                if not _as_member_material(scene, material, material_tree):
+                    continue
+                envs = dict(material_tree.get("m_SavedProperties", {}).get("m_TexEnvs", []))
+                main = lookup(material, (envs.get("_MainTex") or {}).get("m_Texture"))
+                cheek = lookup(material, (envs.get("_CheekTex") or {}).get("m_Texture"))
+                if cheek is not None and cheek.type.name == "Texture2DArray":
+                    arrays.insert(0, cheek)
+                head_all = lookup(obj, tree.get("headAll"))
+                name = str(material_tree.get("m_Name") or "")
+                keywords = str(material_tree.get("m_ShaderKeywords") or "").split()
+                attach = tree.get("attachTable") or {}
+                descriptor = {"role": "head", "material": name, "matcap": "_MATCAP_ON" in keywords,
+                              "masked": head_all is not None and masked(head_all),
+                              "recolourSuits": bool(isinstance(attach, dict) and attach.get("m_PathID")),
+                              "platform": _PLATFORMS.get(getattr(material.assets_file, "_m_target_platform", None), "")}
+                heads[name] = descriptor
+                if main is not None and main.type.name == "Texture2D" and id(main) in located:
+                    source, file_index = located[id(main)]
+                    rules[(source, file_index, str(main.path_id))] = descriptor
+            except (AttributeError, KeyError, TypeError, ValueError):
+                continue
+    for obj, tree in tables:
+        # CommonCoreMember.ApplyAttachData: only attachType 1 (MaterialColor);
+        # a Texture2D becomes the mainTexture of the material named replaceBindName.
+        for data in tree.get("datas") or ():
+            if not isinstance(data, dict) or data.get("attachType") != 1:
+                continue
+            for item in data.get("replaceObjects") or ():
+                name = item.get("replaceBindName") if isinstance(item, dict) else None
+                target = lookup(obj, item.get("replaceObject")) if isinstance(name, str) and name else None
+                if target is None or target.type.name != "Texture2D" or id(target) not in located:
+                    continue
+                if name not in heads and not name.endswith("_head"):
+                    continue
+                head = heads.get(name, {})
+                source, file_index = located[id(target)]
+                rules.setdefault((source, file_index, str(target.path_id)), {
+                    "role": "attach", "material": name, "attachKey": str(data.get("attachName") or ""),
+                    "verifiedHead": name in heads, "matcap": head.get("matcap", False), "masked": head.get("masked", False),
+                    "recolourSuits": False,
+                    "platform": _PLATFORMS.get(getattr(target.assets_file, "_m_target_platform", None), "")})
+    return rules, arrays
+
+
+def _resolve_cheek(arrays, source_names):
+    """(payload, public info): the bundle's own verified array, else the cache."""
+    for obj in arrays:
+        payload = _array_payload(obj)
+        if payload is not None and texture_blush.verify_payload(payload):
+            _remember_cheek(payload)
+            return payload, {"available": True, "source": "bundle", "sourceName": source_names.get(id(obj), ""),
+                             "sha256": texture_blush.CHEEK_SHA256, "reason": ""}
+    payload = _read_cached_cheek()
+    if payload is not None:
+        return payload, {"available": True, "source": "cache", "sourceName": "",
+                         "sha256": texture_blush.CHEEK_SHA256, "reason": ""}
+    return None, {"available": False, "source": "", "sourceName": "", "sha256": "", "reason": CHEEK_UNAVAILABLE}
+
+
+def _with_blush(catalogue, groups, sources):
+    rules, arrays = _blush_scan(groups)
+    names = {}
+    for index, _, objects, _ in groups:
+        for obj in objects:
+            if obj.type.name == "Texture2DArray":
+                names[id(obj)] = sources[index]["name"]
+    cheek = None
+    if rules:
+        _, cheek = _resolve_cheek(arrays, names)
+    for row in catalogue["textures"]:
+        identity = row["texture"]
+        rule = rules.get((identity["source"], identity["file"], identity["id"]))
+        if rule is not None and row["available"]:
+            row["blush"] = copy.deepcopy(rule)
+    catalogue["blush"] = {"cheek": cheek or {"available": False, "source": "", "sourceName": "", "sha256": "", "reason": ""},
+                          "levels": [{"id": name, "k": k} for name, k in texture_blush.LEVELS],
+                          "defaultLevel": texture_blush.DEFAULT_LEVEL, "defaultLayer": texture_blush.DEFAULT_LAYER,
+                          "layers": list(texture_blush.LAYERS), "maxK": texture_blush.MAX_K}
+    return catalogue
+
+
+def _session_groups(session):
+    from .viewer_mesh_tools import _objects
+    groups = []
+    for index, source in enumerate(session["sources"]):
+        env, files, objects = _objects(source["raw"])
+        groups.append((index, env, list(objects.values()), lambda obj, files=files: files[id(obj.assets_file)]))
+    return groups
+
+
+def cheek_payload(session):
+    """The verified 524288-byte array for this session, or a TextureToolError."""
+    payload = session.get("cheekPayload")
+    if payload is None or not texture_blush.verify_payload(payload):
+        _, arrays = _blush_scan(_session_groups(session))
+        payload, info = _resolve_cheek(arrays, {})
+        if payload is None:
+            _fail(info["reason"])
+        session["cheekPayload"] = payload
+    return payload
+
+
+def checked_blush(value):
+    """Canonical recipe operation: {"layer": 0 | 1, "k": strength}."""
+    if not isinstance(value, dict) or set(value) != {"layer", "k"}:
+        _fail("The blush bake needs exactly a blush type and a strength.")
+    try:
+        return {"layer": texture_blush.checked_layer(value["layer"]), "k": texture_blush.checked_k(value["k"])}
+    except texture_blush.BlushError as error:
+        raise TextureToolError(str(error)) from error
+
+
+def cheek(token):
+    """Both stock layers (Unity row order) for the editor's preview and swatches."""
+    session = _session(token)
+    catalogue = _catalog(session)
+    if not any("blush" in row for row in catalogue["textures"]):
+        _fail("This model has no head texture that can take a baked blush.")
+    cached = session.get("cheekPreview")
+    if cached is None:
+        payload = cheek_payload(session)
+        cached = {"width": texture_blush.CHEEK_SIZE, "height": texture_blush.CHEEK_SIZE * texture_blush.CHEEK_LAYERS,
+                  "rowOrder": "unity", "layers": texture_blush.CHEEK_LAYERS, "sha256": texture_blush.CHEEK_SHA256,
+                  "source": catalogue.get("blush", {}).get("cheek", {}).get("source", ""),
+                  "rgbaZlib": base64.b64encode(zlib.compress(payload, 6)).decode("ascii")}
+        session["cheekPreview"] = cached
+    return copy.deepcopy(cached)
 
 
 def _session(token):
@@ -84,16 +352,17 @@ def _session(token):
 def _catalog(session):
     if "textures" not in session:
         from .viewer_mesh_tools import _objects
-        rows = []
+        rows, groups = [], []
         for index, source in enumerate(session["sources"]):
-            _, _, objects = _objects(source["raw"])
+            env, files, objects = _objects(source["raw"])
+            groups.append((index, env, list(objects.values()), lambda obj, files=files: files[id(obj.assets_file)]))
             for (file_index, _), obj in objects.items():
                 if obj.type.name == "Texture2D":
                     rows.append(_record(obj, index, file_index, source["name"], source["sha256"],
                                         index in session.get("outlineOnlySources", set())))
                     if len(rows) > MAX_TEXTURES:
                         _fail("The selected model has too many textures for pixel editing.")
-        session["textures"] = {"textures": rows, "originalsPreserved": True}
+        session["textures"] = _with_blush({"textures": rows, "originalsPreserved": True}, groups, session["sources"])
     return session["textures"]
 
 
@@ -246,7 +515,8 @@ def validate(session, operations):
         _fail("Invalid texture edit list.")
     out, seen, total, pixels = [], set(), 0, 0
     for operation in operations:
-        if not isinstance(operation, dict) or set(operation) != {"texture", "sourceSha256", "png", "kind"}:
+        if (not isinstance(operation, dict) or not {"texture", "sourceSha256", "png", "kind"} <= set(operation)
+                or not set(operation) <= {"texture", "sourceSha256", "png", "kind", "blush"}):
             _fail("Unsupported texture edit property.")
         row = _identity(operation["texture"], session)
         identity = operation["texture"]
@@ -256,8 +526,13 @@ def validate(session, operations):
         seen.add(key)
         if not isinstance(operation["sourceSha256"], str) or not _SHA.fullmatch(operation["sourceSha256"]) or operation["sourceSha256"] != row["sourceSha256"]:
             _fail("The texture edit belongs to different original model bytes.")
-        if operation["kind"] not in ("costume", "skin", "paint"):
+        if operation["kind"] not in ("costume", "skin", "paint", "blush"):
             _fail("Choose a supported texture edit mode.")
+        if "blush" in operation or operation["kind"] == "blush":
+            operation = dict(operation, blush=checked_blush(operation.get("blush")))
+            if "blush" not in row:
+                _fail("Baked blush is available only for a head material's main texture or its recolour texture.")
+            cheek_payload(session)
         raw, image = _png(operation["png"], row)
         image.close()
         total += len(raw); pixels += row["width"] * row["height"]
@@ -278,8 +553,16 @@ def _change_mask(before, after):
     return mask.point(lambda value: 255 if value else 0), alpha_mask
 
 
-def _write(obj, edited):
-    from PIL import Image, ImageChops
+def _write(obj, edited, blush=None, cheek=None):
+    """Write one edited texture as lossless RGBA32 with its authored mip count.
+
+    Painted texels propagate into the authored mips through their binary
+    footprint; every other authored mip texel is kept. A blush bake is not a
+    pixel edit: the shader rule is applied to each level in place, at each mip
+    texel's own UV centre, after the paint, so mips are never regenerated and
+    only texels whose rounded RGB changes are touched (alpha never).
+    """
+    from PIL import Image
     from . import decode
     from .model_materials import _original_mips
     original = obj.read()
@@ -292,31 +575,47 @@ def _write(obj, edited):
     mask, alpha_mask = _change_mask(before, edited)
     alpha_changed = alpha_mask.getbbox() is not None
     before.close()
-    if mask.getbbox() is None:
+    painted = mask.getbbox() is not None
+    if not painted and blush is None:
         return None
+    layer = texture_blush.layer_bytes(cheek, blush["layer"]) if blush is not None else None
+    bounds = texture_blush.layer_bounds(layer) if layer is not None else None
     width, height = edited.size
     payload = bytearray()
     footprint = mask
     alpha_footprint = alpha_mask
+    baked = []
     for level, source in enumerate(levels):
         size = (max(1, width >> level), max(1, height >> level))
         if level == 0:
             image = edited
         else:
-            # Preserve every authored mip texel whose source footprint was not
-            # changed. Binary propagation at each halving retains tiny strokes.
-            footprint = footprint.resize(size, Image.Resampling.BOX).point(lambda value: 255 if value else 0)
-            alpha_footprint = alpha_footprint.resize(size, Image.Resampling.BOX).point(lambda value: 255 if value else 0)
             authored = decode._android_image(source, deadline).convert("RGBA")
             if authored.size != size:
                 _fail("An original mip has invalid image dimensions.")
-            updated = edited.resize(size, Image.Resampling.BOX)
-            updated.putalpha(Image.composite(updated.getchannel("A"), authored.getchannel("A"), alpha_footprint))
-            image = Image.composite(updated, authored, footprint)
-            authored.close(); updated.close()
+            if painted:
+                # Preserve every authored mip texel whose source footprint was not
+                # changed. Binary propagation at each halving retains tiny strokes.
+                footprint = footprint.resize(size, Image.Resampling.BOX).point(lambda value: 255 if value else 0)
+                alpha_footprint = alpha_footprint.resize(size, Image.Resampling.BOX).point(lambda value: 255 if value else 0)
+                updated = edited.resize(size, Image.Resampling.BOX)
+                updated.putalpha(Image.composite(updated.getchannel("A"), authored.getchannel("A"), alpha_footprint))
+                image = Image.composite(updated, authored, footprint)
+                authored.close(); updated.close()
+            else:
+                image = authored
+        if layer is not None:
+            data, changed, _ = texture_blush.bake_rgba(image.tobytes(), image.width, image.height, layer, blush["k"], bounds)
+            baked.append(changed)
+            if changed:
+                if level:
+                    image.close()
+                image = Image.frombytes("RGBA", image.size, data)
         payload.extend(image.transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes())
-        if level:
+        if image is not edited:
             image.close()
+    if not painted and not any(baked):
+        return None
     tree = copy.deepcopy(obj.read_typetree())
     source_format = int(tree["m_TextureFormat"])
     tree["m_TextureFormat"] = 4  # lossless RGBA32 is supported by both game clients
@@ -330,16 +629,23 @@ def _write(obj, edited):
     if "m_StreamingMipmaps" in tree:
         tree["m_StreamingMipmaps"] = False
     obj.save_typetree(tree)
-    return {"name": str(tree.get("m_Name") or "Texture"), "width": width, "height": height,
-            "mipCount": count, "sourceFormat": _format(source_format), "resultFormat": "RGBA32",
-            "encodingChanged": source_format != 4,
-            "encodingReason": ("Lossless original-format encoding is unavailable; RGBA32 preserves unselected pixels and alpha."
-                               if source_format != 4 else "Lossless RGBA32 pixels retained."),
-            "unchangedPixelsPreserved": True, "alphaChanged": alpha_changed}
+    result = {"name": str(tree.get("m_Name") or "Texture"), "width": width, "height": height,
+              "mipCount": count, "sourceFormat": _format(source_format), "resultFormat": "RGBA32",
+              "encodingChanged": source_format != 4,
+              "encodingReason": ("Lossless original-format encoding is unavailable; RGBA32 preserves unselected pixels and alpha."
+                                 if source_format != 4 else "Lossless RGBA32 pixels retained."),
+              "unchangedPixelsPreserved": True, "alphaChanged": alpha_changed,
+              "payloadSha256": hashlib.sha256(payload).hexdigest()}
+    if blush is not None:
+        result["blush"] = {"layer": blush["layer"], "k": blush["k"], "changedTexels": baked}
+    return result
 
 
-def apply_edits(raw, source_index, operations, catalogue):
-    """Apply validated final PNGs to existing objects in a fresh Unity source."""
+def apply_edits(raw, source_index, operations, catalogue, cheek=None):
+    """Apply validated final PNGs to existing objects in a fresh Unity source.
+
+    ``cheek`` is the verified cheek_array payload, required by blush bakes.
+    """
     selected = [row for row in operations if row["texture"]["source"] == source_index]
     if not selected:
         return raw, []
@@ -354,9 +660,12 @@ def apply_edits(raw, source_index, operations, catalogue):
         obj = objects.get((identity["file"], identity["id"]))
         if row is None or obj is None or obj.type.name != "Texture2D":
             _fail("An edited texture no longer belongs to its original model.")
+        blush = operation.get("blush")
+        if blush is not None and not texture_blush.verify_payload(cheek):
+            _fail(CHEEK_UNAVAILABLE)
         _, image = _png(operation["png"], row)
         try:
-            change = _write(obj, image)
+            change = _write(obj, image, blush, cheek)
         finally:
             image.close()
         if change is not None:
@@ -370,8 +679,10 @@ def apply_edits(raw, source_index, operations, catalogue):
     if len(result) > model_edits.MAX_SOURCE_BYTES:
         _fail("The lossless edited model exceeds the supported model size. Edit fewer textures in one model.")
     # Reload emitted native bytes and prove every selected object retains its
-    # identity and the exact edited base-level RGBA, including transparent RGB.
+    # identity and the exact edited base-level RGBA, including transparent RGB,
+    # and that every written mip level survived byte for byte.
     _, _, reloaded = _objects(result)
+    written = {(row["texture"]["file"], row["texture"]["id"]): row["payloadSha256"] for row in changes}
     for operation in selected:
         identity = operation["texture"]
         obj = reloaded.get((identity["file"], identity["id"]))
@@ -379,10 +690,21 @@ def apply_edits(raw, source_index, operations, catalogue):
             _fail("The saved texture failed its original-identity reload check.")
         row = entries[(identity["source"], identity["file"], identity["id"])]
         _, expected = _png(operation["png"], row)
-        actual = decode._android_image(obj.read(), time.monotonic() + 60).convert("RGBA")
+        if operation.get("blush") is not None:
+            baked, _ = texture_blush.bake_image(expected, texture_blush.layer_bytes(cheek, operation["blush"]["layer"]),
+                                                operation["blush"]["k"])
+            expected.close()
+            expected = baked
+        texture = obj.read()
+        actual = decode._android_image(texture, time.monotonic() + 60).convert("RGBA")
         try:
             if actual.size != expected.size or actual.tobytes() != expected.tobytes():
                 _fail("The saved texture pixels failed exact reload validation.")
+            key = (identity["file"], identity["id"])
+            if key in written and hashlib.sha256(bytes(texture.get_image_data())).hexdigest() != written[key]:
+                _fail("The saved texture mip levels failed exact reload validation.")
         finally:
             actual.close(); expected.close()
+    for row in changes:
+        row.pop("payloadSha256", None)
     return result, changes
