@@ -155,6 +155,21 @@ async function main() {
     s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 2, level: 'custom', encoding: 'exact' }); assert(same(await live(page), expected(1, 2)));
     await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.k === 2 && !s.pending; });
     report.cases.push({ name: 'apply, undo/redo, re-bake without compounding and advanced strength' });
+    // Cancel preview drops the previewed choice: the next change starts from the applied bake.
+    await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = false; });
+    await click(page, '#viewer-texture-blush-level-veryStrong'); s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 3, level: 'veryStrong', encoding: 'exact' }); assert(s.blush.previewing);
+    await click(page, '#viewer-texture-cancel'); s = await state(page);
+    assert.deepStrictEqual([s.blush.choice, s.blush.pending, s.blush.previewing], [{ layer: 1, k: 2, level: 'custom', encoding: 'exact' }, false, false]);
+    assert.equal(s.blush.status, 'Applied: Custom (k 2) · Cheeks and nose (Akarame)'); assert(same(await live(page), expected(1, 2)));
+    assert.equal(await page.locator('#viewer-texture-blush-level-veryStrong').getAttribute('aria-checked'), 'false');
+    assert.equal(await page.locator('#viewer-texture-blush-k').inputValue(), '2');
+    await click(page, '#viewer-texture-blush-layer-0'); s = await state(page);
+    assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 2, level: 'custom', encoding: 'exact' }, 'a type click keeps the applied strength, not the cancelled one');
+    assert.equal(s.blush.status, 'Preview, not applied yet: Custom (k 2) · Cheeks (Ppo)'); assert(same(await live(page), expected(0, 2)));
+    await click(page, '#viewer-texture-cancel'); s = await state(page);
+    assert.deepStrictEqual([s.blush.choice, s.blush.pending], [{ layer: 1, k: 2, level: 'custom', encoding: 'exact' }, false]);
+    report.cases.push({ name: 'Cancel preview restores the applied choice; the next type click starts from it' });
+
 
     // Keyboard undo/redo from the panel: a click on its text leaves focus on the page body.
     await page.locator('#viewer-texture-blush-status').click(); await page.keyboard.press('Control+z'); await frames(page);
@@ -302,17 +317,22 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && !s.pending; });
       let saved = await saveNow();
       assert.deepStrictEqual(saved.notes, [fixture.savedExact]); assert.deepStrictEqual(writtenFormat(saved.previewPaths[0]), [4, 7], 'exact pixels: lossless RGBA32');
+      // A cancelled preview never comes back with the save-mode checkbox.
+      await click(page, '#viewer-texture-blush-level-veryStrong'); await click(page, '#viewer-texture-cancel'); s = await state(page);
+      assert.deepStrictEqual([s.blush.choice, s.blush.pending], [{ layer: 0, k: 1.65, level: 'medium', encoding: 'exact' }, false]);
+      assert.equal(s.blush.status, 'Applied: Medium (k 1.65) · Cheeks (Ppo)');
       // Opt in: the choice is part of the operation, previewed like any other change and named in the status.
       await click(page, '#viewer-texture-blush-astc-keep'); s = await state(page);
       assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'astc-keep' }); assert(s.blush.previewing);
       assert.match(s.blush.status, /^Preview, not applied yet: Medium \(k 1\.65\) · Cheeks \(Ppo\) · ASTC kept$/);
+      assert.deepStrictEqual(s.blush.displayed, { layer: 0, k: 1.65, encoding: 'astc-keep' }, 'the previewed strength is unchanged');
       await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.encoding === 'astc-keep' && !s.pending; });
       edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits[0].blush, { layer: 0, k: 1.65, encoding: 'astc-keep' });
       saved = await saveNow();
       assert.deepStrictEqual(saved.notes, [fixture.savedAstc]); assert.deepStrictEqual(writtenFormat(saved.previewPaths[0]), [56, 7], 'ASTC 6x6 kept');
       assert.ok((await page.locator('#viewer-save-status').textContent()).endsWith(' ' + fixture.savedAstc));
       await click(page, '#viewer-texture-undo'); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 1.65, encoding: 'exact' });
-      report.cases.push({ name: 'ASTC head: exact pixels by default, ASTC kept on request, save summary names the mode' });
+      report.cases.push({ name: 'ASTC head: exact pixels by default, ASTC kept on request, save summary names the mode; a cancelled level never returns with the checkbox' });
     }
 
     // Without a verified array the entry explains why and refuses to apply.

@@ -1125,7 +1125,7 @@
     }
     function cancelPreview() {
       sequence++; if (previewTimer) global.clearTimeout(previewTimer); previewTimer = null;
-      if (blushPending || blushBefore) { blushPending = false; blushBefore = false; if (active) upload(active); }
+      if (blushPending || blushBefore) { blushPending = false; blushBefore = false; settleBlushChoice(); if (active) upload(active); }
       entries.forEach(function (entry) { entry.previewStamp = null; if (entry.preview) { entry.preview = null; if (entry.engine) entry.engine.setPreviewImage(null); upload(entry); } }); refreshButtons();
     }
     function applyPreview() {
@@ -1177,6 +1177,14 @@
     function sameBlush(a, b) { return B ? B.sameOperation(a, b) : !a && !b; }
     function copyBlush(value) { return B ? B.copyOperation(value) : null; }
     function selectedBlush() { return copyBlush({ layer: blushChoice.layer, k: blushChoice.k, encoding: blushChoice.encoding }); }
+    // Every blush change starts from what the panel shows: the unapplied
+    // choice while it is previewed, else the applied bake, else the defaults.
+    // A preview that is cancelled or dropped leaves nothing of itself behind.
+    function defaultBlushChoice() { return { layer: B.DEFAULT_LAYER, k: B.levelK(B.DEFAULT_LEVEL), level: B.DEFAULT_LEVEL, encoding: B.DEFAULT_ENCODING }; }
+    function choiceOf(value) { var op = copyBlush(value); return { layer: op.layer, k: op.k, level: B.levelFor(op.k) || "custom", encoding: op.encoding }; }
+    function shownBlush(entry) { return blushPending ? blushChoice : entry && entry.blush ? choiceOf(entry.blush) : null; }
+    function baseBlush(entry) { return Object.assign({}, shownBlush(entry) || defaultBlushChoice()); }
+    function settleBlushChoice() { if (B && !blushPending) blushChoice = baseBlush(active); }
     // ASTC block edge of the texture (from its catalogue format), or 0.
     function astcBlock(entry) { var match = /^ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1$/.exec(entry && entry.record && entry.record.format || ""); return match ? Number(match[1]) : 0; }
     function validBlush(value) { if (!B) return false; try { B.checkedOperation(value); return true; } catch (_) { return false; } }
@@ -1232,31 +1240,33 @@
     }
     function initBlushChoice(entry) {
       if (!B) return;
-      var committed = entry && entry.blush;
-      if (committed) { blushChoice = { layer: committed.layer, k: committed.k, level: B.levelFor(committed.k) || "custom", encoding: committed.encoding }; blushPending = false; }
-      else { blushChoice = { layer: B.DEFAULT_LAYER, k: B.levelK(B.DEFAULT_LEVEL), level: B.DEFAULT_LEVEL, encoding: B.DEFAULT_ENCODING }; blushPending = !!blushRule(entry); }
+      blushPending = false; blushChoice = baseBlush(entry); blushPending = !(entry && entry.blush) && !!blushRule(entry);
       blushBefore = false; blushSwatches = null; blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep";
     }
-    function blushChoiceChanged() { blushPending = true; blushBefore = false; blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; if (active) upload(active); refreshButtons(); }
-    function chooseBlushLevel(id) { if (!blushEditable(active)) return false; blushChoice.k = B.levelK(id); blushChoice.level = id; blushChoiceChanged(); return true; }
-    function chooseBlushType(layer) { if (!blushEditable(active)) return false; blushChoice.layer = B.checkedLayer(layer); blushChoiceChanged(); return true; }
+    // One change (a level, a type, a strength or the save mode) on top of the shown state.
+    function changeBlush(change) {
+      blushChoice = Object.assign(baseBlush(active), change); blushPending = true; blushBefore = false;
+      blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; if (active) upload(active); refreshButtons(); return true;
+    }
+    function chooseBlushLevel(id) { if (!blushEditable(active)) return false; return changeBlush({ k: B.levelK(id), level: id }); }
+    function chooseBlushType(layer) { if (!blushEditable(active)) return false; return changeBlush({ layer: B.checkedLayer(layer) }); }
     // "exact" (default) or "astc-keep"; keeping ASTC needs an ASTC texture.
     function setBlushEncoding(value) {
-      var keep = blushChoice.encoding === "astc-keep";
+      var keep = baseBlush(active).encoding === "astc-keep", encoding;
       if (!blushEditable(active) || value === "astc-keep" && !astcBlock(active)) { blushKeep.checked = keep; return false; }
-      try { blushChoice.encoding = B.checkedEncoding(value); } catch (err) { blushKeep.checked = keep; say("", err.message); return false; }
-      blushChoiceChanged(); return true;
+      try { encoding = B.checkedEncoding(value); } catch (err) { blushKeep.checked = keep; say("", err.message); return false; }
+      return changeBlush({ encoding: encoding });
     }
     function setBlushStrength(value) {
       if (!blushEditable(active)) return false;
       var k = typeof value === "number" ? value : Number(String(value).trim());
       try { B.checkedK(k); } catch (err) { say("", err.message); return false; }
-      blushChoice.k = k; blushChoice.level = B.levelFor(k) || "custom"; blushChoiceChanged(); return true;
+      return changeBlush({ k: k, level: B.levelFor(k) || "custom" });
     }
     function setBlushBefore(value) { blushBefore = !!value && !!blushRule(active); if (active) upload(active); refreshButtons(); return blushBefore; }
     function setEntryBlush(entry, value) {
       entry.blush = copyBlush(value);
-      if (entry === active) { if (value) blushChoice = { layer: value.layer, k: value.k, level: B.levelFor(value.k) || "custom", encoding: B.copyOperation(value).encoding }; blushPending = false; blushBefore = false; blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; }
+      if (entry === active) { blushPending = false; blushBefore = false; settleBlushChoice(); blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; }
       entry.modified = !!entry.pixelModified || !!entry.blush;
       if (!entry.modified) { entry.encodeGeneration = (entry.encodeGeneration || 0) + 1; entry.encoding = false; entry.encodeError = null; entry.png = null; }
       else if (!entry.png && !entry.encoding && entry.engine) encodeEntry(entry);
@@ -1274,7 +1284,7 @@
       var entry = active;
       if (!blushEditable(entry)) { if (blushRule(entry) && !cheekAvailable()) say("", cheekReason()); return false; }
       var next = selectedBlush(); try { B.checkedOperation(next); } catch (err) { say("", err.message); return false; }
-      if (sameBlush(entry.blush, next)) { blushPending = false; blushBefore = false; upload(entry); refreshButtons(); return false; }
+      if (sameBlush(entry.blush, next)) { blushPending = false; blushBefore = false; settleBlushChoice(); upload(entry); refreshButtons(); return false; }
       try { entry.engine.recordState("Bake blush", blushStep(entry, entry.blush, next)); } catch (err) { say("", err.message); return false; }
       setEntryBlush(entry, next); say("Blush applied. Save model edits or a Mod ZIP to export.");
       if (blushStatus.scrollIntoView) blushStatus.scrollIntoView({ block: "nearest" });
@@ -1303,13 +1313,14 @@
       tabButtons.blush.hidden = !records.length;
       if (proxyState && attachProxyFor(proxyState.entry) !== proxyState.head) clearProxy();
       if (activeTab !== "blush") return;
-      var shown = blushPending ? blushChoice : entry && entry.blush ? { layer: entry.blush.layer, k: entry.blush.k, level: B.levelFor(entry.blush.k) || "custom", encoding: entry.blush.encoding } : null;
-      var layerIndex = shown ? shown.layer : blushChoice.layer;
+      // Levels light up only for a shown blush; the type, the strength value
+      // and the save mode show what the next change starts from.
+      var shown = shownBlush(entry), base = baseBlush(entry), layerIndex = base.layer;
       blushTarget.textContent = rule ? t(rule.role === "attach" ? "Recolour face texture" : "Face texture") + ": " + entry.record.name : t("Choose a face texture to bake a blush.");
       blushTypeButtons.forEach(function (item) { var on = Number(item.dataset.blushLayer) === layerIndex; item.setAttribute("aria-checked", String(on)); item.disabled = !editable; });
       if (rule && cheek && entry.engine) {
-        var stamp = layerStamp(entry) + ":" + layerIndex + ":" + blushChoice.k;
-        if (!blushSwatches || blushSwatches.entry !== entry || blushSwatches.stamp !== stamp) blushSwatches = { entry: entry, stamp: stamp, value: B.swatches(entry.engine.getImage(false), cheek.layers[layerIndex], B.LEVELS.map(function (level) { return level.k; }).concat([blushChoice.k])) };
+        var stamp = layerStamp(entry) + ":" + layerIndex + ":" + base.k;
+        if (!blushSwatches || blushSwatches.entry !== entry || blushSwatches.stamp !== stamp) blushSwatches = { entry: entry, stamp: stamp, value: B.swatches(entry.engine.getImage(false), cheek.layers[layerIndex], B.LEVELS.map(function (level) { return level.k; }).concat([base.k])) };
       } else blushSwatches = null;
       var colours = blushSwatches && blushSwatches.value.colours;
       blushLevelButtons.forEach(function (row, index) {
@@ -1321,8 +1332,8 @@
       blushBaseSwatch.style.background = blushSwatches ? rgbText(blushSwatches.value.base) : ""; blushBase.dataset.colour = blushSwatches ? hex(blushSwatches.value.base) : "";
       blushCustomSwatch.style.background = colours ? rgbText(colours[colours.length - 1]) : "";
       var block = astcBlock(entry);
-      blushKField.disabled = !editable; blushKeep.disabled = !editable || !block; if (document.activeElement !== blushKField) blushKField.value = String(shown ? shown.k : blushChoice.k);
-      blushKeep.checked = (shown || blushChoice).encoding === "astc-keep";
+      blushKField.disabled = !editable; blushKeep.disabled = !editable || !block; if (document.activeElement !== blushKField) blushKField.value = String(base.k);
+      blushKeep.checked = base.encoding === "astc-keep";
       blushKeepHint.textContent = !rule || block ? t("Smaller file and memory, but the 6×6 blocks the blush touches are compressed again, so nearby pixels change slightly too.").replace(/6×6/g, (block || 6) + "×" + (block || 6))
         : t("This texture is not ASTC-compressed, so it is always saved as exact pixels.");
       applyBlushButton.disabled = !editable || !blushPending || sameBlush(entry.blush, selectedBlush());
