@@ -1051,10 +1051,16 @@
     });
   }
 
-  // Focus without a jump; scrolls only when the clip moved out of view (to another row).
-  function focusClip(clip) {
+  // Focus without a jump; with follow, a clip whose lane moved out of view (an Edit-tab
+  // reorder) is scrolled back to the nearest edge.
+  function focusClip(clip, follow = true) {
     clip.focus({ preventScroll: true });
-    clip.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    if (follow) clip.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }
+
+  function inView(element, box) {
+    const a = element.getBoundingClientRect(), b = box.getBoundingClientRect();
+    return a.right > b.left && a.left < b.right && a.bottom > b.top && a.top < b.bottom;
   }
 
   function renderTimelineLane(track) {
@@ -1228,10 +1234,11 @@
 
   function renderTimeline() {
     const grid = byId("mv-timeline-grid"), scroll = byId("mv-timeline-scroll");
-    // A rebuild keeps keyboard focus on the same clip, wherever its lane lands.
+    // A rebuild keeps keyboard focus on the same clip, wherever its lane lands; the view
+    // follows it only if it was in view (a resize does not scroll back to a far clip).
     const active = document.activeElement;
     const focused = active && active !== grid && grid.contains(active) && active.classList.contains("mv-clip")
-      ? { track: active.dataset.track, event: active.dataset.event } : null;
+      ? { track: active.dataset.track, event: active.dataset.event, follow: inView(active, scroll) } : null;
     grid.replaceChildren();
     timelineLanes.clear();
     timelineLabels.clear();
@@ -1301,7 +1308,7 @@
     syncTrackControls();
     syncPosition();
     const clip = focused && grid.querySelector(`.mv-clip[data-track="${CSS.escape(focused.track)}"][data-event="${CSS.escape(focused.event)}"]`);
-    if (clip) focusClip(clip);
+    if (clip) focusClip(clip, focused.follow);
   }
 
   function renderPreviewStatus() {

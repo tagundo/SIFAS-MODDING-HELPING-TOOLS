@@ -566,6 +566,20 @@ async function run() {
     await page.keyboard.press('Control+z');
     assert.equal(findEvent((await state(page)).project, cheek.id).start, cheek.start);
     assert.equal(await focusedEvent(), cheek.id, 'an undo that moves the track back keeps the focus too');
+    // A resize rebuild keeps the focus as well, without scrolling back to a clip out of view.
+    const far = await page.evaluate(() => {
+      document.activeElement.dataset.stale = 'true';
+      const scroll = document.getElementById('mv-timeline-scroll');
+      scroll.scrollLeft = scroll.scrollWidth;
+      return scroll.scrollLeft;
+    });
+    assert(far > 1000, `scrolled away from the clip (${far})`);
+    await page.setViewportSize({ width: 1200, height: 900 });
+    await page.waitForFunction(() => innerWidth === 1200 && !document.activeElement?.dataset?.stale);
+    assert.equal(await focusedEvent(), cheek.id, 'a resize rebuild keeps the focus');
+    assert(Math.abs(await page.evaluate(() => document.getElementById('mv-timeline-scroll').scrollLeft) - far) < 2, 'and leaves the view where it was');
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForFunction(() => innerWidth === 1280);
     await page.locator('#mv-tab-camera').click();
     const edited = (await state(page)).project;
 
