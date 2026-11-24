@@ -328,8 +328,11 @@ async function testStageEmissiveHold() {
   controller.dispose();
   assert(MVStudioLighting.approximately(1, 1.0000005) && !MVStudioLighting.approximately(1, 1.000002),
     "Mathf.Approximately is a 1e-6 relative test");
-  assert(MVStudioLighting.approximately(0, 1e-40) && !MVStudioLighting.approximately(0, 1e-36),
-    "Mathf.Approximately has an 8 * min-normal floor");
+  // Mathf.Epsilon is FloatMinDenormal (2^-149): the client never sets FPCR.FZ.
+  const epsilon = 2 ** -149;
+  assert.equal(MVStudioLighting.APPROXIMATELY_FLOOR, 8 * epsilon, "the floor is 8 * Mathf.Epsilon");
+  assert(MVStudioLighting.approximately(0, 7 * epsilon) && !MVStudioLighting.approximately(0, 8 * epsilon) &&
+    !MVStudioLighting.approximately(0, 1e-40), "Mathf.Approximately has an 8 * FloatMinDenormal floor");
   console.log("Native stage emissive holds (CheckSame color, Approximately intensity) passed");
 }
 

@@ -27,8 +27,9 @@
     "LiveMemberScalingTrack", "LiveSplitScreenTrack", "LiveStageAmbientTrack", "LiveStageEmissiveTrack",
     "LiveStageSingleAmbientTrack", "MemberCheekTrack", "MemberEyeTrack", "MemberGazeTrack", "MemberLipSyncTrack",
   ]);
-  // Mathf.Approximately(weight, 0): |weight| < 8 * Mathf.Epsilon (the smallest denormal float here).
-  const ZERO_WEIGHT = 1.1210387714598537e-44;
+  // Mathf.Approximately(weight, 0): |weight| < 8 * Mathf.Epsilon, MVStudioLighting's floor (its
+  // comment has the evidence for Epsilon). mv-studio-lighting.js loads before this file.
+  const ZERO_WEIGHT = global.MVStudioLighting.APPROXIMATELY_FLOOR;
 
   function inputs(track) {
     return (track.events || []).map((event, index) => ({ event, index }))

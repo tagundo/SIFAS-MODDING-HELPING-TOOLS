@@ -93,10 +93,19 @@
   }
 
   // UnityEngine.Mathf.Approximately (0x34ab0ac): |b - a| < max(1e-6 * max(|a|, |b|),
-  // Mathf.Epsilon * 8), the 1e-6 being the float at 0x56f60f8. Mathf.Epsilon is the smallest
-  // normal float where denormals flush to zero (ARM). LiveCoreStageEmissive.ApplyEmissiveIntensity
-  // (0x2f74f5c) skips Material.SetFloat while it holds for the intensity it last wrote.
-  const APPROXIMATELY_FLOOR = Math.fround(Math.fround(1.17549435e-38) * 8);
+  // Mathf.Epsilon * 8), the 1e-6 being the float at 0x56f60f8 and Mathf.Epsilon read from the
+  // Mathf statics at run time. Mathf..cctor (0x34ab480) stores Epsilon =
+  // MathfInternal.IsFlushToZeroEnabled ? FloatMinNormal : FloatMinDenormal; MathfInternal..cctor
+  // (0x441442c) stores FloatMinNormal = 0x00800000 and FloatMinDenormal = 0x00000001 and sets
+  // IsFlushToZeroEnabled = (FloatMinDenormal == 0) with a scalar fcmp, which is true only when
+  // FPCR.FZ flushes the denormal input. No arm64 library of the client APK writes FPCR (no msr
+  // fpcr in libil2cpp, libunity or any plugin; the few fpcr accesses are reads in compiler-rt
+  // and SQLite), so the threads keep the AArch64 Linux default FZ = 0: IsFlushToZeroEnabled is
+  // false and Mathf.Epsilon is FloatMinDenormal, 2^-149. Shared with MVStudioMixer.
+  const MATHF_EPSILON = 1.401298464324817e-45;
+  const APPROXIMATELY_FLOOR = Math.fround(MATHF_EPSILON * 8);
+  // LiveCoreStageEmissive.ApplyEmissiveIntensity (0x2f74f5c) skips Material.SetFloat while
+  // Approximately holds for the intensity it last wrote.
   const APPROXIMATELY_SCALE = Math.fround(1e-6);
 
   function approximately(a, b) {
@@ -243,5 +252,6 @@
     };
   }
 
-  global.MVStudioLighting = { nativeWeight, clipWeight, memberColor, sample, heldColor, heldScalar, approximately, HOLD_EPSILON };
+  global.MVStudioLighting = { nativeWeight, clipWeight, memberColor, sample, heldColor, heldScalar, approximately, HOLD_EPSILON,
+    APPROXIMATELY_FLOOR };
 })(typeof window !== "undefined" ? window : globalThis);
