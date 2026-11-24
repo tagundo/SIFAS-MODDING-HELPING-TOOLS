@@ -62,9 +62,17 @@ const document = {
 const text = (element) => element.children.map(child => child.textContent);
 
 const scenes = [];
+// resize() draws in the real scene; `drawing` marks a draw in progress, so a
+// resize while it is set is a nested draw.
 class FakeScene {
-  constructor(options) { this.options = options; this.loaded = []; }
-  setVisible() {} setPlaying() {} resize() {} dispose() {} setCamera() {} frameAll() {} setScreenFade() {}
+  constructor(options) { this.options = options; this.loaded = []; this.resizes = 0; this.drawing = false; this.nested = 0; }
+  resize() { this.resizes++; if (this.drawing) this.nested++; }
+  // The scene reports a note from inside its draw (MVStudioDofFocus.sample in renderView).
+  warnWhileDrawing(message) {
+    this.drawing = true;
+    try { this.options.onWarning(message); } finally { this.drawing = false; }
+  }
+  setVisible() {} setPlaying() {} dispose() {} setCamera() {} frameAll() {} setScreenFade() {}
   seek() {} playbackFrame() {}
   load(project) { this.loaded.push(project); return Promise.resolve(); }
 }
@@ -104,8 +112,10 @@ vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studi
 
   const note = 'A depth-of-field clip targets member 2, which this MV does not have; ' +
     "the game keeps the previous frame's depth of field, and so does this preview.";
-  scene.options.onWarning(note);
-  scene.options.onWarning(note);
+  const microtask = () => Promise.resolve();
+  scene.warnWhileDrawing(note);
+  scene.warnWhileDrawing(note);
+  await microtask();
   assert.deepEqual(text(list), ['Imported timeline note.', note], 'a preview note is listed once after the import notes');
   assert.deepEqual(studio.getState().project.warnings, ['Imported timeline note.'], 'preview notes are not saved into the project');
 
@@ -115,8 +125,30 @@ vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studi
   assert.equal(scene.loaded.length, 2);
   assert.deepEqual(text(list), [], 'loading another project clears the previous preview notes');
   assert.equal(panel.hidden, true, 'no notes: the warnings panel stays closed');
-  scene.options.onWarning(note);
+  const resizes = scene.resizes;
+  scene.warnWhileDrawing(note);
+  assert.equal(scene.nested, 0, 'opening the panel for a note does not resize (draw) inside the draw that reported it');
+  assert.equal(scene.resizes, resizes, 'nothing resizes before the reporting draw returns');
+  assert.equal(panel.hidden, true, 'the panel opens after the reporting draw');
+  await microtask();
   assert.deepEqual(text(list), [note]);
   assert.equal(panel.hidden, false, 'a preview note shows the warnings panel');
-  console.log('MV Studio preview warnings: listed once with the import notes, panel shown, not saved, cleared on the next project.');
+  assert(scene.resizes > resizes, 'the scene is resized for the opened panel once the draw has returned');
+  assert.equal(scene.nested, 0);
+  // Several notes in one draw update the list together.
+  const second = 'A depth-of-field clip targets body part 5, which BodyPartManager never holds; ' +
+    "the game keeps the previous frame's depth of field, and so does this preview.";
+  const third = 'A depth-of-field clip picks a member by cameraAutoDistanceMode 1, but this MV has no performers; ' +
+    "this preview keeps the previous frame's depth of field.";
+  const before = scene.resizes;
+  scene.drawing = true;
+  scene.options.onWarning(second);
+  scene.options.onWarning(third);
+  scene.drawing = false;
+  assert.deepEqual(text(list), [note], 'the list waits for the reporting draw to return');
+  await microtask();
+  assert.deepEqual(text(list), [note, second, third]);
+  assert.equal(scene.resizes, before, 'an open panel is not laid out again');
+  assert.equal(scene.nested, 0);
+  console.log('MV Studio preview warnings: listed once with the import notes, panel shown after the reporting draw (no nested draw), not saved, cleared on the next project.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

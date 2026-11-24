@@ -38,7 +38,7 @@
   // Runtime notes from the 3D preview of the open project (for example a
   // depth-of-field clip whose focus target the preview cannot find). They are
   // listed with the project's import notes and never saved into the project.
-  let previewWarnings = [];
+  let previewWarnings = [], previewWarningsQueued = false, warningsPanelListed = false;
   // Device option of the original client (off by default): Live3DScene requests
   // the display refresh rate instead of the preset's 30/60 fps, and the swing
   // physics step once per frame at that rate.
@@ -279,7 +279,9 @@
   function renderPanelMenu() {
     const menu = byId("mv-panel-options");
     menu.replaceChildren();
-    for (const key of availablePanels()) {
+    const panels = availablePanels();
+    warningsPanelListed = panels.includes("warnings");
+    for (const key of panels) {
       const check = make("input", null, { type: "checkbox", "data-mv-panel-option": key });
       check.checked = !hidden.includes(key);
       const label = make("label");
@@ -768,12 +770,20 @@
     byId("mv-warning-list").replaceChildren(...warningLines().map((line) => make("li", t(line))));
   }
 
+  // The scene reports these from inside its own draw (MVStudioDofFocus.sample
+  // runs in renderView and playbackFrame). Opening the warnings panel resizes
+  // the scene, and a resize draws, so the list and the panel update once the
+  // current call stack has returned, never inside the draw that reported.
   function previewWarning(message) {
     if (typeof message !== "string" || !message || previewWarnings.includes(message) || previewWarnings.length >= 64) return;
-    const shown = warningLines().length > 0;
     previewWarnings.push(message);
-    renderWarnings();
-    if (!shown) renderPanelMenu();
+    if (previewWarningsQueued) return;
+    previewWarningsQueued = true;
+    Promise.resolve().then(() => {
+      previewWarningsQueued = false;
+      renderWarnings();
+      if (!warningsPanelListed && warningLines().length) renderPanelMenu();
+    });
   }
 
   function render() {
