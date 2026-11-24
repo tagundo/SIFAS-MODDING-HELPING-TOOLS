@@ -75,6 +75,17 @@ function testDrawOrderMatchesNativeLanes() {
   assert.equal(first.source.position[0], f32(f32(native.nativeUnit(shape()) - .5) * 12));
 }
 
+// A per-step start (libunity.so 0x60bd60) keeps a lifetime of at least 1e-5 s (0x3727c5ac at 0x60c2c8) after
+// scaling it by the sub-emitter inherited lifetime (InitialModule +0x1e8), which is 1 outside sub-emitters.
+function testPerStepLifetimeFloor() {
+  for (const [lifetime, kept] of [[5e-5, 5e-5], [2e-6, 1e-5], [0, 1e-5]]) {
+    const stream = P.create(system({main: {lifetime: constant(lifetime)}, emission: {rate: constant(60)}}), 11);
+    const atoms = stream.sample(1, 30);
+    assert.ok(atoms.length > 0, `particles started at lifetime ${lifetime}`);
+    for (const atom of atoms) assert.equal(atom.source.life, native.nativeInverseLifetime(f32(kept)), `lifetime ${lifetime}`);
+  }
+}
+
 function testSeekMatchesPlayback() {
   const row = system({main: {prewarm: true}, velocity: {x: constant(0), y: between(-.2, .2), z: constant(.1), worldSpace: false},
     size: {separateAxes: false, curve: linear}});
@@ -147,6 +158,170 @@ function testPrewarmActivationBuildUp() {
   const unflagged = system({main: {prewarm: true, duration: 10, lifetime: between(12, 12), maxParticles: 10},
     emission: {rate: constant(0), bursts: []}, culling: procedural});
   assert.equal(alive(P.create(unflagged, 3), 1), 0, "an old descriptor's empty module counts as disabled");
+}
+
+// The particles of a procedural prewarm come from its batches (libunity.so 0x1d7a94), checked against an
+// independent model of the client rule, which a unicorn emulation of 0x60fe08 reproduced: per batch, groups
+// of four InitialModule lanes draw the lifetime first; a group whose four lanes are all dead stops after that
+// one draw and keeps nothing; a kept group draws word, size, rotation and colour and keeps min(left, 4)
+// lanes, `left` going down only for kept groups; the ShapeModule lanes then run over the kept particles.
+// Motion and time (0x1d7ed8 / 0x1d7fd8): the batch time is the loop time at the end of its step; a kept
+// particle's lived offset is (carry + j) * spacing while carry + j is below the batch's rate count, else 0
+// (j counting the batch's kept particles, carry + j summed one at a time as the client does); its start
+// speed is drawn again from salted(word, 0x96aa4de3) at batch time * (1 / duration), and it moves along its
+// box direction by that offset and then by every step after its batch's step; gravity acts in closed form
+// over the particle's whole time (0x1d8284-0x1d8334).
+
+// A MinMaxCurve as Unity evaluates it (states 0-3), on the native curve emulation.
+function curveOf(curve) {
+  const keys = rows => native.nativeCurve(rows.map(([time, value, incoming, outgoing]) =>
+    [f32(time), f32(value), incoming === null ? null : f32(incoming), outgoing === null ? null : f32(outgoing)]));
+  const mix = (a, b, weight) => f32(a + f32(f32(b - a) * weight));
+  const scalar = f32(curve.scalar), low = f32(curve.min);
+  if (curve.mode === 0) return () => scalar;
+  if (curve.mode === 3) return (time, weight) => mix(low, scalar, weight);
+  const upper = keys(curve.maxKeys);
+  if (curve.mode === 1) return time => f32(upper(time) * scalar);
+  const lower = keys(curve.minKeys);
+  return (time, weight) => f32(mix(lower(time), upper(time), weight) * scalar);
+}
+
+// The prewarm's steps and the loop time at the end of each (0x1d7908 stores it after the clock advance).
+function prewarmClock(row, horizon) {
+  const cycle = f32(row.main.duration);
+  const {steps} = P.prewarmSteps(f32(horizon), cycle);
+  let clock = f32(f32(f32(Math.ceil(f32(f32(horizon) / cycle)) * cycle) - f32(horizon)) % cycle);
+  const ends = steps.map(dt => {
+    const next = f32(clock + dt);
+    clock = next > cycle ? f32(next - cycle) : next;
+    return clock;
+  });
+  return {steps, ends};
+}
+
+function regenerated(row, seed, batches, {steps, ends}) {
+  const lanes = [0, 1, 2, 3].map(lane => ({initial: native.nativeRandom((seed + 367 * lane) >>> 0),
+    shape: native.nativeRandom((seed + 367 * lane) >>> 0)}));
+  const unit = draw => native.nativeUnit(draw());
+  const lifetime = curveOf(row.main.lifetime), speed = curveOf(row.main.speed);
+  const cycle = f32(row.main.duration);
+  const kept = [];
+  let skipped = 0, phantoms = 0;
+  for (const batch of batches) {
+    const time = f32(ends[batch.step] / cycle), first = kept.length;
+    let left = batch.count;
+    for (let base = 0; base < batch.count; base += 4) {
+      const lives = lanes.map(({initial}) => Math.max(f32(1e-6), lifetime(time, unit(initial))));
+      const death = lives.map((life, lane) => f32(f32(life - batch.age) -
+        (base + lane < batch.rate ? f32(f32(batch.carry + base + lane) * batch.spacing) : 0)));
+      if (death.every(value => value <= 0)) {
+        skipped++;
+        continue;
+      }
+      const words = lanes.map(({initial}) => initial());
+      for (const {initial} of lanes) {
+        initial();  // size
+        initial();  // rotation
+        initial();  // colour
+      }
+      for (let lane = 0; lane < Math.min(left, 4); lane++) {
+        if (base + lane >= batch.count) phantoms++;
+        const inverse = native.nativeInverseLifetime(lives[lane]);
+        kept.push({word: words[lane], life: inverse, age: f32(Math.max(0, f32(1 - f32(death[lane] * inverse))) * 100)});
+      }
+      left -= 4;
+    }
+    const at = f32(ends[batch.step] * f32(1 / cycle));
+    let order = f32(batch.carry);
+    for (const entry of kept.slice(first)) {
+      entry.unspaced = !(order < batch.rate);
+      entry.offset = entry.unspaced ? 0 : f32(order * batch.spacing);
+      entry.speed = speed(at, native.nativeUnit(native.nativeRandom((entry.word + 0x96aa4de3) >>> 0)()));
+      entry.later = steps.slice(batch.step + 1);
+      entry.batchAge = batch.age;
+      order = f32(order + 1);
+    }
+  }
+  for (let base = 0; base < kept.length; base += 4) {
+    lanes.forEach(({shape}, lane) => {
+      const box = row.shape.scale.map(span => f32(f32(unit(shape) - .5) * span));
+      const entry = kept[base + lane];
+      if (!entry) return;
+      entry.position = box;
+      // A box emits along +Z: the particle moves by its lived offset, then by each later step.
+      const start = [0, 0, 1].map(axis => f32(axis * entry.speed));
+      entry.at = box.slice();
+      for (const dt of [entry.offset, ...entry.later]) {
+        entry.at = entry.at.map((value, axis) => f32(value + f32(start[axis] * dt)));
+      }
+      // Gravity in closed form over its whole time t = batch age + offset (0x1d8284-0x1d8334):
+      // x += G t * (t * .5), v += G t, G = 9.81 * modifier along the down axis (0, -1, 0).
+      const time = f32(entry.batchAge + entry.offset), pull = f32(f32(9.81) * f32(row.main.gravity.scalar));
+      const gained = [0, -1, 0].map(axis => f32(f32(pull * axis) * time));
+      entry.at = entry.at.map((value, axis) => f32(value + f32(gained[axis] * f32(time * .5))));
+      entry.velocity = start.map((value, axis) => f32(value + gained[axis]));
+    });
+  }
+  return {kept, skipped, phantoms};
+}
+
+function testProceduralPrewarmRegeneration() {
+  const procedural = {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true, procedural: true};
+  // Start speeds between two curves rising over the loop: where a batch samples them matters.
+  const rising = {mode: 2, scalar: 1, min: 1, minKeys: [[0, 1, 1, 1], [1, 2, 1, 1]], maxKeys: [[0, 2, 2, 2], [1, 4, 2, 2]]};
+  const kira = (rate, max, gravity = 0) => system({main: {prewarm: true, duration: 50, lifetime: between(1, 10),
+    maxParticles: max, speed: rate === 15 ? between(1, 2) : rising, gravity: constant(gravity)},
+  emission: {enabled: true, rate: constant(rate), bursts: []}, culling: procedural});
+  // A lifetime growing over the loop, 1 s and .2 s steps, and a burst: kept particles past the batch's rate
+  // count move from their batch's step end without a spacing offset.
+  const burst = (gravity = 0) => system({main: {prewarm: true, duration: 50, maxParticles: 1000, speed: rising,
+    lifetime: {mode: 2, scalar: 1, min: 1, minKeys: [[0, 4, 4, 4], [1, 8, 4, 4]], maxKeys: [[0, 6, 6, 6], [1, 12, 6, 6]]},
+    gravity: constant(gravity)}, emission: {enabled: true, rate: constant(10), bursts: [{time: 41.5, count: constant(6),
+    cycles: 1, interval: 1, probability: 1}]}, culling: procedural});
+  let skippedAny = 0, phantomAny = 0, unspacedAny = 0, moved = 0, fell = 0;
+  // The last two fall with a gravity modifier of .5 and .02.
+  const cases = [[kira(15, 40), 10, 3127128034], [kira(30, 60), 10, 3127128034], [kira(30, 60), 10, 77],
+    [kira(30, 60), 10, 2], [kira(15, 40), 10, 5], [burst(), 12, 3127128034], [burst(), 12, 9],
+    [burst(.5), 12, 5], [kira(30, 60, .02), 10, 77]];
+  for (const [row, horizon, seed] of cases) {
+    const label = `rate ${row.emission.rate.scalar}, seed ${seed}`;
+    const stream = P.create(row, seed), clock = prewarmClock(row, horizon);
+    assert.ok(stream.batches.length > 3, "the procedural prewarm keeps its batches");
+    if (row.main.maxParticles < 1000) {
+      assert.equal(stream.batches.reduce((sum, batch) => sum + batch.count, 0), row.main.maxParticles,
+        "the batch cap stops at maxParticles");
+    }
+    for (const batch of stream.batches) {
+      assert.equal(batch.time, clock.ends[batch.step], `batch time is the loop time at its step's end (${label})`);
+      const age = clock.steps.slice(batch.step + 1).reduce((sum, dt) => f32(sum + dt), 0);
+      assert.equal(batch.age, age, `a batch ages by every later step (${label})`);
+    }
+    const {kept, skipped, phantoms} = regenerated(row, seed, stream.batches, clock);
+    skippedAny += skipped;
+    phantomAny += phantoms;
+    const alive = kept.filter(entry => entry.age <= 100);
+    unspacedAny += alive.filter(entry => entry.unspaced).length;
+    const atoms = stream.sample(0, 30);
+    assert.deepEqual(atoms.map(atom => atom.source.word).sort(), alive.map(entry => entry.word).sort(),
+      `kept words (${label})`);
+    const byWord = new Map(alive.map(entry => [entry.word, entry]));
+    for (const atom of atoms) {
+      const expected = byWord.get(atom.source.word);
+      assert.equal(atom.source.life, expected.life);
+      assert.equal(atom.age, expected.age);
+      assert.deepEqual(atom.source.position, expected.position);
+      assert.equal(atom.source.speed, expected.speed, `start speed at the batch time (${label})`);
+      assert.deepEqual([atom.vx, atom.vy, atom.vz], expected.velocity, `velocity (${label})`);
+      assert.deepEqual([atom.x, atom.y, atom.z], expected.at, `position after the lived offset and later steps (${label})`);
+      if (atom.z !== atom.source.position[2]) moved++;
+      if (atom.vy < 0) fell++;
+    }
+  }
+  assert.ok(skippedAny > 0 && phantomAny > 0, `cases cover skipped groups (${skippedAny}) and phantom lanes (${phantomAny})`);
+  assert.ok(unspacedAny > 0, `cases cover live particles past the rate count (${unspacedAny})`);
+  assert.ok(moved > 100 && fell > 50, `prewarmed particles moved (${moved}) and fell (${fell})`);
+  // A non-procedural prewarm keeps no batches.
+  assert.equal(P.create(system({main: {prewarm: true}}), 5).batches, null);
 }
 
 // A prewarm whose step plan leaves a remainder, at simulationSpeed .5: 0x1d1e54 divides the prewarm time by
@@ -652,9 +827,11 @@ async function testCullingFreezesTheClockOffScreen() {
 
 (async () => {
   testDrawOrderMatchesNativeLanes();
+  testPerStepLifetimeFloor();
   testSeekMatchesPlayback();
   testPrewarmedSteadyState();
   testPrewarmActivationBuildUp();
+  testProceduralPrewarmRegeneration();
   testPrewarmRemainderAtSimulationSpeed();
   testBurstsCyclesAndExpiry();
   testCurvesAndColorsOverLifetime();
