@@ -589,15 +589,18 @@ opens that face texture.
   **Show before** toggles it off; **Apply blush** is one undo step (the history
   buttons, Ctrl+Z / Ctrl+Y and Ctrl+Shift+Z anywhere in the texture tools).
   **Cancel preview** drops the previewed choice entirely: the next change starts
-  from the applied bake (or the defaults). Apply / Show before / Remove stay
-  pinned to the bottom of the settings column, above one line that says how Save
-  writes this face (exact pixels and how much larger the texture data gets, or
-  the ASTC compression kept).
+  from the applied bake (or the defaults). The two types sit side by side, the
+  five levels in a grid after the "No blush" swatch, and Apply / Show before /
+  Remove in one row right under them, followed by one line that says what Save
+  will write for this face (exact pixels and how much larger the texture data
+  gets, or the ASTC compression kept).
+  At 1366×900 the status, all five levels and Apply are in view together when
+  the tab opens, in English, Korean and Japanese.
 - Each level shows the texture's own cheek-centre colour. Strength k is a
   permanent blush of intensity k (k = 1 is the strongest stock clip):
   Very light 0.5, Light 1.05, Medium 1.65 (default), Strong 2.3, Very strong 3
   (so Light is the closest to the game's own strongest song blush, which the
-  panel says too).
+  panel says right under the strength heading).
   Neighbouring levels differ by CIEDE2000 4.6–5.0 at the darkest stock texel on
   a typical cheek (4.2 or more on every head sampled); the strongest keeps
   every channel far from 0. **Advanced** accepts any k up to 4.

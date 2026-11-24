@@ -61,14 +61,40 @@ async function startServer() {
   for (let i = 0; i < 300; i++) { if (child.exitCode !== null) throw new Error('Product server exited'); try { if ((await fetch(url + '/api/tools')).ok) return { url, child, log }; } catch (_) {} await wait(100); }
   child.kill(); throw new Error('Server did not become ready');
 }
-// Where the status line and the Apply button sit against the settings scroller.
+// Where the status, the strength hint, the five levels, the type buttons, Apply
+// and the save line sit against the settings scroller and the window. With
+// scroll 'top' the settings box is scrolled to its top and into the window, as a
+// user would; without it, everything stays where the product put it.
 async function blushLayout(page, scroll) {
   return page.evaluate(scroll => {
-    // The page itself scrolls the settings box into the window, as a user would.
-    const box = document.querySelector('.viewer-texture-properties'); box.scrollTop = scroll === 'bottom' ? box.scrollHeight : 0; box.scrollIntoView({ block: 'nearest' });
-    const view = box.getBoundingClientRect(), place = id => { const r = document.getElementById(id).getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), inside: r.height > 0 && r.top >= Math.max(0, view.top) - 1 && r.bottom <= Math.min(innerHeight, view.bottom) + 1 }; };
-    return { scroller: { top: Math.round(view.top), bottom: Math.round(view.bottom), scrollTop: box.scrollTop, scrollHeight: box.scrollHeight }, status: place('viewer-texture-blush-status'), apply: place('viewer-texture-blush-apply'), before: place('viewer-texture-blush-before'), save: place('viewer-texture-blush-save-mode') };
-  }, scroll);
+    const box = document.querySelector('.viewer-texture-properties');
+    if (scroll) { box.scrollTop = 0; box.scrollIntoView({ block: 'nearest' }); }
+    // Inside the box and the window, and not covered by anything (a pinned row, say).
+    const view = box.getBoundingClientRect(), uncovered = (e, r) => [r.top + 2, (r.top + r.bottom) / 2, r.bottom - 2].every(y => { const at = document.elementFromPoint((r.left + r.right) / 2, y); return !!at && e.contains(at); });
+    const place = e => { const r = e.getBoundingClientRect(), inside = r.height > 0 && r.top >= Math.max(0, view.top) - 1 && r.bottom <= Math.min(innerHeight, view.bottom) + 1; return { top: Math.round(r.top), bottom: Math.round(r.bottom), inside: inside && uncovered(e, r) }; };
+    const id = name => place(document.getElementById(name)), all = selector => Array.from(document.querySelectorAll(selector)).map(place);
+    return { scroller: { top: Math.round(view.top), bottom: Math.round(view.bottom), scrollTop: box.scrollTop, scrollHeight: box.scrollHeight }, status: id('viewer-texture-blush-status'), hint: id('viewer-texture-blush-game-level'),
+      levels: all('#viewer-texture-blush-levels .viewer-texture-blush-level'), types: all('#viewer-texture-blush-types .viewer-texture-blush-layer'),
+      apply: id('viewer-texture-blush-apply'), before: id('viewer-texture-blush-before'), save: id('viewer-texture-blush-save-mode') };
+  }, scroll || null);
+}
+// The status, the hint beside the strength heading, all five levels, Apply,
+// Show before and the save line are in view together; the two types share a row.
+function assertBlushInView(where, label) {
+  const text = label + ' ' + JSON.stringify(where);
+  assert.equal(where.levels.length, 5, text);
+  assert.ok(['status', 'hint', 'apply', 'before', 'save'].every(key => where[key].inside) && where.levels.every(row => row.inside), text);
+  assert.ok(where.types.length === 2 && where.types[0].top === where.types[1].top && where.types[0].bottom === where.types[1].bottom, 'type buttons side by side, same height: ' + text);
+}
+// Leave the blush tab and open it again with a click, as a user does.
+async function reopenBlush(page) {
+  await page.evaluate(() => ModelViewer.getTextureTools().setTab('costume')); await frames(page);
+  await page.locator('#viewer-texture-tab-blush').click();
+  await page.waitForFunction(() => { const b = ModelViewer.getTextureTools().getState().blush; return b.rule && b.cheek.loaded && b.swatches; }); await frames(page);
+}
+async function panelShot(page, file) {
+  const clip = await page.evaluate(() => { const v = document.querySelector('.viewer-texture-properties').getBoundingClientRect(); return { x: Math.max(0, v.left - 8), y: Math.max(0, v.top - 8), width: v.width + 16, height: Math.min(innerHeight, v.bottom + 8) - Math.max(0, v.top - 8) }; });
+  await page.screenshot({ path: file, clip });
 }
 async function frames(page) { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
 async function state(page) { return page.evaluate(() => ModelViewer.getTextureTools().getState()); }
@@ -113,37 +139,56 @@ async function main() {
     const layout = await page.evaluate(() => {
       const box = document.querySelector('.viewer-texture-properties'), panel = document.getElementById('viewer-texture-blush-panel'), view = box.getBoundingClientRect();
       const inside = id => { const r = document.getElementById(id).getBoundingClientRect(); return r.top >= view.top - 1 && r.bottom <= view.bottom + 1 && r.height > 0; };
-      return { status: inside('viewer-texture-blush-status'), alerts: inside('viewer-texture-blush-alerts'), order: Array.from(panel.children).map(e => e.id || e.className) };
+      return { status: inside('viewer-texture-blush-status'), alerts: inside('viewer-texture-blush-alerts'), order: Array.from(panel.children).map(e => e.id || e.className),
+        levelGroup: Array.from(document.getElementById('viewer-texture-blush-levels').children).slice(0, 3).map(e => e.id) };
     });
     assert.ok(layout.status && layout.alerts, JSON.stringify(layout));
-    assert.deepStrictEqual(layout.order.slice(1, 4), ['viewer-texture-blush-target', 'viewer-texture-blush-status', 'viewer-texture-blush-alerts']);
-    assert.equal(layout.order[layout.order.length - 1], 'viewer-texture-blush-footer');
-    // The status and the actions are both in view without scrolling, also on a
-    // 1366x900 screen and with Advanced open and scrolled to its end.
+    // Status and alerts, the choices, then Apply with its save line in normal
+    // flow; the explanations and Advanced come after them.
+    assert.deepStrictEqual(layout.order.slice(0, 6), ['viewer-texture-blush-target', 'viewer-texture-blush-status', 'viewer-texture-blush-alerts', 'viewer-texture-blush-types', 'viewer-texture-blush-levels', 'viewer-texture-blush-commit']);
+    // Where the game's own blush is, right under the strength heading.
+    assert.deepStrictEqual(layout.levelGroup, ['viewer-texture-blush-level-title', 'viewer-texture-blush-game-level', 'viewer-texture-blush-base']);
+    assert.equal(await page.locator('#viewer-texture-blush-game-level').textContent(), "Light ≈ the game's strongest song blush");
+    assert.equal(await page.locator('#viewer-texture-blush-levels').getAttribute('aria-describedby'), 'viewer-texture-blush-game-level');
+    // The status, the five levels and Apply are in view together, at the top
+    // of the settings box, also on a 1366x900 screen and with Advanced open.
     const layouts = [];
     for (const [width, height] of [[1480, 1100], [1366, 900]]) {
       await page.setViewportSize({ width, height }); await frames(page);
       for (const advanced of [false, true]) {
         await page.evaluate(open => { document.querySelector('.viewer-texture-blush-advanced').open = open; }, advanced); await frames(page);
-        for (const scroll of advanced ? ['top', 'bottom'] : ['top']) {
-          const where = await blushLayout(page, scroll); layouts.push({ width, height, advanced, scroll, where });
-          assert.ok(where.apply.inside && where.before.inside && where.save.inside, 'actions and save line in view: ' + JSON.stringify(layouts[layouts.length - 1]));
-          if (scroll === 'top') assert.ok(where.status.inside, 'status in view: ' + JSON.stringify(layouts[layouts.length - 1]));
-        }
+        const where = await blushLayout(page, 'top'); layouts.push({ width, height, advanced, where });
+        assertBlushInView(where, width + 'x' + height + (advanced ? ' Advanced open' : ''));
       }
     }
     await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = false; document.querySelector('.viewer-texture-properties').scrollTop = 0; });
+    // As the tab opens on a 1366x900 screen, without any scrolling by the user.
+    await page.setViewportSize({ width: 1366, height: 900 }); await page.evaluate(() => { document.querySelector('.viewer-texture-properties').scrollTop = 300; window.scrollTo(0, 0); });
+    await reopenBlush(page); let opened = await blushLayout(page); layouts.push({ width: 1366, height: 900, opened: true, where: opened });
+    assertBlushInView(opened, 'en as the tab opens'); await panelShot(page, path.join(evidence, 'panel-1366x900-en.png'));
+    // Keyboard: every control from the types to Apply is in view when it takes focus.
+    await page.locator('#viewer-texture-blush-layer-0').focus(); const focused = [];
+    for (let i = 0; i < 8; i++) {
+      await page.keyboard.press('Tab'); await frames(page);
+      focused.push(await page.evaluate(() => { const e = document.activeElement, v = document.querySelector('.viewer-texture-properties').getBoundingClientRect(), r = e.getBoundingClientRect(); return { id: e.id, inside: r.top >= v.top - 1 && r.bottom <= v.bottom + 1 }; }));
+    }
+    assert.deepStrictEqual(focused.map(row => row.id), ['viewer-texture-blush-layer-1', 'viewer-texture-blush-level-veryLight', 'viewer-texture-blush-level-light', 'viewer-texture-blush-level-medium', 'viewer-texture-blush-level-strong', 'viewer-texture-blush-level-veryStrong', 'viewer-texture-blush-apply', 'viewer-texture-blush-before']);
+    assert.ok(focused.every(row => row.inside), JSON.stringify(focused));
     await page.setViewportSize({ width: 1480, height: 1100 }); await frames(page);
+    s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'exact' }); assert(s.blush.previewing);
     // How Save writes this RGBA32 face is always in view; the selection display does not apply here.
     assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), 'Save: exact pixels');
     assert.equal(await page.locator('#viewer-texture-show-selection').isVisible(), false, 'the selection toggle is hidden in the blush tab');
-    assert.match(await page.locator('#viewer-texture-blush-layer-1 .viewer-texture-blush-shape').textContent(), /^Band across the nose and both cheeks$/);
+    assert.match(await page.locator('#viewer-texture-blush-layer-1 .viewer-texture-blush-shape').textContent(), /^Band across the nose$/);
+    // Advanced names what it holds; this RGBA32 face has no ASTC to keep.
+    assert.equal(await page.locator('#viewer-texture-blush-advanced-summary').textContent(), 'Advanced: strength value');
+    assert.equal(await page.locator('#viewer-texture-blush-remove').textContent(), 'Remove');
     const swatches = await page.evaluate(() => Array.from(document.querySelectorAll('#viewer-texture-blush-levels .viewer-texture-blush-level')).map(b => ({ id: b.dataset.blushLevel, colour: b.dataset.colour, text: b.textContent })));
     assert.deepStrictEqual(swatches.map(r => r.text), ['Very light', 'Light', 'Medium', 'Strong', 'Very strong']);
     assert.equal(new Set(swatches.map(r => r.colour)).size, 5, 'each level shows its own cheek-centre colour');
     for (let i = 1; i < 5; i++) { const a = s.blush.swatches.colours[i - 1], b = s.blush.swatches.colours[i]; assert(b[1] < a[1] && b[2] < a[2], 'neighbouring levels get darker'); }
     report.cases.push({ name: 'blush tab, defaults, swatches and caveats', choice: s.blush.choice, swatches });
-    report.cases.push({ name: 'status, actions and save line in view at 1480x1100 and 1366x900', layouts });
+    report.cases.push({ name: 'status, the five levels, Apply and the save line in view together at 1480x1100 and 1366x900, also as the tab opens', layouts, focused });
 
     // Live 3D preview before saving, exact against the Python rule; Save waits for Apply.
     assert(same(await live(page), expected(0, 1.65)), 'the 3D texture shows the exact bake preview');
@@ -303,12 +348,17 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       assert.deepStrictEqual(labels, { tab: tabText, medium, apply, types }, lang);
       // The blush types name a shape, never a strength.
       assert.ok(labels.types.every(text => !/진한|진하|濃/.test(text)), JSON.stringify(labels.types));
-      // The two type buttons are the same height (one per row, nothing wraps).
-      const heights = await page.evaluate(() => Array.from(document.querySelectorAll('#viewer-texture-blush-types .viewer-texture-blush-layer')).map(e => Math.round(e.getBoundingClientRect().height)));
-      assert.equal(heights[0], heights[1], lang + ' ' + JSON.stringify(heights));
-      // Status and Apply in view on a 1366x900 screen in this language too.
-      await page.setViewportSize({ width: 1366, height: 900 }); await frames(page);
-      const where = await blushLayout(page, 'top'); assert.ok(where.status.inside && where.apply.inside && where.save.inside, lang + ' ' + JSON.stringify(where));
+      // The status, the five levels and Apply in view together on a 1366x900
+      // screen in this language too: as the tab opens and at the top of the box
+      // (the type buttons share one row and have the same height).
+      await page.setViewportSize({ width: 1366, height: 900 }); await page.evaluate(() => { document.querySelector('.viewer-texture-properties').scrollTop = 300; window.scrollTo(0, 0); });
+      await reopenBlush(page); assertBlushInView(await blushLayout(page), lang + ' as the tab opens');
+      await panelShot(page, path.join(evidence, 'panel-1366x900-' + lang + '.png'));
+      assertBlushInView(await blushLayout(page, 'top'), lang);
+      assert.equal(await page.locator('#viewer-texture-blush-game-level').textContent(), lang === 'ko' ? '‘약하게’ ≈ 게임 곡의 가장 진한 홍조' : '「薄く」≈ ゲームの楽曲で最も濃い頬紅');
+      assert.equal(await page.locator('#viewer-texture-blush-remove').textContent(), lang === 'ko' ? '홍조 제거' : '頬紅を外す');
+      // Reopening the tab started the default preview again; drop it.
+      await click(page, '#viewer-texture-cancel'); assert.equal((await state(page)).blush.pending, false);
       await page.setViewportSize({ width: 1480, height: 1100 }); await frames(page);
       assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), lang === 'ko' ? '저장: 정확한 픽셀' : '保存: 正確なピクセル');
     }
@@ -359,7 +409,8 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       assert.equal(await page.locator('#viewer-texture-blush-astc-keep').isChecked(), false, 'exact pixels are the default');
       assert.equal(await page.locator('#viewer-texture-blush-astc-keep-hint').textContent(), 'Smaller file and memory, but the 6×6 blocks the blush touches are compressed again, so nearby pixels change slightly too.');
       s = await state(page); assert.equal(s.blush.choice.encoding, 'exact'); assert.match(s.blush.status, /· Cheeks \(Ppo\)$/, 'the default save mode is not named');
-      assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), 'Save: exact pixels (texture data about 9× larger) · keeping ASTC is under Advanced');
+      assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), 'Save: exact pixels (data about 9× larger)');
+      assert.equal(await page.locator('#viewer-texture-blush-advanced-summary').textContent(), 'Advanced: strength value, keep ASTC');
       await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && !s.pending; });
       let saved = await saveNow();
       assert.deepStrictEqual(saved.notes, [fixture.savedExact]); assert.deepStrictEqual(writtenFormat(saved.previewPaths[0]), [4, 7], 'exact pixels: lossless RGBA32');
