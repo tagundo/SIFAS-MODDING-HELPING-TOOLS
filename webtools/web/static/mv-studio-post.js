@@ -32,8 +32,14 @@
     return value ** 2.2;
   }
 
+  // PostProcessingContext.CreateReducedImage (0x2cd22d0): a 420-pixel-high RenderTexture, its width
+  // Math.Round(width / height * 420f, MidpointRounding.AwayFromZero), RGB111110Float where supported.
+  function reducedSize(width, height) {
+    return [Math.max(1, Math.round(Math.fround(Math.fround(width / height) * reducedHeight))), reducedHeight];
+  }
+
   function plan(width, height, value) {
-    const reduced = [Math.max(1, Math.round(width / height * reducedHeight)), reducedHeight];
+    const reduced = reducedSize(width, height);
     const prefilter = reduced.map((length) => Math.floor(length / 2));
     const levels = [];
     let size = prefilter;
@@ -224,7 +230,6 @@ void main() {${source}}`, uniforms,
       uniforms.sampleScale.value = setup.scale;
       uniforms.intensity.value = effect.intensity;
       uniforms.antiFlicker.value = effect.antiFlicker;
-      blit("reduce", source, reduced);
       blit("prefilter", reduced, prefilter);
       let image = prefilter;
       for (let index = 0; index < setup.levels.length; index++) {
@@ -251,13 +256,18 @@ void main() {${source}}`, uniforms,
       const dimensions = effect ? plan(width, height, effect) : null;
       const setup = dimensions?.levels.length && dimensions.reduced[0] <= renderer.capabilities.maxTextureSize ? dimensions : null;
       if (!setup && !lens && !flare) return false;
+      // Both DepthOfFieldComponent and BloomComponent read the context's reduced image.
+      const lensImage = lens ? reducedSize(width, height) : null;
+      const reduce = setup?.reduced ?? (lensImage?.[0] <= renderer.capabilities.maxTextureSize ? lensImage : null);
       const sampleDepth = needsDepth || preserveDepth;
       if (!source || (sampleDepth && !source.depthTexture) ||
           (!sampleDepth && source.depthTexture && sourceReady === false)) makeSource(width, height, sampleDepth);
+      if (reduce) {
+        if (!reduced) makeReduced(reduce);
+        reduced.setSize(...reduce);
+      }
       if (setup) {
-        if (!reduced) makeReduced(setup.reduced);
         if (!prefilter) prefilter = target(...setup.prefilter);
-        reduced.setSize(...setup.reduced);
         prefilter.setSize(...setup.prefilter);
       }
       if (source.width !== width || source.height !== height) {
@@ -269,19 +279,23 @@ void main() {${source}}`, uniforms,
       try {
         renderer.autoClear = true;
         renderer.setRenderTarget(source);
-        if (hdr && !prepareHDR(Boolean(setup))) {
+        if (hdr && !prepareHDR(Boolean(reduce))) {
           // Rebuild both native ARGB32 fallback attachments together if packed
           // color or its multisample resolve is unavailable on this device.
           hdr = null;
           renderer.setRenderTarget(previousTarget);
           makeSource(width, height, sampleDepth || Boolean(source.depthTexture));
-          if (setup) makeReduced(setup.reduced);
+          if (reduce) makeReduced(reduce);
           renderer.setRenderTarget(source);
         }
         if (sourceReady === null) sourceReady = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
         if (!sourceReady) return false;
         renderScene(source);
-        const focus = lens ? dof.prepare(source, lens, viewCamera) : null;
+        // PostProcessingBehaviour.OnPostRender blits the camera image into the reduced image once
+        // (0x2cd19dc-0x2cd1a20) when DOF or bloom is active, before DepthOfFieldComponent.Prepare
+        // (0x2cd1a60) and BloomComponent.Prepare (0x2cd1ab0) read it.
+        if (reduce) blit("reduce", source, reduced);
+        const focus = lens ? dof.prepare(source, lens, viewCamera, reduce ? reduced : source) : null;
         const bloomImage = setup ? renderBloom(setup) : null;
         dofApi?.apply(uniforms, focus);
         flareApi?.apply(T, uniforms, flare, width, height);
@@ -308,5 +322,5 @@ void main() {${source}}`, uniforms,
     } };
   }
 
-  global.MVStudioPost = { create, sample, plan };
+  global.MVStudioPost = { create, sample, plan, reducedSize };
 }(window));

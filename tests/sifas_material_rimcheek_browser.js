@@ -42,7 +42,7 @@ const root = path.resolve(__dirname, '..');
       const camera = new T.PerspectiveCamera(35, 1, .01, 10); camera.position.set(0, 0, 3); camera.lookAt(0, 0, 0);
       // GLB textures: 0 main, 1 rim mask, 2/3 cheek array slices 0/1.
       const textures = [image([200, 180, 160, 255]), image([255, 0, 0, 255]), image([128, 64, 255, 255]), image([255, 128, 64, 255])];
-      async function build({ live, rimlight = true, backFacing = false, keywords = [], cheek = 'layers', authoredRim = 1 }) {
+      async function build({ live, rimlight = true, backFacing = false, keywords = [], cheek = 'layers', authoredRim = 1, shared }) {
         const scene = new T.Scene(); scene.background = new T.Color(0x202020);
         const geometry = new T.PlaneBufferGeometry(1, 1);
         geometry.setAttribute('_sifas_color', new T.Float32BufferAttribute(Array(4).fill([1, 1, 1, 1]).flat(), 4));
@@ -51,7 +51,8 @@ const root = path.resolve(__dirname, '..');
         const floats = { _RimglightIntensity: authoredRim, _RimglightPower: 1, _CullMode: 2, _OutlineStencilComp: 8,
           _CheekIntensity: 0, _CheekTexArrayIndex: 0 };
         const cheekSlot = cheek === 'layers' ? { _CheekTex: { index: 2, arrayLayer: 0, name: 'cheek_array', depth: 2,
-          layers: [{ index: 2, arrayLayer: 0, name: 'cheek_array' }, { index: 3, arrayLayer: 1, name: 'cheek_array' }] } } : {};
+          layers: [{ index: 2, arrayLayer: 0, name: 'cheek_array' }, { index: 3, arrayLayer: 1, name: 'cheek_array' }],
+          ...(shared === undefined ? {} : { sharedArray: { resource: 'Live/Characters/facialAssets/cheek_array', matches: shared } }) } } : {};
         original.userData.sifas = { version: 1, shader: 'AS/Member', keywords, limitations: [],
           colors: { _RimlightColor: [0, 1, 0, 1], _RimlightDirection: [0, 0, 0, 0] }, floats,
           features: { rimlight: true, cheek: cheek === 'layers', outline: true },
@@ -120,6 +121,18 @@ const root = path.resolve(__dirname, '..');
       out.cheek = { plain, zero: cheek({ index: 0, intensity: 0 }), first: cheek({ index: 0, intensity: .5 }),
         second: cheek({ index: 1, intensity: .5 }), clamped: cheek({ index: 5, intensity: .5 }),
         off: cheek({ index: 1, intensity: .5, enabled: false }) };
+      // PostProcess keeps the last floats; ResetComponentsState -> ResetAll (the
+      // state before any clip, null) clears them.
+      out.cheekKept = [live.uniforms.uCheekTexArrayIndex.value, live.uniforms.uCheekIntensity.value];
+      out.cheekReset = { ...cheek(null), floats: [live.uniforms.uCheekTexArrayIndex.value, live.uniforms.uCheekIntensity.value] };
+      // The game binds the client's shared Resources cheek_array; the head's copy
+      // is exact only when its recorded identity matches that array.
+      const cheekNotes = async (shared) => {
+        const head = await build({ live: true, shared });
+        head.controller.setCheek('head', { index: 0, intensity: .5 });
+        return head.controller.getState().limitations.filter((item) => /cheek_array/.test(item));
+      };
+      out.sharedNotes = { unknown: await cheekNotes(undefined), copy: await cheekNotes(true), modded: await cheekNotes(false) };
       // A head without a cheek array reports it instead of tinting with the placeholder.
       const bare = await build({ live: true, cheek: 'none' });
       bare.controller.setLiveLighting({ rim: { ...rim, intensity: 0 } });
@@ -173,13 +186,22 @@ const root = path.resolve(__dirname, '..');
     assert.equal(result.cheek.clamped.slice, '255,128,64', 'the index is clamped into the complete array');
     assert.deepEqual(result.cheek.off.pixel, result.cheek.plain, 'ApplyEnable(false) removes the term');
     assert.equal(result.cheek.off.defined, false);
+    assert.deepEqual(result.cheekKept, [1, .5], 'ApplyEnable(false) keeps the floats');
+    assert.deepEqual(result.cheekReset.floats, [0, 0], 'ResetAll clears index and intensity');
+    assert.deepEqual(result.cheekReset.pixel, result.cheek.plain);
+    assert.equal(result.cheekReset.defined, false);
+    assert.equal(result.sharedNotes.copy.length, 0, 'a verified copy of the shared array needs no note');
+    assert.equal(result.sharedNotes.unknown.length, 1);
+    assert(/own cheek_array/.test(result.sharedNotes.unknown[0]), result.sharedNotes.unknown[0]);
+    assert.equal(result.sharedNotes.modded.length, 1);
+    assert(/differs/.test(result.sharedNotes.modded[0]), result.sharedNotes.modded[0]);
     assert.deepEqual(result.bare.pixel, result.bare.plain, 'no array: never tinted by the placeholder');
     assert.equal(result.bare.defined, false);
     assert(result.bare.limitations.some((item) => /cheek_array/.test(item)), 'the missing shared array is reported');
     assert.equal(result.keyed, true, 'an authored _CHEEK_ON keeps the static cheek variant');
     assert.equal(result.textureName, 'head_rim', 'textures carry their Unity asset name');
     assert.equal(result.glError, 0);
-    console.log('PASS: live rim baseline 0, ApplyEnable outline stencil, Equal drops outline-only pixels, cheek slice selection');
+    console.log('PASS: live rim baseline 0, ApplyEnable outline stencil, Equal drops outline-only pixels, cheek slice selection, cheek reset and shared-array notes');
   } finally {
     await browser.close();
   }

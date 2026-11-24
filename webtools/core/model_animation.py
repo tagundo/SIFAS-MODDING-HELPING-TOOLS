@@ -752,6 +752,9 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             clip = decode_clip(scene.tree(obj), deadline)
             source_role = source_roles.get(_object_key(obj), "unknown") if hasattr(obj, "assets_file") else "unknown"
             times, outputs, morph_outputs, rebound, unbound, ambiguous = clip["times"], [], {}, False, 0, False
+            # A glTF weights channel carries every target of its mesh; the
+            # source clip binds only these indices (the rest stay at rest).
+            morph_indices = {}
             visibility_tracks = []
             planned_frames, planned_values = 0, 0
             for track in clip["tracks"]:
@@ -808,6 +811,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                             if len(rest) != count:
                                 raise AnimationError("An animated mesh has invalid rest morph weights.")
                             morph_outputs[node] = [rest.copy() for _ in times]
+                        morph_indices.setdefault(node, set()).add(index)
                         for sample_index, (row, stamp) in enumerate(zip(morph_outputs[node], times)):
                             if sample_index % 128 == 0:
                                 _check(deadline)
@@ -891,6 +895,9 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                              "unsupportedTracks": clip["unsupported"], "unboundTracks": unbound,
                              "unsupportedKinds": clip["unsupportedKinds"],
                              "bindingComplete": not (clip["unsupported"] or unbound or ambiguous)})
+            if morph_indices:
+                metadata[-1]["morphTargets"] = [{"node": node, "indices": sorted(indices)}
+                                                for node, indices in sorted(morph_indices.items())]
             used_frames += frames
             used_values += values
             used_channels += channels

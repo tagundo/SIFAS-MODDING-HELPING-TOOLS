@@ -26,7 +26,9 @@ for (const indexTiming of [true, false]) {
   near(player.cheek(15.983).intensity, .317 * .5, 'half way through the ease in');
   assert.equal(player.cheek(15.983).enabled, true);
   near(player.cheek(16.5).intensity, .317, 'full intensity between the eases');
-  near(player.cheek(16.983).intensity, .317 * (.4 / .6), 'ease out');
+  // No serialized mix curve: TimelineClip.get_mixOutCurve's EaseInOut(0, 1, 1, 0),
+  // 1 - smoothstep(1/3) = 20/27 a third into the .6 s ease-out.
+  near(player.cheek(16.983).intensity, .317 * 20 / 27, 'ease out');
   assert.equal(player.cheek(16.5).index, 0);
   assert.deepEqual(player.cheek(17.5), { index: 0, intensity: 0, enabled: false },
     'after an eased-out clip the keyword is off and the floats keep its last (faded) value');

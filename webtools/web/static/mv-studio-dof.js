@@ -43,7 +43,9 @@
     }
   }
 
-  function plan(width, height, lens, camera) {
+  // width/height: the camera image (CalculateMaxCoCRadius reads its height); image: the reduced image
+  // the pyramid is built from.
+  function plan(width, height, lens, camera, image = [width, height]) {
     const { distance, focalLength, aperture, kernelSize = 0 } = lens || {};
     const { near, far } = camera || {};
     if (!Number.isInteger(kernelSize) || kernelSize < 0 || kernelSize > 3 ||
@@ -55,11 +57,12 @@
     const coefficient = focalLength ** 2 / (2 * 0.024 * aperture * (focus - focalLength));
     const maxCircle = Math.min(0.05, (6 + 4 * kernelSize) / height);
     const sizes = [];
+    // DepthOfFieldComponent.CreateRenderTextures (0x2ccf0c0): ReducedImage.width / (2 << index) by
+    // ReducedImage.height / (2 << index), ARGBHalf.
     for (let index = 0; index < kernelSize + 2; index++) {
-      width = Math.floor(width / 2);
-      height = Math.floor(height / 2);
-      if (width < 1 || height < 1) return null;
-      sizes.push([width, height]);
+      const size = [Math.floor(image[0] / (2 << index)), Math.floor(image[1] / (2 << index))];
+      if (size[0] < 1 || size[1] < 1) return null;
+      sizes.push(size);
     }
     return { sizes, params: [focus, coefficient, maxCircle], zParams: [1 / far - 1 / near, 1 / near] };
   }
@@ -113,9 +116,11 @@
       renderer.render(scene, camera);
     }
 
-    function prepare(source, lens, viewCamera) {
-      if (!source?.depthTexture) return null;
-      const settings = plan(source.width, source.height, lens, viewCamera);
+    // DepthOfFieldComponent.Prepare (0x2cce8b4) filters the context's reduced image
+    // (get_ReducedImage at 0x2ccebd8, Blit at 0x2ccec58), not the camera image.
+    function prepare(source, lens, viewCamera, image = source) {
+      if (!source?.depthTexture || !image) return null;
+      const settings = plan(source.width, source.height, lens, viewCamera, [image.width, image.height]);
       if (!settings) return null;
       const { sizes, params, zParams } = settings;
       sizes.forEach(([width, height], index) => {
@@ -128,7 +133,7 @@
       const previous = renderer.getRenderTarget();
       try {
         // Stock game uses a pyramid of box-filter blits for all four kernel sizes.
-        blit(lens.antiAura ? "antiAura" : "prefilter", source, targets[0]);
+        blit(lens.antiAura ? "antiAura" : "prefilter", image, targets[0]);
         for (let index = 1; index < sizes.length; index++) blit("blur", targets[index - 1], targets[index]);
         for (let index = sizes.length - 2; index >= 0; index--) blit("blur", targets[index + 1], targets[index]);
       } finally {

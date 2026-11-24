@@ -131,7 +131,7 @@ class ViewerCachePathTests(unittest.TestCase):
         signatures = [{"path": "source", "size": 4}]
         record = {"category": "home", "motion": "idle:1", "target_character": 101}
         descriptor = {"category": "home", "motion": "idle:1", "targetCharacter": 101, "performer": None, "performerPosition": 1}
-        row = {"version": 3, "sources": signatures, "files": [{"name": str(path.relative_to(root)), "sha256": game_models._sha(path)}], "motion": descriptor, "timelines": []}
+        row = {"version": 4, "sources": signatures, "files": [{"name": str(path.relative_to(root)), "sha256": game_models._sha(path)}], "motion": descriptor, "timelines": []}
         (root / ".motion-test.json").write_text(json.dumps(row))
         before = self.snapshot()
         roots = viewer_cache.legacy_cache_roots(viewer_cache.game_motions_dir(), "motions")
