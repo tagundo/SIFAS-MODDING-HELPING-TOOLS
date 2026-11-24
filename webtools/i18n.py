@@ -2651,7 +2651,7 @@ _MV_STUDIO_TRANSLATIONS = {
         "このMVには出演者がすでに12人います。既存の出演者を選んで衣装を交換してください。"
     ],
     "Props": ("소품", "小道具"),
-    "Effects": ("효과", "エフェクト"),
+    "Effects": ("이펙트", "エフェクト"),
     "Soundtrack": ("음원", "音源"),
     "Soundtrack offset (s)": ("음원 오프셋 (초)", "音源オフセット（秒）"),
     "Import soundtrack": ("음원 불러오기", "音源を読み込む"),
@@ -2682,7 +2682,7 @@ _MV_STUDIO_TRANSLATIONS = {
     "The MV asset could not be imported.": ("MV 에셋을 불러오지 못했습니다.", "MVアセットを読み込めませんでした。"),
     "The MV project could not be saved.": ("MV 프로젝트를 저장하지 못했습니다.", "MVプロジェクトを保存できませんでした。"),
     "Camera": ("카메라", "カメラ"),
-    "Dance": ("안무", "ダンス"),
+    "Dance": ("댄스", "ダンス"),
     "Gaze": ("시선", "視線"),
     "Cheek": ("볼", "頬"),
     "Sound": ("소리", "サウンド"),
@@ -2695,6 +2695,66 @@ _MV_STUDIO_TRANSLATIONS = {
     "Split screen": ("화면 분할", "画面分割"),
 }
 for _source, (_korean, _japanese) in _MV_STUDIO_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# MV Studio editor lane A: timeline tabs and filters, undo/redo, clip editing.
+_MV_EDITOR_A_TRANSLATIONS = {
+    "Edit": ("편집", "編集"),
+    "All": ("전체", "すべて"),
+    "Expression": ("표정", "表情"),
+    "Screen effects": ("화면 효과", "画面効果"),
+    "Other": ("기타", "その他"),
+    "Timeline categories": ("타임라인 분류", "タイムラインの分類"),
+    "Tracks: {tracks} · Clips: {clips}": ("트랙 {tracks}개 · 클립 {clips}개", "トラック{tracks}件 · クリップ{clips}件"),
+    "Members": ("멤버", "メンバー"),
+    "All members": ("전체 멤버", "全メンバー"),
+    "Member": ("멤버", "メンバー"),
+    "Search tracks": ("트랙 이름 검색", "トラック名で検索"),
+    "Show editable tracks only": ("편집 가능한 트랙만 보기", "編集できるトラックのみ表示"),
+    "The Edit tab already lists edited and editable tracks.": (
+        "편집 탭에는 이미 편집한 트랙과 편집 가능한 트랙만 나옵니다.",
+        "編集タブには編集したトラックと編集できるトラックだけが表示されます。",
+    ),
+    "Native group": ("원본 그룹", "元のグループ"),
+    "All groups": ("모든 그룹", "すべてのグループ"),
+    "{tracks} tracks · {clips} clips · {edited} edited": (
+        "트랙 {tracks}개 · 클립 {clips}개 · 편집 {edited}개", "トラック{tracks}件 · クリップ{clips}件 · 編集{edited}件"),
+    "Editable": ("편집 가능", "編集可能"),
+    "No edits yet. Editable tracks are listed below.": (
+        "아직 편집한 항목이 없습니다. 편집할 수 있는 트랙은 아래에 있습니다.",
+        "まだ編集していません。編集できるトラックは下にあります。",
+    ),
+    "Edited": ("편집됨", "編集済み"),
+    "Undo": ("실행 취소", "元に戻す"),
+    "Redo": ("다시 실행", "やり直す"),
+    "Undo: {label}": ("실행 취소: {label}", "元に戻す: {label}"),
+    "Redo: {label}": ("다시 실행: {label}", "やり直す: {label}"),
+    "Nothing to undo": ("실행 취소할 작업이 없습니다", "元に戻す操作はありません"),
+    "Nothing to redo": ("다시 실행할 작업이 없습니다", "やり直す操作はありません"),
+    "Move clip": ("클립 이동", "クリップを移動"),
+    "Resize clip": ("클립 길이 변경", "クリップの長さを変更"),
+    "Rename clip": ("클립 이름 변경", "クリップ名を変更"),
+    "Edit value": ("값 편집", "値を編集"),
+    "Revert clip": ("클립 되돌리기", "クリップを元に戻す"),
+    "Duplicate clip": ("클립 복제", "クリップを複製"),
+    "Delete clip": ("클립 삭제", "クリップを削除"),
+    "Move performer": ("출연자 위치 변경", "出演者の位置を変更"),
+    "Change soundtrack offset": ("음원 오프셋 변경", "音源オフセットを変更"),
+    "Change quality preset": ("그래픽 프리셋 변경", "グラフィックプリセットを変更"),
+    "Change quality setting": ("그래픽 설정 변경", "グラフィック設定を変更"),
+    "Clip name": ("클립 이름", "クリップ名"),
+    "Recomputed by the game": ("게임이 다시 계산하는 값입니다", "ゲームが再計算する値です"),
+    "Some timeline edits could not be carried over.": (
+        "일부 타임라인 편집 내용을 옮기지 못했습니다.", "一部のタイムライン編集を引き継げませんでした。"),
+    "Wait for the current MV task to finish.": ("진행 중인 MV 작업이 끝날 때까지 기다려 주세요.", "実行中のMV処理が終わるまでお待ちください。"),
+    "This clip's timing cannot be edited.": ("이 클립의 시간은 편집할 수 없습니다.", "このクリップの時間は編集できません。"),
+    "Drag a clip to move it and its right edge to change its length. Alt+Left or Alt+Right moves the clip by one frame, with Shift by ten frames.": (
+        "클립을 드래그하면 이동하고, 오른쪽 끝을 드래그하면 길이가 바뀝니다. Alt+왼쪽/오른쪽 화살표로 1프레임씩, Shift를 함께 누르면 10프레임씩 옮깁니다.",
+        "クリップをドラッグすると移動し、右端をドラッグすると長さが変わります。Alt+左右矢印キーで1フレームずつ、Shiftを併用すると10フレームずつ移動します。",
+    ),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_A_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 

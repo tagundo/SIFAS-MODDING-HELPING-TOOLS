@@ -36,6 +36,7 @@ class Element {
   }
   replaceChildren(...nodes) { this.children = []; this.options = []; this.append(...nodes); }
   remove() {}
+  contains(node) { for (let item = node; item; item = item.parentElement) if (item === this) return true; return false; }
   querySelector() { return new Element(); }
   querySelectorAll() { return []; }
   closest() { return null; }
@@ -57,6 +58,8 @@ const document = {
     return elements.get(id);
   },
   createElement: (tag) => new Element(tag),
+  createTextNode: (value) => { const node = new Element('#text'); node.textContent = String(value); return node; },
+  querySelectorAll: () => [],
   addEventListener() {},
 };
 const text = (element) => element.children.map(child => child.textContent);
@@ -94,7 +97,9 @@ const window = {
 window.window = window;
 const context = vm.createContext({ ...window, window, console, setTimeout, clearTimeout, AbortController, URL,
   encodeURIComponent, JSON, Math, Number, Object, Array, Promise, Set, Map, String });
-vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio.js'), 'utf8'), context);
+for (const name of ['mv-studio-edit-history.js', 'mv-studio-timeline-tabs.js', 'mv-studio-timeline-interact.js', 'mv-studio.js']) {
+  vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/' + name), 'utf8'), context);
+}
 
 (async () => {
   const studio = context.window.MVStudio || context.MVStudio;

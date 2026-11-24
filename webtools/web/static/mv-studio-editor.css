@@ -1,0 +1,163 @@
+/* MV Studio editor: timeline tabs and filters, edited marks, clip drag, and the
+   shared classes editor plugins use (.mv-key, .mv-lane-extra, .mv-rig-clip,
+   .mv-form-grid, .mv-field-note). */
+
+/* The tabs take a full row; the member chips (when the tab has member tracks) and the
+   name search share the next one, so the layout does not jump between tabs. */
+.mv-timeline-toolbar > .mv-timeline-nav { flex-basis: 100%; }
+.mv-timeline-nav {
+  display: grid;
+  grid-template: "tabs tabs" auto "members search" auto / minmax(0, 1fr) minmax(8rem, 15rem);
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.mv-timeline-nav[hidden] { display: none; }
+.mv-timeline-tabs, .mv-member-filter {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  padding: 2px;
+}
+.mv-timeline-tabs { grid-area: tabs; }
+.mv-member-filter { grid-area: members; }
+.mv-member-filter[hidden] { display: none; }
+#tab-mv .mv-tab, #tab-mv .mv-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 3px 11px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+#tab-mv .mv-tab[aria-selected=true], #tab-mv .mv-chip[aria-checked=true] {
+  background: var(--accent2);
+  border-color: var(--accent2);
+  color: #fff;
+}
+.mv-tab-count {
+  min-width: 1.6em;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  font-size: .72rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+#tab-mv .mv-chip { min-height: 28px; padding: 2px 10px; font-size: .78rem; }
+.mv-chip-dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 1px #0005; flex: none; }
+.mv-timeline-toolbar .mv-track-search { grid-area: search; min-width: 0; }
+.mv-track-search input { flex: 1 1 auto; min-width: 0; width: 100%; }
+
+/* Undo / redo. */
+#tab-mv .mv-history-button { min-width: 36px; padding-inline: 6px; font-size: 1.05rem; line-height: 1; }
+
+/* Rows that are not tracks. */
+.mv-lane-label.mv-lane-group { min-height: 22px; padding-block: 2px; background: var(--panel2); color: var(--muted); font-size: .72rem; font-weight: 600; }
+.mv-lane-group-lane { min-height: 22px; border-block-end: 1px solid var(--line); background: var(--panel2); }
+.mv-lane-separator, .mv-lane-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  border-block-end: 1px solid var(--line);
+  font-size: .74rem;
+}
+.mv-lane-separator > span, .mv-lane-hint > span { position: sticky; left: 0; display: inline-block; padding: 4px 8px; }
+.mv-lane-separator { background: var(--panel2); color: var(--muted); font-weight: 600; text-transform: none; }
+.mv-lane-hint { color: var(--muted); }
+.mv-lane-path { color: var(--muted); }
+.mv-lane-name { font-weight: 600; }
+.mv-lane-label.mv-lane-edited { box-shadow: inset 3px 0 0 #f2b84b; }
+.mv-lane-extra { background-color: color-mix(in srgb, var(--accent) 7%, transparent); }
+.mv-lane-extra-label { font-style: italic; }
+
+/* Clips: edited dot, right-edge trim zone, drag feedback. */
+#tab-mv .mv-clip.mv-edited, #tab-mv .mv-edited {
+  background-image: radial-gradient(circle at calc(100% - 7px) 7px, #ffd166 0 3.5px, #0007 3.6px 4.6px, transparent 4.7px);
+}
+#tab-mv .mv-clip.mv-clip-resizable::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: 6px;
+  cursor: ew-resize;
+  background: linear-gradient(to right, transparent 0 3px, #fff3 3px);
+}
+#tab-mv .mv-clip:not(.mv-clip-locked) { cursor: grab; }
+#tab-mv .mv-clip.mv-clip-locked { cursor: default; background-image: repeating-linear-gradient(135deg, transparent 0 6px, #0000001f 6px 9px); }
+#tab-mv .mv-clip.mv-clip-locked.mv-edited {
+  background-image: radial-gradient(circle at calc(100% - 7px) 7px, #ffd166 0 3.5px, #0007 3.6px 4.6px, transparent 4.7px),
+    repeating-linear-gradient(135deg, transparent 0 6px, #0000001f 6px 9px);
+}
+#tab-mv .mv-clip[aria-pressed=true] { touch-action: none; }
+#tab-mv :is(.mv-clip, .mv-rig-clip).mv-dragging { z-index: 3; cursor: grabbing; outline: 2px dashed #facc73; outline-offset: 0; opacity: .92; }
+#tab-mv .mv-clip.mv-dragging[data-drag-time]::after {
+  content: attr(data-drag-time);
+  position: absolute;
+  inset-inline-end: 8px;
+  inset-block-end: 1px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #000b;
+  color: #fff;
+  font-size: .62rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Inspector additions. */
+.mv-event-header { display: grid; gap: 6px; }
+.mv-event-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.mv-edited-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #f2b84b33;
+  color: var(--text);
+  border: 1px solid #f2b84b;
+  font-size: .7rem;
+}
+.mv-field-note { margin: 0; color: var(--muted); font-size: .74rem; }
+.mv-track-summary { color: var(--muted); }
+
+/* Shared by editor plugins. */
+.mv-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(5.5em, 55%); gap: 6px 8px; align-items: center; min-width: 0; }
+.mv-form-grid > label { display: contents; }
+.mv-inline-fields { display: flex; gap: 4px; min-width: 0; }
+.mv-inline-fields > * { flex: 1 1 0; min-width: 0; }
+#tab-mv .mv-key {
+  position: absolute;
+  z-index: 2;
+  top: calc(2px + var(--mv-clip-row, 0) * var(--mv-clip-row-height, 30px));
+  width: 12px;
+  height: 12px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid #0009;
+  border-radius: 2px;
+  background: #ffd166;
+  transform: translateX(-50%) rotate(45deg);
+  cursor: pointer;
+}
+#tab-mv .mv-key[aria-pressed=true], #tab-mv .mv-key.mv-selected { outline: 2px solid #fff; outline-offset: 1px; background: #ff9f43; }
+@media (pointer: coarse) {
+  #tab-mv .mv-key { width: 18px; height: 18px; }
+  #tab-mv .mv-clip.mv-clip-resizable::before { width: 12px; }
+}
+
+/* Short landscape: one transport row, then tabs, search and chips share one row. */
+@media (min-width: 540px) and (max-height: 480px) {
+  .mv-timeline-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, max-content) max-content minmax(4em, 1fr) max-content;
+    align-items: center;
+  }
+  .mv-timeline-toolbar > :is(h3, .mv-controls, .mv-seek-label, .mv-zoom-label) { grid-area: auto; }
+  .mv-timeline-toolbar > .mv-timeline-nav { grid-area: auto; grid-column: 1 / -1; }
+  .mv-timeline-nav { grid-template: "tabs search members" auto / minmax(0, 1fr) minmax(7rem, 10rem) minmax(0, max-content); }
+  #tab-mv .mv-tab, #tab-mv .mv-chip { min-height: 28px; padding-block: 1px; }
+}

@@ -31,7 +31,7 @@
   let settings, scene, project, selected, pending, gameImport, catalogRequest, catalogIndex = [], songs = [];
   let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
   let previewLoading = false, playheadNode, seekInput, timeOutput, lastReadout = -Infinity;
-  let hidden = [], trackKind = "", assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
+  let hidden = [], assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
   let registered = null, registrationTitle = "", chartTemplates = [], chartTemplate = "", chartPath = "";
   let registrationTimelines = {}, registrationAudio = {}, latestNativeTimeline = null;
   let lastGamePayload = null;
@@ -46,11 +46,36 @@
   // Device option of the original client (off by default): the player's
   // anti-aliasing setting lets Max and High 3D draw at the screen height.
   let antiAliasingMode = false;
-  const timelineLanes = new Map();
+  // Editor core: undo/redo history, editor plugins (MVStudioPlugins) and the
+  // timeline category tabs with their member and name filters.
+  const Tabs = global.MVStudioTimelineTabs, Interact = global.MVStudioTimelineInteract;
+  const tabKey = "elichika.mv.timelineTab.v1", memberKey = "elichika.mv.timelineMember.v1";
+  const searchKey = "elichika.mv.timelineSearch.v1", editableKey = "elichika.mv.timelineEditableOnly.v1";
+  let history, ctx, plugins = [], panelList = [], lastPlan = null, lastTimeEmit = 0, renderQueued = 0;
+  let preferredTab = "all", activeTab = "all", preferredMember = null, searchText = "", editableOnly = false, groupFilter = "";
+  let extrapolationGates = new Map(), trackControls = null;
+  const timelineLanes = new Map(), timelineLabels = new Map();
   const audio = document.createElement("audio");
   audio.preload = "metadata";
 
   function t(label) { return settings.translate(label); }
+
+  // Fills "{name}" placeholders of a translated template.
+  function format(label, values) {
+    return t(label).replace(/\{(\w+)\}/g, (match, key) => key in values ? String(values[key]) : match);
+  }
+
+  // Per-session UI memory (tab and filters). Storage can be missing or throw.
+  function session(key, value) {
+    try {
+      const store = global.sessionStorage;
+      if (!store) return null;
+      if (value === undefined) return store.getItem(key);
+      if (value === null) store.removeItem(key);
+      else store.setItem(key, String(value));
+    } catch (_) {}
+    return null;
+  }
 
   function make(tag, label, attrs = {}) {
     const element = document.createElement(tag);
@@ -205,6 +230,17 @@
     if (changeAudio && audio.hasAttribute("src")) audio.currentTime = Math.max(0, time + audioOffset());
     if (scene && project) scene.seek(time, project, deferDraw);
     syncPosition();
+    emitTime();
+  }
+
+  // timeChanged for plugins: after every seek, at most 10 Hz during playback.
+  function emitTime(now) {
+    if (!plugins.length) return;
+    if (now !== undefined) {
+      if (now - lastTimeEmit < 100) return;
+      lastTimeEmit = now;
+    } else lastTimeEmit = performance.now();
+    callPlugins("timeChanged", time, { playing });
   }
 
   function updatePlayButton() {
@@ -238,6 +274,7 @@
     time = clamp(finite(position) ? position : time, 0, project.duration);
     if (scene) scene.playbackFrame(time, now);
     syncPosition(now);
+    emitTime(now);
     if (time >= project.duration) pause();
     else frame = requestAnimationFrame(tick);
   }
@@ -256,17 +293,26 @@
     frame = requestAnimationFrame(tick);
   }
 
+  // Built-in panels and the panels editor plugins add right after "Selected event".
+  function panelNode(key) {
+    const panel = panelList.find((item) => item.key === key);
+    return panel && byId(panel.plugin ? "mv-panel-" + key : "mv-" + key);
+  }
+
   function availablePanels() {
-    return panelKeys.filter((key) => {
-      if (key === "registration") return gameSource() !== null;
-      if (key === "warnings") return warningLines().length > 0;
+    return panelList.filter((panel) => {
+      if (panel.plugin) {
+        try { return typeof panel.plugin.available !== "function" || !!panel.plugin.available(ctx); } catch (error) { console.error(error); return false; }
+      }
+      if (panel.key === "registration") return gameSource() !== null;
+      if (panel.key === "warnings") return warningLines().length > 0;
       return true;
-    });
+    }).map((panel) => panel.key);
   }
 
   function applyPanels() {
     const active = availablePanels();
-    for (const key of panelKeys) byId("mv-" + key).hidden = !active.includes(key) || hidden.includes(key);
+    for (const { key } of panelList) panelNode(key).hidden = !active.includes(key) || hidden.includes(key);
     const allHidden = active.every((key) => hidden.includes(key));
     byId("mv-inspector").hidden = allHidden;
     const workspace = byId("mv-workspace");
@@ -285,7 +331,7 @@
       const check = make("input", null, { type: "checkbox", "data-mv-panel-option": key });
       check.checked = !hidden.includes(key);
       const label = make("label");
-      label.append(check, make("span", t(panelNames[panelKeys.indexOf(key)])));
+      label.append(check, make("span", t(panelList.find((panel) => panel.key === key).name)));
       check.addEventListener("change", () => {
         hidden = hidden.filter((id) => id !== key);
         if (!check.checked) hidden.push(key);
@@ -338,9 +384,11 @@
     for (const [axis, label] of ["X", "Y", "Z"].entries()) {
       const value = finite(position[axis]) ? position[axis] : 0;
       box.append(field(label, numberInput(value, { min: -1000, max: 1000, "data-mv-performer-axis": label }, (next) => {
-        position[axis] = next;
-        actor.transform = { ...actor.transform, position };
-        seek(time, false);
+        const current = actor.transform && Array.isArray(actor.transform.position) ? actor.transform.position.slice(0, 3) : [];
+        const after = [0, 1, 2].map((index) => finite(current[index]) ? current[index] : 0);
+        after[axis] = next;
+        edit({ label: "Move performer", changes: [{ target: { kind: "performer", id: actor.id }, path: ["transform", "position"], after }] },
+          "performers");
       })));
     }
     const costume = gameCostumeControl(actor);
@@ -372,7 +420,7 @@
         }
       }
       costumes[actor.position] = { suit: choice.id, viewStatus: view(choice.viewStatus) };
-      runGameImport({ ...lastGamePayload, costumes });
+      runGameImport({ ...lastGamePayload, costumes }, true);
     });
     return control;
   }
@@ -389,21 +437,42 @@
     if (!project) { box.append(make("p", t("No MV is open."))); return; }
     if (soundtrack && soundtrack.url) box.append(field("Soundtrack offset (s)", numberInput(audioOffset(), {
       min: 0, max: 3600, id: "mv-soundtrack-offset",
-    }, (next) => { soundtrack.offset = next; seek(time); })));
+    }, (next) => edit({ label: "Change soundtrack offset", changes: [{ target: { kind: "soundtrack" }, path: ["offset"], after: next }] },
+      "soundtrack"))));
     const change = button(t("Import soundtrack"), () => importAsset("audio"), { id: "mv-import-soundtrack" });
     change.disabled = !!pending;
     box.append(change);
   }
 
+  // Tracks panel: filters that combine with the active timeline tab, and a summary.
   function renderTracks() {
     const box = byId("mv-track-controls");
     box.replaceChildren();
+    trackControls = null;
     if (!project || !project.tracks.length) { box.append(make("p", t("No timeline events."))); return; }
-    const filter = make("select", null, { id: "mv-track-kind" });
-    const present = [...new Set(project.tracks.map((track) => text(track.kind)))];
-    replaceOptions(filter, present.map((id) => ({ id, label: kinds[id] || id })), trackKind, t("All tracks"));
-    filter.addEventListener("change", () => { trackKind = filter.value; renderTimeline(); });
-    box.append(field("Track type", filter));
+    const editable = checkInput(editableOnly, { id: "mv-track-editable-only" }, (value) => {
+      editableOnly = value;
+      session(editableKey, value ? "1" : null);
+      renderTimeline();
+    });
+    const group = make("select", null, { id: "mv-track-group" });
+    group.addEventListener("change", () => { groupFilter = group.value; renderTimeline(); });
+    const summary = make("p", null, { id: "mv-track-summary", class: "mv-track-summary", "aria-live": "polite" });
+    box.append(field("Show editable tracks only", editable), field("Native group", group), summary);
+    trackControls = { editable, group, summary };
+    syncTrackControls();
+  }
+
+  function syncTrackControls() {
+    if (!trackControls || !lastPlan) return;
+    replaceOptions(trackControls.group, lastPlan.groups.map((id) => ({ id, label: id })), lastPlan.group, t("All groups"));
+    trackControls.editable.disabled = activeTab === "edit";
+    trackControls.editable.title = activeTab === "edit" ? t("The Edit tab already lists edited and editable tracks.") : "";
+    const edited = history.editedEvents();
+    let clips = 0, changed = 0;
+    for (const track of lastPlan.tracks) for (const event of track.events) { clips++; if (edited.has(event.id)) changed++; }
+    trackControls.summary.textContent = format("{tracks} tracks · {clips} clips · {edited} edited",
+      { tracks: lastPlan.tracks.length, clips, edited: changed });
   }
 
   function activeEvent() {
@@ -435,11 +504,12 @@
     return control;
   }
 
-  function eventField(object, key, path, editable, depth = 0) {
+  // write(segments, next) records the edit; segments is the key path under event.values.
+  function eventField(object, key, path, editable, depth = 0, segments = [key], write = () => {}) {
     const value = object[key];
     const title = eventLabels[key] || String(key);
     const data = { "data-mv-field": path };
-    const update = (next) => { object[key] = next; seek(time, false); };
+    const update = (next) => write(segments, next);
     if (key === "time" && path.startsWith("keyframes.")) editable = false;
     if (editable && finite(value)) {
       if (key === "preExtrapolationMode" || key === "postExtrapolationMode") {
@@ -463,45 +533,227 @@
       const group = make("fieldset");
       group.append(make("legend", t(title)));
       if (Array.isArray(value) && value.length && value[0] && typeof value[0] === "object") {
-        const body = make("div"), row = (index) => body.replaceChildren(eventField(value, index - 1, path + "." + (index - 1), editable, depth + 1));
+        const body = make("div"), row = (index) => body.replaceChildren(eventField(value, index - 1, path + "." + (index - 1), editable,
+          depth + 1, [...segments, index - 1], write));
         const cursor = numberInput(1, { min: 1, max: value.length, step: 1, "aria-label": t("Entry number") }, (index) => row(Math.round(index)));
         group.append(field("Entry number", cursor), body);
         row(1);
-      } else for (const key of Object.keys(value).slice(0, 48)) group.append(eventField(value, key, path + "." + key, editable, depth + 1));
+      } else for (const key of Object.keys(value).slice(0, 48)) {
+        group.append(eventField(value, key, path + "." + key, editable, depth + 1, [...segments, key], write));
+      }
       return group;
     }
     return field(title, make("output", typeof value === "object" ? JSON.stringify(value).slice(0, 240) : text(value)));
   }
 
+  function eventTarget(track, event) {
+    return { kind: "event", track: track.id, event: event.id };
+  }
+
+  function findEvent(trackId, eventId) {
+    const track = project && project.tracks.find((item) => item.id === trackId);
+    const event = track && track.events.find((item) => item.id === eventId);
+    return event ? { track, event } : null;
+  }
+
+  function autoExtrapolation(track) {
+    const id = track && typeof track === "object" ? track.id : track;
+    return extrapolationGates.get(id) === true;
+  }
+
+  // Recomputed extrapolation times of a gated track, as history changes.
+  function extrapolationWrites(track, overrides) {
+    if (!autoExtrapolation(track)) return [];
+    return Interact.extrapolationChanges(track, overrides).map((write) => ({
+      target: eventTarget(track, write.event), path: ["values", write.key], after: write.value }));
+  }
+
+  function writableValue(track, event, key) {
+    const editable = track.editable !== false && event.editable !== false;
+    if (!editable || (Array.isArray(event.editableValues) && !event.editableValues.includes(key))) return false;
+    return !((key === "preExtrapolationTime" || key === "postExtrapolationTime") && autoExtrapolation(track));
+  }
+
+  function setEventValue(track, event, segments, next) {
+    const changes = [{ target: eventTarget(track, event), path: ["values", ...segments], after: next }];
+    if (segments.length === 1 && segments[0] === "postExtrapolationMode" && finite(next)) {
+      changes.push(...extrapolationWrites(track, new Map([[event.id, { postMode: next }]])));
+    }
+    return edit({ label: "Edit value", detail: segments.join("."), changes }, "events");
+  }
+
+  // Start/duration change as one command, with the recomputed extrapolation times.
+  function timingCommand(track, event, next, label) {
+    const target = eventTarget(track, event), changes = [];
+    if (finite(next.start) && next.start !== event.start) changes.push({ target, path: ["start"], after: next.start });
+    if (finite(next.duration) && next.duration !== event.duration) changes.push({ target, path: ["duration"], after: next.duration });
+    if (!changes.length) return null;
+    changes.push(...extrapolationWrites(track, new Map([[event.id, { start: next.start, duration: next.duration }]])));
+    return { label, changes };
+  }
+
+  // move/resize rules of a clip: lock state, the editable flags, then every plugin.
+  function clipRules(track, event) {
+    if (ctx.locked()) return { move: false, resize: false, reason: t("Wait for the current MV task to finish.") };
+    if (track.editable === false || event.editable === false) return { move: false, resize: false, reason: t("This clip's timing cannot be edited.") };
+    const rules = { move: true, resize: true, reason: "" }, reasons = [];
+    for (const result of callPlugins("clipConstraints", track, event)) {
+      if (!result || typeof result !== "object") continue;
+      if (result.move === false) rules.move = false;
+      if (result.resize === false) rules.resize = false;
+      if ((result.move === false || result.resize === false) && result.reason) reasons.push(String(result.reason));
+    }
+    rules.reason = reasons.join(" ");
+    return rules;
+  }
+
+  function renderEventHeader(box, track, event) {
+    box.replaceChildren();
+    const edited = history.editedEvents().has(event.id);
+    const title = make("div", null, { class: "mv-event-title" });
+    title.append(make("strong", text(event.label || track.label)));
+    if (edited) title.append(make("span", t("Edited"), { class: "mv-edited-badge" }));
+    box.append(title);
+    const actions = make("div", null, { class: "mv-controls mv-event-actions" });
+    if (edited && history.originals.get(event.id)) {
+      actions.append(button(t("Revert clip"), () => revertEvent(track, event), { id: "mv-revert-clip" }));
+    }
+    if (project.nativeTimeline !== true && track.editable !== false && event.editable !== false) {
+      actions.append(button(t("Duplicate clip"), () => duplicateEvent(track, event), { id: "mv-duplicate-clip" }),
+        button(t("Delete clip"), () => deleteEvent(track, event), { id: "mv-delete-clip" }));
+    }
+    if (actions.childElementCount) box.append(actions);
+  }
+
   function renderEvent() {
     const box = byId("mv-event-fields");
+    const focus = focusedField(box);
     box.replaceChildren();
     const active = activeEvent();
     if (!active) { box.append(make("p", t("Select an event in the timeline."))); return; }
     const { track, event } = active;
     const editable = track.editable !== false && event.editable !== false;
-    const start = text(event.start), duration = text(event.duration);
-    box.append(make("strong", text(event.label || track.label)));
+    const header = make("div", null, { class: "mv-event-header", id: "mv-event-header" });
+    renderEventHeader(header, track, event);
+    box.append(header);
     if (editable) {
-      const startControl = numberInput(event.start, { "data-mv-field": "start", min: 0, max: project.duration - event.duration }, (value) => {
-        event.start = value;
-        refreshTimelineLane(track);
-        seek(value);
-        renderEvent();
+      const name = make("input", null, { type: "text", maxlength: 240, "data-mv-field": "label" });
+      name.value = text(event.label);
+      name.addEventListener("change", () => {
+        const next = name.value;
+        if (!next.trim() || next.length > 240) { name.value = text(event.label); return; }
+        edit({ label: "Rename clip", changes: [{ target: eventTarget(track, event), path: ["label"], after: next }] }, "events");
       });
-      const durationControl = numberInput(event.duration, { "data-mv-field": "duration", min: 0, max: project.duration - event.start }, (value) => {
-        event.duration = value;
-        refreshTimelineLane(track);
-        seek(time, false);
-        renderEvent();
-      });
-      box.append(field("Start time (s)", startControl), field("Duration (s)", durationControl));
-    } else box.append(field("Start time (s)", make("output", start)), field("Duration (s)", make("output", duration)));
-    const values = event.values || {};
-    for (const key of Object.keys(values).slice(0, 48)) {
-      const writable = editable && (!Array.isArray(event.editableValues) || event.editableValues.includes(key));
-      box.append(eventField(values, key, key, writable));
+      box.append(field("Clip name", name));
     }
+    const start = text(event.start), duration = text(event.duration), rules = clipRules(track, event);
+    if (editable && rules.move !== false) {
+      box.append(field("Start time (s)", numberInput(event.start, { "data-mv-field": "start", min: 0, max: project.duration - event.duration }, (value) => {
+        const command = timingCommand(track, event, { start: value, duration: event.duration }, "Move clip");
+        if (command && edit(command)) seek(value);
+      })));
+    } else box.append(field("Start time (s)", make("output", start, rules.reason ? { title: rules.reason } : {})));
+    if (editable && rules.resize !== false) {
+      box.append(field("Duration (s)", numberInput(event.duration, { "data-mv-field": "duration", min: 0, max: project.duration - event.start }, (value) => {
+        const command = timingCommand(track, event, { start: event.start, duration: value }, "Resize clip");
+        if (command) edit(command);
+      })));
+    } else box.append(field("Duration (s)", make("output", duration, rules.reason ? { title: rules.reason } : {})));
+    if (rules.reason && (rules.move === false || rules.resize === false)) box.append(make("p", rules.reason, { class: "mv-field-note" }));
+    for (const element of callPlugins("eventHeader", { track, event })) if (element) box.append(element);
+    const values = event.values || {}, original = history.originals.get(event.id);
+    let noted = false;
+    for (const key of Object.keys(values).slice(0, 48)) {
+      const writable = writableValue(track, event, key);
+      const info = { track, event, key, path: key, value: values[key], writable,
+        original: original && original.values ? original.values[key] : undefined,
+        set: (next) => setEventValue(track, event, [key], next),
+        gesture: { begin: () => history.begin("Edit value"), end: () => history.end() } };
+      const control = valueControl(info);
+      if (control === null) continue;
+      box.append(control !== undefined ? control : eventField(values, key, key, writable, 0, [key], (segments, next) => setEventValue(track, event, segments, next)));
+      if (!noted && control === undefined && autoExtrapolation(track) && (key === "preExtrapolationTime" || key === "postExtrapolationTime")) {
+        noted = true;
+        box.append(make("p", t("Recomputed by the game"), { class: "mv-field-note" }));
+      }
+    }
+    for (const element of callPlugins("eventFooter", { track, event })) if (element) box.append(element);
+    restoreFocus(box, focus);
+  }
+
+  // Keeps keyboard focus on the same field when the inspector is rebuilt.
+  function focusedField(box) {
+    const active = document.activeElement;
+    return active && box.contains && box.contains(active) && active.dataset && active.dataset.mvField || null;
+  }
+
+  function restoreFocus(box, name) {
+    if (!name || !box.querySelector) return;
+    const control = [...box.querySelectorAll("[data-mv-field]")].find((item) => item.dataset.mvField === name);
+    if (control && document.activeElement !== control) control.focus({ preventScroll: true });
+  }
+
+  function valueControl(info) {
+    for (const plugin of plugins) {
+      if (typeof plugin.valueControl !== "function") continue;
+      let result;
+      try { result = plugin.valueControl(ctx, info); } catch (error) { console.error(error); continue; }
+      if (result !== undefined) return result;
+    }
+    return undefined;
+  }
+
+  function revertEvent(track, event) {
+    for (const plugin of plugins) {
+      if (typeof plugin.revertEvent !== "function") continue;
+      try { if (plugin.revertEvent(ctx, track, event) === true) return; } catch (error) { console.error(error); }
+    }
+    const original = history.originals.get(event.id);
+    if (!original) return;
+    const target = eventTarget(track, event);
+    const changes = [{ target, path: ["start"], after: original.start }, { target, path: ["duration"], after: original.duration },
+      { target, path: ["label"], after: original.label }, { target, path: ["values"], after: copy(original.values || {}) }];
+    changes.push(...extrapolationWrites(track, new Map([[event.id, { start: original.start, duration: original.duration,
+      postMode: original.values && finite(original.values.postExtrapolationMode) ? original.values.postExtrapolationMode : undefined }]])));
+    edit({ label: "Revert clip", changes });
+  }
+
+  // Non-native projects only: the exporter refuses new or removed native clips.
+  function duplicateEvent(track, event) {
+    if (project.nativeTimeline === true) return;
+    const ids = new Set(project.tracks.flatMap((item) => item.events.map((clip) => clip.id)));
+    let number = 1;
+    while (ids.has(`${track.id}:u${number}`)) number++;
+    const clone = copy(event);
+    clone.id = `${track.id}:u${number}`;
+    clone.start = clamp(event.start + event.duration, 0, Math.max(0, project.duration - event.duration));
+    delete clone.editable;
+    const index = track.events.indexOf(event) + 1;
+    const virtual = { ...track, events: [...track.events.slice(0, index), clone, ...track.events.slice(index)] };
+    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "insert", index, value: clone }];
+    if (autoExtrapolation(track)) {
+      for (const write of Interact.extrapolationChanges(virtual, new Map())) {
+        changes.push({ target: eventTarget(track, write.event), path: ["values", write.key], after: write.value });
+      }
+    }
+    if (edit({ label: "Duplicate clip", changes })) {
+      const found = findEvent(track.id, clone.id);
+      if (found) chooseEvent(found.track, found.event);
+    }
+  }
+
+  function deleteEvent(track, event) {
+    if (project.nativeTimeline === true) return;
+    const index = track.events.indexOf(event);
+    if (index < 0) return;
+    const virtual = { ...track, events: track.events.filter((item) => item !== event) };
+    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "remove", index }];
+    if (autoExtrapolation(track)) {
+      for (const write of Interact.extrapolationChanges(virtual, new Map())) {
+        changes.push({ target: eventTarget(track, write.event), path: ["values", write.key], after: write.value });
+      }
+    }
+    edit({ label: "Delete clip", changes });
   }
 
   function renderQuality() {
@@ -515,23 +767,18 @@
     select.addEventListener("change", () => {
       const mode = modes.find((candidate) => text(candidate.id) === select.value);
       if (!mode) return;
-      quality.mode = mode.id;
-      quality.values = { ...quality.values, ...copy(mode.values || {}) };
-      renderQuality(); seek(time, false);
-      if (scene) scene.resize();
+      edit({ label: "Change quality preset", changes: [{ target: { kind: "quality" }, path: ["mode"], after: mode.id },
+        { target: { kind: "quality" }, path: ["values"], after: { ...quality.values, ...copy(mode.values || {}) } }] });
     });
     if (modes.length) box.append(field("Quality preset", select));
     const mode = modes.find((candidate) => text(candidate.id) === select.value && candidate.description);
     if (mode) box.append(make("p", t(mode.description)));
-    const values = quality.values || (quality.values = {});
+    const values = quality.values || {};
     for (const option of quality.options) {
       const key = option.key, value = values[key];
       const data = { "data-mv-quality": key };
-      const update = (next) => {
-        values[key] = next;
-        seek(time, false);
-        if (key === "rendering_resolution" && scene) scene.resize();
-      };
+      const update = (next) => edit({ label: "Change quality setting", detail: text(option.label || key),
+        changes: [{ target: { kind: "quality" }, path: ["values", key], after: next }] }, "quality");
       if (option.type === "boolean" || option.type === "checkbox") box.append(field(option.label || key, checkInput(value, data, update)));
       else if (option.type === "number" && finite(value)) box.append(field(option.label || key, numberInput(value, data, update)));
       else if (value != null) box.append(field(option.label || key, make("output", text(value))));
@@ -664,20 +911,33 @@
     box.append(attach);
   }
 
-  function chooseEvent(track, event) {
+  function chooseEvent(track, event, move = true) {
     selected = { track: track.id, event: event.id };
     pause();
-    seek(event.start);
-    for (const clip of byId("mv-timeline-grid").querySelectorAll(".mv-clip")) {
-      clip.setAttribute("aria-pressed", String(clip.dataset.track === text(track.id) && clip.dataset.event === text(event.id)));
-    }
+    if (move) seek(event.start);
+    syncClipSelection();
     const panel = byId("mv-events");
     if (!panel.hidden) panel.open = true;
     renderEvent();
+    callPlugins("selectionChanged", { track, event });
+  }
+
+  function clearSelection() {
+    if (!selected) return;
+    selected = null;
+    syncClipSelection();
+    renderEvent();
+    callPlugins("selectionChanged", null);
+  }
+
+  function syncClipSelection() {
+    for (const clip of byId("mv-timeline-grid").querySelectorAll(".mv-clip")) {
+      clip.setAttribute("aria-pressed", String(!!selected && clip.dataset.track === text(selected.track) && clip.dataset.event === text(selected.event)));
+    }
   }
 
   function scrub(event, deferDraw = false) {
-    if (event.target.closest(".mv-clip")) return;
+    if (event.target.closest(".mv-clip, .mv-key, .mv-rig-clip")) return;
     const bar = event.currentTarget;
     seek((event.clientX - bar.getBoundingClientRect().left) / pixelsPerSecond, true, deferDraw);
   }
@@ -686,43 +946,247 @@
     scene?.flushSeekDraw();
   }
 
+  // The lane geometry handed to plugins (laneDecorate, extraLanes).
+  function laneLayout(rowOf) {
+    const grid = byId("mv-timeline-grid");
+    let rowHeight = null;
+    return {
+      pixelsPerSecond, rowOf, grid, laneLeft: 0,
+      get rowHeight() {
+        if (rowHeight === null) {
+          const lane = grid.querySelector && grid.querySelector(".mv-lane");
+          const value = lane && global.getComputedStyle ? parseFloat(global.getComputedStyle(lane).getPropertyValue("--mv-clip-row-height")) : NaN;
+          rowHeight = finite(value) ? value : 30;
+        }
+        return rowHeight;
+      },
+    };
+  }
+
+  // MainCamera cuts (scene rule for camera tracks it renders), playhead and the
+  // other clip edges on the same track: snap targets for a clip drag.
+  function clipSnapTargets(trackId, eventId) {
+    const targets = [time];
+    for (const track of project ? project.tracks : []) {
+      const camera = track.kind === "camera" && track.nativeClass !== "LiveCameraOffsetTrack" && (!track.binding || /MainCamera/i.test(track.binding));
+      if (track.id !== trackId && !camera) continue;
+      for (const event of track.events) {
+        if (track.id === trackId && event.id === eventId) continue;
+        targets.push(event.start, event.start + event.duration);
+      }
+    }
+    return targets;
+  }
+
+  function attachClipDrag(clip, trackId, eventId) {
+    const place = (range) => {
+      clip.style.left = `${range.start * pixelsPerSecond}px`;
+      clip.style.width = `${Math.max(13, (range.end - range.start) * pixelsPerSecond)}px`;
+    };
+    Interact.attachDrag(clip, {
+      label: "Move clip",
+      pixelsPerSecond: () => pixelsPerSecond,
+      getRange: () => {
+        const found = findEvent(trackId, eventId);
+        return found ? { start: found.event.start, end: found.event.start + found.event.duration } : null;
+      },
+      bounds: () => ({ min: 0, max: project ? project.duration : 0, minLength: Interact.FRAME }),
+      snapTargets: () => clipSnapTargets(trackId, eventId),
+      allowed: () => {
+        const found = findEvent(trackId, eventId);
+        return found ? clipRules(found.track, found.event) : { move: false, resize: false };
+      },
+      setRange: (range, { phase, mode }) => {
+        const found = findEvent(trackId, eventId);
+        if (!found) return;
+        if (phase === "preview") {
+          place(range);
+          clip.dataset.dragTime = formatTime(mode === "end" ? range.end : range.start);
+          return;
+        }
+        delete clip.dataset.dragTime;
+        if (phase === "cancel") { place({ start: found.event.start, end: found.event.start + found.event.duration }); return; }
+        const { track, event } = found;
+        // A move keeps the stored duration exactly (end − start would add float noise).
+        const next = mode === "move" ? { start: range.start, duration: event.duration } : { start: event.start, duration: range.end - event.start };
+        const command = timingCommand(track, event, next, mode === "move" ? "Move clip" : "Resize clip");
+        const changed = !!command && edit(command);
+        if (!changed) place({ start: event.start, end: event.start + event.duration });
+        const current = findEvent(trackId, eventId);
+        if (!current) return;
+        if (!selected || selected.track !== trackId || selected.event !== eventId) chooseEvent(current.track, current.event, false);
+        if (mode === "move") seek(current.event.start);
+        else seek(time, false);
+        const again = timelineLanes.get(trackId)?.querySelector?.(`.mv-clip[data-event="${CSS.escape(eventId)}"]`);
+        if (again && clip !== again && clip === document.activeElement) again.focus({ preventScroll: true });
+      },
+    });
+  }
+
   function renderTimelineLane(track) {
-    const lane = make("div", null, { class: "mv-lane", "data-kind": text(track.kind) });
+    const lane = make("div", null, { class: "mv-lane", "data-kind": text(track.kind), "data-track": text(track.id), "data-tab": Tabs.tabOf(track) });
     lane.addEventListener("click", scrub);
-    const rows = [];
+    const rows = [], rowOf = new Map(), edited = history.editedEvents();
     for (const event of track.events.slice().sort((first, second) => first.start - second.start)) {
       const title = text(event.label || track.label || kinds[track.kind]);
       const isSelected = selected && selected.track === track.id && selected.event === event.id;
+      const changed = edited.has(event.id);
+      const rules = clipRules(track, event);
       const clip = button(title, (click) => { click.stopPropagation(); chooseEvent(track, event); }, {
-        class: "mv-clip", title: `${title} · ${formatTime(event.start)}`,
-        "data-track": text(track.id), "data-event": text(event.id), "aria-pressed": String(!!isSelected),
+        class: "mv-clip", title: `${title} · ${formatTime(event.start)}` + (changed ? " · " + t("Edited") : "") + (rules.reason ? " · " + rules.reason : ""),
+        "data-track": text(track.id), "data-event": text(event.id), "aria-pressed": String(!!isSelected), "aria-describedby": "mv-clip-help",
       });
+      if (changed) { clip.classList.add("mv-edited"); clip.dataset.edited = "true"; }
+      if (rules.move === false && rules.resize === false) clip.classList.add("mv-clip-locked");
+      else if (rules.resize !== false) clip.classList.add("mv-clip-resizable");
       const left = event.start * pixelsPerSecond, width = Math.max(13, event.duration * pixelsPerSecond);
       const free = rows.findIndex((end) => end + 1 < left), row = free < 0 ? rows.length : free;
       rows[row] = left + width;
+      rowOf.set(event.id, row);
       clip.style.left = `${left}px`;
       clip.style.width = `${width}px`;
       clip.style.setProperty("--mv-clip-row", row);
+      attachClipDrag(clip, track.id, event.id);
       lane.append(clip);
     }
     lane.style.setProperty("--mv-lane-rows", Math.max(rows.length, 1));
+    lane.mvLayout = laneLayout(rowOf);
     return lane;
   }
 
+  function decorateLane(track, lane) {
+    callPlugins("laneDecorate", track, lane, lane.mvLayout);
+  }
+
   function refreshTimelineLane(track) {
-    const previous = timelineLanes.get(track);
-    if (!previous) return;
-    const lane = renderTimelineLane(track);
+    const id = track && typeof track === "object" ? track.id : track;
+    const previous = timelineLanes.get(id);
+    const current = project && project.tracks.find((item) => item.id === id);
+    if (!previous || !current) return;
+    const focused = previous.contains(document.activeElement) ? document.activeElement.dataset.event : null;
+    const lane = renderTimelineLane(current);
     previous.replaceWith(lane);
-    timelineLanes.set(track, lane);
+    timelineLanes.set(id, lane);
+    decorateLane(current, lane);
+    syncLaneLabel(current);
+    if (focused) lane.querySelector(`.mv-clip[data-event="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+  }
+
+  // Edited marks only (a value edit does not move clips): keeps the clip elements and their focus.
+  function syncLaneMarks(track) {
+    const lane = timelineLanes.get(track.id);
+    if (!lane) return;
+    const edited = history.editedEvents();
+    for (const clip of lane.querySelectorAll(".mv-clip")) {
+      const changed = edited.has(clip.dataset.event);
+      clip.classList.toggle("mv-edited", changed);
+      if (changed) clip.dataset.edited = "true";
+      else delete clip.dataset.edited;
+    }
+    syncLaneLabel(track);
+  }
+
+  function syncLaneLabel(track) {
+    const label = timelineLabels.get(track.id);
+    if (!label) return;
+    const edited = history.editedEvents();
+    label.classList.toggle("mv-lane-edited", track.events.some((event) => edited.has(event.id)));
+  }
+
+  function laneLabel(track) {
+    const full = text(track.label || kinds[track.kind] || track.kind);
+    const label = make("p", null, { class: "mv-lane-label", title: text(track.binding || track.label), "data-track": text(track.id) });
+    const cut = full.lastIndexOf("/");
+    if (cut > 0) label.append(make("span", full.slice(0, cut + 1), { class: "mv-lane-path" }), make("span", full.slice(cut + 1), { class: "mv-lane-name" }));
+    else label.append(make("span", full, { class: "mv-lane-name" }));
+    return label;
+  }
+
+  function editCount() {
+    let count = project ? history.editedEvents().size : 0;
+    for (const value of callPlugins("editedCount")) if (finite(value) && value > 0) count += value;
+    return count;
+  }
+
+  function tabCounts() {
+    const counts = Tabs.census(project ? project.tracks : []);
+    const edited = project ? history.editedEvents() : new Set();
+    counts.edit = { tracks: project ? project.tracks.filter((track) => track.events.some((event) => edited.has(event.id))).length : 0,
+      events: editCount() };
+    return counts;
+  }
+
+  function selectTab(id, focus) {
+    preferredTab = id;
+    session(tabKey, id);
+    groupFilter = "";
+    renderTimeline();
+    if (focus) byId("mv-tab-" + activeTab)?.focus();
+  }
+
+  function selectMember(value, focus) {
+    preferredMember = value === "" || value == null ? null : Number(value);
+    session(memberKey, preferredMember === null ? null : preferredMember);
+    renderTimeline();
+    if (focus) byId("mv-member-filter").querySelector('[aria-checked="true"]')?.focus();
+  }
+
+  function renderTimelineTabs() {
+    const nav = byId("mv-timeline-nav"), list = byId("mv-timeline-tabs");
+    nav.hidden = !project;
+    if (!project) { list.replaceChildren(); byId("mv-member-filter").hidden = true; return; }
+    const counts = tabCounts(), ids = Tabs.visibleTabs(counts);
+    activeTab = ids.includes(preferredTab) ? preferredTab : "all";
+    const refocus = list.contains(document.activeElement);
+    Tabs.renderTabs(list, {
+      active: activeTab, onSelect: selectTab,
+      tabs: ids.map((id) => ({ id, label: t(Tabs.TABS.find((tab) => tab.id === id).label), count: counts[id].events,
+        tracks: counts[id].tracks })),
+      title: (tab) => format("Tracks: {tracks} · Clips: {clips}", { tracks: tab.tracks, clips: tab.count }),
+    });
+    if (refocus) byId("mv-tab-" + activeTab)?.focus({ preventScroll: true });
+  }
+
+  function renderMemberFilter(plan) {
+    const box = byId("mv-member-filter");
+    box.hidden = !plan.memberTracks;
+    if (!plan.memberTracks) { box.replaceChildren(); return; }
+    const refocus = box.contains(document.activeElement);
+    const choices = [{ value: "", label: t("All members") }];
+    for (const member of Tabs.memberChoices(project)) {
+      const generic = t("Member") + " " + member.slot;
+      choices.push({ value: member.slot, label: member.name ? `${member.slot} · ${member.name}` : generic,
+        title: member.name ? `${generic} · ${member.name}` : generic, color: member.color });
+    }
+    Tabs.renderChips(box, { choices, active: plan.member === null ? "" : plan.member, onSelect: selectMember });
+    if (refocus) box.querySelector('[aria-checked="true"]')?.focus({ preventScroll: true });
+  }
+
+  function extraLanes(tab) {
+    const lanes = [];
+    for (const list of callPlugins("extraLanes", tab)) if (Array.isArray(list)) lanes.push(...list.filter((lane) => lane && lane.id != null));
+    return lanes;
+  }
+
+  function wideRow(className, label, attrs = {}) {
+    const row = make("div", null, { class: className, ...attrs });
+    row.append(make("span", label));
+    return row;
   }
 
   function renderTimeline() {
     const grid = byId("mv-timeline-grid"), scroll = byId("mv-timeline-scroll");
     grid.replaceChildren();
     timelineLanes.clear();
+    timelineLabels.clear();
     playheadNode = null;
-    if (!project) return;
+    lastPlan = null;
+    renderTimelineTabs();
+    if (!project) {
+      scroll.removeAttribute("role");
+      scroll.removeAttribute("aria-labelledby");
+      return;
+    }
     const heading = make("p", t("Tracks"), { class: "mv-lane-label" });
     const ruler = make("div", null, { class: "mv-ruler" });
     const scale = byId("mv-zoom").value;
@@ -740,15 +1204,41 @@
     ruler.addEventListener("pointerdown", (event) => { ruler.setPointerCapture(event.pointerId); scrub(event, true); });
     ruler.addEventListener("pointermove", (event) => { if (ruler.hasPointerCapture(event.pointerId)) scrub(event, true); });
     for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) ruler.addEventListener(type, flushScrub);
-    for (const track of project.tracks) {
-      if (trackKind && track.kind !== trackKind) continue;
-      const label = make("p", text(track.label || kinds[track.kind] || track.kind), { class: "mv-lane-label", title: text(track.binding || track.label) });
-      const lane = renderTimelineLane(track);
-      timelineLanes.set(track, lane);
-      grid.append(label, lane);
+    const plan = Tabs.plan(project.tracks, { tab: activeTab, member: preferredMember, search: searchText,
+      editableOnly: activeTab !== "edit" && editableOnly, group: groupFilter, edited: history.editedEvents(), extra: extraLanes(activeTab) });
+    lastPlan = plan;
+    groupFilter = plan.group;
+    const decorate = [];
+    for (const row of plan.rows) {
+      if (row.type === "track") {
+        const label = laneLabel(row.track), lane = renderTimelineLane(row.track);
+        timelineLanes.set(row.track.id, lane);
+        timelineLabels.set(row.track.id, label);
+        grid.append(label, lane);
+        syncLaneLabel(row.track);
+        decorate.push([row.track, lane]);
+      } else if (row.type === "group") {
+        grid.append(make("p", text(row.track.label), { class: "mv-lane-label mv-lane-group", title: text(row.track.label), "data-track": text(row.track.id) }),
+          make("div", null, { class: "mv-lane-group-lane", "aria-hidden": "true" }));
+      } else if (row.type === "extra") {
+        const label = make("p", text(row.lane.label), { class: "mv-lane-label mv-lane-extra-label", title: text(row.lane.title || row.lane.label) });
+        const lane = make("div", null, { class: "mv-lane mv-lane-extra", "data-extra": text(row.lane.id) });
+        lane.addEventListener("click", scrub);
+        grid.append(label, lane);
+        try { row.lane.render?.(lane, laneLayout(new Map())); } catch (error) { console.error(error); }
+      } else if (row.type === "separator") {
+        grid.append(wideRow("mv-lane-separator", t("Editable"), { role: "presentation" }));
+      } else if (row.type === "hint") {
+        grid.append(wideRow("mv-lane-hint", t("No edits yet. Editable tracks are listed below.")));
+      }
     }
+    for (const [track, lane] of decorate) decorateLane(track, lane);
+    renderMemberFilter(plan);
     playheadNode = make("div", null, { class: "mv-playhead", "aria-hidden": "true" });
     grid.append(playheadNode);
+    scroll.setAttribute("role", "tabpanel");
+    scroll.setAttribute("aria-labelledby", "mv-tab-" + activeTab);
+    syncTrackControls();
     syncPosition();
   }
 
@@ -786,7 +1276,228 @@
     });
   }
 
+  // ---- Editor core: history, plugins, shortcuts ----------------------------------------
+
+  function callPlugins(hook, ...args) {
+    const results = [];
+    for (const plugin of plugins) {
+      if (typeof plugin[hook] !== "function") continue;
+      try { results.push(plugin[hook](ctx, ...args)); } catch (error) { console.error(`MV Studio plugin ${plugin.id}: ${hook}`, error); }
+    }
+    return results;
+  }
+
+  // Applies one history command. quiet names the panel the edit came from: that
+  // panel keeps its controls (and focus) instead of being rebuilt.
+  let quietPanel = null;
+  function edit(command, quiet = null) {
+    if (!history || !project) return false;
+    const previous = quietPanel;
+    quietPanel = quiet;
+    try { return history.apply(command); } finally { quietPanel = previous; }
+  }
+
+  function undo() { if (project && !ctx.locked()) history.undo(); }
+  function redo() { if (project && !ctx.locked()) history.redo(); }
+
+  function updateHistoryButtons() {
+    const locked = !project || !!pending || !!gameImport;
+    for (const [id, peek, label] of [["mv-undo", history.peekUndo(), "Undo"], ["mv-redo", history.peekRedo(), "Redo"]]) {
+      const control = byId(id);
+      control.disabled = locked || !peek;
+      control.title = peek ? format(label + ": {label}", { label: t(peek.label) + (peek.detail ? ` (${peek.detail})` : "") })
+        : t(label === "Undo" ? "Nothing to undo" : "Nothing to redo");
+      control.setAttribute("aria-label", t(label));
+    }
+  }
+
+  // After every apply/undo/redo: preview, affected lanes, the inspector, tab counts,
+  // the undo/redo buttons, then plugins (camera rebakes run in projectChanged).
+  function historyChanged({ command, direction, changes }) {
+    if (!project) return;
+    const tracks = new Set(), timing = new Set(), kinds = new Set();
+    let selectedTouched = false, selectedTiming = false, structure = false, wholeValues = false;
+    for (const change of changes) {
+      const target = change.target;
+      kinds.add(target.kind);
+      if (target.kind === "event" || target.kind === "track") tracks.add(target.track);
+      if (target.kind === "track") { structure = true; timing.add(target.track); }
+      if (target.kind !== "event") continue;
+      const key = change.path[0];
+      if (key === "start" || key === "duration") timing.add(target.track);
+      if (selected && selected.track === target.track && selected.event === target.event) {
+        selectedTouched = true;
+        if (key !== "values" || change.path.length === 1) selectedTiming = true;
+        if (key === "values" && change.path.length === 1) wholeValues = true;
+      }
+    }
+    if (selected && !findEvent(selected.track, selected.event)) {
+      selected = null;
+      callPlugins("selectionChanged", null);
+      selectedTouched = selectedTiming = true;
+    }
+    seek(time, kinds.has("soundtrack"), false);
+    const editTab = activeTab === "edit" && (tracks.size || kinds.has("editor"));
+    if (editTab || structure) renderTimeline();
+    else {
+      for (const id of tracks) {
+        const track = project.tracks.find((item) => item.id === id);
+        if (!track) continue;
+        if (timing.has(id)) refreshTimelineLane(track);
+        else syncLaneMarks(track);
+      }
+      renderTimelineTabs();
+      syncTrackControls();
+    }
+    const quiet = direction === "do" ? quietPanel : null;
+    if (selectedTouched || kinds.has("editor")) {
+      const box = byId("mv-event-fields"), header = byId("mv-event-header");
+      const active = activeEvent();
+      if (quiet === "events" && !selectedTiming && !wholeValues && active && header && box.contains && box.contains(header)) {
+        renderEventHeader(header, active.track, active.event);
+      } else if (selectedTouched || direction !== "do") renderEvent();
+    }
+    if (kinds.has("performer") && quiet !== "performers") renderPerformers();
+    if (kinds.has("soundtrack") && quiet !== "soundtrack") renderSoundtrack();
+    if (kinds.has("quality")) {
+      const quality = changes.filter((change) => change.target.kind === "quality");
+      const preset = quality.some((change) => change.path[0] !== "values" || change.path.length === 1);
+      if (quiet !== "quality" || preset) renderQuality();
+      if (preset || quality.some((change) => change.path[1] === "rendering_resolution")) scene?.resize();
+    }
+    updateHistoryButtons();
+    callPlugins("projectChanged", { reason: "history", command, direction });
+  }
+
+  // Track id → whether the extrapolation port reproduces its stored times (spec §5.3).
+  function computeGates(value) {
+    const gates = new Map();
+    for (const track of value.tracks) gates.set(track.id, Interact.extrapolationGate(track));
+    return gates;
+  }
+
+  // Costume re-import of the same MV: the native ids are identical, so every
+  // edited event whose keys still match keeps its edits, and the editor layer
+  // (originals, camera keys, rigs) comes along. Returns false when some edit
+  // could not be carried over.
+  function carryEdits(previous, next) {
+    const editor = previous.editor;
+    if (!editor || typeof editor !== "object") return true;
+    const before = new Map(), after = new Map();
+    for (const track of previous.tracks) for (const event of track.events) before.set(event.id, event);
+    for (const track of next.tracks) for (const event of track.events) after.set(event.id, event);
+    const keys = (values) => Object.keys(values || {}).sort().join("\n");
+    let complete = true;
+    for (const [id, original] of Object.entries(editor.originals || {})) {
+      const current = before.get(id), fresh = after.get(id);
+      if (!current) continue;
+      if (!fresh || !original || keys(original.values) !== keys(fresh.values)) { complete = false; continue; }
+      fresh.start = current.start;
+      fresh.duration = current.duration;
+      if ("label" in current) fresh.label = current.label;
+      else delete fresh.label;
+      fresh.values = copy(current.values);
+    }
+    next.editor = copy(editor);
+    return complete;
+  }
+
+  function translateAria() {
+    for (const node of document.querySelectorAll("#tab-mv [data-i18n-aria-label]")) node.setAttribute("aria-label", t(node.dataset.i18nAriaLabel));
+    for (const node of document.querySelectorAll("#tab-mv [data-mv-panel-name]")) node.textContent = t(node.dataset.mvPanelName);
+  }
+
+  function renderPanel(key) {
+    const panel = panelList.find((item) => item.key === key);
+    if (!panel) return;
+    if (!panel.plugin) {
+      ({ assets: renderAssets, performers: renderPerformers, soundtrack: renderSoundtrack, tracks: renderTracks, events: renderEvent,
+        quality: renderQuality, registration: renderRegistration, warnings: renderWarnings })[key]?.();
+      return;
+    }
+    const box = byId("mv-" + key + "-fields");
+    if (!box || typeof panel.plugin.render !== "function") return;
+    try { panel.plugin.render(box, ctx); } catch (error) { console.error(error); }
+  }
+
+  function typing(target) {
+    if (!target || target.isContentEditable) return !!target;
+    if (target.tagName === "SELECT" || target.tagName === "TEXTAREA") return true;
+    return target.tagName === "INPUT" && !["checkbox", "radio", "range", "button", "submit", "reset", "color", "file"].includes(target.type);
+  }
+
+  // Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z and Ctrl+Y on the MV tab, then plugin shortcuts.
+  function editorKeydown(event) {
+    if (!visible || !project || event.defaultPrevented || event.isComposing) return;
+    const root = byId("tab-mv"), target = event.target;
+    if (!(root.contains(target) || target === document.body || target === document.documentElement)) return;
+    if (byId("mv-game-picker").open || ctx.locked() || typing(target)) return;
+    const key = String(event.key || "").toLowerCase();
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && key === "z") {
+      event.preventDefault();
+      if (event.shiftKey) redo(); else undo();
+      return;
+    }
+    if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === "y") {
+      event.preventDefault();
+      redo();
+      return;
+    }
+    for (const plugin of plugins) {
+      if (typeof plugin.keydown !== "function") continue;
+      let handled = false;
+      try { handled = plugin.keydown(ctx, event) === true; } catch (error) { console.error(error); }
+      if (handled) { event.preventDefault(); return; }
+    }
+  }
+
+  function createContext() {
+    return Object.freeze({
+      project: () => project || null,
+      time: () => time,
+      duration: () => project ? project.duration : 0,
+      playing: () => playing,
+      pause,
+      seek: (seconds, { audio: changeAudio = true, defer = false } = {}) => { if (project) seek(seconds, changeAudio, defer); },
+      selection: () => activeEvent(),
+      select: (trackId, eventId, { seek: move = true } = {}) => {
+        if (!project) return;
+        const found = trackId == null || eventId == null ? null : findEvent(trackId, eventId);
+        if (found) chooseEvent(found.track, found.event, move);
+        else clearSelection();
+      },
+      history,
+      editor: (create = false) => {
+        if (!project) return null;
+        if (create && (!project.editor || typeof project.editor !== "object")) project.editor = { version: 1, originals: {} };
+        return project.editor || null;
+      },
+      edited: (eventId) => !!project && history.editedEvents().has(eventId),
+      extrapolationAuto: (track) => autoExtrapolation(track),
+      scene: () => scene || null,
+      t, make, button, field, numberInput, checkInput, format,
+      renderTimeline: () => { if (history) history.invalidate(); renderTimeline(); },
+      refreshLane: (trackId) => {
+        if (!project) return;
+        history.invalidate();
+        const track = project.tracks.find((item) => item.id === trackId);
+        if (track && timelineLanes.has(trackId)) refreshTimelineLane(track);
+        renderTimelineTabs();
+        syncTrackControls();
+      },
+      renderPanel, renderEvent: () => renderEvent(),
+      report,
+      locked: () => !!pending || !!gameImport,
+      frameRate: 60,
+      snap: (seconds) => Math.round(seconds * 60) / 60,
+      activeTab: () => activeTab,
+      filters: () => ({ tab: activeTab, member: lastPlan ? lastPlan.member : null, search: searchText, editableOnly, group: groupFilter }),
+      attachDrag: (element, options) => Interact.attachDrag(element, options),
+    });
+  }
+
   function render() {
+    translateAria();
     byId("mv-project-title").textContent = project && project.name || t("3D MV");
     renderPreviewStatus();
     renderWarnings();
@@ -801,8 +1512,11 @@
     renderEvent();
     renderQuality();
     renderRegistration();
+    const available = availablePanels();
+    for (const panel of panelList) if (panel.plugin && available.includes(panel.key)) renderPanel(panel.key);
     renderTimeline();
     updatePlayButton();
+    updateHistoryButtons();
   }
 
   function checkedProject(data) {
@@ -825,9 +1539,11 @@
     return scene;
   }
 
-  async function commit(value, preserveTime = false, reuseOutfit = null, reuseStage = false) {
+  // carry: a costume re-import of the same MV keeps the timeline edits and history (§5.5).
+  async function commit(value, preserveTime = false, reuseOutfit = null, reuseStage = false, carry = false) {
     const next = checkedProject(value);
     const playhead = preserveTime ? time : 0;
+    const before = project;
     pause();
     ensureScene();
     const source = resource(next.soundtrack && next.soundtrack.url);
@@ -838,10 +1554,19 @@
     }
     const previous = selected;
     project = next;
+    // Gates are decided on the data as loaded, before any carried edit.
+    extrapolationGates = computeGates(next);
+    let reason = preserveTime ? "reload" : "load", complete = true;
+    if (carry && before && before.editor) {
+      complete = carryEdits(before, next);
+      reason = "reimport";
+      history.invalidate();
+    } else if (!preserveTime) history.clear();
+    else history.invalidate();
     // The scene reports its preview notes again for the project it loads.
     previewWarnings = [];
-    selected = preserveTime ? previous : null;
-    trackKind = preserveTime ? trackKind : "";
+    selected = preserveTime || reason === "reimport" ? previous : null;
+    if (selected && !findEvent(selected.track, selected.event)) selected = null;
     if (!preserveTime) {
       registered = latestNativeTimeline = null; registrationTitle = performerId = ""; registrationTimelines = {}; registrationAudio = {};
       chartTemplates = []; chartTemplate = chartPath = "";
@@ -852,12 +1577,15 @@
       if (scene) scene.setVisible(visible && !document.hidden);
       render();
       seek(playhead);
+      if (previous && !selected) callPlugins("selectionChanged", null);
+      callPlugins("projectChanged", { reason });
       await ready;
     } finally {
       previewLoading = false;
       renderPreviewStatus();
       updatePlayButton();
     }
+    return complete;
   }
 
   async function operation(label, callback) {
@@ -866,6 +1594,7 @@
     pending = controller;
     byId("mv-save-result").hidden = true;
     byId("mv-import-game").disabled = byId("mv-open").disabled = byId("mv-save").disabled = byId("mv-export-timeline").disabled = true;
+    updateHistoryButtons();
     report(t(label));
     try { await callback(controller.signal); return true; }
     catch (error) { showError(error); return false; }
@@ -878,6 +1607,7 @@
       renderPerformers();
       renderSoundtrack();
       renderRegistration();
+      updateHistoryButtons();
     }
   }
 
@@ -925,9 +1655,15 @@
 
   function saveResult(endpoint, pendingLabel, doneLabel) {
     if (!project || pending) return;
-    const snapshot = copy(project);
     const source = gameSource();
     operation(pendingLabel, async (signal) => {
+      // Plugins finish pending work (camera bakes) or refuse with an Error first.
+      for (const plugin of plugins) {
+        const hook = plugin[endpoint === "export-timeline" ? "beforeExport" : "beforeSave"];
+        if (typeof hook === "function") await hook.call(plugin, ctx);
+        if (signal.aborted) throw new DOMException("The MV request was cancelled.", "AbortError");
+      }
+      const snapshot = copy(project);
       const receipt = await request(endpoint, { project: snapshot }, signal);
       const href = resource(receipt.download);
       if (!href) throw new Error("The MV project could not be saved.");
@@ -1017,7 +1753,8 @@
   }
 
   function lockGameEditing(locked) {
-    for (const id of ["mv-inspector", "mv-timeline-scroll"]) {
+    updateHistoryButtons();
+    for (const id of ["mv-inspector", "mv-timeline-scroll", "mv-timeline-nav"]) {
       const panel = byId(id);
       if ("inert" in panel) panel.inert = locked;
       else {
@@ -1077,7 +1814,7 @@
     runGameImport(payload);
   }
 
-  function runGameImport(payload) {
+  function runGameImport(payload, carry = false) {
     if (pending) return;
     lastGamePayload = payload;
     operation("Preparing MV from game…", async (signal) => {
@@ -1097,9 +1834,9 @@
         if (imported === null) imported = checkedProject(await request("game", payload, signal));
         requireCurrent();
         load.finishing = true;
-        await commit(imported, false, null, load.stageRequested);
+        const complete = await commit(imported, false, null, load.stageRequested, carry);
         committed = true;
-        report("");
+        report(complete ? "" : t("Some timeline edits could not be carried over."), !complete);
       } catch (error) {
         if (!load.finishing) requireCurrent();
         throw error;
@@ -1229,14 +1966,81 @@
     }
   }
 
+  // Editor plugins: sorted by order then id, attached once, their panels placed after "Selected event".
+  function mountPlugins() {
+    panelList = panelKeys.map((key, index) => ({ key, name: panelNames[index], plugin: null }));
+    plugins = (Array.isArray(global.MVStudioPlugins) ? global.MVStudioPlugins : []).filter((plugin) => plugin && typeof plugin === "object")
+      .sort((first, second) => (finite(first.order) ? first.order : 0) - (finite(second.order) ? second.order : 0) ||
+        text(first.id).localeCompare(text(second.id)));
+    for (const plugin of plugins) {
+      if (typeof plugin.attach !== "function") continue;
+      try { plugin.attach(ctx); } catch (error) { console.error(`MV Studio plugin ${plugin.id}: attach`, error); }
+    }
+    let anchor = byId("mv-events"), at = panelList.findIndex((panel) => panel.key === "events") + 1;
+    for (const plugin of plugins) {
+      let list = plugin.panels;
+      if (typeof list === "function") { try { list = list.call(plugin, ctx); } catch (error) { console.error(error); list = null; } }
+      if (!Array.isArray(list)) continue;
+      for (const panel of list) {
+        if (!panel || typeof panel.key !== "string" || !/^[A-Za-z0-9_-]+$/.test(panel.key) || panelList.some((item) => item.key === panel.key)) continue;
+        const name = text(panel.name || panel.key);
+        const details = make("details", null, { id: "mv-panel-" + panel.key, "data-mv-panel": panel.key });
+        details.open = !!panel.open;
+        details.append(make("summary", t(name), { "data-mv-panel-name": name }),
+          make("div", null, { class: "mv-panel-content", id: "mv-" + panel.key + "-fields" }));
+        anchor.after(details);
+        anchor = details;
+        panelList.splice(at++, 0, { key: panel.key, name, plugin: panel });
+      }
+    }
+  }
+
+  // Timeline tabs, member chips and the name search (tab and filters are remembered per session).
+  function mountTimelineNav() {
+    const stored = session(tabKey);
+    if (Tabs.TAB_IDS.includes(stored)) preferredTab = stored;
+    const member = Number(session(memberKey));
+    preferredMember = Number.isInteger(member) && member > 0 ? member : null;
+    searchText = text(session(searchKey)).slice(0, 120);
+    editableOnly = session(editableKey) === "1";
+    const search = byId("mv-track-search");
+    search.value = searchText;
+    search.addEventListener("input", () => {
+      searchText = search.value.slice(0, 120);
+      session(searchKey, searchText || null);
+      if (!renderQueued) renderQueued = requestAnimationFrame(() => { renderQueued = 0; renderTimeline(); });
+    });
+    const tabs = byId("mv-timeline-tabs"), members = byId("mv-member-filter");
+    Tabs.roving(tabs, "[role=tab]", (item) => item.dataset.mvTab, selectTab);
+    Tabs.roving(members, "[role=radio]", (item) => item.dataset.mvMember, selectMember);
+    byId("mv-undo").addEventListener("click", undo);
+    byId("mv-redo").addEventListener("click", redo);
+    document.addEventListener("keydown", editorKeydown);
+  }
+
   function mount(options) {
     if (settings) return;
     settings = options;
     seekInput = byId("mv-seek");
     timeOutput = byId("mv-time");
+    history = global.MVStudioEditHistory.create({ getProject: () => project, onChange: historyChanged, limit: 200,
+      compareView: (track, event) => {
+        const view = global.MVStudioEditHistory.editedView(event);
+        // Extrapolation times of a gated track are derived from the clip timing.
+        if (view && view.values && autoExtrapolation(track)) {
+          const values = { ...view.values };
+          delete values.preExtrapolationTime;
+          delete values.postExtrapolationTime;
+          view.values = values;
+        }
+        return view;
+      } });
+    ctx = createContext();
+    mountPlugins();
     const timelineScroll = byId("mv-timeline-scroll");
     timelineResizer = setupTimelineResizer(timelineScroll);
-    try { hidden = (JSON.parse(localStorage.getItem("elichika.mv.panels.v1")) || []).filter((key) => panelKeys.includes(key)); } catch (_) {}
+    try { hidden = (JSON.parse(localStorage.getItem("elichika.mv.panels.v1")) || []).filter((key) => panelList.some((panel) => panel.key === key)); } catch (_) {}
+    mountTimelineNav();
     byId("mv-import-game").addEventListener("click", showCatalog);
     byId("mv-game-close").addEventListener("click", () => byId("mv-game-picker").close());
     byId("mv-open").addEventListener("click", open);
@@ -1293,5 +2097,11 @@
   }
 
   global.MVStudio = Object.freeze({ mount, setVisible, updateLanguage: () => { if (settings) render(); }, open, save,
-    getState: () => ({ visible, playing, time, selection: selected && { ...selected }, project: project && copy(project) }) });
+    getState: () => {
+      const size = history ? history.size() : { undo: 0, redo: 0 };
+      return { visible, playing, time, selection: selected && { ...selected }, project: project && copy(project), tab: activeTab,
+        filters: { member: lastPlan ? lastPlan.member : null, search: searchText, editableOnly, group: groupFilter },
+        history: { undo: size.undo, redo: size.redo, undoLabel: history?.peekUndo()?.label || null, redoLabel: history?.peekRedo()?.label || null,
+          version: history ? history.version : 0 } };
+    } });
 })(window);
