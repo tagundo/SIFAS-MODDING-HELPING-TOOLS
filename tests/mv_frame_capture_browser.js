@@ -154,6 +154,18 @@ async function run() {
     // A higher preset changes the native height; the requested mode then wins.
     const high = await capture.applyQuality(page, { mode: 20 });
     assert.equal(high.values.rendering_resolution, 360);
+    // With --game-dump the quality the game ran wins over the manifest's preset, and the spring
+    // clock's rule rate follows it (the preset here has frame_rate_60fps false).
+    const gameRun = { file: 'dump.json', doc: { side: 'game', header: { quality: { values: { Quality: { v: 20, n: null },
+      RenderingResolution: 240, FrameRate60Fps: true, PostEffect: false, MovieLive: false } } } } };
+    const fromGame = await capture.captureQuality(page, { quality: { mode: 30 } }, gameRun);
+    assert.deepEqual([fromGame.source, fromGame.status, fromGame.mode, fromGame.gameOnly], ['game', 'matched', 20, ['MovieLive']],
+      JSON.stringify(fromGame.reasons));
+    assert.deepEqual([fromGame.values.rendering_resolution, fromGame.values.frame_rate_60fps, fromGame.values.posteffect], [240, true, false]);
+    assert.equal(capture.physicsReference({ physics: { order: 'game' } }, fromGame.values).rate, 60);
+    const fromManifest = await capture.captureQuality(page, { quality: { mode: 20 } });
+    assert.deepEqual([fromManifest.source, fromManifest.values.frame_rate_60fps], ['manifest', false]);
+    assert.equal(capture.physicsReference({ physics: { order: 'game' } }, fromManifest.values).rate, 30);
     const applied = await capture.applyQuality(page, { mode: 30, overrides: { posteffect: false } });
     assert.equal(applied.values.rendering_resolution, 180);
     await capture.pinViewport(page, 320, 180);

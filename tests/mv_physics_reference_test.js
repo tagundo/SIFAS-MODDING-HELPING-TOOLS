@@ -72,6 +72,41 @@ assert.throws(() => capture.physicsReference(fovmod, q30, { rate: '60/1' }), /do
 assert.throws(() => capture.physicsReference(manifest({ game: { exporter: 'fovmod' } }), q30, { rate: '25/1' }), /30, 60 or 120/);
 assert.throws(() => capture.physicsReference(manifest({ game: { exporter: 'fovmod' } }), q30, { rate: '30000/1001' }), /whole number/);
 
+// `node tests/mv_frame_capture.js --game-dump` reads the dump (requiring mv_runtime_capture.js, which
+// requires the runner back) before it applies the game's quality: the runner must be fully exported by
+// then. A preloaded playwright stand-in applies a quality through mv_runtime_capture.js from inside
+// chromium.launch(), the first step after the dump is read, and stops the run there.
+function commandLineGameDump() {
+  const { spawnSync } = require('node:child_process');
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-physics-cli-'));
+  try {
+    const dump = path.join(folder, 'dump.json'), file = path.join(folder, 'manifest.json'), stub = path.join(folder, 'stub.js');
+    fs.writeFileSync(dump, JSON.stringify({ schema: runtime.SCHEMA, side: 'game', header: {},
+      records: [10, 11].map((frameCount) => ({ id: `f${frameCount}`, kind: 'frame', clock: { frameCount, directorTime: frameCount / 10, deltaTime: 0.1 } })) }));
+    fs.writeFileSync(file, JSON.stringify(base));
+    fs.writeFileSync(stub, `'use strict';
+const Module = require('node:module');
+const load = Module._load;
+Module._load = function (request, ...rest) {
+  if (request !== 'playwright') return load.call(this, request, ...rest);
+  return { chromium: { async launch() {
+    const runtime = require(${JSON.stringify(path.join(__dirname, 'mv_runtime_capture.js'))});
+    const page = { evaluate: async (fn, args) => args === undefined ? { modes: [30], options: [] } : { mode: 30, values: {} } };
+    const applied = await runtime.applyGameQuality(page, undefined, { mode: 30 });
+    console.log('STUB_QUALITY ' + applied.mode);
+    throw new Error('stub browser stops here');
+  } } };
+};
+`);
+    const result = spawnSync(process.execPath, ['-r', stub, path.join(__dirname, 'mv_frame_capture.js'), '--manifest', file,
+      '--out', path.join(folder, 'out'), '--url', 'http://127.0.0.1:9', '--game-dump', dump], { encoding: 'utf8' });
+    assert.match(result.stdout, /STUB_QUALITY 30/, result.stderr);
+    assert.match(result.stderr, /stub browser stops here/);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+}
+
 // renderFrame: warm-up frames at the start pose only when the preroll reaches the song start.
 function fakePage() {
   const calls = [];
@@ -189,9 +224,50 @@ function fakePage() {
       records: [frame(100, 10, .2), frame(102, 10.5, .25), frame(103, 10.7, .2)] }));
     assert.deepEqual(capture.gameFrameGrid(manifest({}), file), { source: 'game-dump', file: 'dump.json', times: [10, 10.25, 10.5, 10.7] });
     assert.throws(() => capture.gameFrameGrid(manifest({ physics: { grid: [1] } }), file), /not both/);
+    const read = capture.readGameDump(file);
+    assert.equal(read.file, 'dump.json');
+    assert.deepEqual(capture.gameFrameGrid(manifest({}), read).times, [10, 10.25, 10.5, 10.7], 'a dump read once gives the same grid');
+    const editorFile = path.join(folder, 'editor.json');
+    fs.writeFileSync(editorFile, JSON.stringify({ schema: runtime.SCHEMA, side: 'editor', header: {}, records: [] }));
+    assert.throws(() => capture.readGameDump(editorFile), /must be a game runtime dump/);
   } finally {
     fs.rmSync(folder, { recursive: true, force: true });
   }
+
+  // With --game-dump the frames are drawn at the quality the game ran (header.quality, as the value
+  // capture applies it), so the spring clock's rule rate follows the game run: dump3b ran Max 3D with
+  // FrameRate60Fps false, while the editor's Max 3D preset has frame_rate_60fps true.
+  const presets = { 10: { rendering_resolution: 1080, frame_rate_60fps: true, posteffect: true },
+    30: { rendering_resolution: 720, frame_rate_60fps: false, posteffect: true } };
+  const options = [{ key: 'rendering_resolution', type: 'number' }, { key: 'frame_rate_60fps', type: 'boolean' },
+    { key: 'posteffect', type: 'boolean' }];
+  const editorProject = { quality: { mode: 30, values: { quality_mode: 30, ...presets[30] }, modes: [{ id: 10 }, { id: 30 }], options } };
+  const modeSelect = { options: [{ value: '10' }, { value: '30' }], value: '30',
+    dispatchEvent() { editorProject.quality.mode = Number(this.value); editorProject.quality.values = { quality_mode: Number(this.value), ...presets[this.value] }; } };
+  const inputs = Object.fromEntries(options.map(({ key, type }) => [key, { type: type === 'boolean' ? 'checkbox' : 'number', checked: false, value: '',
+    dispatchEvent(event) { if (event.type === 'change') editorProject.quality.values[key] = type === 'boolean' ? this.checked : Number(this.value); } }]));
+  globalThis.MVStudio = { getState: () => ({ project: editorProject }) };
+  globalThis.document = { querySelector: (selector) => selector === '#mv-quality-mode' ? modeSelect
+    : inputs[/data-mv-quality="(\w+)"/.exec(selector)?.[1]] ?? null };
+  const max3d10 = manifest({ quality: { mode: 10 }, physics: { rate: 4.869 } });
+  const gameRun = { file: 'mv-runtime-dump.json.gz', doc: { side: 'game', header: { quality: { values: { Quality: { v: 10, n: null },
+    RenderingResolution: 1080, FrameRate60Fps: false, RefreshRateMode: false, PostEffect: true } } } } };
+  let quality = await capture.captureQuality(direct, max3d10, gameRun);
+  assert.deepEqual([quality.source, quality.status, quality.mode, quality.values.frame_rate_60fps], ['game', 'matched', 10, false]);
+  assert.deepEqual(quality.request, { mode: 10, overrides: { rendering_resolution: 1080, frame_rate_60fps: false, posteffect: true } });
+  assert.deepEqual(quality.gameOnly, ['RefreshRateMode']);
+  reference = capture.physicsReference(max3d10, quality.values);
+  assert.deepEqual([reference.rate, reference.ruleRate], [4.869, 30], 'the spring clock runs at the rate the game requested');
+  // Without the dump the manifest's preset decides (60 Hz at Max 3D).
+  quality = await capture.captureQuality(direct, max3d10);
+  assert.deepEqual([quality.source, quality.mode, quality.values.frame_rate_60fps], ['manifest', 10, true]);
+  assert.equal(capture.physicsReference(max3d10, quality.values).ruleRate, 60);
+  // A dump that recorded no quality falls back to the manifest quality and says so.
+  quality = await capture.captureQuality(direct, max3d10, { file: 'old.json', doc: { side: 'game', header: {} } });
+  assert.deepEqual([quality.source, quality.status, quality.mode, quality.values.frame_rate_60fps], ['manifest', 'invalid:quality', 10, true]);
+  assert.deepEqual(quality.reasons, ['the game dump records no quality values']);
+  delete globalThis.MVStudio;
+  commandLineGameDump();
 
   // Real-time runtime dumps step at the achieved frame rate, capped by the requested rate.
   const clock = (directorTime, frameCount, deltaTime = .1) => ({ clock: { directorTime, frameCount, deltaTime } });
