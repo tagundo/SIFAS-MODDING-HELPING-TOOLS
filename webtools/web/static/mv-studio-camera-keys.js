@@ -233,18 +233,26 @@
     return previous || next;
   }
 
-  // The shot the game camera shows at `time` (the last main-camera track wins, as in the scene).
+  // endedCameraEvent of the scene: the clip that ends last on the track, once `time` is past
+  // its end (an original MV holds its final pose). A gap between two shots is no shot.
+  function endedCameraEvent(track, time) {
+    let last = null;
+    for (const event of track.events) if (event && (!last || event.start + event.duration > last.start + last.duration)) last = event;
+    return last && time > last.start + last.duration ? last : null;
+  }
+
+  // The shot the game camera shows at `time`, as the scene's mainCameraAt picks it: the last
+  // main-camera track with an active shot wins; otherwise, for game sources, the shot that
+  // ends last among the tracks the playhead has run past.
   function playheadShot(ctx, time = ctx.time()) {
     const project = ctx.project();
     let found = null, ended = null;
+    const hold = !!(project && project.source && project.source.kind === "game");
     for (const track of mainTracks(project)) {
       const event = activeCameraEvent(track, time);
       if (event) { found = { track, event }; continue; }
-      if (project.source && project.source.kind === "game") {
-        for (const item of track.events) {
-          if (time > item.start + item.duration && (!ended || item.start + item.duration > ended.event.start + ended.event.duration)) ended = { track, event: item };
-        }
-      }
+      const last = hold ? endedCameraEvent(track, time) : null;
+      if (last && (!ended || last.start + last.duration > ended.event.start + ended.event.duration)) ended = { track, event: last };
     }
     found = found || ended;
     return found ? shotInfo(ctx, found.track, found.event, time) : null;

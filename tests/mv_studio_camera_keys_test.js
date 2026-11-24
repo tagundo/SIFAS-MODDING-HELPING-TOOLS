@@ -516,6 +516,29 @@ function inspectorAndKeys() {
 }
 
 // The panel's shot is the scene's (mainCameraAt): a gap between two shots is no shot; past the
+// track's last shot a game source holds that shot's final frame.
+function playheadGap() {
+  const project = nativeProject();
+  project.nativeTimeline = false;
+  const shots = project.tracks[0].events;
+  shots[1].start = 3;   // cam:0 ends at 2, cam:1 starts at 3: a gap
+  shots[2].start = 7;   // cam:1 ends at 6, cam:2 ends at 8
+  for (const shot of shots) shot.values.postExtrapolationTime = 0;
+  const { ctx } = harness(project);
+  assert.equal(K.playheadShot(ctx, 2.5), null, 'no shot in a gap between shots');
+  assert.equal(K.playheadShot(ctx, 6.5), null, 'nor in the next gap');
+  const held = K.playheadShot(ctx, 9);
+  assert.equal(held && held.event.id, 'cam:2', 'past the last shot the game source holds it');
+  assert.equal(held.frame, 60, 'on its last frame');
+  project.source = { kind: 'mod' };
+  assert.equal(K.playheadShot(ctx, 9), null, 'other sources hold nothing');
+  project.source = { kind: 'game' };
+  // A Hold extrapolation bridges the cut, as in the scene.
+  shots[0].values.postExtrapolationMode = 1;
+  shots[0].values.postExtrapolationTime = 1;
+  assert.equal(K.playheadShot(ctx, 2.5).event.id, 'cam:0', 'a Hold post-extrapolation keeps the shot');
+}
+
 // A key that moves without changing the samples (a lone offset key) still redraws its lane's
 // diamonds, on the edit and on undo/redo.
 function keyLaneRefresh() {
@@ -551,5 +574,6 @@ function keyLaneRefresh() {
   nonNative();
   inspectorAndKeys();
   keyLaneRefresh();
+  playheadGap();
   console.log('mv studio camera keys tests passed');
 })().catch((error) => { console.error(error); process.exit(1); });
