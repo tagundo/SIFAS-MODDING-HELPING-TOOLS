@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/viewer-interaction-tools.css"/>
   <link rel="stylesheet" href="/static/viewer-signed-inputs.css"/>
   <link rel="stylesheet" href="/static/mv-studio.css"/>
+  <link rel="stylesheet" href="/static/mv-studio-editor.css"/>
 </head>
 <body>
   <header id="asset-tools-header">
@@ -510,6 +511,7 @@
           </div>
           <span id="mv-timeline-height-label" class="sr-only" data-i18n="Timeline height">Timeline height</span>
           <span id="mv-timeline-resize-help" class="sr-only" data-i18n="Drag upward or press the Up arrow to make the timeline taller. Home restores the default. End sets the maximum.">Drag upward or press the Up arrow to make the timeline taller. Home restores the default. End sets the maximum.</span>
+          <span id="mv-clip-help" class="sr-only" data-i18n="Drag a clip to move it and its right edge to change its length. Alt+Left or Alt+Right moves the clip by one frame, with Shift by ten frames.">Drag a clip to move it and its right edge to change its length. Alt+Left or Alt+Right moves the clip by one frame, with Shift by ten frames.</span>
           <div class="mv-timeline-toolbar">
             <h3 id="mv-timeline-label" data-i18n="MV timeline">MV timeline</h3>
             <div class="mv-controls">
@@ -518,10 +520,19 @@
               <output id="mv-time">0:00.00 / 0:00.00</output>
             </div>
             <label class="mv-seek-label"><span data-i18n="Playhead">Playhead</span><input id="mv-seek" type="range" min="0" max="0" value="0" step="0.001" disabled></label>
-            <label><span data-i18n="Timeline scale">Timeline scale</span><select id="mv-zoom">
+            <label class="mv-zoom-label"><span data-i18n="Timeline scale">Timeline scale</span><select id="mv-zoom">
               <option value="fit" data-i18n="Fit to width">Fit to width</option>
               <option value="16">16 px/s</option><option value="48">48 px/s</option><option value="96">96 px/s</option>
             </select></label>
+            <div id="mv-timeline-nav" class="mv-timeline-nav" hidden>
+              <div class="mv-history-controls">
+                <button id="mv-undo" class="mv-history-button" type="button" aria-keyshortcuts="Control+Z Meta+Z" aria-label="Undo" disabled><span aria-hidden="true">↶</span></button>
+                <button id="mv-redo" class="mv-history-button" type="button" aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y" aria-label="Redo" disabled><span aria-hidden="true">↷</span></button>
+              </div>
+              <div id="mv-timeline-tabs" class="mv-timeline-tabs" role="tablist" aria-label="Timeline categories" data-i18n-aria-label="Timeline categories"></div>
+              <label class="mv-track-search"><span class="sr-only" data-i18n="Search tracks">Search tracks</span><input id="mv-track-search" type="search" maxlength="120" autocomplete="off" placeholder="Search tracks" data-i18n-ph="Search tracks"></label>
+              <div id="mv-member-filter" class="mv-member-filter" role="radiogroup" aria-label="Members" data-i18n-aria-label="Members" hidden></div>
+            </div>
           </div>
           <div class="mv-timeline-scroll" id="mv-timeline-scroll">
             <div class="mv-timeline-grid" id="mv-timeline-grid"></div>
@@ -703,6 +714,9 @@
   <script src="/static/mv-studio-camera-depth.js"></script>
   <script src="/static/mv-studio-transparent-sort.js"></script>
   <script src="/static/mv-studio-asset-dump.js"></script>
+  <script src="/static/mv-studio-edit-history.js"></script>
+  <script src="/static/mv-studio-timeline-tabs.js"></script>
+  <script src="/static/mv-studio-timeline-interact.js"></script>
   <script src="/static/mv-studio-scene.js"></script>
   <script src="/static/mv-studio.js"></script>
   <script src="/static/app.js"></script>
