@@ -91,6 +91,7 @@
   var qualityFailure = false;
   var layoutNotice = "";
   var layoutListeners = [];
+  var hudPress = null;
   var layoutState = { viewport: null, stage: null, safeInsets: { top: 0, right: 0, bottom: 0, left: 0 } };
   var statusKey = "Choose a costume file to begin.";
   var statusError = false;
@@ -922,7 +923,10 @@
     hudOffset = Math.min(Math.max(0, height - hudInset - hudHeight - bottomHudHeight -
       safeInsets.top - safeInsets.bottom), Math.ceil(hudOffset));
     var hudTransform = hudOffset ? "translateY(" + hudOffset + "px)" : "";
-    if (topHud.style.transform !== hudTransform) topHud.style.transform = hudTransform;
+    // This offset follows a scroll one frame late. While a press that began on
+    // one of these controls is down, keep them where it started, or the release
+    // lands on whatever moved under the pointer and the click is lost.
+    if (hudPress === null && topHud.style.transform !== hudTransform) topHud.style.transform = hudTransform;
     if (!stageObserver) stageVisible = box.bottom > viewport.top && box.top < viewport.top + viewport.height &&
       box.right > viewport.left && box.left < viewport.left + viewport.width;
     // Popovers occupy the gap between corner columns, leaving every viewport
@@ -2187,9 +2191,9 @@
       acceptFullscreen("native");
     } else if (fullscreenMode === "native" || fullscreenPending === "enter" || fullscreenPending === "exit" || document.hidden) finishFullscreenExit(false);
   }
-  function listenLayout(target, event, handler) {
-    target.addEventListener(event, handler);
-    layoutListeners.push(function () { target.removeEventListener(event, handler); });
+  function listenLayout(target, event, handler, capture) {
+    target.addEventListener(event, handler, !!capture);
+    layoutListeners.push(function () { target.removeEventListener(event, handler, !!capture); });
   }
 
   function mount(options) {
@@ -2463,6 +2467,24 @@
     listenLayout(window, "resize", scheduleResize);
     listenLayout(window, "orientationchange", scheduleResize);
     listenLayout(window, "scroll", scheduleResize);
+    // A press on a top viewport control holds that bar's scroll offset until
+    // the press ends (see resize), then the pending offset is applied.
+    listenLayout(window, "pointerdown", function (event) {
+      if (event.isPrimary === false) return;
+      // A primary press starts a new gesture; it also ends a press whose
+      // release this page never saw. Only the main button holds the bar: a
+      // right-press can lose its release to the context menu.
+      var topHud = node("viewer-stage-tools-top"), held = hudPress !== null;
+      hudPress = topHud && event.button === 0 && event.target instanceof Node && topHud.contains(event.target) ? event.pointerId : null;
+      if (held && hudPress === null) scheduleResize();
+    }, true);
+    ["pointerup", "pointercancel"].forEach(function (name) {
+      listenLayout(window, name, function (event) {
+        if (hudPress === null || event.pointerId !== hudPress) return;
+        hudPress = null; scheduleResize();
+      }, true);
+    });
+    listenLayout(window, "blur", function () { if (hudPress !== null) { hudPress = null; scheduleResize(); } });
     if (window.visualViewport) {
       listenLayout(window.visualViewport, "resize", scheduleResize);
       listenLayout(window.visualViewport, "scroll", scheduleResize);
