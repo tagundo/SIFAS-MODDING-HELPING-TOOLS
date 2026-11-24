@@ -90,14 +90,27 @@ function planning() {
   }
 }
 
+// Every manifest planning() writes goes into one temporary folder, removed when planning ends.
+let manifests = null, written = 0;
 function writeManifest(extra) {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mv-frame-manifest-')), 'frames.json');
+  manifests ||= fs.mkdtempSync(path.join(os.tmpdir(), 'mv-frame-manifest-'));
+  const file = path.join(manifests, `frames-${written++}.json`);
   fs.writeFileSync(file, JSON.stringify({ source: { region: 'gl', platform: 'ios', liveId: 1, assetId: 2 }, quality: { mode: 30 }, ...extra }));
   return file;
 }
 
+function plan() {
+  try {
+    planning();
+  } finally {
+    if (manifests) fs.rmSync(manifests, { recursive: true, force: true });
+  }
+  assert(manifests && !fs.existsSync(manifests), 'the temporary manifests are removed');
+  manifests = null;
+}
+
 async function run() {
-  planning();
+  plan();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-frame-capture-'));
   const library = path.join(work, 'library'), out = path.join(work, 'capture');
   fs.mkdirSync(library); fs.mkdirSync(out);
@@ -141,6 +154,18 @@ async function run() {
     // A higher preset changes the native height; the requested mode then wins.
     const high = await capture.applyQuality(page, { mode: 20 });
     assert.equal(high.values.rendering_resolution, 360);
+    // With --game-dump the quality the game ran wins over the manifest's preset, and the spring
+    // clock's rule rate follows it (the preset here has frame_rate_60fps false).
+    const gameRun = { file: 'dump.json', doc: { side: 'game', header: { quality: { values: { Quality: { v: 20, n: null },
+      RenderingResolution: 240, FrameRate60Fps: true, PostEffect: false, MovieLive: false } } } } };
+    const fromGame = await capture.captureQuality(page, { quality: { mode: 30 } }, gameRun);
+    assert.deepEqual([fromGame.source, fromGame.status, fromGame.mode, fromGame.gameOnly], ['game', 'matched', 20, ['MovieLive']],
+      JSON.stringify(fromGame.reasons));
+    assert.deepEqual([fromGame.values.rendering_resolution, fromGame.values.frame_rate_60fps, fromGame.values.posteffect], [240, true, false]);
+    assert.equal(capture.physicsReference({ physics: { order: 'game' } }, fromGame.values).rate, 60);
+    const fromManifest = await capture.captureQuality(page, { quality: { mode: 20 } });
+    assert.deepEqual([fromManifest.source, fromManifest.values.frame_rate_60fps], ['manifest', false]);
+    assert.equal(capture.physicsReference({ physics: { order: 'game' } }, fromManifest.values).rate, 30);
     const applied = await capture.applyQuality(page, { mode: 30, overrides: { posteffect: false } });
     assert.equal(applied.values.rendering_resolution, 180);
     await capture.pinViewport(page, 320, 180);

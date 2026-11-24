@@ -1,6 +1,7 @@
 """Game-vs-editor frame comparison: alignment, geometry and report contract."""
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -271,6 +272,44 @@ class ScreencapGameFrames(unittest.TestCase):
                          "no times the game never showed and no repeats; the fallback spacing only before the first frame")
         times = compare.shot_candidates([{"n": 1, "before": {"id": "e0", "directorTime": 19.4}}], dump, frames_back=2)
         self.assertEqual([item["time"] for item in times], [19.4, 19.2, 19.0], "before the first reconstructed frame")
+
+    def test_runtime_capture_rebuilds_the_same_frames(self):
+        """mv_runtime_capture.js gameFrames is this map; its gameFrameTimes preroll grid is the map in frame
+        order without the frames that go back in time (a rewound record and what follows it until the
+        director passes the listed time again)."""
+        node = shutil.which("node") or ("/opt/node22/bin/node" if Path("/opt/node22/bin/node").exists() else None)
+        if not node:
+            self.skipTest("node is not installed")
+        dumps = [self.DUMP,
+                 runtime_dump([("e0", 196, 19.4, 0.2), ("e1", 199, 20.0, 0.2), ("e2", 200, 20.0, 1 / 3), ("e3", 204, 20.0, 0.12)]),
+                 runtime_dump([("r0", 300, 30.0, 0.2), ("r1", 302, 29.0, 0.2), ("r2", 304, 29.5, 0.2), ("r3", 306, 31.0, 0.2),
+                               ("r4", 309, 31.0, 0.2), ("r5", 310, 31.2, 0.4)])]
+        capture_js = Path(__file__).resolve().with_name("mv_runtime_capture.js")
+        env = dict(os.environ)
+        env.setdefault("NODE_PATH", "/usr/local/lib/node_modules_global")
+        # Exit 3 only when the runner itself cannot be loaded (e.g. no playwright); any other error fails.
+        script = (f"let m; try {{ m = require({json.dumps(str(capture_js))}); }} catch (error) {{ console.error(error.message); process.exit(3); }}"
+                  "const docs = JSON.parse(process.argv[1]);"
+                  "console.log(JSON.stringify(docs.map((doc) => ({ frames: [...m.gameFrames(doc)], times: m.gameFrameTimes(doc) }))));")
+        result = subprocess.run([node, "-e", script, json.dumps(dumps)], capture_output=True, text=True, env=env)
+        if result.returncode == 3:
+            self.skipTest(f"the capture runner cannot be loaded here: {result.stderr.strip()[:200]}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for dump, js in zip(dumps, json.loads(result.stdout)):
+            frames = compare.game_frame_times(dump)
+            self.assertEqual([frame for frame, _ in js["frames"]], sorted(frames))
+            for frame, time in js["frames"]:
+                self.assertAlmostEqual(time, frames[frame], places=9, msg=f"frame {frame}")
+            grid = []
+            for frame in sorted(frames):
+                if not grid or frames[frame] >= grid[-1] - 1e-9:
+                    grid.append(max(frames[frame], grid[-1]) if grid else frames[frame])
+            self.assertEqual(len(js["times"]), len(grid))
+            for got, want in zip(js["times"], grid):
+                self.assertAlmostEqual(got, want, places=9)
+            self.assertEqual(js["times"], sorted(js["times"]), "the preroll grid is ascending")
+        self.assertIn(302, compare.game_frame_times(dumps[2]), "the rewound record is a frame in the map")
+        self.assertEqual([round(t, 9) for t in json.loads(result.stdout)[2]["times"]], [30.0, 30.8, 31.0, 31.0, 31.0, 31.0, 31.2])
 
     def test_screencap_mode_compares_only_game_frame_candidates(self):
         root = Path(tempfile.mkdtemp(prefix="mv-frame-shots-"))

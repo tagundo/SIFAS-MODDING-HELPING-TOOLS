@@ -399,11 +399,14 @@ def load_game_dump(path):
 
 def game_frame_times(dump):
     """Rendered game frames (frameCount -> director seconds) rebuilt from every record that carries
-    clock.frameCount: a record is a frame; the frame before it is at directorTime - deltaTime unless
-    deltaTime was clamped to maximumDeltaTime; the other frames between two records are spread evenly.
-    While the director does not advance between two records (pinned at the song end), every frame
-    between them shows that time. A director that goes back leaves its frames unknown. The same rule
-    as mv_runtime_capture.js gameFrameTimes."""
+    clock.frameCount: every record is a frame it showed; the frame before it is at directorTime -
+    deltaTime unless deltaTime was clamped to maximumDeltaTime; the other frames between two records
+    are spread evenly. While the director does not advance between two records (pinned at the song
+    end), every frame between them shows that time. A director that goes back leaves the frames
+    between those two records unknown; both records keep their own times. The same map as
+    mv_runtime_capture.js gameFrames. Its gameFrameTimes (the spring preroll grid) lists these
+    times in frame order but must not go back, so it leaves out a rewound record and the frames
+    after it until the director passes the time already listed; this map keeps them."""
     anchors = {}
     for record in dump.get("records") or []:
         clock = record.get("clock") or {}

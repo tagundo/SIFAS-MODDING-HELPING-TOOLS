@@ -17,7 +17,12 @@
    (default) or "same-frame". With --game-dump (a real-time runtime dump of the same
    run) or manifest physics.grid (its frame times), the springs preroll on the game's
    own rendered frames wherever they cover the preroll window, as mv_runtime_capture.js
-   does. capture.json records the rate, reference, order and grid.
+   does. capture.json records the rate, reference, order and grid. With --game-dump the
+   editor also runs at the quality the game ran (header.quality, applied as
+   mv_runtime_capture.js applyGameQuality does; the manifest quality is only the
+   fallback when the game recorded none or it cannot be applied), so the spring
+   clock's rule rate (frame_rate_60fps) and the render height follow the game run;
+   capture.json quality records its source and status ("matched" or "invalid:quality").
 
    Members follow the client's MV deck chain; source.deck "original" picks the
    Original tab instead of Customize, source.player picks a local Elichika player of
@@ -148,13 +153,15 @@ async function nativeRenderHeight(page, qualityValues, screenHeight, antiAliasin
 }
 
 // Sets the editor's anti-aliasing option (manifest device.antiAliasing, off by default as in the
-// client) through its control and checks the scene took it.
+// client) through its control and checks the scene took it. The editor offers the control only
+// with the project's quality options; without it the option can only stay off, so off is checked
+// on the scene itself and on is refused.
 async function applyAntiAliasing(page, enabled) {
   const wanted = enabled === true;
   const applied = await page.evaluate((wanted) => {
     const input = document.querySelector('#mv-anti-aliasing');
-    if (!input) return { error: 'The editor has no anti-aliasing control.' };
-    if (input.checked !== wanted) {
+    if (!input && wanted) return { error: 'The editor has no anti-aliasing control.' };
+    if (input && input.checked !== wanted) {
       input.checked = wanted;
       input.dispatchEvent(new Event('change', { bubbles: true }));
     }
@@ -415,17 +422,36 @@ async function renderFrame(page, time, preroll, rate, warmup = 0, grid = null, s
   return { ...result, steps: plan.steps, warmupSteps: plan.warmupSteps, prerollStart: plan.start, prerollSource: plan.source };
 }
 
+// A real-time game runtime dump of the same run (--game-dump), read once for its quality and frame grid.
+function readGameDump(file) {
+  const { doc } = require('./mv_runtime_capture').readDump(path.resolve(file));
+  assert.equal(doc.side, 'game', `${file} must be a game runtime dump (side "game")`);
+  return { file: path.basename(file), doc };
+}
+
 // The game frame grid the springs preroll on: the game's rendered-frame times rebuilt from a runtime
-// dump (--game-dump, mv_runtime_capture.gameFrameTimes) or listed in manifest physics.grid; null otherwise.
+// dump (--game-dump: its path or readGameDump(); mv_runtime_capture.gameFrameTimes) or listed in
+// manifest physics.grid; null otherwise.
 function gameFrameGrid(manifest, gameDump = null) {
   assert(!(gameDump && manifest.physics?.grid), 'Give the game frame grid as --game-dump or manifest physics.grid, not both');
   if (gameDump) {
-    const runtime = require('./mv_runtime_capture');
-    const grid = runtime.gameFrameTimes(runtime.readDump(path.resolve(gameDump)).doc);
-    assert(grid.length, `${gameDump} has no records with clock.frameCount to rebuild the game frames from`);
-    return { source: 'game-dump', file: path.basename(gameDump), times: grid };
+    const dump = typeof gameDump === 'string' ? readGameDump(gameDump) : gameDump;
+    const grid = require('./mv_runtime_capture').gameFrameTimes(dump.doc);
+    assert(grid.length, `${dump.file} has no records with clock.frameCount to rebuild the game frames from`);
+    return { source: 'game-dump', file: dump.file, times: grid };
   }
   return manifest.physics?.grid ? { source: 'manifest physics.grid', file: null, times: manifest.physics.grid } : null;
+}
+
+// The quality the frames are drawn at. With a runtime dump of the same run (readGameDump) it is the
+// quality the game ran (header.quality through mv_runtime_capture.applyGameQuality: the mode and every
+// value with an editor control, the manifest quality only when the game recorded none or it cannot be
+// applied), so the spring rule rate (frame_rate_60fps) and the render height follow the game run.
+// Otherwise it is the manifest quality.
+async function captureQuality(page, manifest, gameDump = null) {
+  if (gameDump) return require('./mv_runtime_capture').applyGameQuality(page, gameDump.doc.header?.quality, manifest.quality);
+  const applied = await applyQuality(page, manifest.quality);
+  return { mode: applied.mode, values: applied.values, source: 'manifest' };
 }
 
 // Applies the reference's spring timing to the scene and returns what it applied.
@@ -465,6 +491,9 @@ async function run() {
   const target = video ? probeVideo(video) : null;
   const aspect = target ? target.width / target.height : (manifest.aspect ?? 16 / 9);
   const serverRoot = path.resolve(options['server-root'] || path.join(MODTOOLS, '..'));
+  const gameDump = options['game-dump'] ? readGameDump(options['game-dump']) : null;
+  const grid = gameFrameGrid(manifest, gameDump);
+  assert(!grid || manifest.game?.exporter !== 'fovmod', 'A game frame grid is for a real-time game run, not a FOVMOD export');
   let server = null, browser = null;
   try {
     const url = options.url || (server = await bootEditor(serverRoot, options.library, path.join(out, 'editor-server.log'))).url;
@@ -485,7 +514,7 @@ async function run() {
       });
     }
     await importOriginal(page, manifest.source, manifest.download === true);
-    const quality = await applyQuality(page, manifest.quality);
+    const quality = await captureQuality(page, manifest, gameDump);
     const antiAliasing = await applyAntiAliasing(page, manifest.device?.antiAliasing);
     // The game draws at the client's height for its screen (manifest.screen, else the video's
     // height; the preset's height when neither is known); the export then scales to the video size.
@@ -505,8 +534,6 @@ async function run() {
       }
     }, manifest.screenFade === true);
     const physics = physicsReference(manifest, quality.values, target);
-    const grid = gameFrameGrid(manifest, options['game-dump']);
-    assert(!grid || physics.source !== 'fovmod-export', 'A game frame grid is for a real-time game run, not a FOVMOD export');
     await applyPhysicsReference(page, physics);
     const rate = physics.rate, stampRate = physics.ruleRate ?? physics.rate;
     const project = await projectRecord(page);
@@ -542,7 +569,9 @@ async function run() {
         warmupSteps: physics.warmupSteps, ruleRate: stampRate,
         grid: grid ? { source: grid.source, file: grid.file, frames: grid.times.length } : null },
       render: { width: renderWidth, height: renderHeight, aspect, antiAliasing, video: target },
-      quality: { mode: quality.mode, values: quality.values },
+      quality: { mode: quality.mode, values: quality.values, source: quality.source,
+        ...(gameDump ? { file: gameDump.file, request: quality.request, status: quality.status, reasons: quality.reasons,
+          gameOnly: quality.gameOnly, gameDifferences: quality.gameDifferences } : {}) },
       environment: {
         modtools: { commit: gitHead(MODTOOLS), dirty: gitDirty(MODTOOLS) },
         server: { root: serverRoot, commit: options.url ? null : gitHead(serverRoot) },
@@ -551,13 +580,17 @@ async function run() {
       pageErrors: errors, frames,
     };
     fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify(capture, null, 2) + '\n');
-    console.log(JSON.stringify({ out, frames: frames.length, webgl: capture.environment.webgl, warnings: project.warnings.length, pageErrors: errors.length }));
+    console.log(JSON.stringify({ out, frames: frames.length, webgl: capture.environment.webgl, warnings: project.warnings.length, pageErrors: errors.length,
+      quality: { source: quality.source, mode: quality.mode, status: quality.status ?? null, reasons: quality.reasons ?? [] } }));
   } finally {
     if (browser) await browser.close();
     if (server) server.child.kill();
   }
 }
 
-if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
 module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, deckRequest, importOriginal, projectRecord, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty,
-  videoFps, physicsReference, applyPhysicsReference, nativeRenderHeight, applyAntiAliasing, prerollPlan, gameFrameGrid, MAX_DELTA_TIME };
+  videoFps, physicsReference, applyPhysicsReference, nativeRenderHeight, applyAntiAliasing, prerollPlan, readGameDump, gameFrameGrid, captureQuality,
+  MAX_DELTA_TIME };
+// Exported before run() starts: run() requires mv_runtime_capture.js (--game-dump), which requires this
+// module back and would otherwise keep its unfinished exports.
+if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
