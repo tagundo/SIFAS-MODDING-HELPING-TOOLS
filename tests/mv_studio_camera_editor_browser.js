@@ -11,7 +11,8 @@
    - Free camera → orbit → Key current view (K) → back in Game camera the pose equals
      the view (≤ 1e-3 m / 0.01°, same FOV); Ctrl+Z restores, Ctrl+Shift+Z redoes;
    - a clicked or Enter-activated key diamond keeps the focus, so Alt+Arrow moves the key;
-   - the curve view renders;
+   - the curve view renders, and a click on its grid lines seeks; the selected key's time
+     is on the header's shot-local clock;
    - a closed panel opened at another shot shows that shot;
    - save → reopen keeps editor.camera and the baked samples;
    - every camera editor string has Korean and Japanese copy, and the whole panel follows a
@@ -315,6 +316,7 @@ async function synthetic(browser, url) {
   assert.equal(await page.locator('#mv-cam-key').isVisible(), true, 'selected key fields');
   assert.equal(await page.locator('#mv-cam-interp').inputValue(), 'bezier');
   assert.equal(await page.locator('#mv-cam-handle').inputValue(), 'flat');
+  assert.equal(await page.locator('#mv-cam-key .mv-cam-key-time').textContent(), '0:01.25', 'the selected key on the header clock (shot-local)');
   assert((await page.locator('#mv-cam-curves polyline.mv-cam-curve').count()) >= 3, 'key curves drawn');
   assert((await page.locator('#mv-cam-curves polyline.mv-cam-dense').count()) >= 3, 'baked curves drawn');
   assert((await page.locator('#mv-cam-curves .mv-cam-curve-key').count()) >= 6, 'key points drawn');
@@ -329,6 +331,11 @@ async function synthetic(browser, url) {
   current = await state(page);
   assert.equal(current.history.undo, undoBefore + 1, 'a curve drag is one undo step');
   assert.equal(current.history.undoLabel, 'Move camera key');
+  // A click on a grid line seeks like a click on the plot (guides let the click through).
+  const grid = await page.locator('#mv-cam-curves .mv-cam-grid').nth(1).boundingBox();
+  await page.mouse.click(grid.x + grid.width * .6, grid.y + grid.height / 2);
+  near((await state(page)).time, shotStart + 180 / 60, 2 / 60, 'a click on the middle grid line seeks to frame 180');
+  assert.equal((await state(page)).history.undo, undoBefore + 1, 'a seek is not an edit');
   await page.screenshot({ path: path.join(evidence, 'camera-editor-ko.png') });
   // A tall window shows the whole panel at once.
   await page.setViewportSize({ width: 1400, height: 1900 });

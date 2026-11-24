@@ -1365,7 +1365,8 @@
     if (refs.keyBox) refs.keyBox.hidden = !key;
     if (key) {
       put("key.frame", key.frame, 0);
-      if (refs.keyTime) refs.keyTime.textContent = formatTime(frameTime(shot, key.frame));
+      // Shot-local, the clock of the header's "(0:00.50)".
+      if (refs.keyTime) refs.keyTime.textContent = formatTime(frameTime(shot, key.frame) - shot.event.start);
       if (refs.interp && refs.interp !== focused) refs.interp.value = key.interp;
       if (refs.handle && refs.handle !== focused) refs.handle.value = key.handle;
     }

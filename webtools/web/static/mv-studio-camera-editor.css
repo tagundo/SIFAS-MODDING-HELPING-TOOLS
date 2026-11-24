@@ -51,9 +51,10 @@
 .mv-cam-curves { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); overflow: hidden; }
 .mv-cam-graph { display: block; max-width: 100%; touch-action: none; user-select: none; }
 .mv-cam-plot { fill: transparent; cursor: crosshair; }
-.mv-cam-grid { stroke: var(--line); stroke-width: 1; }
-.mv-cam-zero { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
-.mv-cam-axis { fill: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+/* Guides and labels let a click through to the plot (a click on the plot seeks). */
+.mv-cam-grid { stroke: var(--line); stroke-width: 1; pointer-events: none; }
+.mv-cam-zero { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+.mv-cam-axis { fill: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; pointer-events: none; }
 .mv-cam-dense { stroke-width: 3; opacity: .28; pointer-events: none; }
 .mv-cam-curve { stroke-width: 1.6; pointer-events: none; }
 .mv-cam-curve-key { stroke: #000a; stroke-width: 1; cursor: grab; }
