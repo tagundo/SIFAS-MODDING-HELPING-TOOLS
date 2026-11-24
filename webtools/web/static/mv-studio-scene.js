@@ -2390,6 +2390,20 @@
         resetPhysics("physics-timing");
         return physicsTiming && { ...physicsTiming, rate: physicsRate() };
       },
+      // The next game frame's LiveCoreMemberManager.Update on its own, for a runtime value
+      // dump: the springs step once on the pose the last evaluated frame ended with and
+      // nothing else runs, as a reader between the Update scripts and that frame's deferred
+      // director evaluation (LiveTimeSynchronizer.SyncMusicPlayingTime sets the time, then
+      // DeferredEvaluate) sees the members. Playing frames only; returns the step taken
+      // (0: none, e.g. paused or the same-frame order, whose job runs after the timeline).
+      // The next seek or playback frame continues as usual.
+      stepPhysicsUpdate(frameTimestamp) {
+        if (disposed || !playing || !visible || !records.some((record) => record.physics)) return 0;
+        const physicsStep = physicsClock?.step(frameTimestamp, physicsRate()) || 0;
+        for (const record of records) record.physics?.frame?.("update", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
+        if (scene.autoUpdate) scene.updateMatrixWorld();
+        return physicsTiming?.order === "same-frame" ? 0 : physicsStep;
+      },
       frameAll,
       // Read-only state of the last evaluated frame for frame comparisons.
       inspect() {
