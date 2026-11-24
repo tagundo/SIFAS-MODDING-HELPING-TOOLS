@@ -64,6 +64,87 @@ async function noOverflow(page) {
   });
 }
 
+const songsNow = (page) => page.evaluate(async () => (await (await fetch('/api/mv-studio/songs?region=gl')).json()).songs);
+
+async function settled(page) {
+  await page.waitForFunction(() => {
+    const submit = document.querySelector('#mv-register-submit');
+    return submit && !submit.disabled && !document.querySelector('#mv-register-job');
+  }, null, { timeout: 30000 });
+}
+
+async function moveFirstClip(page, seconds) {
+  await page.locator('.mv-lane[data-tab] .mv-clip').first().click();
+  const start = page.locator('[data-mv-field=start]');
+  await start.waitFor();
+  await start.fill(String(seconds));
+  await start.press('Enter');
+}
+
+// A project with a (stand-in) native timeline: an edit made while the panel is closed still
+// reaches the game, Register waits for the check after an edit, and updates without timeline
+// changes keep the custom Android and iOS timelines without stopping the game server.
+async function nativeTimeline(page, server, panel, posted, log) {
+  await page.unroute('**/api/mv-studio/game?*');
+  await page.route('**/api/mv-studio/game?*', (route) => route.fulfill({ json: server.nativeProject }));
+  await page.locator('#mv-import-game').click();
+  await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
+  await page.locator('#mv-game-load').click();
+  await page.waitForFunction(() => MVStudio.getState().project?.nativeTimeline === true);
+  await page.locator('#mv-register-plan').filter({ hasText: '타임라인 변경 없음' }).waitFor();
+  await panel.locator(':scope > summary').click();
+  const plans = () => posted.filter((item) => item.url.endsWith('/registration-plan')).length;
+  const before = plans();
+  await moveFirstClip(page, 0.25);
+  await page.waitForFunction(() => MVStudio.getState().history.undo > 0);
+  await page.waitForTimeout(1300);
+  assert.equal(plans(), before, 'A closed panel does not plan');
+  await panel.locator(':scope > summary').click();
+  await page.locator('#mv-register-plan').filter({ hasText: '클립 타이밍 1개' }).waitFor();
+  assert(plans() > before, 'Reopening checks the edit made while the panel was closed');
+  await page.locator('#mv-register-title').fill('네이티브 MV');
+  await settled(page);
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-result').filter({ hasText: '등록했습니다' }).waitFor({ timeout: 60000 });
+  const job = posted.filter((item) => item.url.endsWith('/register-job')).pop();
+  assert.deepEqual(job.body.platforms, ['android', 'ios']);
+  let song = (await songsNow(page)).find((item) => item.title === '네이티브 MV');
+  assert.deepEqual(song.platforms, { android: 'custom', ios: 'custom' });
+
+  // Update without changes: both timelines stay, nothing is written, the server keeps running.
+  await page.locator('#mv-register-submit').filter({ hasText: '업데이트' }).waitFor();
+  await page.locator('#mv-register-plan').filter({ hasText: 'Android · iOS: 등록된 타임라인을 그대로 둡니다' }).waitFor();
+  await settled(page);
+  let mark = log().length;
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-result').filter({ hasText: '바뀐 내용이 없습니다.' }).waitFor({ timeout: 30000 });
+  assert(!log().slice(mark).includes('stop'), 'A no-op update does not stop the game server');
+  assert.deepEqual((await songsNow(page)).find((item) => item.liveId === song.liveId).platforms, { android: 'custom', ios: 'custom' });
+  await shot(page, panel, 'register-native-noop-ko.png');
+
+  // Title only: the title changes, the timelines stay custom.
+  await settled(page);
+  await page.locator('#mv-register-title').fill('네이티브 MV 2');
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-result').filter({ hasText: '업데이트했습니다' }).waitFor({ timeout: 60000 });
+  song = (await songsNow(page)).find((item) => item.liveId === song.liveId);
+  assert.deepEqual([song.title, song.platforms], ['네이티브 MV 2', { android: 'custom', ios: 'custom' }]);
+
+  // An edit with the panel open: Register waits for the check (no stale plan inside the debounce).
+  await settled(page);
+  await moveFirstClip(page, 0.5);
+  assert(await page.locator('#mv-register-submit').isDisabled(), 'Register waits for the check after an edit');
+  await settled(page);
+  mark = log().length;
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-result').filter({ hasText: '업데이트했습니다' }).waitFor({ timeout: 60000 });
+  const update = posted.filter((item) => item.url.endsWith('/register-job')).pop();
+  assert.equal(update.body.project.tracks[0].events[0].start, 0.5);
+  assert.deepEqual((await songsNow(page)).find((item) => item.liveId === song.liveId).platforms, { android: 'custom', ios: 'custom' });
+  assert(log().slice(mark).includes('stop'), 'A timeline update stops the managed server for the write');
+  return song;
+}
+
 async function run() {
   if (!elichika) {
     console.log(JSON.stringify({ status: 'SKIP', reason: 'The Elichika server app is not available (set ELICHIKA_DIR).' }));
@@ -132,7 +213,7 @@ async function run() {
     const job = posted.find((item) => item.url.endsWith('/register-job'));
     assert.deepEqual({ ...job.body, project: undefined }, { mode: 'new', project: undefined, title: '내 MV', credit: '작곡: 테스트',
       jacket: { kind: 'file', path: path.join(server.library, 'modded', 'jacket-wide.png'), crop: { x: 70, y: 0, size: 400 } },
-      audio: { kind: 'base' }, platforms: [], download: false, unbaked: [] });
+      audio: { kind: 'base' }, platforms: ['android', 'ios'], download: false, unbaked: [] });
     assert.deepEqual(await page.evaluate(() => MVStudio.getState().project.registration), { region: 'gl', liveId: 93000 });
     const songs = await page.evaluate(async () => (await (await fetch('/api/mv-studio/songs?region=gl')).json()).songs);
     assert.equal(songs.length, 1);
@@ -208,6 +289,7 @@ async function run() {
     assert.equal(await page.locator('#mv-register-target').count(), 0);
     assert.equal(await page.evaluate(() => MVStudio.getState().project.registration), undefined);
     await shot(page, panel, 'register-removed-ko.png');
+    await nativeTimeline(page, server, panel, posted, log);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {

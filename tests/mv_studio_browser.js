@@ -59,8 +59,18 @@ async function registrationControls(page) {
   const project = await page.evaluate(() => MVStudio.getState().project);
   const soundtrack = { origin: 'project', offset: project.soundtrack.offset, duration: project.soundtrack.duration,
     url: project.soundtrack.url };
-  let unbased = false;
-  const plan = () => unbased ? {
+  let unbased = false, modBase = false;
+  // A mod project on a chosen base: both originals are local, the iOS bake fails (OTHER_PLATFORM_FAILED).
+  const modPlan = () => ({
+    region: 'gl', base: { liveId: 13, assetId: 35, title: '다른 노래', stage: '별빛 무대', fixed: false, registered: false },
+    song: null, targets: [], target: 'new', title: 'MV Studio sample', credit: '',
+    platforms: { android: { status: 'local' }, ios: { status: 'local' } }, projectPlatform: 'android',
+    timeline: { native: true, kind: 'mod', unchanged: false, bake: ['android', 'ios'], download: [], missing: [], keep: [] },
+    edits: { cameraShots: 0, values: 1, timing: 0, clips: 1, follow: false }, notInGame: [], blocked: [], warnings: [],
+    audio: { default: 'base', encoder: true, soundtrack, beat: null, previewStart: 0 }, jacket: { default: 'base' },
+    encoder: true, managedRestart: false,
+  });
+  const plan = () => modBase ? modPlan() : unbased ? {
     region: 'gl', base: null, song: null, targets: [], target: 'new', title: 'MV Studio sample', credit: '', platforms: {},
     projectPlatform: null, timeline: { native: false, unchanged: true, bake: [], download: [], missing: [], keep: [] },
     edits: {}, notInGame: [], blocked: [{ message: 'Choose the base MV.' }], warnings: [],
@@ -74,15 +84,16 @@ async function registrationControls(page) {
     blocked: [], warnings: [], audio: { default: 'project', encoder: true, soundtrack, beat: null, previewStart: 0 },
     jacket: { default: 'base' }, encoder: true, managedRestart: false,
   };
-  const plans = [], jobs = [];
+  const plans = [], jobs = [], sequence = [];
   let pcm = null;
-  await page.route('**/api/mv-studio/registration-plan?*', (route) => { plans.push(route.request().postDataJSON()); return route.fulfill({ json: plan() }); });
+  await page.route('**/api/mv-studio/registration-plan?*', (route) => { plans.push(route.request().postDataJSON()); sequence.push('plan');
+    return route.fulfill({ json: plan() }); });
   await page.route('**/api/mv-studio/songs?*', (route) => route.fulfill({ json: { region: 'gl', encoder: true, managedRestart: false,
     songs: [{ liveId: 93000, region: 'gl', title: '옛 등록 곡', visible: false, actions: ['fix', 'remove'], templateAssetId: 34,
       platforms: { android: 'stock', ios: 'stock' }, updatedAt: 1764000000 }] } }));
   await page.route('**/api/mv-studio/pcm?*', (route) => { pcm = route.request().postDataBuffer();
     return route.fulfill({ json: { name: 'a'.repeat(32) + '.wav', duration: 9.25 } }); });
-  await page.route('**/api/mv-studio/register-job?*', (route) => { jobs.push(route.request().postDataJSON());
+  await page.route('**/api/mv-studio/register-job?*', (route) => { jobs.push(route.request().postDataJSON()); sequence.push('job');
     return route.fulfill({ json: { job_id: 'job' + jobs.length } }); });
   const stream = (events) => events.map((event) => 'data: ' + JSON.stringify(event) + '\n\n').join('');
   await page.route('**/api/jobs/job1/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
@@ -93,6 +104,13 @@ async function registrationControls(page) {
     { type: 'done', status: 'done', summary: 'ok' }]) }));
   await page.route('**/api/jobs/job2/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
     { type: 'mv-song', mode: 'update', changed: true, restart: 'manual', warnings: [], song: { liveId: 93000, region: 'gl', title: '옛 등록 곡' } },
+    { type: 'done', status: 'done', summary: 'ok' }]) }));
+  const otherFailed = 'The edits could not be baked into the iOS original MV. Register for Android only to play the original MV on iOS.';
+  await page.route('**/api/jobs/job3/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-stage', stage: 'check', label: 'Checking the base MV originals', index: 0, total: 3 },
+    { type: 'done', status: 'error', summary: otherFailed }]) }));
+  await page.route('**/api/jobs/job4/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-song', mode: 'new', changed: true, restart: 'manual', warnings: [], song: { liveId: 93002, region: 'gl', title: 'MV Studio sample' } },
     { type: 'done', status: 'done', summary: 'ok' }]) }));
   const panel = page.locator('#mv-panel-register');
   assert.equal(await panel.locator(':scope > summary').textContent(), 'MV 전용 곡으로 등록');
@@ -108,6 +126,7 @@ async function registrationControls(page) {
   assert(!(await page.locator('#mv-register-download').isChecked()));
   await page.locator('#mv-register-bpm').fill('120');
   await page.locator('#mv-register-first-beat').fill('0.5');
+  const planned = sequence.length;
   await page.locator('#mv-register-submit').click();
   const consent = page.locator('#mv-register-confirm');
   await consent.waitFor();
@@ -121,6 +140,7 @@ async function registrationControls(page) {
   assert.deepEqual([pcm.readUInt16LE(20), pcm.readUInt16LE(22), pcm.readUInt32LE(24), pcm.readUInt16LE(34)], [1, 2, 44100, 16]);
   assert.equal(pcm.readUInt32LE(40), pcm.length - 44);
   assert(Math.abs((pcm.length - 44) / 4 - (10 - 0.75) * 44100) <= 1, String(pcm.length));
+  assert.deepEqual(sequence.slice(planned, planned + 2), ['plan', 'job'], 'Each submit checks the posted project again before the job');
   const { project: posted, ...request } = jobs[0];
   assert.equal(posted.source.liveId, 12);
   assert.deepEqual(request, { mode: 'new', title: 'MV Studio sample', credit: null, jacket: { kind: 'base' },
@@ -144,10 +164,24 @@ async function registrationControls(page) {
   assert.deepEqual(await page.locator('#mv-register-base-song option').allTextContents(), ['다른 노래 (13)']);
   const before = plans.length;
   unbased = false;
+  modBase = true;
   await page.locator('#mv-register-base-use').click();
   await page.waitForFunction(() => !document.querySelector('#mv-register-picker'));
   for (let tries = 0; tries < 100 && plans.length === before; tries++) await page.waitForTimeout(50);
   assert.deepEqual(plans[plans.length - 1].template, { region: 'gl', liveId: 13, assetId: 35 });
+  // The edits do not fit the iOS original: the panel offers to register for Android only.
+  await page.waitForFunction(() => { const submit = document.querySelector('#mv-register-submit'); return submit && !submit.disabled; });
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-error').filter({ hasText: 'iOS 원본 MV에 넣지 못했습니다' }).waitFor();
+  assert.deepEqual(jobs[2].platforms, ['android', 'ios']);
+  assert.deepEqual(jobs[2].template, { region: 'gl', liveId: 13, assetId: 35 });
+  const only = page.locator('#mv-register-only');
+  await page.waitForFunction(() => { const button = document.querySelector('#mv-register-only'); return button && !button.disabled; });
+  assert.equal(await only.textContent(), 'Android에만 등록');
+  await only.click();
+  await page.locator('#mv-register-result').filter({ hasText: '93002' }).waitFor();
+  assert.deepEqual(jobs[3].platforms, ['android']);
+  modBase = false;
   await page.unroute('**/api/mv-studio/registration-plan?*');
   await page.unroute('**/api/mv-studio/songs?*');
   await page.unroute('**/api/mv-studio/pcm?*');
