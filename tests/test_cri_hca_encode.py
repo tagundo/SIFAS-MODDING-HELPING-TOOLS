@@ -321,6 +321,50 @@ class FrameTests(unittest.TestCase):
             with self.assertRaises(enc.AudioEncodeError):
                 enc.encode_hca(bad)
 
+    def test_malformed_caller_input_raises_audio_encode_error(self):
+        pcm = stereo(np.zeros(100))
+        for bad in ([[1, 2], [3]], "pcm", None, object()):
+            with self.subTest(pcm=bad), self.assertRaises(enc.AudioEncodeError):
+                enc.encode_hca(bad)
+        for key, subkey in (("key", 0), (None, 0), (-1, 0), (1 << 64, 0), (1.5, 0), (enc.SIFAS_HCA_KEY, "1"),
+                            (enc.SIFAS_HCA_KEY, -1), (enc.SIFAS_HCA_KEY, 0x10000), (enc.SIFAS_HCA_KEY, True)):
+            with self.subTest(key=key, subkey=subkey), self.assertRaises(enc.AudioEncodeError):
+                enc.encode_hca(pcm, key=key, subkey=subkey)
+        with self.assertRaises(enc.AudioEncodeError):
+            enc.encode_hca(pcm, progress="not callable")
+        self.assertEqual(enc.encode_hca(pcm, subkey=np.uint16(0x51)), enc.encode_hca(pcm, subkey=0x51))
+        for bad in ([[1, 2], [3]], "pcm", object()):
+            with self.subTest(pcm=bad):
+                with self.assertRaises(enc.AudioEncodeError):
+                    enc.write_wav(bad)
+                with self.assertRaises(enc.AudioEncodeError):
+                    enc.snr_db(bad, bad)
+                with self.assertRaises(enc.AudioEncodeError):
+                    enc.sabi_excerpt(bad, 0.0)
+
+    def test_hca_info_refuses_malformed_headers(self):
+        def with_crc(header):
+            header = bytearray(header)
+            size = struct.unpack_from(">H", header, 6)[0]
+            struct.pack_into(">H", header, size - 2, enc.crc16(bytes(header[:size - 2])))
+            return bytes(header)
+
+        stream = enc.encode_hca(stereo(np.zeros(2000)))
+        self.assertEqual(enc.hca_info(stream)["sampleCount"], 2000)
+        # The format chunk does not fit in a 20-byte header (and the stream ends there).
+        short = bytearray(stream[:20])
+        struct.pack_into(">H", short, 6, 20)
+        no_rate = bytearray(stream[:96])
+        no_rate[13:16] = bytes(3)  # fmt chunk at 8: channels at 12, rate at 13..15
+        no_frame_size = bytearray(stream[:96])
+        no_frame_size[28:30] = bytes(2)  # comp chunk at 24: frame size at 28
+        unknown = bytearray(stream[:96])
+        unknown[24:28] = b"wxyz"
+        for name, header in (("truncated chunk", with_crc(short)), ("no rate", with_crc(no_rate)),
+                             ("no frame size", with_crc(no_frame_size)), ("unknown chunk", with_crc(unknown))):
+            with self.subTest(name), self.assertRaises(enc.AudioEncodeError):
+                enc.hca_info(header + stream[96:])
+
     def test_progress_reports_and_can_cancel(self):
         pcm = stereo(np.zeros(1024 * 600))
         seen = []
@@ -461,21 +505,23 @@ class MessageTests(unittest.TestCase):
         messages = set()
         for module in (enc, cri_acb_write):
             tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-            # The _fail helpers forward their caller's message; every other raise names a literal.
+            # The helpers forward their caller's message; every other raise names a literal.
+            # Message argument position per raising helper:
+            raisers = {"_fail": 0, "AudioEncodeError": 0, "_array": 1}
             helpers = {id(node) for function in ast.walk(tree)
-                       if isinstance(function, ast.FunctionDef) and function.name == "_fail"
+                       if isinstance(function, ast.FunctionDef) and function.name in raisers
                        for node in ast.walk(function)}
             for node in ast.walk(tree):
                 if (not isinstance(node, ast.Call) or id(node) in helpers or not isinstance(node.func, ast.Name)
-                        or node.func.id not in ("_fail", "AudioEncodeError")):
+                        or node.func.id not in raisers):
                     continue
                 with self.subTest(module=module.__name__, line=node.lineno):
-                    self.assertTrue(node.args, "message argument missing")
-                    message = node.args[0]
+                    position = raisers[node.func.id]
+                    self.assertEqual(len(node.args), position + 1, "extra values go in keyword details")
+                    message = node.args[position]
                     self.assertIsInstance(message, ast.Constant)
                     self.assertIsInstance(message.value, str)
                     self.assertTrue(message.value.endswith("."), message.value)
-                    self.assertEqual(len(node.args), 1, "extra values go in keyword details")
                     messages.add(message.value)
         self.assertGreater(len(messages), 40)
         error = enc.AudioEncodeError("Fixed.", value=3)
@@ -500,11 +546,26 @@ class SabiTests(unittest.TestCase):
         self.assertEqual((late_start, len(late)), (RATE * 50, RATE * 10))
         short, short_start = enc.sabi_excerpt(song[:RATE * 5], 3.0)
         self.assertEqual((short_start, len(short)), (0, RATE * 5))
-        for args in ((-1.0,), (float("nan"),)):
-            with self.assertRaises(enc.AudioEncodeError):
+        for args in ((-1.0,), (float("nan"),), ("1",), (None,), (True,), ([1.0],), (10 ** 400,)):
+            with self.subTest(start=args[0]), self.assertRaises(enc.AudioEncodeError):
                 enc.sabi_excerpt(song, *args)
+        for fade in ("0.5", None, float("nan"), -0.5, math.inf):
+            with self.subTest(fade=fade), self.assertRaises(enc.AudioEncodeError):
+                enc.sabi_excerpt(song, 1.0, fade_seconds=fade)
         with self.assertRaises(enc.AudioEncodeError):
             enc.sabi_excerpt(song, 1.0, length_samples=0)
+        # A start far past the end (even one whose sample position overflows a
+        # float) moves back to the last window like any other late start.
+        for far_seconds in (75.0, 1e305):
+            far, far_start = enc.sabi_excerpt(song, far_seconds, length_samples=RATE * 10)
+            self.assertEqual(far_start, RATE * 50)
+            np.testing.assert_array_equal(far, late)
+        numpy_start, numpy_start_sample = enc.sabi_excerpt(song, np.float32(12.5))
+        self.assertEqual(numpy_start_sample, start)
+        np.testing.assert_array_equal(numpy_start, excerpt)
+        # A fade longer than half the window is limited to half of it.
+        long_fade, _ = enc.sabi_excerpt(song, 1.0, length_samples=100, fade_seconds=1e305)
+        self.assertEqual(int(np.argmax(long_fade[:, 0])), 49)
 
 
 @unittest.skipUnless(os.environ.get("MODTOOLS_SLOW_TESTS"), "Set MODTOOLS_SLOW_TESTS=1 to time a 4-minute stereo encode")

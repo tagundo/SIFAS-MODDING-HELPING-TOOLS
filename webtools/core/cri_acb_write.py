@@ -23,8 +23,8 @@ import wave
 import numpy as np
 
 from . import cri_audio_decode
-from .cri_hca_encode import (AudioEncodeError, SAMPLE_RATE, SNR_FLOOR_DB, encode_hca, hca_info, sabi_excerpt,
-                             snr_db)
+from .cri_hca_encode import (AudioEncodeError, MAX_SAMPLES, SAMPLE_RATE, SNR_FLOOR_DB, _array, _finite, encode_hca,
+                             hca_info, sabi_excerpt, snr_db)
 
 __all__ = [
     "AudioEncodeError", "UtfColumn", "UtfTable", "read_utf", "write_utf", "read_afs2", "write_afs2",
@@ -135,7 +135,7 @@ def _check_value(kind, value):
     elif kind == 11:
         ok = isinstance(value, (bytes, bytearray))
     elif kind in (8, 9):
-        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        ok = _finite(value)
     else:
         bits = _WIDTHS[kind] * 8
         signed = kind % 2 == 1
@@ -314,7 +314,10 @@ def afs2_header_size(count, offset_size=4, id_size=2):
 
 def read_afs2(raw):
     """AFS2 parameters and entries ``[(id, bytes)]`` (bounds as ``cri_audio_decode.awb_entries``)."""
-    entries = cri_audio_decode.awb_entries(raw)
+    try:
+        entries = cri_audio_decode.awb_entries(raw)
+    except cri_audio_decode.AudioDecodeError as error:
+        raise AudioEncodeError("The audio bank (AWB) cannot be read.", cause=str(error)) from error
     version, offset_size, id_size = raw[4], raw[5], raw[6]
     _, alignment, subkey = struct.unpack_from("<IHH", raw, 8)
     return {"version": version, "offsetSize": offset_size, "idSize": id_size, "alignment": alignment,
@@ -367,6 +370,11 @@ _BEAT_COLUMNS = (("Bpm", 8), ("NumBeats", 5), ("BeatDenominator", 5), ("SyncBeat
                  ("StartSample", 4), ("EndSample", 4))
 
 
+# Errors that a malformed template can raise while it is walked; they become
+# "The template cue sheet does not have the stock music layout."
+_TEMPLATE_ERRORS = (KeyError, IndexError, ValueError, TypeError, AttributeError, ArithmeticError, struct.error)
+
+
 def _nested(root, name):
     raw = root.value(0, name)
     if not isinstance(raw, bytes) or not raw:
@@ -374,30 +382,51 @@ def _nested(root, name):
     return read_utf(raw)
 
 
-def _beat_rows(beat, sample_count, rate):
-    """BeatSyncInfoTable rows: contiguous inclusive regions ending at ``sample_count``."""
+def _check_beat(beat):
+    """Refuse a caller's beat description (the ``beat`` of ``build_cue``) unless it is well formed.
+
+    Checks types and ranges only; ``_beat_rows`` checks the order of the tempo
+    segments against the song length.
+    """
     if not isinstance(beat, dict):
         _fail("BPM and the first beat are required for the cue's beat table.")
     beats = beat.get("numBeats", 4)
     denominator = beat.get("beatDenominator", 4)
-    if type(beats) is not int or not 1 <= beats <= 32 or denominator not in (1, 2, 4, 8, 16, 32):
+    if (type(beats) is not int or not 1 <= beats <= 32 or type(denominator) is not int
+            or denominator not in (1, 2, 4, 8, 16, 32)):
         _fail("The beat table needs a supported time signature.")
     if "segments" in beat:
-        segments = [(item.get("bpm"), item.get("startSample")) for item in beat["segments"]]
+        segments = beat["segments"]
+        if not isinstance(segments, (list, tuple)) or not 0 < len(segments) <= cri_audio_decode.MAX_BEAT_SYNC_REGIONS:
+            _fail("The beat table needs at least one tempo.")
+        if not all(isinstance(item, dict) for item in segments):
+            _fail("Each tempo needs a BPM and a start sample.")
+        tempos = [(item.get("bpm"), item.get("startSample")) for item in segments]
     else:
         first = beat.get("firstBeat")
-        if not isinstance(first, (int, float)) or isinstance(first, bool) or not math.isfinite(first) or first < 0:
+        if not _finite(first) or not 0 <= first <= MAX_SAMPLES / SAMPLE_RATE:
             _fail("The first beat must be a time inside the song.")
-        segments = [(beat.get("bpm"), int(round(first * rate)))]
-    if not 0 < len(segments) <= cri_audio_decode.MAX_BEAT_SYNC_REGIONS:
-        _fail("The beat table needs at least one tempo.")
+        tempos = [(beat.get("bpm"), 0)]
+    for bpm, start in tempos:
+        if not _finite(bpm) or not 0 < bpm <= 1000:
+            _fail("The BPM must be a number between 0 and 1000.")
+        if type(start) is not int or not 0 <= start <= MAX_SAMPLES:
+            _fail("The beats must start inside the song, in order.")
+
+
+def _beat_rows(beat, sample_count, rate):
+    """BeatSyncInfoTable rows: contiguous inclusive regions ending at ``sample_count``."""
+    _check_beat(beat)
+    beats = beat.get("numBeats", 4)
+    denominator = beat.get("beatDenominator", 4)
+    if "segments" in beat:
+        segments = [(item["bpm"], item["startSample"]) for item in beat["segments"]]
+    else:
+        segments = [(beat["bpm"], int(round(beat["firstBeat"] * rate)))]
     rows = []
     for index, (bpm, start) in enumerate(segments):
-        if (not isinstance(bpm, (int, float)) or isinstance(bpm, bool) or not math.isfinite(bpm)
-                or not 0 < bpm <= 1000):
-            _fail("The BPM must be a number between 0 and 1000.")
         end = segments[index + 1][1] - 1 if index + 1 < len(segments) else sample_count
-        if type(start) is not int or not 0 <= start < end or (index and start != rows[-1]["EndSample"] + 1):
+        if not 0 <= start < end or (index and start != rows[-1]["EndSample"] + 1):
             _fail("The beats must start inside the song, in order.")
         rows.append({"Bpm": float(bpm), "NumBeats": beats, "BeatDenominator": denominator,
                      "SyncBeatFlags": 0xFFFFFFFF, "BaseRate": rate, "StartSample": start, "EndSample": end})
@@ -417,10 +446,7 @@ def excerpt_beat(beat, start_sample, length, rate=44100):
         return None
     if type(start_sample) is not int or type(length) is not int or start_sample < 0 or length <= 0:
         _fail("The preview excerpt must lie inside the song.")
-    tempos = [item.get("bpm") for item in beat.get("segments", [beat])]
-    if not tempos or any(not isinstance(bpm, (int, float)) or isinstance(bpm, bool) or not math.isfinite(bpm)
-                         or not 0 < bpm <= 1000 for bpm in tempos):
-        _fail("The BPM must be a number between 0 and 1000.")
+    _check_beat(beat)
     if "segments" in beat:
         segments = sorted(beat["segments"], key=lambda item: item["startSample"])
         kept = [item for item in segments if item["startSample"] >= start_sample]
@@ -462,16 +488,26 @@ def build_cue(template_acb, template_awb, hca, *, sheet, beat, guid=None):
     The AWB uses the template bank's AFS2 version, offset size, alignment and
     subkey; ``hca`` must be keyed for that subkey. ``awb`` is ``None`` for an
     in-memory (Streaming 0) template.
+
+    Malformed arguments and templates raise ``AudioEncodeError``: ``sheet``
+    must be printable ASCII, ``guid`` 16 bytes, and ``beat`` is type- and
+    range-checked before the template is read.
     """
-    if not isinstance(sheet, str) or not sheet or len(sheet) > 255 or "\0" in sheet:
+    if (not isinstance(sheet, str) or not sheet or len(sheet) > 255 or not sheet.isascii()
+            or not sheet.isprintable()):
         _fail("The cue sheet name is invalid.")
+    if guid is not None and (not isinstance(guid, (bytes, bytearray, memoryview)) or len(bytes(guid)) != 16):
+        _fail("The cue sheet GUID must be 16 bytes.")
+    if beat is not None:
+        _check_beat(beat)
     try:
         return _build_cue(template_acb, template_awb, hca, sheet, beat, guid)
     except AudioEncodeError:
         raise
     except cri_audio_decode.AudioDecodeError as error:
         raise AudioEncodeError("The template cue sheet cannot be read.", cause=str(error)) from error
-    except (KeyError, IndexError, ValueError) as error:
+    except _TEMPLATE_ERRORS as error:
+        # The caller's values are checked above, so what is left comes from template content.
         raise AudioEncodeError("The template cue sheet does not have the stock music layout.",
                                cause=str(error)) from error
 
@@ -617,7 +653,7 @@ def verify_cue(acb, awb, pcm, *, cue=None, snr_floor=SNR_FLOOR_DB, scratch_dir=N
     ``{"frames", "snrDb", "decoder"}``.
     """
     _check_snr_floor(snr_floor)
-    pcm = np.asarray(pcm)
+    pcm = _array(pcm, "The reference PCM must be int16 with shape (samples, channels).")
     if pcm.dtype != np.int16 or pcm.ndim != 2:
         _fail("The reference PCM must be int16 with shape (samples, channels).")
     if cri_audio_decode._native_library() is None:
@@ -674,7 +710,7 @@ def template_info(template_acb, template_awb=None):
                 "streaming": streaming, "subkey": subkey, "hasBeats": bool(beats and beats.rows)}
     except cri_audio_decode.AudioDecodeError as error:
         raise AudioEncodeError("The template cue sheet cannot be read.", cause=str(error)) from error
-    except (KeyError, IndexError, ValueError) as error:
+    except _TEMPLATE_ERRORS as error:
         if isinstance(error, AudioEncodeError):
             raise
         raise AudioEncodeError("The template cue sheet does not have the stock music layout.",
@@ -720,6 +756,8 @@ def make_preview(pcm, template_acb, template_awb, *, sheet, start_seconds, beat,
     """
     if verify:
         _check_snr_floor(snr_floor)
+    if beat is not None:
+        _check_beat(beat)  # also when the template has no beat table, so bad input is always refused
     info = template_info(template_acb, template_awb)
     excerpt, start = sabi_excerpt(pcm, start_seconds, length_samples=length_samples)
     preview_beat = excerpt_beat(beat, start, len(excerpt)) if info["hasBeats"] else None

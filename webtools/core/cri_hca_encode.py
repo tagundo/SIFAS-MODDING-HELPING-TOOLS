@@ -17,6 +17,7 @@ The module also holds the strict 16-bit PCM WAV reader and the preview
 (``_SABI``) excerpt builder used by registration.
 """
 import math
+import numbers
 import struct
 
 import numpy as np
@@ -62,6 +63,28 @@ class AudioEncodeError(ValueError):
 
 def _fail(message, **details):
     raise AudioEncodeError(message, **details)
+
+
+def _finite(value):
+    """True for a finite real number; ``bool`` is not a number here."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an int too large for a float
+        return False
+
+
+def _integer(value, low, high):
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool) and low <= value <= high
+
+
+def _array(pcm, message):
+    """``np.asarray(pcm)``, refusing ragged or non-numeric input with ``message``."""
+    try:
+        return np.asarray(pcm)
+    except (TypeError, ValueError, OverflowError):
+        _fail(message)
 
 
 # ---------------------------------------------------------------------------
@@ -372,9 +395,14 @@ def hca_info(hca):
     if not 8 <= header_size <= len(hca) or crc16(hca[:header_size]) != 0:
         _fail("The HCA header is truncated or fails its checksum.")
     info = {"version": version, "headerSize": header_size, "cipherType": 0}
+    sizes = {b"fmt\0": 16, b"comp": 16, b"ciph": 6, b"loop": 16, b"rva\0": 8}
     position = 8
     while position + 4 <= header_size - 2:
         name = mask(hca[position:position + 4])
+        if name[:3] != b"pad" and name not in sizes:
+            _fail("The HCA header has an unsupported chunk.")
+        if name[:3] != b"pad" and position + sizes[name] > header_size - 2:
+            _fail("The HCA header is truncated or fails its checksum.")
         if name == b"fmt\0":
             channels = hca[position + 4]
             rate = int.from_bytes(hca[position + 5:position + 8], "big")
@@ -398,12 +426,12 @@ def hca_info(hca):
         elif name == b"rva\0":
             info["volume"], = struct.unpack_from(">f", hca, position + 4)
             position += 8
-        elif name[:3] == b"pad":
-            break
         else:
-            _fail("The HCA header has an unsupported chunk.")
+            break  # "pad": the rest of the header is padding before the CRC
     if "frameCount" not in info or "frameSize" not in info:
         _fail("The HCA header has no format or compression chunk.")
+    if not info["channels"] or not info["sampleRate"] or not info["frameSize"]:
+        _fail("The HCA header has no channels, sample rate or frame size.")
     info["sampleCount"] = info["frameCount"] * SAMPLES_PER_FRAME - info["encoderDelay"] - info["encoderPadding"]
     info["dataSize"] = info["frameCount"] * info["frameSize"]
     return info
@@ -748,7 +776,7 @@ def _pack_frames(level, boundary, factors, delta_bits, intensity, resolution, qu
 # ---------------------------------------------------------------------------
 
 def _as_pcm(pcm):
-    array = np.asarray(pcm)
+    array = _array(pcm, "The encoder needs 16-bit stereo PCM samples.")
     if array.dtype != np.int16 or array.ndim != 2 or array.shape[1] != CHANNELS:
         _fail("The encoder needs 16-bit stereo PCM samples.")
     if not 0 < array.shape[0] <= MAX_SAMPLES:
@@ -811,11 +839,15 @@ def encode_hca(pcm, *, key=SIFAS_HCA_KEY, subkey=0, encrypt=True, progress=None)
     exception raised by it cancels the encode.
     """
     pcm = _as_pcm(pcm)
+    if not _integer(key, 0, (1 << 64) - 1) or not _integer(subkey, 0, 0xFFFF):
+        _fail("The HCA key or bank subkey is invalid.")
+    if progress is not None and not callable(progress):
+        _fail("The encode progress callback is not callable.")
     sample_count = pcm.shape[0]
     frame_count, _ = frame_layout(sample_count)
     table = None
     if encrypt:
-        table = np.frombuffer(encryption_table(awb_key(key, subkey)), dtype=np.uint8)
+        table = np.frombuffer(encryption_table(awb_key(int(key), int(subkey))), dtype=np.uint8)
     out = bytearray(hca_header(sample_count, encrypted=encrypt))
     for first in range(0, frame_count, _FRAMES_PER_CHUNK):
         count = min(_FRAMES_PER_CHUNK, frame_count - first)
@@ -859,8 +891,11 @@ def snr_db(reference, decoded):
     Returns ``inf`` for an exact match (including digital silence) and
     ``-inf`` when the reference is silent but the decoded audio is not.
     """
-    reference = np.asarray(reference, dtype=np.float64)
-    decoded = np.asarray(decoded, dtype=np.float64)
+    reference = _array(reference, "The decoded audio does not have the input's length and channels.")
+    decoded = _array(decoded, "The decoded audio does not have the input's length and channels.")
+    if reference.dtype.kind not in "biuf" or decoded.dtype.kind not in "biuf":
+        _fail("The decoded audio does not have the input's length and channels.")
+    reference, decoded = reference.astype(np.float64), decoded.astype(np.float64)
     if reference.shape != decoded.shape:
         _fail("The decoded audio does not have the input's length and channels.")
     error = float(((reference - decoded) ** 2).sum())
@@ -945,7 +980,7 @@ def read_wav(data, *, sample_rate=SAMPLE_RATE, channels=CHANNELS, max_bytes=WAV_
 
 def write_wav(pcm, *, sample_rate=SAMPLE_RATE):
     """Plain 16-bit PCM WAV bytes for an int16 ``(frames, channels)`` array."""
-    array = np.asarray(pcm)
+    array = _array(pcm, "The PCM samples must be int16 with shape (frames, channels).")
     if array.dtype != np.int16 or array.ndim != 2 or not 1 <= array.shape[1] <= 8:
         _fail("The PCM samples must be int16 with shape (frames, channels).")
     body = array.astype("<i2").tobytes()
@@ -973,19 +1008,23 @@ def sabi_excerpt(pcm, start_seconds, *, length_samples=None, fade_seconds=SABI_F
     whole. Returns ``(excerpt, start_sample)``. Samples inside the window are
     copied unchanged except within ``fade_seconds`` of either end.
     """
-    pcm = np.asarray(pcm)
+    pcm = _array(pcm, "The PCM samples must be int16 with shape (frames, channels).")
     if pcm.dtype != np.int16 or pcm.ndim != 2 or pcm.shape[0] == 0:
         _fail("The PCM samples must be int16 with shape (frames, channels).")
-    if not math.isfinite(start_seconds) or start_seconds < 0:
+    if not _finite(start_seconds) or start_seconds < 0:
         _fail("The preview start must be a time inside the song.")
+    if not _finite(fade_seconds) or fade_seconds < 0:
+        _fail("The preview fade must be zero or more seconds.")
     if length_samples is None:
         length_samples = int(round(SABI_SECONDS * sample_rate))
     if type(length_samples) is not int or length_samples <= 0:
         _fail("The preview length must be a positive sample count.")
     length = min(length_samples, pcm.shape[0])
-    start = min(int(round(start_seconds * sample_rate)), pcm.shape[0] - length)
+    # Clamp before rounding: a start far past the end (even one whose sample
+    # position overflows a float) moves back to the last window.
+    start = int(round(min(start_seconds * sample_rate, pcm.shape[0] - length)))
     excerpt = pcm[start:start + length].astype(np.float64)
-    fade = min(int(round(fade_seconds * sample_rate)), length // 2)
+    fade = int(round(min(fade_seconds * sample_rate, length // 2)))
     if fade > 0:
         ramp = (np.arange(fade, dtype=np.float64) + 0.5) / fade
         excerpt[:fade] *= ramp[:, None]

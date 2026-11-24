@@ -352,6 +352,83 @@ class BuildCueTests(unittest.TestCase):
         with self.assertRaises(enc.AudioEncodeError):
             acbw.build_cue(self.template_acb, self.template_awb, self.hca[:-1], sheet="x", beat={"bpm": 1, "firstBeat": 0})
 
+    def test_malformed_caller_input_raises_audio_encode_error(self):
+        bad_beats = (
+            [], "beat", 5, {"segments": [1, 2]}, {"segments": [None]}, {"segments": "x"}, {"segments": None},
+            {"segments": {"bpm": 120.0}}, {"segments": [{"bpm": 120.0}]}, {"segments": [{"startSample": 0}]},
+            {"segments": [{"bpm": "120", "startSample": 0}]}, {"segments": [{"bpm": 120.0, "startSample": "0"}]},
+            {"segments": [{"bpm": 120.0, "startSample": 1.5}]}, {"segments": [{"bpm": 120.0, "startSample": 10 ** 30}]},
+            {"segments": [{"bpm": 120.0, "startSample": -5}]}, {"bpm": 120.0}, {"firstBeat": 0.0},
+            {"bpm": "120", "firstBeat": 0}, {"bpm": None, "firstBeat": 0}, {"bpm": 120.0, "firstBeat": "0"},
+            {"bpm": 120.0, "firstBeat": None}, {"bpm": 120.0, "firstBeat": True}, {"bpm": 120.0, "firstBeat": 1e305},
+            {"bpm": 120.0, "firstBeat": 10 ** 400}, {"bpm": 120.0, "firstBeat": math.inf},
+            {"bpm": 10 ** 400, "firstBeat": 0}, {"bpm": 120.0, "firstBeat": 0, "numBeats": 4.0},
+            {"bpm": 120.0, "firstBeat": 0, "numBeats": "4"}, {"bpm": 120.0, "firstBeat": 0, "beatDenominator": 4.0},
+            {"bpm": 120.0, "firstBeat": 0, "beatDenominator": []})
+        for beat in bad_beats:
+            with self.subTest(beat=beat):
+                with self.assertRaises(enc.AudioEncodeError):
+                    self.build(beat=beat)
+                with self.assertRaises(enc.AudioEncodeError):
+                    acbw.excerpt_beat(beat, 0, RATE)
+                with self.assertRaises(enc.AudioEncodeError):
+                    acbw.excerpt_beat(beat, 5 * RATE, RATE)
+        for guid in ("0123456789abcdef", 1.5, 16, [0] * 16, object(), bytes(15)):
+            with self.subTest(guid=guid), self.assertRaises(enc.AudioEncodeError):
+                self.build(guid=guid)
+        for guid in (bytearray(range(16)), memoryview(bytes(range(16)))):
+            acb, _ = self.build(guid=guid)
+            self.assertEqual(acbw.read_utf(acb).value(0, "AcbGuid"), bytes(range(16)))
+        for sheet in ("music_あ", "music_\udcff", "music\n1", "a" * 256, b"music_1", None):
+            with self.subTest(sheet=sheet), self.assertRaises(enc.AudioEncodeError):
+                self.build(sheet=sheet)
+        for raw in (None, "AFS2", 5, bytearray(self.template_awb), b"AFS2" + bytes(28)):
+            with self.subTest(awb=raw), self.assertRaises(enc.AudioEncodeError):
+                acbw.read_afs2(raw)
+            if raw is not None:  # a missing stream template AWB means the stock AFS2 defaults
+                with self.subTest(awb=raw), self.assertRaises(enc.AudioEncodeError):
+                    self.build_with(template_awb=raw)
+        for template in (None, "x", 5, memoryview(self.template_acb)):
+            with self.subTest(template=template), self.assertRaises(enc.AudioEncodeError):
+                self.build_with(template_acb=template)
+            with self.subTest(template=template), self.assertRaises(enc.AudioEncodeError):
+                acbw.template_info(template, self.template_awb)
+        for hca in (None, "HCA", self.hca[:20], memoryview(self.hca)):
+            with self.subTest(hca=type(hca)), self.assertRaises(enc.AudioEncodeError):
+                self.build_with(hca=hca)
+        # Whatever else goes wrong while a template is walked is reported as a layout error.
+        for error in (TypeError("x"), AttributeError("x"), ZeroDivisionError("x"), struct.error("x")):
+            with self.subTest(error=error), patch.object(acbw, "_nested", side_effect=error):
+                with self.assertRaisesRegex(enc.AudioEncodeError, "stock music layout"):
+                    self.build()
+                with self.assertRaisesRegex(enc.AudioEncodeError, "stock music layout"):
+                    acbw.template_info(self.template_acb, self.template_awb)
+
+    def test_preview_refuses_malformed_input_even_without_a_beat_table(self):
+        memory_acb, _ = synthetic_template(self.template_hca, streaming=0, beat_rows=0)
+        song = tone(2.0, 330)
+        options = {"sheet": "music_93001_SABI", "verify": False, "length_samples": RATE}
+        for beat, start in (({"segments": [1]}, 0.0), ({"bpm": 120.0, "firstBeat": "0"}, 0.0),
+                            ({"bpm": 120.0, "firstBeat": 0.0}, "1"), ({"bpm": 120.0, "firstBeat": 0.0}, None)):
+            with self.subTest(beat=beat, start=start), self.assertRaises(enc.AudioEncodeError):
+                acbw.make_preview(song, memory_acb, None, start_seconds=start, beat=beat, **options)
+        preview = acbw.make_preview(song, memory_acb, None, start_seconds=1e305, beat={"bpm": 120.0, "firstBeat": 0.0},
+                                    **options)
+        self.assertEqual(preview["startSample"], len(song) - RATE)
+        self.assertIsNone(cri.inspect_beat_sync(preview["acb"], "music_93001_SABI"))
+
+    def test_excerpt_beat_keeps_the_caller_form(self):
+        beat = {"bpm": np.float64(120.0), "firstBeat": 0.3, "numBeats": 3, "label": "kept"}
+        moved = acbw.excerpt_beat(beat, RATE, 20 * RATE)
+        self.assertEqual((moved["numBeats"], moved["label"]), (3, "kept"))
+        self.assertAlmostEqual(moved["firstBeat"], 0.3)
+
+    def build_with(self, **overrides):
+        arguments = {"template_acb": self.template_acb, "template_awb": self.template_awb, "hca": self.hca}
+        arguments.update(overrides)
+        return acbw.build_cue(arguments["template_acb"], arguments["template_awb"], arguments["hca"],
+                              sheet="music_93001", beat={"bpm": 128.0, "firstBeat": 0.52})
+
     def test_template_without_prefetch_or_stream(self):
         memory_acb, memory_awb = synthetic_template(self.template_hca, streaming=0, beat_rows=0)
         self.assertIsNone(memory_awb)
