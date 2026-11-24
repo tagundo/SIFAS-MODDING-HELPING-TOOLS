@@ -1499,7 +1499,7 @@
     "Duration is locked while this shot has camera edits.", "A camera rig also moves this shot.",
     "Restore the original length of camera shots with camera edits before exporting.", "The camera could not be baked.",
     "Edit camera key", "Move camera key", "Delete camera key", "Duplicate camera key", "Edit camera handle", "Change interpolation",
-    "Change handle type", "Apply ease preset", "Change camera mode", "Change offset space", "New camera shot",
+    "Change handle type", "Apply ease preset", "Change camera mode", "Change offset space", "New camera shot", "Add camera key",
     ...Object.values(CONFIRM),
   ]);
 

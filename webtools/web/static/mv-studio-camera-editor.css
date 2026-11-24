@@ -1,0 +1,78 @@
+/* MV Studio camera editor (mv-studio-camera-keys.js, mv-studio-camera-curves.js):
+   the Camera editor panel, its curve view and the key diamonds on the camera lane. */
+
+.mv-cam-editor { display: grid; gap: 8px; min-width: 0; }
+.mv-cam-shot { margin: 0; font-size: .78rem; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.mv-cam-settings { font-size: .8rem; }
+.mv-cam-toolbar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+#tab-mv .mv-cam-tool { min-height: 30px; padding: 3px 8px; font-size: .74rem; }
+#tab-mv .mv-cam-tool.mv-cam-primary { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+#tab-mv .mv-cam-tool.mv-cam-primary::before { content: "\25C6"; margin-inline-end: 4px; color: #ffd166; }
+.mv-cam-autokey { display: inline-flex; align-items: center; gap: 4px; font-size: .74rem; white-space: nowrap; }
+
+.mv-cam-values, .mv-cam-key-fields {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.mv-cam-values legend, .mv-cam-key-fields legend { padding: 0 4px; font-size: .74rem; color: var(--muted); }
+.mv-cam-key-fields[hidden] { display: none; }
+.mv-cam-row { display: grid; gap: 4px; min-width: 0; }
+.mv-cam-row + .mv-cam-row { padding-top: 6px; border-top: 1px dashed var(--line); }
+.mv-cam-row-title { margin: 0; font-size: .72rem; font-weight: 600; color: var(--muted); }
+.mv-cam-vector { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; min-width: 0; }
+.mv-cam-number { display: grid; gap: 1px; min-width: 0; }
+.mv-cam-number > span { font-size: .66rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#tab-mv .mv-cam-editor .mv-cam-number input[type=number] { width: 100%; min-width: 0; min-height: 30px; padding: 3px 5px; font-size: .76rem; font-variant-numeric: tabular-nums; }
+/* A field whose frame holds a key (Blender's yellow keyed field). */
+#tab-mv .mv-cam-editor .mv-cam-number input.mv-cam-keyed { border-color: #e0b341; background: color-mix(in srgb, #ffd166 18%, var(--panel2)); }
+.mv-cam-key-time { color: var(--muted); font-size: .74rem; font-variant-numeric: tabular-nums; align-self: center; flex: 0 0 auto; }
+.mv-cam-eases { display: flex; flex-wrap: wrap; gap: 4px; }
+#tab-mv .mv-cam-eases button { min-height: 28px; padding: 2px 8px; font-size: .72rem; }
+
+.mv-cam-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+#tab-mv .mv-cam-chip { min-height: 26px; padding: 1px 9px; border-radius: 999px; font-size: .72rem; }
+#tab-mv .mv-cam-chip::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-inline-end: 5px;
+  border-radius: 50%;
+  background: var(--mv-cam-color, currentColor);
+  vertical-align: middle;
+}
+#tab-mv .mv-cam-chip[aria-pressed=true] { border-color: var(--mv-cam-color, var(--accent)); background: color-mix(in srgb, var(--mv-cam-color, var(--accent)) 22%, var(--panel2)); }
+
+.mv-cam-curves { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); overflow: hidden; }
+.mv-cam-graph { display: block; max-width: 100%; touch-action: none; user-select: none; }
+.mv-cam-plot { fill: transparent; cursor: crosshair; }
+.mv-cam-grid { stroke: var(--line); stroke-width: 1; }
+.mv-cam-zero { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.mv-cam-axis { fill: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+.mv-cam-dense { stroke-width: 3; opacity: .28; pointer-events: none; }
+.mv-cam-curve { stroke-width: 1.6; pointer-events: none; }
+.mv-cam-curve-key { stroke: #000a; stroke-width: 1; cursor: grab; }
+.mv-cam-curve-key.mv-selected { stroke: #fff; stroke-width: 2; }
+.mv-cam-curve-key:focus-visible { outline: none; stroke: var(--accent); stroke-width: 3; }
+.mv-cam-handle { stroke: #fff; stroke-width: 1; cursor: grab; }
+.mv-cam-handle-line { stroke-width: 1; opacity: .8; pointer-events: none; }
+.mv-cam-playhead { stroke: #ff5d5d; stroke-width: 1.5; pointer-events: none; }
+.mv-cam-note:empty { display: none; }
+
+/* Inspector summary that replaces the dense sample editor. */
+.mv-field.mv-cam-summary { grid-template-columns: minmax(0, 1fr) auto; }
+.mv-cam-summary > .mv-cam-open { grid-column: 1 / -1; justify-self: start; }
+
+/* Key diamonds on the camera lane. This file loads before mv-studio.css (index.html
+   anchor), so its rules carry enough specificity to win over the shared control styles. */
+#tab-mv .mv-key.mv-cam-key { z-index: 3; touch-action: none; }
+#tab-mv .mv-key.mv-cam-key.mv-dragging { cursor: grabbing; outline: 2px dashed #facc73; }
+@media (pointer: coarse) {
+  #tab-mv button.mv-key.mv-cam-key { min-height: 0; }
+  #tab-mv .mv-cam-tool, #tab-mv .mv-cam-number input { min-height: 40px; }
+}
