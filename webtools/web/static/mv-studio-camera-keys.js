@@ -36,6 +36,8 @@
   const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
   const vector = (value, size) => Array.isArray(value) && value.length >= size && value.slice(0, size).every(finite);
   const clampFov = (value) => clamp(value, 1, 170);
+  // The native camera writer accepts positions within ±1e6 m (mv_studio_timeline._camera_vector).
+  const POSITION_LIMIT = 1e6;
   const zeros = () => Object.fromEntries(CHANNELS.map((channel) => [channel, 0]));
 
   // ---- per-editor state (one ctx per MV Studio mount; tests make several) -----------------
@@ -45,7 +47,7 @@
     if (!state) {
       state = { selected: null, channels: ["x"], autoKey: false, space: "view", pending: null, controller: null, events: undefined,
         scene: null, unsubscribe: null, panel: null, curves: null, differs: new WeakMap(), lastShot: null, helper: false,
-        toggle: null, refreshed: null };
+        toggle: null, echo: null, refreshed: null };
       states.set(ctx, state);
     }
     return state;
@@ -318,7 +320,10 @@
     let previous = null;
     frames.forEach((frame, index) => {
       const sample = shot.source[index];
-      const position = vector(frame.position, 3) ? frame.position.slice(0, 3) : sample.position.slice(0, 3);
+      // Changed positions stay inside the native writer's range (±1e6 m).
+      const position = vector(frame.position, 3)
+        ? frame.position.slice(0, 3).map((value, axis) => value === sample.position[axis] ? value : clamp(value, -POSITION_LIMIT, POSITION_LIMIT))
+        : sample.position.slice(0, 3);
       let rotation = vector(frame.rotation, 4) ? frame.rotation : sample.rotation;
       const kept = untouched[index] && rotation.slice(0, 4).every((value, axis) => value === sample.rotation[axis]);
       rotation = kept ? sample.rotation.slice(0, 4) : M.normalize(rotation);
@@ -507,6 +512,21 @@
 
   const groupOf = (channel) => M.POSITION.includes(channel) ? "position" : M.ROTATION.includes(channel) ? "rotation" : "fov";
 
+  // A key's values as stored: positions within the native writer's ±1e6 m, and a FOV that keeps
+  // the shot's FOV at that frame in [1, 170] (absolute in keys mode, a delta in offset mode).
+  function limitValues(shot, record, frame, values) {
+    const out = { ...values };
+    for (const channel of M.POSITION) if (finite(out[channel])) out[channel] = clamp(out[channel], -POSITION_LIMIT, POSITION_LIMIT);
+    if (finite(out.fov)) {
+      if (record.mode === "keys") out.fov = clampFov(out.fov);
+      else {
+        const sample = shot.source[frame], base = finite(sample.fov) ? sample.fov : shot.fallbackFov;
+        out.fov = clamp(out.fov, 1 - base, 170 - base);
+      }
+    }
+    return out;
+  }
+
   // The curve view follows the edited channel: added to the visible ones of the same unit,
   // or shown alone when the others are in another unit.
   function showChannel(ctx, channel) {
@@ -533,7 +553,7 @@
       const groups = new Set(Object.keys(patch).map(groupOf));
       values = deltasFor(shot, record, frame, { ...absolute, ...patch }, groups, current);
     } else values = { ...current, ...patch };
-    if (record.mode === "keys" && finite(values.fov)) values.fov = clampFov(values.fov);
+    values = limitValues(shot, record, frame, values);
     upsertKey(record, frame, values);
     const channel = Object.keys(patch)[0];
     showChannel(ctx, channel);
@@ -583,7 +603,7 @@
       values = deltasFor(shot, record, frame, { x: view.position[0], y: view.position[1], z: view.position[2], rotation: view.rotation, fov: view.fov },
         new Set(["position", "rotation", "fov"]), current);
     }
-    upsertKey(record, frame, values);
+    upsertKey(record, frame, limitValues(shot, record, frame, values));
     select(ctx, shot, frame);
     const changed = commit(ctx, shot, record, "Key current view");
     // The playhead lands on the keyed frame, where the game camera now shows the view.
@@ -690,7 +710,7 @@
       const high = index + 1 < record.keys.length ? record.keys[index + 1].frame - 1 : shot.count - 1;
       key.frame = clamp(Math.round(frame), low, high);
     }
-    if (channel && finite(value)) key.values[channel] = record.mode === "keys" && channel === "fov" ? clampFov(value) : value;
+    if (channel && finite(value)) key.values[channel] = limitValues(shot, record, key.frame, { [channel]: value })[channel];
     select(ctx, shot, key.frame);
     commit(ctx, shot, record, "Move camera key", channel);
     return key.frame;
@@ -1102,7 +1122,10 @@
     const input = ctx.make("input", null, { type: "number", step: "any", "data-mv-cam": name, "aria-label": label, title: label });
     input.addEventListener("change", () => {
       if (input.value === "" || !finite(input.valueAsNumber)) return;
-      onChange(input.valueAsNumber);
+      // The field then shows the value as stored (clamped), even while it keeps the focus.
+      const state = stateOf(ctx);
+      state.echo = name;
+      try { onChange(input.valueAsNumber); syncPanel(ctx); } finally { state.echo = null; }
     });
     const wrap = ctx.make("label", null, { class: "mv-cam-number" });
     wrap.append(ctx.make("span", label), input);
@@ -1350,7 +1373,7 @@
     const focused = global.document && document.activeElement;
     const put = (name, value, digits) => {
       const input = refs.inputs[name];
-      if (input && input !== focused) input.value = round(value, digits);
+      if (input && (input !== focused || state.echo === name)) input.value = round(value, digits);
     };
     const current = channelValues(shot, record, frame);
     const absolute = absoluteOf(basePose(shot, record, frame), record && record.mode === "keys" ? current : M.quaternionToEulerZXY(shot.source[frame].rotation));

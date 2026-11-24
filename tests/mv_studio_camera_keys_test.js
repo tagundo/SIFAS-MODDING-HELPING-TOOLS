@@ -579,6 +579,33 @@ function imeShortcuts() {
   assert.equal(press('a', 'KeyI'), false, 'event.key decides when it is Latin');
 }
 
+// Typed values stay inside what the bake and the native writer accept.
+function valueLimits() {
+  const project = nativeProject();
+  const { ctx, at } = harness(project);
+  const shot = event(project, 'cam:0'), before = original('cam:0');
+  at(.5);
+  K.setChannels(ctx, 'offset', { fov: 500 });
+  let key = project.editor.camera.shots['cam:0'].keys[0];
+  near(key.values.fov, 170 - before[30].fov, 1e-12, 'an offset FOV is cut where the result reaches 170');
+  near(shot.values.keyframes[30].fov, 170, 1e-12, 'the result at the key is 170');
+  K.setChannels(ctx, 'offset', { fov: -500 });
+  key = project.editor.camera.shots['cam:0'].keys[0];
+  near(key.values.fov, 1 - before[30].fov, 1e-12, 'and where it reaches 1');
+  K.setChannels(ctx, 'offset', { fov: 0, z: 5e6 });
+  key = project.editor.camera.shots['cam:0'].keys[0];
+  assert.equal(key.values.z, 1e6, 'a position offset is cut at 1e6 m');
+  for (const sample of shot.values.keyframes) assert(sample.position.every((value) => Math.abs(value) <= 1e6), 'baked positions stay within ±1e6 m');
+  K.setChannels(ctx, 'absolute', { x: -7e6 });
+  for (const sample of shot.values.keyframes) assert(sample.position.every((value) => Math.abs(value) <= 1e6), 'also from the Result row');
+  // Keys mode: absolute FOV in [1, 170], positions within ±1e6 m.
+  K.setMode(ctx, 'keys', { confirm: false });
+  K.setChannels(ctx, 'absolute', { fov: 900, y: 2e7 });
+  key = project.editor.camera.shots['cam:0'].keys.find((item) => item.frame === 30);
+  assert.equal(key.values.fov, 170);
+  assert.equal(key.values.y, 1e6);
+}
+
 
 (async () => {
   unedited();
@@ -597,5 +624,6 @@ function imeShortcuts() {
   keyLaneRefresh();
   playheadGap();
   imeShortcuts();
+  valueLimits();
   console.log('mv studio camera keys tests passed');
 })().catch((error) => { console.error(error); process.exit(1); });
