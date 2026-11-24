@@ -181,6 +181,23 @@ async function registrationControls(page) {
   await only.click();
   await page.locator('#mv-register-result').filter({ hasText: '93002' }).waitFor();
   assert.deepEqual(jobs[3].platforms, ['android']);
+  // A store refusal after the game server stopped: Cancel is off from the stop on, and the error
+  // comes with the server's state. The stream stays open (without 'done') until finishJob5.
+  let finishJob5 = false;
+  const refused = 'The selected music ID or cue already belongs to a song in this region.';
+  await page.route('**/api/jobs/job5/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' },
+    body: 'retry: 100\n\n' + stream([
+      { type: 'mv-stage', stage: 'check', label: 'Checking the base MV originals', index: 0, total: 4 },
+      { type: 'mv-stage', stage: 'stop', label: 'Stopping the game server', index: 1, total: 4 },
+      ...(finishJob5 ? [{ type: 'mv-failed', message: refused, restart: 'done' },
+        { type: 'done', status: 'error', summary: refused }] : [])]) }));
+  await page.waitForFunction(() => { const submit = document.querySelector('#mv-register-submit'); return submit && !submit.disabled; });
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-stage').filter({ hasText: '게임 서버 정지' }).waitFor();
+  assert(await page.locator('#mv-register-cancel').isDisabled(), 'No cancel once the server stops');
+  finishJob5 = true;
+  await page.locator('#mv-register-error').filter({ hasText: '이 지역의 다른 곡이 이미 쓰고 있습니다' }).waitFor();
+  assert.equal(await page.locator('#mv-register-error-server').textContent(), '게임 서버를 다시 시작했습니다.');
   modBase = false;
   await page.unroute('**/api/mv-studio/registration-plan?*');
   await page.unroute('**/api/mv-studio/songs?*');

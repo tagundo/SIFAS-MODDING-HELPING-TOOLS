@@ -344,6 +344,11 @@
       try { event = JSON.parse(raw.data); } catch (_) { return; }
       if (event.type === "mv-stage") {
         current.job.stage = event.label; current.job.index = event.index; current.job.total = event.total;
+        current.job.key = event.stage;
+      } else if (event.type === "mv-failed") {
+        // The store refused (nothing written) or failed after the game server stopped: the
+        // message comes with the server's state (none, done, pending or stopped).
+        current.failed = { message: text(event.message), restart: event.restart };
       } else if (event.type === "mv-encode" && current.job) {
         current.job.encode = event.total ? event.done / event.total : 0;
       } else if (event.type === "mv-song") {
@@ -371,7 +376,8 @@
         finished = true;
         events.close();
         current.job = null;
-        if (event.status === "error") current.error = text(event.summary);
+        if (current.failed) current.error = current.failed.message;
+        else if (event.status === "error") current.error = text(event.summary);
         else if (event.status === "cancelled") current.error = "MV registration was cancelled.";
         else current.exclude = null;
         // Check again after every job: the songs and the originals may have changed.
@@ -605,6 +611,8 @@
     if (state.confirm) nodes.push(confirmBox());
     if (state.job) nodes.push(progressBox());
     if (state.error) nodes.push(make("p", t(state.error), { class: "mv-register-error", role: "alert", id: "mv-register-error" }));
+    const server = state.failed && state.error === state.failed.message && serverNote(state.failed.restart);
+    if (server) nodes.push(make("p", t(server), { class: "mv-field-note", id: "mv-register-error-server" }));
     const only = otherPlatformBox();
     if (only) nodes.push(only);
     if (state.result) nodes.push(resultBox(state.result));
@@ -860,13 +868,23 @@
     return dialog;
   }
 
+  // The game server's state after a job, as one sentence (or none).
+  function serverNote(restart) {
+    return { done: "The game server was restarted.", pending: "The game server restarts when this job finishes.",
+      manual: "Restart the game server to apply it.", stopped: "The game server was stopped. Start it again." }[restart] || "";
+  }
+
+  // Once the job stops the game server it writes the catalog and restarts the server: no cancel.
+  const COMMITTING = ["stop", "write", "remove", "restart"];
+
   function progressBox() {
     const job = state.job, wrap = make("div", null, { class: "mv-register-progress", id: "mv-register-job" });
     const bar = make("progress", null, { id: "mv-register-progress", max: String(Math.max(1, job.total)) });
     bar.value = Math.min(job.total, job.index + (job.encode || 0));
     const row = make("div", null, { class: "mv-controls" });
-    row.append(make("span", t(job.stage) + "…", { id: "mv-register-stage", "aria-live": "polite" }),
-      button("Cancel", cancelJob, { id: "mv-register-cancel" }));
+    const cancel = button("Cancel", cancelJob, { id: "mv-register-cancel" });
+    cancel.disabled = COMMITTING.includes(job.key);
+    row.append(make("span", t(job.stage) + "…", { id: "mv-register-stage", "aria-live": "polite" }), cancel);
     wrap.append(bar, row);
     return wrap;
   }
@@ -1107,6 +1125,7 @@
     "Android will play the original MV. Continue?", "Android and iOS will play the original MV. Continue?",
     "Preparing the project", "Decoding the soundtrack", "Registered '{title}' ({id}).", "Updated '{title}' ({id}).",
     "No changes to apply.", "The game server was restarted.", "The game server restarts when this job finishes.",
+    "The game server was stopped. Start it again.",
     "Restart the game server to apply it.", "In game: Live → song list → {title} → MV", "Registered MV-only songs ({count})",
     "Loading…", "No MV-only songs are registered in this region.", "Updated {date}",
     "Not visible in the game (no Advanced chart)", "Base MV unknown", "Original MV on iOS", "Original MV on Android", "Open", "Fix",
