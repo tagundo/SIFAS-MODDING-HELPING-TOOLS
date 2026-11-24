@@ -174,5 +174,25 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
   const record = capture.editorRecord(planned.get('f0164@-1'), { values: { clock: { directorTime: 100.335 } }, seekMs: 1, dumpMs: 1 }, 30);
   assert.deepEqual([record.clock.phaseSource, Math.round(record.clock.phaseSeconds * 1e9) / 1e9], ['recorded', -0.219]);
 
+  // --frame-history: the seeks hand the editor the game's rendered frame times
+  // (the cheek floats MemberCheekMixer keeps after a clip follow them).
+  {
+    const seeks = [];
+    globalThis.mvFrameProbe = { scene: { seek: (...args) => seeks.push(args), assetDump: () => ({}),
+      inspect: () => ({ time: -1 }), setPlaying() {}, playbackFrame() {} } };
+    const fake = { evaluate: async (fn, arg) => fn(arg) };
+    try {
+      await capture.setFrameHistory(fake, [1, 2.5]);
+      await capture.evaluatePure(fake, [{ id: 'a', t: 3, sections: ['materials'] }], null);
+      await capture.evaluatePhysics(fake, { id: 'b', t: 3, sections: ['members'] }, 0, 30, null, null, 30);
+      assert.deepEqual(seeks.map((args) => [args[0], args[3]]), [[3, [1, 2.5]], [3, [1, 2.5]]]);
+      await capture.setFrameHistory(fake, null);
+      await capture.evaluatePure(fake, [{ id: 'c', t: 4, sections: ['materials'] }], null);
+      assert.equal(seeks.at(-1)[3], null, '--frame-history none: plain seeks');
+    } finally {
+      delete globalThis.mvFrameProbe;
+    }
+  }
+
   console.log('MV_RUNTIME_CAPTURE_PASS viewport, stage-scene selector and pinned suits');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

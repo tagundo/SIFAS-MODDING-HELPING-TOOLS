@@ -32,7 +32,8 @@
    game (default) every seek also hands the editor the game's rendered frame
    times before t (gameFrameTimes), which the client state that changes only on
    rendered frames reads (the director's beat origin, the ambient components'
-   last written colors). The game steps its springs once per rendered
+   last written colors, the cheek floats a finished clip leaves). The game
+   steps its springs once per rendered
    frame, so the preroll steps on the game's own frame times (gameFrameTimes:
    record frameCount, directorTime and deltaTime); --physics-grid clock uses
    the frame rate the game achieved (frames per director second, capped by the

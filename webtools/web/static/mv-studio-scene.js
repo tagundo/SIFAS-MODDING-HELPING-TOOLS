@@ -385,9 +385,10 @@
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1, adaptivePreview = true;
     let lastShaftFrame = null, resetShafts = true;
     // Client state that changes only on rendered frames (the director's beat
-    // origin, the ambient components' last written colors): an advancing
-    // playback frame continues it; a seek replays the rendered frame times it is
-    // given (seek's `history`) or, without them, uses exact values.
+    // origin, the ambient components' last written colors, the cheek floats
+    // MemberCheekMixer leaves after a clip): an advancing playback frame
+    // continues it; a seek replays the rendered frame times it is given (seek's
+    // `history`) or, without them, uses exact values. One frame clock serves all.
     let pendingHistory = null, frameClock = { advancing: false, history: [] }, historyLighting = new Map();
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
@@ -1965,7 +1966,7 @@
         if (record.motion) {
           record.motion.evaluatePose(currentTime, { split: activeSplitGazeCameras !== null });
           record.motion.applyVisibility(currentTime);
-          if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime));
+          if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime, frameClock));
         } else if (record.mixer) record.mixer.setTime(currentTime);
         record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), currentTime);
       }
@@ -2285,8 +2286,12 @@
         culled: entry.record.group === actors && memberCulledAt(entry.record.position, currentTime),
         materialVisible: slots(entry).every(({ material }) => material?.visible !== false),
         transform: D.decompose(rendererWorld(entry), temp), axisBillboard: billboardOf(entry) !== null,
-        materials: slots(entry).map(({ material }, slot) => ({ slot, name: D.materialName(material),
-          editorName: material?.name ?? null, kind: D.materialProperties(material).kind, visible: material?.visible !== false })),
+        materials: slots(entry).map(({ material }, slot) => {
+          // The drawn AS/Member variant, as the game reads Material.shaderKeywords per renderer slot.
+          const { kind, keywords } = D.materialProperties(material);
+          return { slot, name: D.materialName(material), editorName: material?.name ?? null, kind, visible: material?.visible !== false,
+            ...(Array.isArray(keywords) ? { keywords } : {}) };
+        }),
       })));
       // Uniforms an AnimationTrack curve drives (MVStudioStageMotion material channels): the game applies those
       // through a MaterialPropertyBlock, which its dump does not read, so the comparator never scores them.

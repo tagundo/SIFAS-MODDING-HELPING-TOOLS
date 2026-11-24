@@ -193,6 +193,7 @@ const root = path.resolve(__dirname, '..');
     assert.equal(result.sharedNotes.copy.length, 0, 'a verified copy of the shared array needs no note');
     assert.equal(result.sharedNotes.unknown.length, 1);
     assert(/own cheek_array/.test(result.sharedNotes.unknown[0]), result.sharedNotes.unknown[0]);
+    assert(/identical on the stock heads checked\.$/.test(result.sharedNotes.unknown[0]), 'only the stock heads checked are claimed identical');
     assert.equal(result.sharedNotes.modded.length, 1);
     assert(/differs/.test(result.sharedNotes.modded[0]), result.sharedNotes.modded[0]);
     assert.deepEqual(result.bare.pixel, result.bare.plain, 'no array: never tinted by the placeholder');

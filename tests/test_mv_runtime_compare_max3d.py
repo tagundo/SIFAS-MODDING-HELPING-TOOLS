@@ -1,6 +1,6 @@
 """Device conventions of mv_runtime_compare.py found on the Max 3D (Quality 10) run of live 12035: runtime member
 meshes, the overlay camera, clamped deltaTime, AxisBillboard transforms, editor shader materials and curve-driven
-(MaterialPropertyBlock) properties, cheek floats under _CHEEK 0, the render-target size, particle systems,
+(MaterialPropertyBlock) properties, cheek floats whatever the _CHEEK toggle, the render-target size, particle systems,
 blend shapes joined by channel name and the per-part coverage of the game dump."""
 import sys
 import tempfile
@@ -304,31 +304,56 @@ class ShaderMaterialTest(unittest.TestCase):
         self.assertEqual([(item["metric"], item["score"]) for item in result.items], [("textureSize", 0.0)])
         self.assertEqual(result.notes["materials.notComparableMPB"], ["mat_stg:_MainTex_ST (mainUVTransform)"])
 
-    def test_cheek_intensity_under_cheek_keyword_off_is_checked_as_zero(self):
+    def test_cheek_floats_are_compared_as_held_whatever_the_cheek_toggle(self):
+        """MemberCheekBase toggles only _CHEEK_ON; the [Toggle] float _CHEEK is never written and is no shader uniform,
+        so the floats (kept after a clip by MemberCheekMixer.PostProcess) are compared as both materials hold them."""
         def scored(editor_intensity, keywords=None, cheek=0):
             result = comparison()
             game = material_record("head", {"_CHEEK": {"t": "float", "v": cheek}, "_CheekIntensity": {"t": "float", "v": 0.045},
-                                            "_CheekTexArrayIndex": {"t": "float", "v": 3}, "_RimglightIntensity": {"t": "float", "v": 0.5}})
+                                            "_CheekTexArrayIndex": {"t": "float", "v": 0}, "_RimglightIntensity": {"t": "float", "v": 0.5}})
             fields = {"_CheekIntensity": {"t": "float", "v": editor_intensity, "from": "uCheekIntensity"},
-                      "_CheekTexArrayIndex": {"t": "float", "v": 1, "from": "uCheekTexArrayIndex"},
+                      "_CheekTexArrayIndex": {"t": "float", "v": 0, "from": "uCheekTexArrayIndex"},
                       "_RimglightIntensity": {"t": "float", "v": 0.5, "from": "uRimglightIntensity"}}
             editor = editor_material(kind="member", properties=fields, **({"keywords": keywords} if keywords is not None else {}))
             result.compare_materials(game, editor, False)
             return result, {item["field"].split(" ")[0]: item for item in result.items if item["metric"] == "floatScore"}
 
-        # The game keeps a stale 0.045 under _CHEEK 0 (MemberCheekMixer.PostProcess) and draws no cheek.
-        result, items = scored(0)
-        self.assertEqual(sorted(items), ["_CheekIntensity", "_RimglightIntensity"], "the index is not read under _CHEEK 0")
-        self.assertEqual((items["_CheekIntensity"]["game"], items["_CheekIntensity"]["score"]), ([0.0], 0.0))
-        self.assertEqual(result.notes["materials.cheekKeywordOff"], ["_CheekIntensity", "_CheekTexArrayIndex"])
-        result, items = scored(0.3, keywords=["_CHEEK_ON"])
-        self.assertGreater(items["_CheekIntensity"]["score"], 1, "the editor draws a cheek the game does not")
-        result, items = scored(0.3, keywords=[])
-        self.assertEqual(items["_CheekIntensity"]["score"], 0.0, "without _CHEEK_ON the editor draws no cheek either")
-        # With _CHEEK 1 both floats are compared as they are.
-        result, items = scored(0.045, keywords=["_CHEEK_ON"], cheek=1)
+        # dump3b 45.261 s: the game holds 0.04505 after the 15.883 s clip (frame 17.241 s), _CHEEK 0.
+        result, items = scored(0.045, keywords=[])
         self.assertEqual(sorted(items), ["_CheekIntensity", "_CheekTexArrayIndex", "_RimglightIntensity"])
+        self.assertEqual((items["_CheekIntensity"]["game"], items["_CheekIntensity"]["score"]), ([0.045], 0.0))
+        self.assertEqual(result.notes["materials.cheekToggleNotKeyword"], ["head: _CHEEK 0"])
+        self.assertNotIn("materials.cheekKeywordOff", result.notes)
+        result, items = scored(0, keywords=[])
+        self.assertGreater(items["_CheekIntensity"]["score"], 1, "an editor that zeroes the kept float differs")
+        # dump4 16.977 s: 0.317 applied in the previous frame with _CHEEK still 0; the editor draws it under _CHEEK_ON.
+        result, items = scored(0.045, keywords=["_CHEEK_ON", "_RIMLIGHT_ON"])
+        self.assertEqual(items["_CheekIntensity"]["score"], 0.0, "_CHEEK 0 does not mean the game draws no cheek")
+        result, items = scored(0.045, keywords=["_CHEEK_ON"], cheek=1)
         self.assertEqual(items["_CheekIntensity"]["score"], 0.0)
+
+    def test_renderer_slot_keywords_compare_the_drawn_member_variant(self):
+        """The game reads Material.shaderKeywords per renderer slot: the drawn AS/Member variant is compared there."""
+        def scored(game_keywords, editor_slot):
+            result = comparison()
+            result.joins["renderer:/x/microphone"] = ("renderer:effect:mic", "path")
+            result.join_renderer = lambda renderer: "renderer:effect:mic"
+            game = {"id": "r", "clock": {"directorTime": 5.0}, "renderers": [
+                {"key": "renderer:/x/microphone", "scope": "effect", "mesh": "mic", "path": "/x/microphone", "enabled": True,
+                 "activeInHierarchy": True, "layer": 0,
+                 "materials": [{"slot": 0, "name": "ch0212_co0002_head", "shader": "AS/Member", "keywords": game_keywords}]}]}
+            partner = {"renderers": [{"key": "renderer:effect:mic", "visible": True, "culled": False, "materialVisible": True,
+                                      "materials": [dict({"slot": 0, "name": "ch0212_co0002_head", "editorName": "ch0212_co0002_head (AS/Member)",
+                                                          "kind": "member", "visible": True}, **editor_slot)]}]}
+            result.compare_renderers(game, partner, False)
+            return [(item["key"], item["game"], item["editorConverted"], item["score"]) for item in result.items
+                    if item["metric"] == "variantKeywords"]
+
+        key = "material:renderer:/x/microphone#0"
+        self.assertEqual(scored(["_RIMLIGHT_ON"], {"keywords": ["_RIMLIGHT_ON"]}), [(key, [], [], 0.0)])
+        self.assertEqual(scored(["_RIMLIGHT_ON"], {"keywords": ["_CHEEK_ON", "_RIMLIGHT_ON"]}), [(key, [], ["_CHEEK_ON"], C.EXACT_SCORE)],
+                         "a blush the editor draws where the game does not")
+        self.assertEqual(scored(["_RIMLIGHT_ON"], {}), [], "an editor slot without keywords is not compared")
 
 
 class BillboardTest(unittest.TestCase):
