@@ -111,6 +111,11 @@
           parts.push(polyline(points, { class: "mv-cam-curve", stroke: color, "data-channel": channel }));
         }
       }
+      // The playhead under the handles and keys, so they stay grabbable on it.
+      if (finite(model.playhead)) {
+        const px = x(Math.max(0, Math.min(layout.last, model.playhead)));
+        parts.push(node("line", { class: "mv-cam-playhead", x1: px, x2: px, y1: plot.top, y2: plot.top + plot.height }));
+      }
       // Handles of the selected key (bezier segments only).
       const index = model.keys.findIndex((key) => key.frame === model.selected);
       if (index >= 0) {
@@ -138,10 +143,6 @@
             "aria-label": `${model.labels?.[channel] || channel} · ${t("Frame")} ${key.frame} · ${shortNumber(key.values[channel])}` });
           parts.push(diamond);
         }
-      }
-      if (finite(model.playhead)) {
-        const px = x(Math.max(0, Math.min(layout.last, model.playhead)));
-        parts.push(node("line", { class: "mv-cam-playhead", x1: px, x2: px, y1: plot.top, y2: plot.top + plot.height }));
       }
       svg.replaceChildren(...parts);
     }
