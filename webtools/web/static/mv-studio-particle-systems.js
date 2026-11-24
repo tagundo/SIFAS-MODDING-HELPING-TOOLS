@@ -325,7 +325,8 @@
 
   function validCulling(value) {
     return value === undefined || (!!value && typeof value.pauses === "boolean" && typeof value.uniform === "boolean" &&
-      (value.procedural === undefined || typeof value.procedural === "boolean") && (value.bounds === null || (vector(value.bounds, 6) && [0, 1, 2].every(axis => value.bounds[axis] <= value.bounds[axis + 3]))));
+      (value.procedural === undefined || typeof value.procedural === "boolean") &&
+      (value.bounds === null || (vector(value.bounds, 6) && [0, 1, 2].every(axis => value.bounds[axis] <= value.bounds[axis + 3]))));
   }
 
   function validSystem(system, textures) {
