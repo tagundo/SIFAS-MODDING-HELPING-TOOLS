@@ -655,7 +655,8 @@
       })));
     } else box.append(field("Start time (s)", make("output", start, rules.reason ? { title: rules.reason } : {})));
     if (editable && rules.resize !== false) {
-      box.append(field("Duration (s)", numberInput(event.duration, { "data-mv-field": "duration", min: 0, max: project.duration - event.start }, (value) => {
+      // At least one frame, as a drag or trim allows.
+      box.append(field("Duration (s)", numberInput(event.duration, { "data-mv-field": "duration", min: Interact.FRAME, max: project.duration - event.start }, (value) => {
         const command = timingCommand(track, event, { start: event.start, duration: value }, "Resize clip");
         if (command) edit(command);
       })));

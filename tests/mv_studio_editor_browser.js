@@ -470,6 +470,17 @@ async function run() {
     assert.equal(findEvent((await state(page)).project, lip.id).label, '입 모양 A');
     assert.equal((await state(page)).history.undoLabel, 'Rename clip');
 
+    // Duration: at least one frame, as a drag or a trim allows.
+    const length = page.locator('#mv-event-fields [data-mv-field=duration]');
+    assert.equal(Number(await length.getAttribute('min')), 1 / 60);
+    await length.fill('0');
+    await length.press('Tab');
+    assert.equal(findEvent((await state(page)).project, lip.id).duration, 1 / 60, 'a zero duration is clamped to one frame');
+    assert.equal(await length.inputValue(), String(1 / 60));
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert.equal(findEvent((await state(page)).project, lip.id).duration, lip.duration);
+
     // ---- Drag a camera shot by one second ----------------------------------------------------
     await page.locator('#mv-tab-camera').click();
     await page.locator('#mv-zoom').selectOption('48');
