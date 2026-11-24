@@ -645,16 +645,25 @@ function orphanRecords() {
   const next = K.ensureUserShot(ctx, 14, 16);
   assert.notEqual(next.event.id, id, 'a fresh id');
   assert.deepEqual(Object.keys(project.editor.camera.shots), [next.event.id], 'the new shot command drops the orphan too');
+  // Nor the id of a deleted clip without a record (a duplicate never edited): editor.originals
+  // keeps it, and the host's Duplicate clip follows the same rule.
+  const dup = hostDuplicate(project, history, userTrack.id, next.event.id);
+  assert.equal(project.editor.camera.shots[dup.id], undefined);
+  history.apply({ label: 'Delete clip', changes: [{ target: { kind: 'track', track: userTrack.id }, path: ['events'], op: 'remove',
+    index: userTrack.events.indexOf(dup) }] });
+  const third = K.ensureUserShot(ctx, 17, 19);
+  assert(![id, next.event.id, dup.id].includes(third.event.id), `an id never held (${third.event.id})`);
 }
 
-// The host's Duplicate clip (mv-studio.js duplicateEvent) as one insert command: a copy with the
-// id <track>:u<n>, placed at the source's end. History marks it added (originals null).
+// The host's Duplicate clip (mv-studio.js duplicateEvent) as one insert command: a copy with an
+// id <track>:u<n> the project never held, placed at the source's end. History marks it added
+// (originals null). The browser test runs the real one.
 function hostDuplicate(project, history, trackId, eventId) {
   const owner = project.tracks.find((item) => item.id === trackId);
   const source = owner.events.find((item) => item.id === eventId);
   const ids = new Set(project.tracks.flatMap((item) => item.events.map((clip) => clip.id)));
   let number = 1;
-  while (ids.has(`${owner.id}:u${number}`)) number++;
+  while (ids.has(`${owner.id}:u${number}`) || history.originals.get(`${owner.id}:u${number}`) !== undefined) number++;
   const clone = copy(source);
   clone.id = `${owner.id}:u${number}`;
   clone.start = source.start + source.duration;

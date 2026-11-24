@@ -427,6 +427,60 @@ async function synthetic(browser, url) {
   assert.equal(await page.locator('#mv-cam-shot-mode option[value="offset"]').textContent(), japanese.strings['Offset keys']);
   await page.locator('#lang-select').selectOption('ko');
   await page.waitForFunction(() => document.getElementById('mv-cam-key-view')?.textContent === '현재 시점 키 추가');
+
+  // Added clips. The host's Duplicate clip never hands out the id of a deleted clip, whose camera
+  // record stays for undo.
+  const made = await page.evaluate(() => [MVStudioCameraKeys.ensureUserShot(window.probeCtx, 9.2, 10.2).event.id,
+    MVStudioCameraKeys.ensureUserShot(window.probeCtx, 10.5, 11.5).event.id]);
+  assert.deepEqual(made, ['camera-editor:u1', 'camera-editor:u2']);
+  await page.locator('.mv-clip[data-event="camera-editor:u1"]').click();
+  await page.locator('#mv-delete-clip').click();
+  await page.waitForFunction(() => !document.querySelector('.mv-clip[data-event="camera-editor:u1"]'));
+  assert((await state(page)).project.editor.camera.shots['camera-editor:u1'], 'the deleted clip keeps its record for undo');
+  await page.locator('.mv-clip[data-event="camera-editor:u2"]').click();
+  await page.locator('#mv-duplicate-clip').click();
+  await page.waitForFunction(() => MVStudio.getState().project.tracks.find((item) => item.id === 'camera-editor').events.length === 2);
+  current = await state(page);
+  const copyId = current.selection.event;
+  const userClip = (value, id) => value.project.tracks.find((item) => item.id === 'camera-editor').events.find((item) => item.id === id);
+  assert.equal(copyId, 'camera-editor:u3', 'Duplicate clip skips the id of the deleted clip');
+  assert.equal(current.project.editor.camera.shots[copyId], undefined, 'the copy picks up no camera record');
+  const copySamples = userClip(current, copyId).values.keyframes;
+  assert.deepEqual(copySamples, userClip(current, 'camera-editor:u2').values.keyframes, 'the copy carries the samples');
+  // The copy has samples, not keys: a resize and its undo leave them as they were.
+  const durationField = page.locator('#mv-event-fields [data-mv-field=duration]');
+  await durationField.fill('0.5');
+  await durationField.press('Tab');
+  current = await state(page);
+  assert.equal(current.history.undoLabel, 'Resize clip');
+  assert.equal(userClip(current, copyId).duration, .5);
+  assert.deepEqual(userClip(current, copyId).values.keyframes, copySamples, 'a shrink does not cut the copy');
+  await page.locator('#mv-timeline-label').click();
+  await page.keyboard.press('Control+z');
+  current = await state(page);
+  assert.equal(userClip(current, copyId).duration, 1);
+  assert.deepEqual(userClip(current, copyId).values.keyframes, copySamples, 'undo leaves its samples bit for bit');
+  // Its first edit gives it keys (the panel offers only the Value row): a rebake keeps the edit as it
+  // is, and undo gives the samples back.
+  await seek(page, 11.3);
+  await page.waitForFunction(() => /^샷 4 \/ 4/.test(document.getElementById('mv-cam-shot')?.textContent || ''));
+  assert.equal(await page.locator('#mv-cam-shot-mode').inputValue(), 'keys');
+  assert.equal(await page.locator('#mv-camera-fields [data-mv-cam^="offset."]').count(), 0, 'no offset row on an added clip');
+  const valueY = page.locator('#mv-camera-fields [data-mv-cam="absolute.y"]');
+  await valueY.fill('2.5');
+  await valueY.press('Tab');
+  await page.waitForFunction((id) => MVStudio.getState().project.editor.camera.shots[id]?.mode === 'keys', copyId);
+  current = await state(page);
+  assert.equal(current.history.undoLabel, 'Edit camera key');
+  const claimed = userClip(current, copyId).values.keyframes;
+  assert.equal(claimed[18].position[1], 2.5, 'the edit at the playhead frame');
+  await page.evaluate(() => MVStudioCameraKeys.requestBake(window.probeCtx, {}));
+  assert.deepEqual(userClip(await state(page), copyId).values.keyframes, claimed, 'a rebake does not stack the edit');
+  await page.locator('#mv-timeline-label').click();
+  await page.keyboard.press('Control+z');
+  current = await state(page);
+  assert.equal(current.project.editor.camera.shots[copyId], undefined);
+  assert.deepEqual(userClip(current, copyId).values.keyframes, copySamples, 'undo gives the copy its samples back');
   assert.deepEqual(errors, []);
   await page.close();
 }

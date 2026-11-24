@@ -1015,9 +1015,12 @@
       track = { id: USER_TRACK, kind: "camera", label: t(ctx, "Camera (editor)"), events: [] };
       project.tracks.push(track);
     }
+    // An id the project never held, as the host's Duplicate clip picks one: not a deleted clip's
+    // (editor.originals keeps it), nor one a camera record is kept under.
     const ids = new Set(project.tracks.flatMap((item) => item.events.map((event) => event.id)));
+    const used = (id) => ids.has(id) || recordOf(ctx, id) !== undefined || ctx.history.originals.get(id) !== undefined;
     let number = 1;
-    while (ids.has(`${track.id}:u${number}`) || recordOf(ctx, `${track.id}:u${number}`) !== undefined) number++;
+    while (used(`${track.id}:u${number}`)) number++;
     const id = `${track.id}:u${number}`;
     const rig = pose || viewPose(ctx) || { position: [0, 1.4, 6], rotation: [0, 0, 0, 1], fov: 30 };
     const keyframes = Array.from({ length: count }, (_, index) => ({ time: index / FRAME_RATE, position: rig.position.slice(0, 3),
