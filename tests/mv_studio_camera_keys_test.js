@@ -445,11 +445,14 @@ function nonNative() {
     'the plain fov field stays');
   const info = K.findShot(ctx, 'static');
   assert.equal(info.count, 121, 'a static shot gets a 60 Hz grid');
+  // The plain field edits the static pose first; the keys then build on it.
+  history.apply({ label: 'Edit value', changes: [{ target: { kind: 'event', track: 'camera', event: 'static' }, path: ['values', 'fov'], after: 45 }] });
   at(3);
   K.setChannels(ctx, 'offset', { z: 1 });
   const stat = project.tracks[0].events[0];
   assert.equal(stat.values.keyframes.length, 121);
   nearVector(stat.values.keyframes[0].position, [0, 1.5, 4], 1e-12, 'dolly along -Z');
+  assert.equal(stat.values.keyframes[60].fov, 45, 'the static pose as edited is the source');
   assert.equal(plugin.valueControl(ctx, { track: project.tracks[0], event: stat, key: 'fov', value: 35 }), null, 'keys own a baked static shot');
   plugin.revertEvent(ctx, project.tracks[0], stat);
   assert(!('keyframes' in stat.values), 'revert removes the baked samples');

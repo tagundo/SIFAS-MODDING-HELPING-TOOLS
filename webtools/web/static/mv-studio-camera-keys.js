@@ -162,11 +162,14 @@
     const history = ctx.history;
     const original = history && history.originals ? history.originals.get(event.id) : undefined;
     const user = original === null;
-    const values = original && original.values ? original.values : event.values || {};
+    // Dense samples: the original ones (the event's are derived by the bake). A static pose
+    // (non-native projects) is never written by the bake, so the event's own values are its source.
+    const current = event.values || {};
+    const values = original && original.values ? original.values : current;
     let source = null, staticSource = false;
     if (validFrames(values.keyframes)) source = values.keyframes;
-    else if (!user && vector(values.position, 3) && vector(values.rotation, 4) && project && project.nativeTimeline !== true) {
-      source = staticGrid(values, event.duration);
+    else if (!user && vector(current.position, 3) && vector(current.rotation, 4) && project && project.nativeTimeline !== true) {
+      source = staticGrid(current, event.duration);
       staticSource = true;
     }
     const native = project && project.nativeTimeline === true;
@@ -186,7 +189,7 @@
     const info = { track, event, source, count, user, native, staticSource, editable, reason, lengthChanged,
       record: source ? normalizeRecord(recordOf(ctx, event.id), count) : null,
       lens: M.nativeLens(track), index: shots.findIndex((item) => item.event === event), total: shots.length,
-      fallbackFov: finite(values.fov) ? values.fov : 30 };
+      fallbackFov: finite(current.fov) ? current.fov : finite(values.fov) ? values.fov : 30 };
     if (finite(time) && source) info.frame = frameAt(info, time);
     return info;
   }
