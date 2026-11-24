@@ -107,8 +107,10 @@ function gestures() {
   assert.equal(project.tracks[0].events[0].values.fov, .3);
 
   // Tokens: nested begins share one; a stale token's end() leaves a newer gesture open.
+  assert.equal(history.gestureToken, null);
   const first = history.begin('Leaked');
   assert.equal(typeof first, 'object', 'a token is an object begin() made');
+  assert.equal(history.gestureToken, first);
   assert.equal(history.begin(), first, 'a nested begin returns the open gesture\'s token');
   history.apply(setValue('shot-1', 'fov', 7));
   while (history.gestureActive) history.end();   // the host closes a gesture left open
@@ -145,7 +147,28 @@ function gestures() {
   history.end();
   other.end(foreign);
   assert.equal(other.gestureActive, false);
-  assert.equal(history.gestureActive, false);
+  assert.equal(history.gestureToken, null);
+
+  // onBegin runs when a gesture opens (not for a nested begin), with begin()'s settings.
+  const opened = [];
+  const hooked = create({ getProject: () => project, onBegin: (token, settings) => opened.push([token, settings]) });
+  const owner = { contains: () => true };
+  const outer = hooked.begin('Hooked', { owner });
+  hooked.begin('Nested', { owner: null });
+  hooked.end(); hooked.end();
+  hooked.begin('Plain');
+  hooked.end();
+  assert.equal(opened.length, 2);
+  assert.equal(opened[0][0], outer);
+  assert.equal(opened[0][1].owner, owner);
+  assert.deepEqual(opened[1][1], {}, 'no settings: an empty object');
+  const broken = create({ getProject: () => project, onBegin: () => { throw new Error('hook'); } });
+  const error = console.error;
+  console.error = () => {};
+  try { assert.equal(typeof broken.begin('Survives'), 'object'); } finally { console.error = error; }
+  assert.equal(broken.gestureActive, true, 'a throwing hook leaves the gesture consistent');
+  broken.end();
+  assert.equal(broken.gestureActive, false);
 }
 
 function limit() {

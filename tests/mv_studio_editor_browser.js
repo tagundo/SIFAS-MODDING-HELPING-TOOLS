@@ -89,8 +89,9 @@ const laneLabels = (page) => page.evaluate(() => [...document.querySelectorAll('
 const findEvent = (project, id) => project.tracks.flatMap((track) => track.events).find((event) => event.id === id);
 
 /* The plugin host contract lanes B, C and D build on (spec §2): a probe plugin
-   registered before the page scripts records every hook it receives. The probe
-   project is non-native, so clips can also be duplicated and deleted. */
+   registered before the page scripts records every hook it receives, and its value
+   controls (a colour swatch, a slider) check the gesture rules of spec §6.1. The
+   probe project is non-native, so clips can also be duplicated and deleted. */
 async function pluginContract(browser, url) {
   const page = await browser.newPage({ locale: 'ko', viewport: { width: 1280, height: 900 } });
   const errors = [];
@@ -117,6 +118,29 @@ async function pluginContract(browser, url) {
       selectionChanged(ctx, selection) { calls.push('select:' + (selection ? selection.event.id : 'none')); },
       valueControl(ctx, info) {
         if (info.key === 'paramName') return null;
+        if (info.key === 'tint') {
+          // Spec §6.1 colour swatch: begin on pointerdown, the picker writes on input
+          // after the release, end on change.
+          const hex = (colour) => '#' + [colour.r, colour.g, colour.b].map((part) => Math.round(part * 255).toString(16).padStart(2, '0')).join('');
+          const swatch = ctx.make('input', null, { type: 'color', 'data-mv-field': 'tint', id: 'probe-tint' });
+          swatch.value = hex(info.value);
+          swatch.addEventListener('pointerdown', () => { info.gesture.begin(); window.probeTintGesture = info.gesture; });
+          swatch.addEventListener('input', () => {
+            const rgb = parseInt(swatch.value.slice(1), 16);
+            info.set({ r: (rgb >> 16 & 255) / 255, g: (rgb >> 8 & 255) / 255, b: (rgb & 255) / 255, a: 1 });
+          });
+          swatch.addEventListener('change', () => info.gesture.end());
+          return ctx.field('Probe tint', swatch);
+        }
+        if (info.key === 'intensity') {
+          // A slider in a ctx.history gesture, with history.end given straight to the listener.
+          const range = ctx.make('input', null, { type: 'range', min: 0, max: 1, step: .01, 'data-mv-field': 'intensity', id: 'probe-intensity' });
+          range.value = info.value;
+          range.addEventListener('pointerdown', () => ctx.history.begin('Edit value'));
+          range.addEventListener('input', () => info.set(Number(range.value)));
+          range.addEventListener('change', ctx.history.end);
+          return ctx.field('Probe intensity', range);
+        }
         if (info.key !== 'weight') return undefined;
         window.probeInfo = { key: info.key, path: info.path, value: info.value, writable: info.writable, original: info.original };
         window.probeGesture = info.gesture;
@@ -150,7 +174,15 @@ async function pluginContract(browser, url) {
       clipConstraints(ctx, track) { return track.id === 'camera' ? { resize: false, reason: 'Probe lock' } : undefined; },
       revertEvent(ctx, track, event) { if (event.id !== 'cam-1') return false; calls.push('revert:' + event.id); return true; },
       editedCount(ctx) { return ctx.project() && !window.probeNoEdits ? 2 : 0; },
-      keydown(ctx, event) { if (event.key !== 'k') return false; calls.push('key:k'); return true; },
+      keydown(ctx, event) {
+        if (event.key === 'j') {   // a plugin key that writes through ctx.history directly
+          ctx.history.apply({ label: 'Edit value', detail: 'weight', changes: [{ target: { kind: 'event', track: 'mouth', event: 'lip-1' }, path: ['values', 'weight'], after: .9 }] });
+          return true;
+        }
+        if (event.key !== 'k') return false;
+        calls.push('key:k');
+        return true;
+      },
       beforeSave() { if (window.probeRefuseSave) throw new Error('Probe refuses to save'); },
     });
   });
@@ -169,7 +201,8 @@ async function pluginContract(browser, url) {
         { id: 'cam-1', label: 'Shot 1', start: 0, duration: 4, values: { fov: 30 }, editableValues: ['fov'] },
         { id: 'cam-2', label: 'Shot 2', start: 4, duration: 4, values: { fov: 40 }, editableValues: ['fov'] }] },
       { id: 'mouth', kind: 'mouth', binding: '/EntryPoint/Live/Members/Member1', label: 'Member1/LipSync', events: [
-        { id: 'lip-1', label: 'A', start: 1, duration: 1, values: { weight: .5, paramName: 'a' }, editableValues: ['weight', 'paramName'] }] }] };
+        { id: 'lip-1', label: 'A', start: 1, duration: 1, values: { weight: .5, paramName: 'a', tint: { r: 1, g: .4, b: .2, a: 1 }, intensity: .2 },
+          editableValues: ['weight', 'paramName', 'tint', 'intensity'] }] }] };
   await page.route('**/api/mv-studio/catalog?*', (route) => route.fulfill({ json: { region: 'gl', platform: 'android',
     regions: [{ id: 'gl', label: 'GL' }], platforms: [{ id: 'android', label: 'Android' }],
     songs: [{ id: 99, title: 'Probe MV', variants: [{ id: 1, label: 'MV' }] }] } }));
@@ -237,39 +270,105 @@ async function pluginContract(browser, url) {
   await page.locator('.mv-clip[data-event=lip-1]').click();
   assert.equal(await page.evaluate(() => window.probeInfo.original), .5, 'info.original is the value before the first edit');
 
-  // A gesture a control leaves open (no end() on pointerup) is closed by the host after
-  // the release and at the next press, so later edits get their own undo steps.
+  // Gestures (spec §6.1): one undo step per press, or per picker when the control's UI
+  // runs after the release. The host never closes a gesture at a release; it closes
+  // one a control left open once the user moves on (a press, a key or an edit elsewhere).
   const steps = () => page.evaluate(() => ({ undo: window.probeCtx.history.size().undo,
     label: window.probeCtx.history.peekUndo()?.label, open: window.probeCtx.history.gestureActive }));
+  const lip = () => page.evaluate(() => MVStudio.getState().project.tracks[1].events[0]);
+  const settle = () => page.evaluate(() => new Promise((resolve) => setTimeout(() => requestAnimationFrame(() => resolve()), 50)));
+  // A real primary press (and drag by dx px) at a fraction x of the element's width.
+  const press = async (selector, { x = .5, dx = 0 } = {}) => {
+    await page.locator(selector).scrollIntoViewIfNeeded();
+    const box = await page.locator(selector).boundingBox();
+    const left = box.x + box.width * x, y = box.y + box.height / 2;
+    await page.mouse.move(left, y);
+    await page.mouse.down();
+    if (dx) await page.mouse.move(left + dx, y, { steps: 6 });
+    await page.mouse.up();
+  };
+  // The native colour picker: what it writes arrives as input events after the
+  // swatch's release, then change when it closes with a new colour. Escape closes the
+  // picker headless Chromium opens (keys go to it while it is up).
+  const pick = async (colours, change = true) => {
+    await page.evaluate(async ([list, done]) => {
+      for (const colour of list) {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const swatch = document.getElementById('probe-tint');
+        swatch.value = colour;
+        swatch.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      if (done) document.getElementById('probe-tint').dispatchEvent(new Event('change', { bubbles: true }));
+    }, [colours, change]);
+    await page.keyboard.press('Escape');
+  };
   const before = (await steps()).undo;
-  await page.evaluate(() => document.getElementById('probe-weight').addEventListener('pointerdown', () => {
-    window.probeGesture.begin();
-    window.probeBegan = window.probeCtx.history.gestureActive;
-  }, { once: true }));
-  await page.locator('#probe-weight').click();
-  assert.equal(await page.evaluate(() => window.probeBegan), true);
-  await page.waitForFunction(() => !window.probeCtx.history.gestureActive, null, { timeout: 2000 });
-  await page.evaluate(() => window.probeGesture.begin());   // opened without a pointer, never ended
-  await page.locator('#probe-weight').fill('.6');
-  await page.locator('#probe-weight').press('Tab');
-  assert.deepEqual(await steps(), { undo: before + 1, label: 'Edit value', open: true });
-  await page.locator('#mv-timeline-label').click();
-  assert.equal((await steps()).open, false, 'the next press closes it');
-  await page.locator('#mv-event-fields [data-mv-field=label]').fill('B');
-  await page.locator('#mv-event-fields [data-mv-field=label]').press('Tab');
-  assert.deepEqual(await steps(), { undo: before + 2, label: 'Rename clip', open: false }, 'the rename is a step of its own');
+  const original = await lip();
+  await press('#probe-tint');
+  await settle();
+  assert.equal((await steps()).open, true, 'the swatch gesture outlives its release while the picker is up');
+  await pick(['#336699', '#4477aa', '#5588bb']);
+  assert.deepEqual(await steps(), { undo: before + 1, label: 'Edit value', open: false }, 'one colour pick is one undo step');
+  assert.deepEqual((await lip()).values.tint, { r: 0x55 / 255, g: 0x88 / 255, b: 0xbb / 255, a: 1 });
+
+  // A slider drag in a ctx.history gesture; history.end given straight to the change
+  // listener gets the Event and still ends it.
+  await press('#probe-intensity', { dx: 60 });
+  await settle();
+  assert.deepEqual(await steps(), { undo: before + 2, label: 'Edit value', open: false }, 'a slider drag is one step, ended by history.end as a listener');
+  assert((await lip()).values.intensity > .5);
+
+  // A clip drag afterwards is a step of its own.
+  await press('.mv-clip[data-event=lip-1]', { x: .3, dx: 30 });
+  assert.deepEqual(await steps(), { undo: before + 3, label: 'Move clip', open: false }, 'a clip drag is a step of its own');
+  assert((await lip()).start > original.start);
+
+  // A picker closed with no change event leaves its gesture open; the next press on
+  // the swatch starts a new step.
+  await press('#probe-tint');
+  await pick(['#102030'], false);
+  assert.deepEqual(await steps(), { undo: before + 4, label: 'Edit value', open: true });
+  await press('#probe-tint');
+  await pick(['#203040'], false);
+  assert.deepEqual(await steps(), { undo: before + 5, label: 'Edit value', open: true }, 'each press on the swatch is a step of its own');
+  // An edit through another control, typed without a press, closes it first.
+  const label = page.locator('#mv-event-fields [data-mv-field=label]');
+  await label.focus();
+  await label.fill('B');
+  await label.press('Tab');
+  assert.deepEqual(await steps(), { undo: before + 6, label: 'Rename clip', open: false }, 'the rename is a step of its own');
+  // So does a key once the picker is gone, even on the swatch: the probe's j writes
+  // through ctx.history directly.
+  await press('#probe-tint');
+  await pick(['#304050'], false);
+  assert.deepEqual(await steps(), { undo: before + 7, label: 'Edit value', open: true });
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'probe-tint');
+  await page.keyboard.press('j');
+  assert.deepEqual(await steps(), { undo: before + 8, label: 'Edit value', open: false }, 'the plugin key is a step of its own');
+  assert.equal((await lip()).values.weight, .9);
+  // A gesture begun from the keyboard belongs to the focused element: keys there keep it.
+  await page.evaluate(() => { document.getElementById('probe-tint').focus(); window.probeCtx.history.begin('Edit value'); });
+  await page.keyboard.press('h');
+  assert.equal((await steps()).open, true, 'a key on the owner of a keyboard gesture keeps it');
+  await page.evaluate(() => document.activeElement.blur());
+  await page.keyboard.press('h');
+  assert.equal((await steps()).open, false, 'a key elsewhere closes it');
+  // begin() can name its owner (a popover): presses inside it keep the gesture.
+  await page.evaluate(() => window.probeCtx.history.begin('Edit value', { owner: document.getElementById('mv-panel-probe') }));
+  await press('#probe-panel-text');
+  assert.equal((await steps()).open, true, 'a press inside the named owner keeps it');
+  await press('#mv-timeline-label');
+  assert.equal((await steps()).open, false, 'a press outside it closes it');
   assert.equal(await page.evaluate(() => {
     const token = window.probeCtx.history.begin('Other');
-    window.probeGesture.end();   // late: its gesture was closed by the host
+    window.probeTintGesture.end();   // late: its gesture was closed by the host
     const open = window.probeCtx.history.gestureActive;
     window.probeCtx.history.end(token);
     return open && !window.probeCtx.history.gestureActive;
   }), true, 'a late info.gesture.end() leaves a newer gesture open');
-  await page.locator('#mv-timeline-label').click();
-  await page.keyboard.press('Control+z');
-  await page.keyboard.press('Control+z');
+  for (let count = (await steps()).undo; count > before; count--) await page.keyboard.press('Control+z');
   assert.equal((await steps()).undo, before);
-  assert.equal((await page.evaluate(() => MVStudio.getState().project.tracks[1].events[0].values.weight)), .75);
+  assert.deepEqual(await lip(), original, 'undo brings the clip back');
 
   // Plugin shortcut after the built-in ones; plain keys in a text field are not shortcuts.
   await page.locator('#mv-timeline-label').click();

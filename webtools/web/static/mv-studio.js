@@ -667,9 +667,9 @@
     let noted = false;
     for (const key of Object.keys(values).slice(0, 48)) {
       const writable = writableValue(track, event, key);
+      const access = valueAccess(track, event, key);
       const info = { track, event, key, path: key, value: values[key], writable,
-        original: original && original.values ? original.values[key] : undefined,
-        set: (next) => setEventValue(track, event, [key], next), gesture: valueGesture() };
+        original: original && original.values ? original.values[key] : undefined, set: access.set, gesture: access.gesture };
       const control = valueControl(info);
       if (control === null) continue;
       box.append(control !== undefined ? control : eventField(values, key, key, writable, 0, [key], (segments, next) => setEventValue(track, event, segments, next)));
@@ -694,25 +694,100 @@
     if (control && document.activeElement !== control) control.focus({ preventScroll: true });
   }
 
-  // info.gesture of one value control. Its token keeps a late end() (after the host
-  // closed a gesture the control left open) from closing someone else's newer gesture.
-  function valueGesture() {
-    let token;
-    return { begin: () => { token = history.begin("Edit value"); }, end: () => { if (token !== undefined) history.end(token); } };
+  // info.set and info.gesture of one value control. Its sets belong to its own
+  // gesture; an edit through any other control closes that gesture first.
+  function valueAccess(track, event, key) {
+    let token = null;
+    const control = {
+      set: (next) => {
+        const previous = setter;
+        setter = control;
+        try { return setEventValue(track, event, [key], next); } finally { setter = previous; }
+      },
+      gesture: {
+        // Does nothing while this control's gesture is still open, so it never nests
+        // on itself. settings.owner: see gestureBegan.
+        begin: (settings) => {
+          if (token && history.gestureToken === token) return;
+          leaveGesture(control);
+          const previous = beginning;
+          beginning = control;
+          try { token = history.begin("Edit value", settings); } finally { beginning = previous; }
+        },
+        // The token keeps a late end() (after the host closed a gesture this control
+        // left open) from closing a newer gesture.
+        end: () => { if (token) history.end(token); },
+      },
+    };
+    return control;
   }
 
-  // A gesture lasts one pointer press at most: end() belongs on pointerup and
-  // pointercancel. One that a control left open is closed once the release's own
-  // handlers (pointerup, click, change) have run, and at the next press, so later
-  // edits get their own undo steps instead of merging into it.
+  // A gesture (one undo step) belongs to its owner: the element begin(label,
+  // { owner }) names (a popover the user presses several times), else the element
+  // pressed while it began, else the focused one (begun from the keyboard). One begun
+  // through info.gesture also belongs to that value control. A control can leave a
+  // gesture open (a pointer released outside it, a picker closed with no change), so
+  // the host closes one once the user moves on:
+  //   - at the next primary press, unless begin() named the owner and the press is in it;
+  //   - at a key pressed outside the owner (not while typing in a field), and at any
+  //     key once the press that began it is over (its picker takes the keys while it
+  //     is up), unless begin() named the owner;
+  //   - before an edit or info.gesture.begin() through another control.
+  // The host never closes a gesture at a release, nor while a press inside its owner
+  // lasts, so end() may come on pointerup or, for a control whose UI runs after the
+  // release (an <input type=color> picker), on change.
+  let press = null, gestureOwner = null, beginning = null, setter = null;
+
+  function gestureBegan(token, settings) {
+    const named = settings.owner && typeof settings.owner.contains === "function" ? settings.owner : null;
+    const active = document.activeElement;
+    const focused = active && active !== document.body && active !== document.documentElement ? active : null;
+    // keys: whether keys pressed inside the owner keep the gesture open.
+    gestureOwner = { token, named: !!named, keys: !!named || !press, element: named || (press && press.target) || focused, control: beginning };
+  }
+
+  function openGesture() {
+    const token = history && history.gestureToken;
+    if (!token) return null;
+    return gestureOwner && gestureOwner.token === token ? gestureOwner : { token, named: false, keys: false, element: null, control: null };
+  }
+
+  function inOwner(owner, node) {
+    const element = owner.element;
+    return !!element && !!node && element.isConnected && (element === node || element.contains(node));
+  }
+
+  // The current press (until its release's own handlers ran) is on the owner.
+  const pressInOwner = (owner, held = false) => !!press && (!held || press.held) && inOwner(owner, press.target);
+
   function closeGestures() {
     while (history.gestureActive) history.end();
   }
 
+  // source: the value control an edit or begin() comes through, or null for the
+  // host's own controls. A ctx.history.begin() gesture takes every info.set, so a
+  // plugin control can put several values in one step.
+  function leaveGesture(source) {
+    const owner = openGesture();
+    if (!owner || pressInOwner(owner) || (owner.control ? owner.control === source : source)) return;
+    closeGestures();
+  }
+
   function watchGestures() {
-    document.addEventListener("pointerdown", (event) => { if (event.isPrimary) closeGestures(); }, true);
+    document.addEventListener("pointerdown", (event) => {
+      if (!event.isPrimary) return;
+      const owner = openGesture();
+      if (owner && !pressInOwner(owner, true) && !(owner.named && inOwner(owner, event.target))) closeGestures();
+      press = { target: event.target, pointerId: event.pointerId, held: true };
+    }, true);
+    // A press lasts until its release's own handlers (pointerup, click, change) ran.
     for (const type of ["pointerup", "pointercancel"]) {
-      document.addEventListener(type, (event) => { if (event.isPrimary && history.gestureActive) setTimeout(closeGestures, 0); }, true);
+      document.addEventListener(type, (event) => {
+        const ended = press;
+        if (!event.isPrimary || !ended || ended.pointerId !== event.pointerId) return;
+        ended.held = false;
+        setTimeout(() => { if (press === ended) press = null; }, 0);
+      }, true);
     }
   }
 
@@ -1360,10 +1435,14 @@
   //   revertEvent(ctx, track, event) → true when handled    editedCount(ctx) → number
   //   keydown(ctx, KeyboardEvent) → true when handled        beforeSave / beforeExport(ctx) → Promise; throw to refuse
   // Writes go through ctx.history (MVStudioEditHistory); a write made outside it (a
-  // derived bake) is followed by ctx.refreshLane(trackId). A gesture (history.begin()
-  // or info.gesture.begin() on pointerdown) ends on pointerup and pointercancel, not on
-  // change: the host closes one still open after the release and at the next press.
-  // history.begin() returns a token; history.end(token) ignores a gesture already closed.
+  // derived bake) is followed by ctx.refreshLane(trackId). A gesture makes one undo
+  // step: begin() on pointerdown, end() on pointerup/pointercancel or, when the
+  // control's UI runs after the release (an <input type=color> picker), on change.
+  // history.begin(label, { owner }?) and info.gesture.begin({ owner }?) open one (the
+  // latter does nothing while its own gesture is open); history.begin() returns a token
+  // object, history.end(token) ignores a gesture that is already closed, and end()
+  // with no token (or an Event) ends the open one. The host closes a gesture left open
+  // once the user moves on (see gestureBegan).
 
   function callPlugins(hook, ...args) {
     const results = [];
@@ -1379,6 +1458,7 @@
   let quietPanel = null;
   function edit(command, quiet = null) {
     if (!history || !project) return false;
+    leaveGesture(setter);
     const previous = quietPanel;
     quietPanel = quiet;
     try { return history.apply(command); } finally { quietPanel = previous; }
@@ -1536,6 +1616,10 @@
       redo();
       return;
     }
+    // The user moved on (see gestureBegan); a plugin key may write through ctx.history
+    // directly, which no edit() check sees.
+    const owner = openGesture();
+    if (owner && !pressInOwner(owner) && !(owner.keys && inOwner(owner, target))) closeGestures();
     for (const plugin of plugins) {
       if (typeof plugin.keydown !== "function") continue;
       let handled = false;
@@ -2127,7 +2211,7 @@
     settings = options;
     seekInput = byId("mv-seek");
     timeOutput = byId("mv-time");
-    history = global.MVStudioEditHistory.create({ getProject: () => project, onChange: historyChanged, limit: 200,
+    history = global.MVStudioEditHistory.create({ getProject: () => project, onChange: historyChanged, limit: 200, onBegin: gestureBegan,
       compareView: (track, event) => {
         const view = global.MVStudioEditHistory.editedView(event);
         // Extrapolation times of a gated track are derived from the clip timing.

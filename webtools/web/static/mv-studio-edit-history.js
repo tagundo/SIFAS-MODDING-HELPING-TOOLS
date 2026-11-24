@@ -51,6 +51,9 @@
     const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 200;
     // compareView(track, event) → the object compared for "edited"; defaults to editedView(event).
     const compareView = typeof options.compareView === "function" ? options.compareView : (_track, event) => editedView(event);
+    // onBegin(token, settings) runs when a gesture opens (not for a nested begin), with
+    // what begin() was given as its second argument; the host uses settings.owner.
+    const onBegin = typeof options.onBegin === "function" ? options.onBegin : null;
     let undoStack = [], redoStack = [], version = 0, depth = 0, gesture = null;
     let editedCache = null, editedKey = null;
 
@@ -290,11 +293,14 @@
     // end(token) ignores a token whose gesture is already closed (by undo/redo/clear
     // or by the host closing a gesture left open), so a late end() cannot close a
     // newer one; end() with anything that is not a token ends the open gesture.
-    function begin(label) {
+    function begin(label, settings) {
       if (depth++ === 0) {
         const token = Object.freeze({});
         tokens.add(token);
         gesture = { label: typeof label === "string" ? label : "", entry: null, token };
+        if (onBegin) {
+          try { onBegin(token, isObject(settings) ? settings : {}); } catch (error) { console.error(error); }
+        }
       }
       return gesture.token;
     }
@@ -357,6 +363,8 @@
       invalidate() { version++; },
       get version() { return version; },
       get gestureActive() { return depth > 0; },
+      // The open gesture's token, or null.
+      get gestureToken() { return gesture ? gesture.token : null; },
       originals: {
         get(id) { const editor = editorOf(project(), false); return editor && own(editor.originals, id) ? editor.originals[id] : undefined; },
         ensure(id) { return originalsEnsure(id); },
