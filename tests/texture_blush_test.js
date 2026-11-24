@@ -118,8 +118,20 @@ check('every blush panel string has Korean and Japanese wording', () => {
     const start = source.indexOf(from), end = source.indexOf(to, start); assert.ok(start >= 0 && end > start, from);
     for (const match of source.slice(start, end).matchAll(/"((?:[^"\\]|\\.)*)"/g)) if (/^[A-Z0-9]/.test(match[1]) && /[a-z]/.test(match[1]) && !/^(AbortError)$/.test(match[1])) texts.add(match[1]);
   });
-  const server = JSON.parse(execFileSync(python, ['-B', '-c', 'import json; from webtools.core import viewer_texture_tools as t; from webtools import i18n; print(json.dumps({"reason": t.CHEEK_UNAVAILABLE, "ko": i18n.tr("Baked blush", "ko"), "ja": i18n.tr("Baked blush", "ja")}))'], { cwd: product, env: { ...process.env, PYTHONPATH: product }, encoding: 'utf8' }));
-  texts.add(server.reason); ['Choose a blush strength between 0 and 4.', 'Choose the Ppo or Akarame blush type.', 'The blush bake takes only a blush type, a strength and a save mode.', 'Baked blush is available only for a head material\'s main texture or its recolour texture.'].forEach(text => texts.add(text));
+  // Server errors shown in this panel and, through webtools/i18n.py, in the Save status.
+  const serverErrors = ['Choose a blush strength between 0 and 4.', 'Choose the Ppo or Akarame blush type.', 'The blush bake takes only a blush type, a strength and a save mode.',
+    'Baked blush is available only for a head material\'s main texture or its recolour texture.', 'This model has no head texture that can take a baked blush.'];
+  const server = JSON.parse(execFileSync(python, ['-B', '-c', `
+import json, sys
+from webtools.core import viewer_texture_tools as t
+from webtools import i18n
+texts = json.loads(sys.argv[1]) + [t.CHEEK_UNAVAILABLE]
+print(json.dumps({"reason": t.CHEEK_UNAVAILABLE, "ko": i18n.tr("Baked blush", "ko"), "ja": i18n.tr("Baked blush", "ja"),
+                  "errors": {text: [i18n.tr(text, "ko"), i18n.tr(text, "ja")] for text in texts}}))`, JSON.stringify(serverErrors)], { cwd: product, env: { ...process.env, PYTHONPATH: product }, encoding: 'utf8' }));
+  texts.add(server.reason); serverErrors.forEach(text => texts.add(text));
+  // The Save status (webtools/i18n.py) and this panel use the same wording.
+  Object.keys(server.errors).forEach(text => assert.deepStrictEqual(server.errors[text], Array.from(words[text]), text));
+  assert.strictEqual(Object.keys(server.errors).length, 6);
   const missing = Array.from(texts).filter(text => !Array.isArray(words[text]) || words[text].length !== 2 || words[text].some(value => !value || value === text));
   assert.deepStrictEqual(missing, [], 'untranslated blush strings');
   assert.ok(texts.size >= 45, 'the scan found the panel strings: ' + texts.size);

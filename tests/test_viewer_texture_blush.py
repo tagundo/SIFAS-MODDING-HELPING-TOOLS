@@ -556,8 +556,25 @@ class BlushSessionTests(unittest.TestCase):
         for module in (texture_block_splice, textures):
             sentences.update(re.findall(r'SpliceUnavailable\("([^"]+)"\)', Path(module.__file__).read_text(encoding="utf-8")))
         self.assertGreaterEqual(len(sentences), 15)
+        # Blush errors the server can return to the Save status, which is
+        # translated with webtools/i18n.py (not the texture tools' own table).
+        errors = {textures.CHEEK_UNAVAILABLE, "Baked blush is available only for a head material's main texture or its recolour texture.",
+                  "The blush bake takes only a blush type, a strength and a save mode.",
+                  "This model has no head texture that can take a baked blush.",
+                  "The saved texture mip levels failed exact reload validation."}
+        errors.update(text.replace("%g", "%g" % tb.MAX_K)
+                      for text in re.findall(r'BlushError\("([^"]+)"', Path(tb.__file__).read_text(encoding="utf-8")))
+        self.assertGreaterEqual(len(errors), 9)
+        for text, call in ((textures.CHEEK_UNAVAILABLE, lambda: textures._fail(textures.CHEEK_UNAVAILABLE)),
+                           ("Choose a blush strength between 0 and 4.", lambda: textures.checked_blush({"layer": 0, "k": 5})),
+                           ("Choose the Ppo or Akarame blush type.", lambda: textures.checked_blush({"layer": 3, "k": 1})),
+                           ("The blush bake takes only a blush type, a strength and a save mode.", lambda: textures.checked_blush({"k": 1}))):
+            with self.assertRaises(ValueError) as caught:
+                call()
+            self.assertEqual(str(caught.exception), text)
+            self.assertIn(text, errors)
         for lang in ("ko", "ja"):
-            missing = [text for text in sorted(sentences) if i18n.tr(text, lang) == text]
+            missing = [text for text in sorted(sentences | errors) if i18n.tr(text, lang) == text]
             self.assertEqual(missing, [], lang)
 
     def test_recolour_texture_is_offered_and_baked_with_its_head(self):

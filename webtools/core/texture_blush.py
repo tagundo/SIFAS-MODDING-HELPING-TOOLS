@@ -98,13 +98,6 @@ class BlushError(ValueError):
     pass
 
 
-def level_k(name):
-    for level, k in LEVELS:
-        if level == name:
-            return k
-    raise BlushError("Choose a supported blush level.")
-
-
 def checked_k(value):
     if type(value) not in (int, float) or isinstance(value, bool) or not math.isfinite(value) or not 0 < value <= MAX_K:
         raise BlushError("Choose a blush strength between 0 and %g." % MAX_K)
