@@ -108,6 +108,7 @@ function gestures() {
 
   // Tokens: nested begins share one; a stale token's end() leaves a newer gesture open.
   const first = history.begin('Leaked');
+  assert.equal(typeof first, 'object', 'a token is an object begin() made');
   assert.equal(history.begin(), first, 'a nested begin returns the open gesture\'s token');
   history.apply(setValue('shot-1', 'fov', 7));
   while (history.gestureActive) history.end();   // the host closes a gesture left open
@@ -126,6 +127,24 @@ function gestures() {
   history.undo();
   assert.equal(history.gestureActive, false, 'undo closes an open gesture');
   history.end(stale);
+  assert.equal(history.gestureActive, false);
+
+  // end() with anything that is not a token ends the open gesture: history.end can be
+  // given straight to addEventListener('change', …), which passes it the Event.
+  for (const notToken of [{ type: 'change', target: {} }, 1, 'x', null, () => {}]) {
+    history.begin('Listener');
+    history.end(notToken);
+    assert.equal(history.gestureActive, false, 'end(' + typeof notToken + ') is a plain end()');
+  }
+  // A token of another history is a token, just not this gesture's.
+  const other = create({ getProject: () => project });
+  const foreign = other.begin('Elsewhere');
+  history.begin('Here');
+  history.end(foreign);
+  assert.equal(history.gestureActive, true, 'another history\'s token does not end this gesture');
+  history.end();
+  other.end(foreign);
+  assert.equal(other.gestureActive, false);
   assert.equal(history.gestureActive, false);
 }
 

@@ -40,13 +40,18 @@
     return stable({ target: change.target, path: change.path });
   }
 
+  // Gesture tokens: an object begin() made, of any history. Anything else given to
+  // end() (an Event, when end is passed straight to addEventListener) is no token.
+  const tokens = new WeakSet();
+  const isToken = (value) => isObject(value) && tokens.has(value);
+
   function create(options = {}) {
     const getProject = typeof options.getProject === "function" ? options.getProject : () => null;
     const onChange = typeof options.onChange === "function" ? options.onChange : () => {};
     const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 200;
     // compareView(track, event) → the object compared for "edited"; defaults to editedView(event).
     const compareView = typeof options.compareView === "function" ? options.compareView : (_track, event) => editedView(event);
-    let undoStack = [], redoStack = [], version = 0, depth = 0, gesture = null, gestures = 0;
+    let undoStack = [], redoStack = [], version = 0, depth = 0, gesture = null;
     let editedCache = null, editedKey = null;
 
     function project() {
@@ -281,16 +286,21 @@
       return true;
     }
 
-    // begin() returns the open gesture's token (nested begins share it). end(token)
-    // ignores a token whose gesture is already closed (by undo/redo/clear or by the
-    // host closing a gesture left open), so a late end() cannot close a newer one.
+    // begin() returns the open gesture's token, an object (nested begins share it).
+    // end(token) ignores a token whose gesture is already closed (by undo/redo/clear
+    // or by the host closing a gesture left open), so a late end() cannot close a
+    // newer one; end() with anything that is not a token ends the open gesture.
     function begin(label) {
-      if (depth++ === 0) gesture = { label: typeof label === "string" ? label : "", entry: null, token: ++gestures };
+      if (depth++ === 0) {
+        const token = Object.freeze({});
+        tokens.add(token);
+        gesture = { label: typeof label === "string" ? label : "", entry: null, token };
+      }
       return gesture.token;
     }
 
     function end(token) {
-      if (depth === 0 || (token !== undefined && token !== gesture.token)) return;
+      if (depth === 0 || (isToken(token) && token !== gesture.token)) return;
       if (--depth === 0) gesture = null;
     }
 
