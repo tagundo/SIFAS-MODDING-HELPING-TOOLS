@@ -84,6 +84,36 @@
     return holdStep(hold, valueAt(seconds));
   }
 
+  // UnityEngine.Mathf.Approximately (0x34ab0ac): |b - a| < max(1e-6 * max(|a|, |b|),
+  // Mathf.Epsilon * 8), the 1e-6 being the float at 0x56f60f8. Mathf.Epsilon is the smallest
+  // normal float where denormals flush to zero (ARM). LiveCoreStageEmissive.ApplyEmissiveIntensity
+  // (0x2f74f5c) skips Material.SetFloat while it holds for the intensity it last wrote.
+  const APPROXIMATELY_FLOOR = Math.fround(Math.fround(1.17549435e-38) * 8);
+  const APPROXIMATELY_SCALE = Math.fround(1e-6);
+
+  function approximately(a, b) {
+    return Math.abs(b - a) < Math.max(Math.fround(APPROXIMATELY_SCALE * Math.max(Math.abs(a), Math.abs(b))), APPROXIMATELY_FLOOR);
+  }
+
+  function holdScalarStep(hold, value) {
+    if (!Number.isFinite(value)) {
+      hold.value = null;
+      return value;
+    }
+    if (hold.value == null || !approximately(value, hold.value)) hold.value = value;
+    return hold.value;
+  }
+
+  // heldColor for a float written behind Mathf.Approximately: valueAt(time) returns the
+  // float or null when nothing is written (the hold then restarts).
+  function heldScalar(hold, valueAt, seconds, frames) {
+    if (!frames?.advancing) {
+      hold.value = null;
+      for (const time of frames?.history || []) holdScalarStep(hold, valueAt(time));
+    }
+    return holdScalarStep(hold, valueAt(seconds));
+  }
+
   function multiply(a, b) { return a.map((channel, index) => channel * b[index]); }
 
   function add(target, source, weight) {
@@ -205,5 +235,5 @@
     };
   }
 
-  global.MVStudioLighting = { nativeWeight, memberColor, sample, heldColor, HOLD_EPSILON };
+  global.MVStudioLighting = { nativeWeight, memberColor, sample, heldColor, heldScalar, approximately, HOLD_EPSILON };
 })(typeof window !== "undefined" ? window : globalThis);

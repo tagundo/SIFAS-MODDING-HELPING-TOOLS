@@ -275,6 +275,64 @@ async function testStageEmissive() {
   console.log("Native stage emissive target ownership, crossfades, seek gaps and quality gates passed");
 }
 
+// LiveCoreStageEmissive.ApplyEmissiveColor (0x2f74e18) skips Material.SetColor while
+// UtilColor.CheckSame holds for the color it last wrote, and ApplyEmissiveIntensity (0x2f74f5c)
+// skips SetFloat while Mathf.Approximately holds: both keep their last write on the frame clock.
+async function testStageEmissiveHold() {
+  const binding = "/EntryPoint/Live/Stages/MainStage/Model";
+  const root = new T.Group(), decoded = [new T.Texture(), new T.Texture()];
+  const geometry = new T.PlaneGeometry();
+  geometry.setAttribute("_stage_light_uv", geometry.getAttribute("uv"));
+  geometry.setAttribute("_stage_emissive_uv", geometry.getAttribute("uv"));
+  geometry.userData.mvStageMaterial = {
+    shader: "stage", uvTransform: [1, 1, 0, 0], lightmap: 1, mipBias: 0,
+    emissive: {texture: 1, uvTransform: [1, 1, 0, 0], color: [1, 1, 1, 1], intensity: 1, binding},
+    colors: {_TintColor: [1, 1, 1, 1], _AmbientColor: [0, 0, 0, 0], _BlendColor: [0, 0, 0, 0]},
+  };
+  const node = new T.Mesh(geometry, new T.MeshBasicMaterial({map: decoded[0]}));
+  root.add(node);
+  const controller = await MVStudioStageMaterial.apply(T, root, {
+    getDependency: async (type, index) => type === "texture" ? decoded[index] : null,
+  });
+  const emissiveTrack = track("LiveStageEmissiveTrack", binding, [
+    {start: 0, duration: 2, values: {playableClass: "LiveStageEmissiveClip", colorSpecifiedType: 0,
+      color: [.2, .2, .2, 1], intensity: 1, blendOut: 1}},
+    {start: 1, duration: 3, values: {playableClass: "LiveStageEmissiveClip", colorSpecifiedType: 0,
+      color: [.2, .2, .205, 1], intensity: 1.0000005, blendIn: 1}},
+  ]);
+  const stageProject = {tracks: [emissiveTrack], quality: {values: {stage_emissive: true}}};
+  const read = () => [node.material.uniforms.emissiveColor.value.toArray(), node.material.uniforms.emissiveIntensity.value];
+  const exact = (time) => (controller.update(time, stageProject), read());
+  const distance = (a, b) => a.reduce((sum, value, index) => sum + (value - b[index]) ** 2, 0);
+  const [at12, at15, at16, at19] = [1.2, 1.5, 1.6, 1.9].map(exact);
+  assert(distance(at15[0], at12[0]) < MVStudioLighting.HOLD_EPSILON, "precondition: 1.5 s is within CheckSame of 1.2 s");
+  assert(distance(at16[0], at12[0]) < MVStudioLighting.HOLD_EPSILON, "precondition: 1.6 s is within CheckSame of 1.2 s");
+  assert(distance(at19[0], at12[0]) >= MVStudioLighting.HOLD_EPSILON, "precondition: 1.9 s moves past the threshold");
+  assert.notEqual(at16[1], at12[1], "precondition: the intensity moves below the Approximately step");
+
+  controller.update(1.6, stageProject, {}, {advancing: false, history: [1.2, 1.5]});
+  assert.deepEqual(read(), at12, "the 1.2 s write is kept for color and intensity");
+  controller.update(1.9, stageProject, {}, {advancing: true, history: []});
+  assert.deepEqual(read()[0], at19[0], "a move past the threshold is written on an advancing frame");
+  assert.equal(read()[1], at12[1], "the intensity stays within Approximately of its last write");
+  controller.update(1.6, stageProject, {}, {advancing: false, history: []});
+  assert.deepEqual(read(), at16, "a seek without frame history writes the exact values");
+  controller.update(3.5, stageProject, {}, {advancing: false, history: [3.2]});
+  assert.deepEqual(read(), [[.2, .2, .205, 1].map(Math.fround), Math.fround(1.0000005)], "a held clip writes its own values");
+  // The base light writes only the ambient components; the emissive hold stays.
+  controller.update(1.6, stageProject, {baseTrack: true}, {advancing: false, history: [1.2, 1.5]});
+  assert.deepEqual(read(), at12, "the emissive hold does not depend on a base light track");
+  emissiveTrack.muted = true;
+  controller.update(1.6, stageProject, {}, {advancing: false, history: [1.2, 1.5]});
+  assert.deepEqual(read(), [[1, 1, 1, 1], 1], "without a mixer the material keeps its own values");
+  controller.dispose();
+  assert(MVStudioLighting.approximately(1, 1.0000005) && !MVStudioLighting.approximately(1, 1.000002),
+    "Mathf.Approximately is a 1e-6 relative test");
+  assert(MVStudioLighting.approximately(0, 1e-40) && !MVStudioLighting.approximately(0, 1e-36),
+    "Mathf.Approximately has an 8 * min-normal floor");
+  console.log("Native stage emissive holds (CheckSame color, Approximately intensity) passed");
+}
+
 async function testStageMainSampler() {
   const root = new T.Group(), disposed = [], closed = [], requests = [];
   const texture = (name, width, height) => {
@@ -621,7 +679,7 @@ async function testWeightedStageMaterial() {
   console.log("Weighted native stage material selects Three skinning, opaque state and authored texture sampling.");
 }
 
-testStageAmbientHold().then(testStageAmbientComponentHolds).then(testSingleStageAmbient).then(testStageEmissive).then(testStageMainSampler).then(testStageAuxiliarySamplers)
+testStageAmbientHold().then(testStageAmbientComponentHolds).then(testSingleStageAmbient).then(testStageEmissive).then(testStageEmissiveHold).then(testStageMainSampler).then(testStageAuxiliarySamplers)
   .then(testStageCubemapQuality).then(testWeightedStageMaterial).catch(error => {
     console.error(error);
     process.exitCode = 1;
