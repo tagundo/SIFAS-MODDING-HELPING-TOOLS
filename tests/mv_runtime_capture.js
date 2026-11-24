@@ -79,10 +79,12 @@ const PHYSICS_PARTS = new Set(['members', 'springs']);
 //   transforms show the previous evaluation (phase -1), and the spring
 //   rotations carry frame N's step on that pose (12035 dump3b and dump4).
 // So a members or springs record of frame N is frame N-1's evaluation plus
-// frame N's pre-timeline spring step (MVStudioScene.stepPhysicsUpdate). Which
-// player-loop subsystem runs ExecuteTasks is not mapped in libunity; that it
-// runs after the Update scripts and before the deferred evaluation rests on
-// the dump values above.
+// frame N's pre-timeline spring step (MVStudioScene.stepPhysicsUpdate).
+// Unevidenced, resting on the dump values above: which player-loop subsystem
+// runs ExecuteTasks (not mapped in libunity), that it runs after the Update
+// scripts and before the deferred evaluation, and that the sampler's
+// main-thread Transform reads wait for the TransformAccess job UpdateMultiThread
+// scheduled (job sync on Transform access), so they see the job's write-back.
 const PHYSICS_READ_POINTS = ['update', 'none'];
 const KNOWN_PARTS = new Set(['census', 'quality', 'fovmodNative', 'renderers', 'materials', 'lightingRefs', 'members',
   'springs', 'stageNodes', 'particles', 'post', 'propertyBlocks', 'tracks']);
