@@ -221,7 +221,8 @@
       for (const [uniform, name] of Object.entries(GLOBAL_UNIFORMS)) {
         if (uniforms[uniform]) globals[name] = uniformValue(uniforms[uniform].value).v;
       }
-      return { kind: "shader", properties: {}, unmapped: unmapped.sort(), editorOnly: [], globals, values };
+      return { kind: "shader", properties: {}, unmapped: unmapped.sort(), editorOnly: [], globals, values,
+        textureSTSpace: textureSTSpace(material) };
     }
     return genericProperties(material);
   }
@@ -244,12 +245,31 @@
     root.traverse((node) => {
       if (skipMesh(node)) return;
       let owner = node;
-      if (typeof node.userData?.name !== "string" && node.parent && !node.parent.isMesh &&
+      // A mesh the editor builds at runtime for a game GameObject (runtimeObject) is its own renderer.
+      if (typeof node.userData?.name !== "string" && !runtimeObject(node) && node.parent && !node.parent.isMesh &&
           typeof node.parent.userData?.name === "string") owner = node.parent;
       if (!owners.has(owner)) owners.set(owner, []);
       owners.get(owner).push(node);
     });
     return owners;
+  }
+
+  // A renderer the editor creates at runtime for a game GameObject (the member spotlight shaft and area):
+  // mvGameObjectPath is its path below the record root, mvGameObjectName its name below its parent node.
+  function runtimeObject(node) {
+    const data = node?.userData;
+    return typeof data?.mvGameObjectPath === "string" || typeof data?.mvGameObjectName === "string";
+  }
+
+  // The texture scale/offset space of an editor shader's uTextureST: "unity" when its vertex shader flips V
+  // itself (Unity [sx, sy, ox, oy]), "gltf" when it applies the value to the glTF UV directly (the exporter's
+  // [sx, sy, ox, 1 - sy - oy]); null when the shader reads it some other way.
+  function textureSTSpace(material) {
+    const source = typeof material?.vertexShader === "string" ? material.vertexShader.replace(/\s+/g, " ") : "";
+    if (!material?.uniforms?.uTextureST || !source.includes("uTextureST")) return null;
+    if (/1\.0 - uTextureST\.y - uTextureST\.w|vec2\(uv\.x, 1\.0 - uv\.y\) \* uTextureST\.xy/.test(source)) return "unity";
+    if (/\buv \* uTextureST\.xy \+ uTextureST\.zw/.test(source)) return "gltf";
+    return null;
   }
 
   // Unity GameObject path of a renderer relative to its record root, read from
@@ -320,4 +340,6 @@
     temporaries, decompose, worldPosition, effectiveVisible, nodeName, materialName, textureIdentity, memberKeywords, uniformValue,
     memberUniforms, stageUniforms, coloringUniforms, materialProperties, rendererScope, renderersOf, gameObjectPath, keyFor, round,
     finalize, finiteArray, aspectCorrection };
+  // Runtime-built renderers and editor shader texture spaces (Max 3D runtime comparison).
+  Object.assign(global.MVStudioAssetDump, { runtimeObject, textureSTSpace });
 })(typeof window !== "undefined" ? window : globalThis);

@@ -258,6 +258,12 @@ async function localAndGame(page, url) {
   await refresh.selectOption('120');
   assert.equal(await page.locator('#mv-refresh-rate-mode').inputValue(), '120');
   await page.locator('#mv-refresh-rate-mode').selectOption('0');
+  // So is the player's anti-aliasing option.
+  const antiAliasing = page.locator('#mv-anti-aliasing');
+  assert.equal(await antiAliasing.isChecked(), false);
+  await antiAliasing.check();
+  assert.equal(await page.locator('#mv-anti-aliasing').isChecked(), true);
+  await page.locator('#mv-anti-aliasing').uncheck();
   await page.locator('#mv-panel-menu summary').click();
   await page.locator('[data-mv-panel-option=quality]').uncheck();
   assert(!(await shadow.isVisible()));

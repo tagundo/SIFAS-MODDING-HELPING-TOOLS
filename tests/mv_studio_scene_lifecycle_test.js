@@ -29,6 +29,7 @@ function fixture(visible = true, options = {}) {
     setSize(width, height) { this.size.set(width, height); }
     getPixelRatio() { return this.pixelRatio; }
     setPixelRatio(value) { this.pixelRatio = value; }
+    getDrawingBufferSize(out) { return out.set(Math.floor(this.size.x * (this.pixelRatio ?? 1)), Math.floor(this.size.y * (this.pixelRatio ?? 1))); }
     render(scene, camera) {
       world = scene;
       if (scene.autoUpdate) scene.updateMatrixWorld();
@@ -192,6 +193,77 @@ function checkResizeDraws() {
   assert.equal(f.frames.length, 5);
   assert.equal(f.renderer.size.x, 640);
   assert.equal(f.renderer.getPixelRatio(), 1);
+  f.app.dispose();
+}
+
+// LiveCoreCameraManager.Update3DCameraRenderTextures: RenderingResolution capped at the screen
+// height (1080 when unset), raised to the screen height only when needAntiAliasing is set
+// (the player's anti-aliasing option, default off, and a quality mode below 21).
+async function checkNativeRenderHeight() {
+  const f = fixture();
+  const height = f.window.MVStudioScene.nativeRenderHeight;
+  assert.equal(height(1080, 720, 10), 720, 'Max 3D on a 1280x720 screen draws 720 lines (game camera pixelRect)');
+  assert.equal(height(640, 720, 40), 640, 'Performance 3D keeps its 640 lines (game 1138x640)');
+  assert.equal(height(1080, 1440, 10), 1080, 'Max 3D draws RenderingResolution lines with anti-aliasing off (the default)');
+  assert.equal(height(1080, 1440, 10, false), 1080);
+  assert.equal(height(1080, 1440, 10, true), 1440, 'with anti-aliasing on, Max/High 3D never draw below the screen height');
+  assert.equal(height(1080, 1440, 20, true), 1440);
+  assert.equal(height(720, 1440, 30, true), 720, 'Normal 3D is not raised by anti-aliasing');
+  assert.equal(height(640, 720, 40, true), 640, 'Performance 3D is not raised by anti-aliasing');
+  assert.equal(height(1080, 720, 10, true), 720);
+  assert.equal(height(0, 720, 40), 1080, 'an unset resolution draws 1080 lines');
+  assert.equal(height(0, 1440, 10), 1080);
+  assert.equal(height(0, 1440, 10, true), 1440);
+  assert.equal(height(1080, 1440, 10, 1), 1080, 'only a boolean true turns anti-aliasing on');
+  const value = project(73);
+  value.quality = { mode: 10, values: { quality_mode: 10, rendering_resolution: 1080 } };
+  await f.app.load(value);
+  f.app.resize();
+  assert.equal(f.app.inspect().antiAliasing, false, 'anti-aliasing is off by default');
+  assert.equal(f.renderer.getPixelRatio(), 1, 'a 720-line view at Max 3D is not supersampled');
+  f.window.devicePixelRatio = 2;
+  f.app.resize();
+  assert.equal(f.renderer.getPixelRatio(), 1.5, 'a 1440-device-line view draws 1080 lines with anti-aliasing off');
+  f.app.setAntiAliasing(true);
+  assert.equal(f.app.inspect().antiAliasing, true);
+  assert.equal(f.renderer.getPixelRatio(), 2, 'with anti-aliasing on, a 1440-device-line view draws at its device pixels');
+  f.app.setAntiAliasing(false);
+  assert.equal(f.renderer.getPixelRatio(), 1.5, 'turning anti-aliasing off resizes back to 1080 lines');
+  f.window.devicePixelRatio = 1;
+  value.quality = { mode: 40, values: { quality_mode: 40, rendering_resolution: 640 } };
+  f.app.seek(0, value);
+  f.app.resize();
+  assert.equal(Math.floor(720 * f.renderer.getPixelRatio()), 640, 'Performance 3D draws its exact 640 lines');
+  f.app.setAntiAliasing(true);
+  assert.equal(Math.floor(720 * f.renderer.getPixelRatio()), 640, 'Performance 3D keeps 640 lines with anti-aliasing on');
+  f.app.dispose();
+}
+
+// The playback's slow-frame preview downscale, and the capture switch that turns it off without
+// touching playback.
+async function checkAdaptivePreview() {
+  const f = fixture();
+  const value = project(74);
+  value.quality = { mode: 10, values: { quality_mode: 10, rendering_resolution: 1080 } };
+  await f.app.load(value);
+  f.app.resize();
+  assert.equal(f.renderer.getPixelRatio(), 1);
+  f.app.setPlaying(true);
+  for (let step = 0; step <= 4; step++) f.app.playbackFrame(1 + step * .2, step * 205, true);
+  assert.equal(f.app.inspect().previewScale, .75, 'four slow frames scale the playback buffer down');
+  f.app.playbackFrame(2.2, 5 * 205, true);
+  assert.equal(f.renderer.getPixelRatio(), .75);
+  f.app.setAdaptivePreview(false);
+  let state = f.app.inspect();
+  assert.deepEqual([state.previewScale, state.adaptivePreview, state.playing], [1, false, true], 'playback keeps running');
+  for (let step = 6; step <= 12; step++) f.app.playbackFrame(1 + step * .2, step * 205, true);
+  assert.equal(f.app.inspect().previewScale, 1, 'slow frames no longer scale the buffer down');
+  assert.equal(f.renderer.getPixelRatio(), 1, 'the next frame resizes back to the selected resolution');
+  f.app.setAdaptivePreview(true);
+  for (let step = 13; step <= 17; step++) f.app.playbackFrame(1 + step * .2, step * 205, true);
+  assert.equal(f.app.inspect().previewScale, .75, 'the adaptive preview comes back');
+  f.app.setPlaying(false);
+  assert.equal(f.app.inspect().previewScale, 1);
   f.app.dispose();
 }
 
@@ -580,6 +652,8 @@ async function checkAssetDump() {
   assert.deepEqual(first.lights, { modeled: false });
   assert.deepEqual(first.particles, { modeled: false });
   assert.equal(first.globals['global:_Beat'], null, 'quantities the editor does not model are null');
+  assert.deepEqual(first.globals['global:_RenderTextureResolution'],
+    { f: 0, from: 'renderer.getDrawingBufferSize', v: [720, 720, 0, 0] }, 'the render-target size in pixels');
   assert.equal(first.renderers.length, 1);
   assert.equal(first.renderers[0].key, 'renderer:member1:model-71');
   assert.equal(first.renderers[0].visible, true);
@@ -587,6 +661,19 @@ async function checkAssetDump() {
   assert.equal(first.renderers[0].path, null, 'a rig-root mesh node carries no GameObject chain');
   assert.equal(first.renderers[0].pathSource, 'flattened');
   assert.deepEqual(first.materials.map((m) => m.key), ['material:renderer:member1:model-71#0']);
+  assert.deepEqual([first.renderers[0].materialVisible, first.materials[0].visible, first.materials[0].hiddenUniforms],
+    [true, true, undefined]);
+  // A hidden material draws nothing: its uniforms are current unless its module marks them stale.
+  const shown = f.models.get(71).mesh.material;
+  shown.visible = false;
+  let hidden = dump({ sections: ['renderers', 'materials'] });
+  assert.deepEqual([hidden.renderers[0].visible, hidden.renderers[0].materialVisible], [true, false]);
+  assert.deepEqual([hidden.materials[0].visible, hidden.materials[0].hiddenUniforms], [false, 'current']);
+  shown.userData.mvHiddenUniforms = 'stale';
+  hidden = dump({ sections: ['materials'] });
+  assert.equal(hidden.materials[0].hiddenUniforms, 'stale');
+  shown.visible = true;
+  delete shown.userData.mvHiddenUniforms;
   const bones = first.members.find((m) => m.bones)?.bones || [];
   assert.deepEqual(bones.map((bone) => bone.key), ['member:1:Reference/Move']);
   assert.deepEqual(first.census.nodes.map((node) => node.kind).sort(), ['bone', 'renderer']);
@@ -687,6 +774,8 @@ function checkAssetDumpHelpers() {
 
 (async () => {
   checkResizeDraws();
+  await checkNativeRenderHeight();
+  await checkAdaptivePreview();
   await checkAssetDump();
   await checkAssetDumpCuller();
   checkAssetDumpHelpers();

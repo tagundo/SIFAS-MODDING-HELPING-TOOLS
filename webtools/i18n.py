@@ -2675,6 +2675,7 @@ _MV_STUDIO_TRANSLATIONS = {
     "No MV quality settings were imported.": ("불러온 MV 그래픽 설정이 없습니다.", "読み込まれたMVグラフィック設定はありません。"),
     "Quality preset": ("그래픽 프리셋", "グラフィックプリセット"),
     "Refresh-rate mode": ("주사율 모드", "リフレッシュレートモード"),
+    "Anti-aliasing": ("안티에일리어싱", "アンチエイリアス"),
     "Soundtrack playback is unavailable. The timeline is still playing.": ("음원을 재생할 수 없어 타임라인만 재생합니다.", "音源を再生できないためタイムラインのみ再生します。"),
     "The imported MV project is invalid.": ("불러온 MV 프로젝트 형식이 올바르지 않습니다.", "読み込んだMVプロジェクトの形式が正しくありません。"),
     "The MV could not be loaded.": ("MV를 불러오지 못했습니다.", "MVを読み込めませんでした。"),

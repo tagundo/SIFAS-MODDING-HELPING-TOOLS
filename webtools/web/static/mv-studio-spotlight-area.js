@@ -77,6 +77,8 @@
     material.name = "Native member spotlight area";
     const mesh = new T.Mesh(geometry, material);
     mesh.name = "Native member spotlight area";
+    // The prefab instance's GameObject below the performer's Move node, for the runtime value dump.
+    if (typeof descriptor.name === "string" && descriptor.name) mesh.userData.mvGameObjectName = descriptor.name;
     mesh.position.fromArray(descriptor.translation);
     mesh.quaternion.fromArray(descriptor.rotation);
     mesh.scale.fromArray(descriptor.scale);

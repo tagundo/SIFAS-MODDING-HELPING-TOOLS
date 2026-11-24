@@ -379,9 +379,11 @@
     let loadedProjectToken = null, defaultMemberShadows = false, memberShadowTracks = [], memberShadowPrefabs = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let liveCameraEvent = null;
-    let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
+    let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1, adaptivePreview = true;
     let lastShaftFrame = null, resetShafts = true;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
+    // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
+    let antiAliasing = options?.antiAliasing === true;
     let nativeMainLens = false, authoredMainFov = liveCamera.fov;
     const cameraOffsets = new Map();
     const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap(), memberScaleTracks = new Map();
@@ -653,8 +655,14 @@
       const displayed = preparation?.shown ? preparation.preview : project;
       const values = displayed?.quality?.values || {};
       const nativeHeight = values.rendering_resolution;
-      const resolution = Number.isFinite(nativeHeight) && nativeHeight > 0
-        ? Math.min(nativeHeight / height, 2) : Math.min(global.devicePixelRatio || 1, 2);
+      // The view's device pixels are the game's screen: the 3D cameras draw at the height the
+      // client derives from RenderingResolution, the screen height and the anti-aliasing option
+      // (nativeRenderHeight).
+      const target = Number.isFinite(nativeHeight) && nativeHeight > 0
+        ? nativeRenderHeight(nativeHeight, Math.floor(height * (global.devicePixelRatio || 1)), values.quality_mode, antiAliasing) : null;
+      let resolution = target === null ? Math.min(global.devicePixelRatio || 1, 2) : Math.min(target / height, 2);
+      // three.js floors height * ratio: keep the exact integer height.
+      if (target !== null && resolution < 2 && Math.floor(height * resolution) < target) resolution = Math.min((target + 1e-6) / height, 2);
       const previewResolution = resolution * (preparation?.shown ? 1 : previewScale);
       const changedRatio = renderer.getPixelRatio() !== previewResolution;
       renderer.getSize(size);
@@ -1769,7 +1777,7 @@
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
-      if (playing && Number.isFinite(frameTimestamp) && previewScale > 0.5) {
+      if (adaptivePreview && playing && Number.isFinite(frameTimestamp) && previewScale > 0.5) {
         if (lastPlaybackFrame !== null && frameTimestamp - lastPlaybackFrame > 40) slowFrames++;
         else slowFrames = 0;
         lastPlaybackFrame = frameTimestamp;
@@ -1988,6 +1996,18 @@
         return best ? best[1] : null;
       }
 
+      // A renderer the editor builds at runtime for a game GameObject: its path below the record root
+      // (the first segment stands for the record root), from the node's own path or its name below a rig bone.
+      function runtimeObjectPath(owner, record) {
+        const data = owner.userData || {};
+        if (typeof data.mvGameObjectPath === "string") return { path: `${D.nodeName(record.root) || "root"}/${data.mvGameObjectPath}`, pathSource: "runtime" };
+        if (typeof data.mvGameObjectName !== "string" || record.group !== actors) return null;
+        for (const [path, node] of boneIndex(record)) {
+          if (node === owner.parent) return { path: `${D.nodeName(record.root) || "root"}/${path}/${data.mvGameObjectName}`, pathSource: "runtime" };
+        }
+        return null;
+      }
+
       function rendererEntries() {
         if (cache.renderers) return cache.renderers;
         const entries = [], counts = new Map();
@@ -1996,7 +2016,7 @@
           for (const [owner, meshes] of D.renderersOf(record.root)) {
             const mesh = D.nodeName(owner), count = (counts.get(scope + "\n" + mesh) || 0) + 1;
             counts.set(scope + "\n" + mesh, count);
-            const { path, pathSource } = D.gameObjectPath(owner, record.root);
+            const { path, pathSource } = runtimeObjectPath(owner, record) || D.gameObjectPath(owner, record.root);
             entries.push({ key: D.keyFor("renderer", { scope, mesh, index: count }), scope, mesh, path, pathSource, owner, meshes, record });
           }
         }
@@ -2007,6 +2027,31 @@
       // GameObject path (the editor path below its prefab root is a suffix of
       // the game path) or by mesh name in the same scope. This is a superset;
       // the comparator makes the actual join.
+      // AxisBillboard turns its nodes in renderScene(); a deferred seek never draws, so
+      // the transforms hold the rest (or last drawn) rotation. Report what the live
+      // camera's draw gives, computed read-only from the rest rotation.
+      function billboardOf(entry) {
+        if (!cache.billboards) {
+          cache.billboards = new Map();
+          const world = viewOf(liveCamera).world, eye = new T.Vector3(world[12], world[13], world[14]);
+          for (const record of records) {
+            for (const [node, rotation] of record.axisBillboard?.preview?.(eye) || []) cache.billboards.set(node, rotation);
+            for (const [node, rotation] of record.shaft?.preview?.(eye) || []) cache.billboards.set(node, rotation);
+          }
+        }
+        let node = entry.owner;
+        while (node && !cache.billboards.has(node)) node = node.parent;
+        return node || null;
+      }
+
+      function rendererWorld(entry) {
+        const node = billboardOf(entry);
+        if (!node) return entry.owner.matrixWorld;
+        const turned = new T.Matrix4().multiplyMatrices(node.parent.matrixWorld,
+          new T.Matrix4().compose(node.position, cache.billboards.get(node), node.scale));
+        return node === entry.owner ? turned : turned.multiply(new T.Matrix4().copy(node.matrixWorld).invert().multiply(entry.owner.matrixWorld));
+      }
+
       function rendererWanted(item, entry) {
         if (item.key === entry.key) return true;
         if (item.scope !== entry.scope) return false;
@@ -2089,6 +2134,8 @@
             if (u.uSelfTime) take("_SelfTime", u.uSelfTime.value, "uSelfTime" + where + " (per material)", { perMaterial: true });
           }
         });
+        const buffer = renderer.getDrawingBufferSize(new T.Vector2());
+        take("_RenderTextureResolution", 0, "renderer.getDrawingBufferSize", { v: [buffer.x, buffer.y, 0, 0] });
         return Object.fromEntries(names.map((name) => [`global:${name}`, found[name] || null]));
       });
       read("renderSettings", "renderSettings", () => ({ modeled: false }));
@@ -2114,18 +2161,34 @@
         visible: entry.meshes.some((mesh) => nodeVisible(mesh, entry.record)),
         culled: entry.record.group === actors && memberCulledAt(entry.record.position, currentTime),
         materialVisible: slots(entry).every(({ material }) => material?.visible !== false),
-        transform: D.decompose(entry.owner.matrixWorld, temp),
+        transform: D.decompose(rendererWorld(entry), temp), axisBillboard: billboardOf(entry) !== null,
         materials: slots(entry).map(({ material }, slot) => ({ slot, name: D.materialName(material),
-          editorName: material?.name ?? null, kind: D.materialProperties(material).kind })),
+          editorName: material?.name ?? null, kind: D.materialProperties(material).kind, visible: material?.visible !== false })),
       })));
+      // Uniforms an AnimationTrack curve drives (MVStudioStageMotion material channels): the game applies those
+      // through a MaterialPropertyBlock, which its dump does not read, so the comparator never scores them.
+      function curveDriven(material) {
+        if (!cache.curveTargets) {
+          cache.curveTargets = new Set();
+          for (const record of records) for (const value of record.stageMotion?.curveTargets?.() || []) cache.curveTargets.add(value);
+        }
+        return Object.entries(material?.uniforms || {}).filter(([, holder]) =>
+          cache.curveTargets.has(holder) || (holder?.value !== null && typeof holder?.value === "object" && cache.curveTargets.has(holder.value)))
+          .map(([name]) => name).sort();
+      }
       read("materials", "materials", () => {
         const materials = [];
         for (const entry of selectedRenderers()) {
           for (const [slot, { material }] of slots(entry).entries()) {
             if (materials.length >= maxMaterials) { truncated.push("materials"); return materials; }
             const properties = D.materialProperties(material);
+            // A hidden material draws nothing; its uniforms are the module's current state unless the
+            // module marks them stale (mvHiddenUniforms, e.g. a penlight without clip input).
+            const hidden = material?.visible === false;
             materials.push({ key: D.keyFor("material", { renderer: entry.key, slot }), renderer: entry.key, slot,
-              name: D.materialName(material), editorName: material?.name ?? null, ...properties });
+              name: D.materialName(material), editorName: material?.name ?? null, visible: !hidden,
+              ...(hidden ? { hiddenUniforms: material.userData?.mvHiddenUniforms === "stale" ? "stale" : "current" } : {}),
+              curveDriven: curveDriven(material), ...properties });
           }
         }
         return materials;
@@ -2237,6 +2300,26 @@
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
       setScreenFade(enabled) { screenFadeEnabled = enabled !== false; requestDraw(); },
+      // Fixed-step captures play on slow timestamps: with the adaptive preview off, the slow-frame
+      // downscale is undone and not applied again. Playback, the physics clock and the shaft
+      // damping clock are left as they are.
+      setAdaptivePreview(enabled) {
+        adaptivePreview = enabled !== false;
+        slowFrames = 0;
+        if (!adaptivePreview && previewScale !== 1) {
+          previewScale = 1;
+          viewportDirty = true;
+        }
+      },
+      // The player's anti-aliasing option (default off): with it, Max and High 3D draw at the
+      // screen height (nativeRenderHeight).
+      setAntiAliasing(enabled) {
+        const value = enabled === true;
+        if (value === antiAliasing) return;
+        antiAliasing = value;
+        viewportDirty = true;
+        resize();
+      },
       // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
       setPhysicsTiming(value) {
         physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
@@ -2262,7 +2345,7 @@
             aspectCorrection: live ? (nativeMainLens ? global.MVStudioSplit?.aspectCorrection(camera.aspect) ?? 1 : 1) : null,
           },
           canvas: { width, height, pixelRatio: renderer.getPixelRatio() },
-          renderHeight, previewScale, playing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
+          renderHeight, previewScale, adaptivePreview, playing, antiAliasing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
           constraints: records.filter((record) => record.constraints)
             .map((record) => ({ slot: record.position, ...record.constraints.getState() })),
           controlPrefabs: stageControlPrefabs?.inspect() ?? null,
@@ -2294,5 +2377,21 @@
     };
   }
 
-  global.MVStudioScene = { create };
+  // LiveCoreCameraManager.Update3DCameraRenderTextures (GL 3.12.0, 0x2f61b18): the 3D cameras
+  // render at RenderingResolution (1080 when it is below 1), never above Screen.height. When
+  // needAntiAliasing (field 0x72) is set, the height is raised to Mathf.Max(height, Screen.height).
+  // Initialize (0x2f61710) sets needAntiAliasing = antiAliasing && Quality < 21; its only caller
+  // (<PostprocessInitializeAsync>d__9) passes GameSettingsDM.GetAntiAliasingMode(), the player's
+  // option, which is false unless ASLocalStorage holds AntiAliasingMode. The same flag selects
+  // MSAA (MSAAUtility.GetMSAALevel). The render texture width is Screen.width / Screen.height *
+  // height, and _RenderTextureResolution is (width, height). Max 3D (1080) on a 1280x720 screen
+  // therefore draws 1280x720, Performance 3D (640) 1138x640; on a 1440-line screen Max 3D draws
+  // 1080 lines, or 1440 with anti-aliasing on.
+  function nativeRenderHeight(renderingResolution, screenHeight, qualityMode, antiAliasing = false) {
+    let height = renderingResolution >= 1 ? Math.min(renderingResolution, screenHeight) : 1080;
+    if (antiAliasing === true && Number.isFinite(qualityMode) && qualityMode < 21) height = Math.max(height, screenHeight);
+    return height;
+  }
+
+  global.MVStudioScene = { create, nativeRenderHeight };
 }(window));

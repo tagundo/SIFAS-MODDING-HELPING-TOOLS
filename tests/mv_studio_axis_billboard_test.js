@@ -159,5 +159,26 @@ for (const [name, position, rotation, camera] of [
   quaternionNear(node.quaternion, rest, 0, "reset restores the authored rotation");
 }
 
+// preview(eye) is read-only and gives the local rotation apply() would set (the runtime value dump reads
+// billboard transforms without drawing).
+{
+  const chain = [{ position: new T.Vector3(3, 1, -2), rotation: randomRotation() },
+    { position: new T.Vector3(0, 2, 0), rotation: randomRotation(), scale: new T.Vector3(1.5, 1, 2) }];
+  const { root, node } = scene(chain);
+  const billboard = MVStudioAxisBillboard.create(T, root);
+  root.updateMatrixWorld(true);
+  const rest = node.quaternion.clone(), matrix = node.matrixWorld.clone();
+  const eye = new T.Vector3(7, 4, 25);
+  const preview = billboard.preview(eye);
+  quaternionNear(node.quaternion, rest, 0, "preview leaves the node alone");
+  assert.ok(node.matrixWorld.equals(matrix), "preview leaves the world matrix alone");
+  const camera = new T.PerspectiveCamera();
+  camera.position.copy(eye);
+  billboard.apply(camera);
+  quaternionNear(preview.get(node), node.quaternion, 1e-12, "preview equals the drawn turn");
+  node.parent.visible = false;
+  assert.equal(billboard.preview(eye).size, 0, "hidden billboards are not previewed");
+}
+
 assert.equal(MVStudioAxisBillboard.create(T, new T.Group()), null);
 console.log("AxisBillboard: RunAxisBillboardY basis, X mirror, rotated/scaled parents, recorded game rotations, degenerate and hidden cases.");
