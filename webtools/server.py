@@ -25,6 +25,17 @@ _MV_STREAM_WRITE_TIMEOUT = 20
 _MV_STREAM_FIRST_RECORD_BYTES = 4096
 
 
+# MV-only song registration (webtools/core/mv_studio_register.py).
+_MV_REGISTRATION_ROUTES = {
+    "/api/mv-studio/registration-plan": "plan",
+    "/api/mv-studio/pcm": "pcm",
+    "/api/mv-studio/jacket-preview": "jacket-preview",
+    "/api/mv-studio/register-job": "register-job",
+    "/api/mv-studio/songs/remove-plan": "remove-plan",
+    "/api/mv-studio/songs/remove-job": "remove-job",
+}
+
+
 class _MVStreamClosed(Exception):
     """Stop the import when the stream can no longer deliver its preview."""
 
@@ -110,6 +121,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_mv_studio_catalog()
             if path == "/api/mv-studio/chart-templates":
                 return self._api_mv_chart_templates()
+            if path == "/api/mv-studio/songs":
+                return self._api_mv_registration("songs")
             if path.startswith("/api/mv-studio/media/"):
                 from webtools.core import mv_studio
                 try:
@@ -140,6 +153,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_costume_platform_match()
             if path == "/api/viewer/game/motions/import":
                 return self._api_viewer_motion_import()
+            if path in _MV_REGISTRATION_ROUTES:
+                return self._api_mv_registration(_MV_REGISTRATION_ROUTES[path])
             if path.startswith("/api/mv-studio/"):
                 return self._api_mv_studio(path.rsplit("/", 1)[1])
             if path in ("/api/viewer/mesh/inspect", "/api/viewer/mesh/data", "/api/viewer/mesh/export"):
@@ -272,8 +287,8 @@ class Handler(BaseHTTPRequestHandler):
                                                     optional_fields={"name"} if action == "save" else ())
                 result = mv_studio.save(data["project"], data.get("name")) if action == "save" else mv_studio.export_timeline(data["project"])
                 return self._send_json(result)
-            if action in {"register", "charts"}:
-                return self._api_mv_song_update(action)
+            if action == "charts":
+                return self._api_mv_charts()
             return self._send_json({"error": "not found"}, status=404)
         except PermissionError as error:
             return self._send_json({"error": str(error)}, status=403)
@@ -344,48 +359,131 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, SQLiteError) as error:
             return self._send_json({"error": str(error)}, status=400)
 
-    def _api_mv_song_update(self, action):
+    def _api_mv_charts(self):
         from webtools.core import mv_studio
         try:
             import database_maintenance
-            from mv_studio_live import attach_live_charts, register_mv_only
+            from mv_studio_live import attach_live_charts
         except ImportError:
             return self._send_json({"error": "MV registration requires the Elichika server app."}, status=501)
         self._require_local_tools_host("Open 3D MV at the local app address before changing the game catalog.")
         root = Path.cwd()
         try:
-            if action == "register":
-                data = self._viewer_feature_request({"region", "sourceLiveId", "title"}, token=False,
-                                                    optional_fields={"assetId", "timelinePaths", "audioAcbPath", "audioAwbPath"})
-                timelines = data.get("timelinePaths", {})
-                if not isinstance(timelines, dict) or set(timelines) - {"android", "ios"}:
-                    raise ValueError("Choose an Android or iOS timeline file.")
-                overrides = {"timeline_paths": {key: mv_studio._path(value) for key, value in timelines.items()}} if timelines else {}
-                for field, argument in (("audioAcbPath", "audio_acb"), ("audioAwbPath", "audio_awb")):
-                    if field in data:
-                        overrides[argument] = mv_studio._path(data[field])
-                with database_maintenance.guard(root):
-                    result = register_mv_only(root, region=data["region"], source_live_id=data["sourceLiveId"],
-                                              title=data["title"], asset_3d_id=data.get("assetId"), **overrides)
-            else:
-                data = self._viewer_feature_request({"region", "liveId", "charts"}, token=False)
-                entries = data["charts"]
-                if not isinstance(entries, dict) or not 1 <= len(entries) <= 6:
-                    raise ValueError("Provide one or more native chart files.")
-                charts = {}
-                for key, entry in entries.items():
-                    if (not isinstance(entry, dict) or set(entry) != {"path", "template_difficulty_id"}
-                            or not key.isdecimal() or not 1 <= len(key) <= 2 or key.startswith("0")):
-                        raise ValueError("Provide a matching chart and difficulty template.")
-                    charts[int(key)] = {"path": mv_studio._path(entry["path"]),
-                                        "template_difficulty_id": entry["template_difficulty_id"]}
-                with database_maintenance.guard(root):
-                    result = attach_live_charts(root, region=data["region"], live_id=data["liveId"], charts=charts)
+            data = self._viewer_feature_request({"region", "liveId", "charts"}, token=False)
+            entries = data["charts"]
+            if not isinstance(entries, dict) or not 1 <= len(entries) <= 6:
+                raise ValueError("Provide one or more native chart files.")
+            charts = {}
+            for key, entry in entries.items():
+                if (not isinstance(entry, dict) or set(entry) != {"path", "template_difficulty_id"}
+                        or not key.isdecimal() or not 1 <= len(key) <= 2 or key.startswith("0")):
+                    raise ValueError("Provide a matching chart and difficulty template.")
+                charts[int(key)] = {"path": mv_studio._path(entry["path"]),
+                                    "template_difficulty_id": entry["template_difficulty_id"]}
+            with database_maintenance.guard(root):
+                result = attach_live_charts(root, region=data["region"], live_id=data["liveId"], charts=charts)
         except (database_maintenance.BusyError, database_maintenance.LockError) as error:
             return self._send_json({"error": str(error)}, status=409)
         return self._send_json({"liveId": result["live_id"], "assetId": result["asset_3d_id"],
                                 "mvOnly": result["mv_only"], "title": result["title"],
                                 "difficulties": result["difficulties"], "restartRequired": True})
+
+    def _mv_same_origin(self):
+        """Refuse a cross-site page; a same-origin request may omit Origin (GET) or send this host's."""
+        origins = self.headers.get_all("Origin", [])
+        if len(origins) > 1 or self.headers.get("Sec-Fetch-Site") == "cross-site":
+            raise PermissionError("Open the editor from this app before saving changes.")
+        if origins:
+            origin = urlsplit(origins[0])
+            if (origin.scheme not in ("http", "https") or origin.username or origin.password
+                    or origin.path not in ("", "/") or origin.query or origin.fragment
+                    or origin.netloc.lower() != (self.headers.get("Host") or "").lower()):
+                raise PermissionError("Open the editor from this app before saving changes.")
+
+    def _mv_raw_body(self, limit):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("Invalid editing request size.") from None
+        if self.headers.get("Transfer-Encoding") or not 0 < length <= limit:
+            raise ValueError("The converted audio is empty or larger than 96 MiB.")
+        kind = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if kind not in ("audio/wav", "audio/x-wav", "audio/wave", "application/octet-stream"):
+            raise ValueError("Send the converted audio as a WAV file.")
+        chunks, remaining = [], length
+        while remaining:
+            chunk = self.rfile.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                raise ValueError("The converted audio upload was interrupted.")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _api_mv_registration(self, route):
+        """MV-only song registration: songs, plan, PCM upload, jacket preview, register and remove jobs."""
+        from sqlite3 import Error as SQLiteError
+        from webtools.core import mv_studio, mv_studio_register as register
+        try:
+            register.store()
+            import database_maintenance
+        except ImportError:
+            return self._send_json({"error": register.NO_ELICHIKA}, status=501)
+        root = Path.cwd()
+        reserved = False
+        try:
+            self._require_local_tools_host("Open 3D MV at the local app address before changing the game catalog.")
+            self._mv_same_origin()
+            if route == "songs":
+                query = self._query()
+                if set(query) - {"region", "lang"} or any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Select the GL or JP catalog.")
+                return self._send_json(register.songs(root, region=query.get("region", ["gl"])[0]))
+            if route == "pcm":
+                return self._send_json(register.store_pcm(self._mv_raw_body(register.PCM_BYTES)))
+            if route == "jacket-preview":
+                data = self._viewer_feature_request({"path"}, token=False, max_bytes=16 * 1024)
+                return self._send_json(register.jacket_preview(data["path"]))
+            if route == "plan":
+                data = self._viewer_feature_request({"project"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                                                    optional_fields={"template", "target", "unbaked"})
+                unbaked = data.get("unbaked", [])
+                if not isinstance(unbaked, list) or len(unbaked) > 4096:
+                    raise ValueError(register.REQUEST)
+                return self._send_json(register.plan(root, data["project"], template=data.get("template"),
+                                                     target=data.get("target"), unbaked=unbaked, language=self._lang()))
+            if route == "remove-plan":
+                data = self._viewer_feature_request({"region", "liveId"}, token=False, max_bytes=4096)
+                return self._send_json(register.remove_plan(root, region=data["region"], live_id=data["liveId"]))
+            if route == "register-job":
+                data = self._viewer_feature_request(
+                    {"mode"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                    optional_fields={"project", "liveId", "region", "template", "title", "credit", "jacket", "audio",
+                                     "platforms", "download", "unbaked", "addPlaceholder"})
+                request = register.validate_register(root, data)
+                body, tool = (lambda job: register.run_register(job, root, request, language=self._lang())), "mv_register"
+            else:
+                data = self._viewer_feature_request({"region", "liveId", "reviewToken"}, token=False, max_bytes=4096)
+                request = register.validate_remove(data)
+                body, tool = (lambda job: register.run_remove(job, root, request)), "mv_remove"
+            if not register.reserve():
+                return self._send_json({"error": register.BUSY}, status=409)
+            reserved = True
+            # Another tool holding the database lease answers 409 now instead of failing in the job.
+            with database_maintenance.guard(root):
+                pass
+            job = MANAGER.create(tool)
+            MANAGER.run_async(job, body)
+            reserved = False
+            return self._send_json({"job_id": job.id})
+        except PermissionError as error:
+            return self._send_json({"error": str(error)}, status=403)
+        except (database_maintenance.BusyError, database_maintenance.LockError) as error:
+            return self._send_json({"error": str(error)}, status=409)
+        except (OSError, ValueError, TypeError, OverflowError, SQLiteError) as error:
+            return self._send_json({"error": str(error)}, status=400)
+        finally:
+            if reserved:
+                register.release()
 
     def _serve_file(self, fpath: Path, content_type=None):
         if not fpath.is_file():
