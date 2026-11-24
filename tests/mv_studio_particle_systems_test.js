@@ -97,6 +97,58 @@ function testPrewarmedSteadyState() {
   assert.ok(cold.sample(1, 30).length <= 2, "without prewarm the first frame holds only its own births");
 }
 
+// Activation prewarm (Play(1) -> Simulate 0x1cbf64 -> 0x1d1e54 / 0x1ce4b0): step plan, rate carry and
+// the procedural batch cap. Game values (dump4 / dump3b, 12035): a procedural display kira_up
+// (rate 15, lifetime 1..10, max 40) holds 15 particles 0.886 s after activation, not a full pool;
+// a rate-0 burst cloud with maxParticles 2 holds none during its first loop, one with 10 holds one.
+function testPrewarmActivationBuildUp() {
+  const plan = P.prewarmSteps(12.5, 30);
+  assert.deepEqual(plan.steps.slice(0, 8), Array(8).fill(1), "1 s steps above 10 s, kept while above 5 s");
+  assert.equal(plan.steps[8], f32(.02));
+  assert.ok(plan.steps.slice(8).every(step => step === f32(.02)));
+  assert.ok(plan.remainder >= 0 && plan.remainder < f32(.02));
+  assert.deepEqual(P.prewarmSteps(8, 30).steps.slice(0, 3), [f32(.2), f32(.2), f32(.2)]);
+  assert.deepEqual(P.prewarmSteps(25, .5).steps.slice(0, 2), [.5, .5], "steps never exceed the duration");
+  assert.deepEqual(P.prewarmSteps(.01, 5), {steps: [], remainder: f32(.01)});
+
+  const procedural = {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true, procedural: true};
+  const kira = (flag, extra = {}) => system({main: {prewarm: true, duration: 50, lifetime: between(1, 10), maxParticles: 40},
+    emission: {enabled: true, rate: constant(15), bursts: []}, culling: {...procedural, procedural: flag}, ...extra});
+  const alive = (stream, frames) => stream.sample(frames, 30).filter(atom => atom.age <= 100).length;
+  const counts = flag => Array.from({length: 8}, (_, seed) => alive(P.create(kira(flag), 100 + seed), 27));
+  const mean = rows => rows.reduce((sum, value) => sum + value, 0) / rows.length;
+  // The procedural prewarm stops emitting once 40 particles were emitted (2.7 s of its 10 s), so most are
+  // dead at activation and the pool builds up again; a non-procedural prewarm keeps the pool full.
+  assert.ok(mean(counts(true)) < 24, `procedural prewarm build-up ${counts(true)}`);
+  assert.ok(mean(counts(false)) > 36, `non-procedural prewarm ${counts(false)}`);
+  assert.ok(alive(P.create(kira(true), 5), 300) >= 36, "the pool is full again later");
+
+  const cloud = (max, emission = {}) => system({main: {prewarm: true, duration: 10, lifetime: between(10, 10), maxParticles: max},
+    emission: {enabled: true, rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: .01, probability: 1}],
+      ...emission}, culling: procedural});
+  const loop = stream => [1, 9, 27, 150, 290, 301, 450].map(frames => alive(stream, frames));
+  // The prewarm's first .2 s step emits the burst plus the seeded carry: one batch of 2 particles, 9.8 s old
+  // at activation (a procedural batch ages from its step's end); the wrap at the loop end fires the burst
+  // again only if the batch cap leaves room.
+  assert.deepEqual(loop(P.create(cloud(10), 3)), [3, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(loop(P.create(cloud(2), 3)), [2, 0, 0, 0, 0, 1, 1], "maxParticles 2: an empty first loop");
+  // Older descriptors without the flag keep the live-particle cap.
+  const legacy = kira(true);
+  delete legacy.culling.procedural;
+  assert.ok(alive(P.create(legacy, 100), 27) > 36);
+  // The carry particle needs an enabled module: an enabled module at rate 0 without bursts emits it once,
+  // a disabled one never.
+  const idle = (enabled, lifetime) => P.create(system({main: {prewarm: true, duration: 10, lifetime: between(lifetime, lifetime),
+    maxParticles: 10}, emission: {enabled, rate: constant(0), bursts: []}, culling: procedural}), 3);
+  // Born at the end of the first (1 s) step of a 12 s prewarm, it is 11 s old at activation.
+  assert.equal(alive(idle(true, 12), 25), 1, "the carry particle of an enabled rate-0 module");
+  assert.equal(alive(idle(true, 12), 35), 0);
+  assert.equal(alive(idle(false, 12), 1), 0, "a disabled module emits nothing");
+  const unflagged = system({main: {prewarm: true, duration: 10, lifetime: between(12, 12), maxParticles: 10},
+    emission: {rate: constant(0), bursts: []}, culling: procedural});
+  assert.equal(alive(P.create(unflagged, 3), 1), 0, "an old descriptor's empty module counts as disabled");
+}
+
 function testBurstsCyclesAndExpiry() {
   const row = system({main: {looping: false, duration: 3, lifetime: constant(1.5)},
     emission: {rate: constant(0), bursts: [{time: 0, count: constant(5), cycles: 3, interval: .5, probability: 1}]}});
@@ -239,23 +291,32 @@ async function testUnreproducedSystemsAreRefused() {
   const base = system();
   assert.equal(P.validSimulation(system({main: {rotation3D: true, rotationX: constant(0), rotationY: between(0, 0)}})),
     true, "3D rotation that stays on Z is drawn");
-  // X/Y start rotation: Local billboards only, and only where culling cannot pause the system.
-  const tumbling = (cullingMode, looping, alignment = 2, mode = 0) => system({
+  // X/Y start rotation: Billboards (View, World and Local), on systems culling cannot pause or
+  // whose culling box the runtime replays.
+  const tumbling = (cullingMode, looping, alignment = 2, mode = 0, culling = undefined) => system({
     main: {rotation3D: true, rotationX: constant(0), rotationY: constant(.35), cullingMode, looping},
-    renderer: {...base.renderer, alignment, mode}});
-  assert.equal(P.validSimulation(tumbling(3, true)), true, "Local billboards turn by X/Y start rotation in the emitter frame");
-  for (const alignment of [0, 1]) {
-    assert.equal(P.validSimulation(tumbling(3, true, alignment)), false,
-      "the View/World frame handedness of the X/Y turn is not evidenced");
+    renderer: {...base.renderer, alignment, mode}, ...(culling === undefined ? {} : {culling})});
+  for (const alignment of [0, 1, 2]) {
+    assert.equal(P.validSimulation(tumbling(3, true, alignment)), true, "billboards turn by X/Y start rotation on their axes");
   }
   for (const mode of [1, 2, 3]) {
     assert.equal(P.validSimulation(tumbling(3, true, 2, mode)), false, "other render modes do not draw X/Y start rotation");
   }
+  // A descriptor without the importer's culling field keeps the earlier rule: looping Automatic and
+  // Pause culling freeze the clock off screen.
   for (const [cullingMode, looping, valid] of [[0, true, false], [0, false, true], [1, true, true], [2, false, false],
     [3, false, true]]) {
     assert.equal(P.validSimulation(tumbling(cullingMode, looping)), valid,
       `culling ${cullingMode} looping ${looping}: Automatic (looping) and Pause culling freeze the clock off screen`);
   }
+  // With it, a system culling pauses is drawn when its culling box is known.
+  const box = [-1, -1, -1, 1, 1, 1];
+  assert.equal(P.validSimulation(tumbling(0, true, 0, 0, {pauses: true, bounds: box, uniform: true})), true);
+  assert.equal(P.validSimulation(tumbling(0, true, 0, 0, {pauses: true, bounds: null, uniform: true})), false);
+  assert.equal(P.validSimulation(tumbling(0, true, 0, 0, {pauses: false, bounds: null, uniform: true})), true,
+    "a looping Automatic system without the procedural flag is never culled");
+  assert.equal(P.validSystem(tumbling(0, true, 0, 0, {pauses: true, bounds: [1, 0, 0, 0, 0, 0], uniform: true}),
+    [{}]), false, "an inverted box is rejected");
   const spin = {separateAxes: true, x: constant(0), y: constant(0), z: constant(2)};
   assert.equal(P.validSimulation(system({rotation: spin})), true);
   assert.equal(P.validSimulation(system({rotation: {...spin, y: {mode: 1, scalar: 1, min: 0,
@@ -297,6 +358,11 @@ async function testTiltedAndLocallyScaledBillboards() {
     main: {duration: 10, lifetime: constant(10), size: constant(1.2), cullingMode: 1}});
   const paused = system({path: "fx/paused", node: 1, shape: null, emission: once,
     main: {duration: 10, lifetime: constant(10), size: constant(1.2), cullingMode: 0, looping: true}});
+  // The same cloud with the importer's culling box (side display: View, tilted 20 degrees on Y).
+  const replayed = system({path: "fx/replayed", node: 1, shape: null, emission: once,
+    culling: {pauses: true, bounds: [-.852, -.852, -.852, .852, .852, .852], uniform: true},
+    main: {duration: 10, lifetime: constant(10), size: constant(1.2), cullingMode: 0, looping: true, rotation3D: true,
+      rotationX: constant(0), rotationY: constant(.3490658503988659)}});
   const beam = system({path: "fx/beam", node: 2, shape: null, emission: once, renderer: {...cloud.renderer, alignment: 2},
     main: {duration: 5, lifetime: constant(5), size: constant(17), rotation3D: true, rotationX: constant(.25),
       rotationY: constant(.0872664600610733), cullingMode: 3}});
@@ -308,7 +374,7 @@ async function testTiltedAndLocallyScaledBillboards() {
     {parent: 0, path: "fx/beam", layer: 1, position: [0, 0, 0], rotation: turn, scale: [1.1, 1.1, 1]},
     {parent: 0, path: "fx/flat", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
   const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
-    templates: [{name: "fx", nodes, systems: [cloud, paused, beam, flat]}],
+    templates: [{name: "fx", nodes, systems: [cloud, paused, beam, flat, replayed]}],
     cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1}]};
   assert.equal(P.validDescriptor(descriptor), true);
   const root = new T.Group();
@@ -316,8 +382,15 @@ async function testTiltedAndLocallyScaledBillboards() {
   controller.update(2, {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 5}]}],
     quality: {values: {stage_display: true}}});
   const meshes = Object.fromEntries(root.children[0].children.map(mesh => [mesh.name.split("/").pop(), mesh]));
-  assert.deepEqual(Object.keys(meshes).sort(), ["beam", "cloud", "flat"], "Automatic culling would pause fx/paused");
-  assert.deepEqual(controller.inspect().map(row => row.path).sort(), ["fx/beam", "fx/cloud", "fx/flat"]);
+  assert.deepEqual(Object.keys(meshes).sort(), ["beam", "cloud", "flat", "replayed"],
+    "Automatic culling would pause fx/paused, whose culling box is unknown");
+  assert.deepEqual(controller.inspect().map(row => row.path).sort(), ["fx/beam", "fx/cloud", "fx/flat", "fx/replayed"]);
+  // A tilted View quad turns on camera right, up and back (three.js view x, y, z).
+  assert.equal(meshes.replayed.material.defines.TILTED, 1);
+  assert.equal(meshes.replayed.material.defines.VIEW_FACING, 1);
+  assert.match(meshes.replayed.material.vertexShader,
+    /uScale \* \(right \* turned\.x \+ up \* turned\.y \+ back \* turned\.z\)/);
+  assert.match(meshes.replayed.material.vertexShader, /#elif defined\(VIEW_FACING\)\n\s*point\.xyz \+= turned;/);
   const attribute = (mesh, name) => Array.from(mesh.geometry.getAttribute(name).array.slice(0, 3));
   // Local scaling: the quad keeps its 1.2 units; the node's (5, 3, 1) reaches the shader, which scales
   // the camera axes by it in world components and caps the quad at the limit over 5 (libunity.so
@@ -350,7 +423,7 @@ async function testTiltedAndLocallyScaledBillboards() {
   assert.equal(meshes.flat.geometry.getAttribute("particleTilt"), undefined);
   assert.deepEqual(attribute(meshes.flat, "particleSize"), [2, 2, 2]);
   assert.match(meshes.beam.material.vertexShader, /vec3 turned = vec3\(local.x, cx \* local.y, -sx \* local.y\)/);
-  assert.doesNotMatch(meshes.beam.material.vertexShader, /turned\.xy, -turned\.z/, "no camera-frame tilt");
+  assert.doesNotMatch(meshes.beam.material.vertexShader, /turned\.xy, -turned\.z/, "camera back is +z in three.js view space");
   controller.dispose();
 }
 
@@ -391,10 +464,115 @@ async function testPrefabAnimatorCurves() {
   controller.dispose();
 }
 
+// Unity culling replayed from the main camera: an Automatic looping procedural system advances only
+// in frames whose previous frame showed its box (libunity.so cull 0x1cc5d8 / uncull 0x1cbd10).
+async function testCullingFreezesTheClockOffScreen() {
+  // Boxes and planes: the box of a local box under rotation and the scaling-mode scale.
+  const turn = [0, Math.sin(Math.PI / 4), 0, Math.cos(Math.PI / 4)];
+  const pose = {position: [1, 2, 3], rotation: turn, scale: [2, 2, 2], local: [4, 1, 1]};
+  const near = (actual, expected) => actual.every((value, i) => Math.abs(value - expected[i]) < 1e-9);
+  const local = {main: {scalingMode: 1}, culling: {uniform: false}};
+  // Local mode, 90 degrees about Y: Unity X (scaled 4) turns onto -Z; X is reflected for three.js.
+  assert.ok(near(P.worldBox([-1, -1, -1, 1, 1, 1], local, pose), [-2, 1, -1, 0, 3, 7]), P.worldBox([-1, -1, -1, 1, 1, 1], local, pose));
+  // View alignment widens every scaled column to the largest scale (libunity.so 0xc0e78).
+  assert.ok(near(P.worldBox([-1, -1, -1, 1, 1, 1], {main: {scalingMode: 1}, culling: {uniform: true}}, pose),
+    [-5, -2, -1, 3, 6, 7]));
+  // Hierarchy mode takes the lossy scale, Shape mode none.
+  assert.ok(near(P.worldBox([-1, -1, -1, 1, 1, 1], {main: {scalingMode: 0}, culling: {uniform: false}}, pose), [-3, 0, 1, 1, 4, 5]));
+  assert.ok(near(P.worldBox([-1, -1, -1, 1, 1, 1], {main: {scalingMode: 2}, culling: {uniform: false}}, pose), [-2, 1, 2, 0, 3, 4]));
+  const camera = new T.PerspectiveCamera(30, 16 / 9, .1, 1000);
+  camera.position.set(0, 0, 0);
+  camera.lookAt(0, 0, 10);
+  camera.updateMatrixWorld();
+  const planes = P.cameraPlanes(camera);
+  assert.equal(planes.length, 6);
+  assert.equal(P.boxVisible([-1, -1, 9, 1, 1, 11], planes), true);
+  assert.equal(P.boxVisible([-1, -1, -11, 1, 1, -9], planes), false, "behind the camera");
+  assert.equal(P.boxVisible([20, -1, 9, 22, 1, 11], planes), false, "beside the frustum");
+  assert.equal(P.boxVisible([-1, -1, 1001, 1, 1, 1003], planes), false, "past the far plane");
+
+  const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]},
+    {parent: 0, path: "fx/cloud", layer: 1, position: [0, 0, 10], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
+  const once = {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]};
+  const culled = system({path: "fx/culled", node: 1, shape: null, emission: once,
+    culling: {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true},
+    main: {duration: 10, lifetime: constant(10), size: constant(1), cullingMode: 0, looping: true}});
+  const kept = system({path: "fx/kept", node: 1, shape: null, emission: once,
+    culling: {pauses: false, bounds: null, uniform: true},
+    main: {duration: 10, lifetime: constant(10), size: constant(1), cullingMode: 0, looping: true}});
+  const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
+    templates: [{name: "fx", nodes, systems: [culled, kept]}],
+    cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1}]};
+  assert.equal(P.validDescriptor(descriptor), true);
+  const root = new T.Group();
+  const controller = await P.apply(T, root, descriptor);
+  const event = {id: "track:0", start: 1, duration: 10};
+  const project = {tracks: [{id: "track", events: [event]}], quality: {values: {stage_display: true}}};
+  // The main camera looks at the cloud before 2 s and from 3 s on, away from it in between.
+  const asked = [];
+  const view = {key: {}, cameraAt(time) {
+    asked.push(time);
+    camera.lookAt(0, 0, time >= 2 && time < 3 ? -10 : 10);
+    camera.updateMatrixWorld();
+    return camera;
+  }};
+  const rows = () => Object.fromEntries(controller.inspect().map(row => [row.path, row]));
+  controller.update(4, project, view);
+  const frames = P.activeFrames(event, 4, 30), activated = P.activationFrame(event, 30);
+  let seen = 0;
+  for (let frame = 1; frame < frames; frame++) {
+    const time = (activated + frame - 1) / 30;
+    if (time < 2 || time >= 3) seen++;
+  }
+  // The activation frame always updates; each later frame only after a visible frame.
+  let state = rows();
+  assert.equal(state["fx/culled"].frames, frames);
+  assert.equal(state["fx/culled"].updates, 1 + seen);
+  assert.equal(state["fx/culled"].updates, frames - 30, "the 30 frames the camera looked away froze the clock");
+  assert.ok(Math.abs(state["fx/culled"].time - (1 + seen) / 30) < 1e-9);
+  assert.equal(state["fx/culled"].culled, false);
+  assert.equal(state["fx/kept"].updates, frames, "a system culling never pauses keeps the clip clock");
+  // In the looked-away second the clock stops at the frame that last saw the cloud.
+  controller.update(2.5, project, view);
+  state = rows();
+  assert.equal(state["fx/culled"].culled, true);
+  const stopped = state["fx/culled"].updates;
+  controller.update(2.9, project, view);
+  assert.equal(rows()["fx/culled"].updates, stopped);
+  // Each display frame's camera is asked for once per view key; a new key starts the pass again.
+  assert.equal(new Set(asked).size, asked.length);
+  controller.update(4, project, {...view, key: {}});
+  assert.equal(rows()["fx/culled"].updates, 1 + seen);
+  // Without a view (no main camera), the system simulates as if always visible.
+  controller.update(4, project);
+  assert.equal(rows()["fx/culled"].updates, frames);
+  // Several cameras draw the frame (split-screen sub cameras): the box counts as seen when any of them
+  // sees it, and a frame no camera draws sees nothing.
+  const away = new T.PerspectiveCamera(30, 1, .1, 1000);
+  away.lookAt(0, 0, -10);
+  away.updateMatrixWorld();
+  const split = {key: {}, camerasAt(time) {
+    camera.lookAt(0, 0, 10);
+    camera.updateMatrixWorld();
+    return time >= 2 && time < 3 ? [away, camera] : [away];
+  }};
+  controller.update(4, project, split);
+  let lit = 0;
+  for (let frame = 1; frame < frames; frame++) {
+    const time = (activated + frame - 1) / 30;
+    if (time >= 2 && time < 3) lit++;
+  }
+  assert.equal(rows()["fx/culled"].updates, 1 + lit);
+  controller.update(4, project, {key: {}, camerasAt: () => []});
+  assert.equal(rows()["fx/culled"].updates, 1, "no camera draws the frame: the clock stays at the activation frame");
+  controller.dispose();
+}
+
 (async () => {
   testDrawOrderMatchesNativeLanes();
   testSeekMatchesPlayback();
   testPrewarmedSteadyState();
+  testPrewarmActivationBuildUp();
   testBurstsCyclesAndExpiry();
   testCurvesAndColorsOverLifetime();
   testOrbitalRadialAndBurstSpread();
@@ -405,6 +583,7 @@ async function testPrefabAnimatorCurves() {
   await testUnreproducedSystemsAreRefused();
   await testTiltedAndLocallyScaledBillboards();
   await testPrefabAnimatorCurves();
+  await testCullingFreezesTheClockOffScreen();
   console.log("mv_studio_particle_systems_test: ok");
 })().catch(error => {
   console.error(error);

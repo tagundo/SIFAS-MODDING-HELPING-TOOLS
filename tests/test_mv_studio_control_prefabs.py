@@ -344,7 +344,9 @@ class OriginalTimelineTests(unittest.TestCase):
     def test_12035_has_no_prefab_meshes(self):
         parsed = _parse("12035")
         self.assertNotIn("stageControlPrefabs", parsed)
-        self.assertEqual(sum(row["status"] == "rendered" for row in parsed["controlCoverage"]), 12)
+        # Every CustomControl clip renders: the display clouds and light beams are drawn with
+        # the culling replay of mv_studio_particle_systems.culling() and View X/Y start rotation.
+        self.assertEqual(sum(row["status"] == "rendered" for row in parsed["controlCoverage"]), 14)
 
 
 if __name__ == "__main__":

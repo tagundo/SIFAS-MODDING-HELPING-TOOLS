@@ -1,9 +1,11 @@
 'use strict';
 
 // Pixel checks of the original-particle billboard shader (mv-studio-particle-systems.js):
-//  * Local billboard quads with 3D start rotation cover the quad Unity builds: the
-//    negated Z, X, Y start angles in Unity's Euler order inside the emitter frame, in the
-//    stage's reflected X. View/World X/Y tilt is refused (unevidenced frame handedness).
+//  * Billboard quads with 3D start rotation cover the quad Unity builds: the negated Z, X,
+//    Y start angles in Unity's Euler order on the alignment's axes (libunity.so 0xd242c),
+//    in the stage's reflected X: the emitter's for Local, the world's for World, and for
+//    View the columns of the inverse world-to-camera matrix (0xc37d8 of Camera 0x2966b8,
+//    which flips Z): camera right, up and back (toward the viewer).
 //  * A Local scaling mode node scale s multiplies the quad axes component-wise in world
 //    space after the roll and 3D turn (libunity.so 0xd2844), so a rolled quad on a 5x3
 //    node shears; the max size cap is checked on the unscaled quad against the limit over
@@ -84,11 +86,13 @@ const { chromium } = require('playwright');
           const local = apply(turn, [u * quad[0] * cap, v * quad[1] * cap, 0]);
           let offset;
           if (alignment === 0) {
-            // An untilted View quad spans the camera's right and up in world space.
-            if (angles[0] || angles[1]) throw new Error('View X/Y tilt has no evidenced frame');
+            // A View quad spans the camera's right, up and back (Unity's inverse world-to-camera
+            // columns; reflected, they are the three.js camera's x, y and z) in world space.
             const right = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
             const up = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
-            offset = grown(right.multiplyScalar(local[0]).add(up.multiplyScalar(local[1]))).applyMatrix3(view);
+            const back = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 2);
+            offset = grown(right.multiplyScalar(local[0]).add(up.multiplyScalar(local[1])).add(back.multiplyScalar(local[2])))
+              .applyMatrix3(view);
           } else {
             const world = alignment === 2 ? apply(quaternionMatrix(emitter), local) : local;
             offset = grown(new T.Vector3(-world[0], world[1], world[2])).applyMatrix3(view);
@@ -152,6 +156,10 @@ const { chromium } = require('playwright');
         // fx_dis_par_so2035_02 main display cloud: View, 1 unit on a 5x3 node (rolled 0.3 rad here,
         // so the scaled axes shear the rolled quad).
         { name: 'view-scaled', alignment: 0, angles: [0, 0, .3], quad: 1, scale: [5, 3, 1] },
+        // fx_dis_par_so2035_02 side display clouds: View, 20 degrees on Y, on a 6x3 node.
+        { name: 'view-y-scaled', alignment: 0, angles: [0, .3490658503988659, 0], quad: 1, scale: [6, 3, 1] },
+        { name: 'view-xyz', alignment: 0, angles: [.5, .7, -.3], quad: 2.5, scale: [1, 1, 1] },
+        { name: 'world-xyz', alignment: 1, angles: [.45, -.6, .25], quad: 2.5, scale: [1, 1, 1] },
         // fx_par_so2035_04 light_02: Local, 5 degrees on Y, on a 1.1x1.1 node.
         { name: 'local-y', alignment: 2, angles: [0, .0872664600610733, 0], quad: 3, scale: [1.1, 1.1, 1] },
         { name: 'local-xyz', alignment: 2, angles: [.45, .8, -.35], quad: 2.5, scale: [1, 1, 1] },
@@ -163,9 +171,10 @@ const { chromium } = require('playwright');
         { name: 'cap-y', alignment: 2, angles: [0, 0, 0], quad: 1, scale: [1, 3, 1], maxParticleSize: .2 },
       ];
       const report = [];
-      // View and World X/Y tilt are refused by the runtime.
-      for (const alignment of [0, 1]) {
-        if (P.validSimulation(system('refused', alignment, [0, .35, 0], 1))) throw new Error(`alignment ${alignment} tilt drawn`);
+      // Stretched, horizontal and vertical quads do not draw X/Y tilt.
+      for (const mode of [1, 2, 3]) {
+        const row = system('refused', 0, [0, .35, 0], 1);
+        if (P.validSimulation({ ...row, renderer: { ...row.renderer, mode } })) throw new Error(`render mode ${mode} tilt drawn`);
       }
       for (const item of cases) {
         const maxParticleSize = item.maxParticleSize ?? 10;
