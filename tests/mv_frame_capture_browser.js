@@ -90,14 +90,27 @@ function planning() {
   }
 }
 
+// Every manifest planning() writes goes into one temporary folder, removed when planning ends.
+let manifests = null, written = 0;
 function writeManifest(extra) {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mv-frame-manifest-')), 'frames.json');
+  manifests ||= fs.mkdtempSync(path.join(os.tmpdir(), 'mv-frame-manifest-'));
+  const file = path.join(manifests, `frames-${written++}.json`);
   fs.writeFileSync(file, JSON.stringify({ source: { region: 'gl', platform: 'ios', liveId: 1, assetId: 2 }, quality: { mode: 30 }, ...extra }));
   return file;
 }
 
+function plan() {
+  try {
+    planning();
+  } finally {
+    if (manifests) fs.rmSync(manifests, { recursive: true, force: true });
+  }
+  assert(manifests && !fs.existsSync(manifests), 'the temporary manifests are removed');
+  manifests = null;
+}
+
 async function run() {
-  planning();
+  plan();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-frame-capture-'));
   const library = path.join(work, 'library'), out = path.join(work, 'capture');
   fs.mkdirSync(library); fs.mkdirSync(out);
