@@ -390,6 +390,9 @@
     // continues it; a seek replays the rendered frame times it is given (seek's
     // `history`) or, without them, uses exact values. One frame clock serves all.
     let pendingHistory = null, frameClock = { advancing: false, history: [] }, historyLighting = new Map();
+    // The game's Time.time as a function of director time (setGameClock; null: the director's clock).
+    // Original particle systems advance on it (MVStudioParticleSystems.gameClock).
+    let particleClock = null;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
     let antiAliasing = options?.antiAliasing === true;
@@ -1930,7 +1933,7 @@
       stageSparksA?.update(currentTime, project);
       stageSparksB?.update(currentTime, project);
       stageSparksRoop?.update(currentTime, project);
-      stageParticleSystems?.update(currentTime, project, particleCullingView());
+      stageParticleSystems?.update(currentTime, project, particleCullingView(), particleClock);
       stageControlPrefabs?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
@@ -2493,6 +2496,14 @@
         antiAliasing = value;
         viewportDirty = true;
         resize();
+      },
+      // A game run's clock for the original particle systems: [directorTime, Time.time] of its
+      // rendered frames (a runtime dump's frame clock or record clocks), or null for the
+      // director's clock. Returns the number of samples used (0: director's clock).
+      setGameClock(samples) {
+        particleClock = Array.isArray(samples) ? global.MVStudioParticleSystems?.gameClock?.(samples) ?? null : null;
+        requestDraw();
+        return particleClock ? particleClock.samples : 0;
       },
       // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
       setPhysicsTiming(value) {

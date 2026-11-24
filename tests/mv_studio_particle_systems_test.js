@@ -253,6 +253,35 @@ function testActivationTiming() {
   assert.equal(P.activeFrames(event, 47.95, 30), 0, "OnBehaviourPause deactivates the clone at the clip end");
 }
 
+// A system advances on the game's Time.time: when frames hit Time.maximumDeltaTime the game clock
+// falls behind the director (12035 dump4: 0.87 s between 47.1 and 96.7 s). The clip window stays
+// on the director; the frames since activation count game seconds.
+function testGameClock() {
+  assert.equal(P.gameClock(null), null);
+  assert.equal(P.gameClock([[1, 901]]), null, "two samples at least");
+  const clock = P.gameClock([[45, 945], [50, 950], [50, 950.2], [51, 950.5], [49, 951], [60, 959.5]]);
+  assert.equal(clock.samples, 4, "a sample that does not advance the director is left out");
+  assert.equal(clock(45), 945);
+  assert.equal(clock(50.5), 950.25, "linear between samples");
+  assert.equal(clock(51), 950.5);
+  assert.equal(clock(40), 940, "one game second per director second before the samples");
+  assert.equal(clock(61), 960.5, "and after them");
+  const event = {start: 47.93333333, duration: 52.35};
+  const activated = P.activationFrame(event, 30);
+  // Before the lag the game clock gives the director's frames, exactly.
+  for (const time of [47.95, 48.5, 49.99]) assert.equal(P.activeFrames(event, time, 30, clock), P.activeFrames(event, time, 30), String(time));
+  // After 0.5 s of lag the clip has run 15 frames fewer.
+  assert.equal(P.activeFrames(event, 55, 30), Math.floor(55 * 30 + 1e-9) - activated + 1);
+  assert.equal(P.activeFrames(event, 55, 30, clock), P.activeFrames(event, 55, 30) - 15);
+  // A clock that never lags (constant offset) changes nothing; the window is the director's.
+  const offset = P.gameClock([[0, 900], [200, 1100]]);
+  for (const time of [47.9, 47.95, 60.01, 100.27, 100.3]) assert.equal(P.activeFrames(event, time, 30, offset), P.activeFrames(event, time, 30), String(time));
+  assert.equal(P.activeFrames(event, 100.3, 30, clock), 0, "the director's clip end deactivates the clone");
+  // Its activation frame always counts, however far the game clock lags.
+  const stalled = P.gameClock([[47, 947], [48, 947], [56, 947.01]]);
+  assert.equal(P.activeFrames(event, 47.95, 30, stalled), 1);
+}
+
 function testMaterialMappingAndLayers() {
   assert.equal(P.blendFactor(T, 5), T.SrcAlphaFactor);
   assert.equal(P.blendFactor(T, 1), T.OneFactor);
@@ -587,6 +616,37 @@ async function testCullingFreezesTheClockOffScreen() {
   assert.equal(rows()["fx/culled"].updates, 1 + lit);
   controller.update(4, project, {key: {}, camerasAt: () => []});
   assert.equal(rows()["fx/culled"].updates, 1, "no camera draws the frame: the clock stays at the activation frame");
+  // update's clock (the game's Time.time): a system that never pauses runs the game frames of its clip.
+  const lagging = P.gameClock([[0, 500], [2, 502], [3, 502.5], [10, 509.5]]);
+  controller.update(4, project, null, lagging);
+  assert.equal(rows()["fx/kept"].frames, P.activeFrames(event, 4, 30, lagging));
+  assert.equal(rows()["fx/kept"].frames, frames - 15, "0.5 s of lag inside the clip: 15 frames fewer");
+  assert.ok(Math.abs(rows()["fx/kept"].time - (frames - 15) / 30) < 1e-9);
+  controller.update(4, project, null, null);
+  assert.equal(rows()["fx/kept"].frames, frames, "no clock: the director's frames again");
+  // A culled system under a lagging clock: each clone frame's cameras are taken at the director time
+  // the game clock reached it. The game clock runs at half speed through the looked-away second
+  // (2-3 s), so 15 clone frames fall into it instead of 30 and the 60 others see the cloud.
+  asked.length = 0;
+  controller.update(4, project, view, lagging);
+  const lagFrames = P.activeFrames(event, 4, 30, lagging);
+  let lagSeen = 0;
+  for (let frame = 1; frame < lagFrames; frame++) {
+    const time = lagging.inverse(lagging(activated / 30) + (frame - 1) / 30);
+    const display = Math.abs(time * 30 - (activated + frame - 1)) < 1e-6 ? activated + frame - 1 : Math.floor(time * 30 + 1e-9);
+    const at = display / 30;
+    if (at < 2 || at >= 3) lagSeen++;
+  }
+  assert.equal(rows()["fx/culled"].updates, 1 + lagSeen);
+  assert.deepEqual([lagFrames - 1 - lagSeen, lagSeen], [15, 60], "hidden and seen clone frames on the game clock");
+  assert.equal(frames - 1 - seen, 30, "on the director's grid the looked-away second holds 30");
+  assert.ok(asked.every(time => Math.abs(time * 30 - Math.round(time * 30)) < 1e-9), "cameras on the director display grid");
+  // The same clock function twice keeps the visibility pass; another clock starts it over.
+  const askedBefore = asked.length;
+  controller.update(4, project, view, lagging);
+  assert.equal(asked.length, askedBefore);
+  assert.equal(lagging.inverse(lagging(2.5)), 2.5);
+  assert.equal(lagging.inverse(502), 2, "a game time the clock stood at maps to its first director time");
   controller.dispose();
 }
 
@@ -601,6 +661,7 @@ async function testCullingFreezesTheClockOffScreen() {
   testOrbitalRadialAndBurstSpread();
   testLimitVelocityDampenAndDrag();
   testActivationTiming();
+  testGameClock();
   testMaterialMappingAndLayers();
   await testApplyDrawsActiveCuesOnly();
   await testUnreproducedSystemsAreRefused();
