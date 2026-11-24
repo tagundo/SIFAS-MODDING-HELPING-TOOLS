@@ -4,7 +4,10 @@
 //  * Local billboard quads with 3D start rotation cover the quad Unity builds: the
 //    negated Z, X, Y start angles in Unity's Euler order inside the emitter frame, in the
 //    stage's reflected X. View/World X/Y tilt is refused (unevidenced frame handedness).
-//  * A Local scaling mode node scale sizes the quad (Local and View alignment).
+//  * A Local scaling mode node scale s multiplies the quad axes component-wise in world
+//    space after the roll and 3D turn (libunity.so 0xd2844), so a rolled quad on a 5x3
+//    node shears; the max size cap is checked on the unscaled quad against the limit over
+//    s.x (0xc35c4): it binds for a 3x1 node and not for a 1x3 one with the same particle.
 //  * A particle material with stencil Equal Ref 2 (the display particles) draws only where
 //    an earlier queue replaced the stencil with 2 (the display background).
 
@@ -29,7 +32,7 @@ const { chromium } = require('playwright');
       const constant = value => ({ mode: 0, scalar: value, min: value });
       const once = { rate: constant(0), bursts: [{ time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1 }] };
       // AlwaysSimulate culling: Automatic culling would pause a looping tilted or scaled system off screen.
-      function system(path, alignment, angles, quad, stencil = [8, 2, 0, 0]) {
+      function system(path, alignment, angles, quad, stencil = [8, 2, 0, 0], maxParticleSize = 10) {
         return {
           path, node: 1, layer: 1,
           main: { duration: 10, looping: true, prewarm: false, startDelay: constant(0), worldSpace: false, scalingMode: 1,
@@ -39,7 +42,7 @@ const { chromium } = require('playwright');
             randomizeRotationDirection: 0, stopAction: 0, cullingMode: 3, simulationSpeed: 1 },
           emission: once, shape: null, velocity: null, clamp: null, size: null, rotation: null, color: null, uv: null,
           rotationBySpeed: null,
-          renderer: { mode: 0, alignment, sortMode: 0, sortingFudge: 0, minParticleSize: 0, maxParticleSize: 10, lengthScale: 2,
+          renderer: { mode: 0, alignment, sortMode: 0, sortingFudge: 0, minParticleSize: 0, maxParticleSize, lengthScale: 2,
             velocityScale: 0, cameraVelocityScale: 0, pivot: [0, 0, 0], flip: [0, 0, 0], allowRoll: true },
           material: { name: 'white', queue: 3000, tint: [1, 1, 1, 1], st: [1, 1, 0, 0], vertexColor: true, saturate: false,
             blend: [5, 10], cull: 0, zTest: 8, zWrite: 0, stencil, texture: null },
@@ -66,21 +69,29 @@ const { chromium } = require('playwright');
         [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
         [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]];
 
-      // Expected screen corners of Unity's quad: frame * Euler(-x, -y, -z) * (+-w/2, +-h/2, 0).
-      function expectedCorners(alignment, angles, quad, center, emitter) {
+      // Expected screen corners of Unity's quad: s * (frame * Euler(-x, -y, -z) * (+-w/2, +-h/2, 0)),
+      // with the unscaled quad capped at maxParticleSize viewport widths over s.x.
+      function expectedCorners(alignment, angles, quad, center, emitter, scale, maxParticleSize) {
         const turn = euler(angles.map(value => -value));
         const view = new T.Matrix3().setFromMatrix4(camera.matrixWorldInverse);
         const centerThree = new T.Vector3(-center[0], center[1], center[2]);
+        const depth = -centerThree.clone().applyMatrix4(camera.matrixWorldInverse).z;
+        const limit = maxParticleSize * 2 * depth / Math.abs(camera.projectionMatrix.elements[0]) / Math.max(scale[0], 1e-5);
+        const cap = Math.min(1, limit / Math.max(quad[0], quad[1]));
+        // Unity scales world components; reflecting X commutes with that.
+        const grown = vector => new T.Vector3(vector.x * scale[0], vector.y * scale[1], vector.z * scale[2]);
         return [[-.5, -.5], [.5, -.5], [.5, .5], [-.5, .5]].map(([u, v]) => {
-          const local = apply(turn, [u * quad[0], v * quad[1], 0]);
+          const local = apply(turn, [u * quad[0] * cap, v * quad[1] * cap, 0]);
           let offset;
           if (alignment === 0) {
-            // An untilted View quad lies in the camera plane (no handedness involved).
+            // An untilted View quad spans the camera's right and up in world space.
             if (angles[0] || angles[1]) throw new Error('View X/Y tilt has no evidenced frame');
-            offset = new T.Vector3(local[0], local[1], 0);
+            const right = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+            const up = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+            offset = grown(right.multiplyScalar(local[0]).add(up.multiplyScalar(local[1]))).applyMatrix3(view);
           } else {
             const world = alignment === 2 ? apply(quaternionMatrix(emitter), local) : local;
-            offset = new T.Vector3(-world[0], world[1], world[2]).applyMatrix3(view);
+            offset = grown(new T.Vector3(-world[0], world[1], world[2])).applyMatrix3(view);
           }
           const point = centerThree.clone().applyMatrix4(camera.matrixWorldInverse).add(offset).applyMatrix4(camera.projectionMatrix);
           return [(point.x * .5 + .5) * size, (.5 - point.y * .5) * size];
@@ -138,11 +149,18 @@ const { chromium } = require('playwright');
       const norm = Math.hypot(...emitter);
       const unitEmitter = emitter.map(value => value / norm);
       const cases = [
-        // fx_dis_par_so2035_02 main display cloud: View, 1 unit on a 5x3 node (rolled 0.3 rad here).
+        // fx_dis_par_so2035_02 main display cloud: View, 1 unit on a 5x3 node (rolled 0.3 rad here,
+        // so the scaled axes shear the rolled quad).
         { name: 'view-scaled', alignment: 0, angles: [0, 0, .3], quad: 1, scale: [5, 3, 1] },
         // fx_par_so2035_04 light_02: Local, 5 degrees on Y, on a 1.1x1.1 node.
         { name: 'local-y', alignment: 2, angles: [0, .0872664600610733, 0], quad: 3, scale: [1.1, 1.1, 1] },
         { name: 'local-xyz', alignment: 2, angles: [.45, .8, -.35], quad: 2.5, scale: [1, 1, 1] },
+        // A rolled Local quad on a non-uniform node: scaled after the roll, in world components.
+        { name: 'local-rolled-scaled', alignment: 2, angles: [0, 0, .5], quad: 1, scale: [2.5, 1, 1] },
+        // fx_dis_so2025_01 glow_under_p's cap: one unit capped at 0.2 viewport widths (about 1.4 units
+        // here). On a 3x1 node the cap sees 3 units and binds; on a 1x3 node it sees 1 unit and does not.
+        { name: 'cap-x', alignment: 2, angles: [0, 0, 0], quad: 1, scale: [3, 1, 1], maxParticleSize: .2 },
+        { name: 'cap-y', alignment: 2, angles: [0, 0, 0], quad: 1, scale: [1, 3, 1], maxParticleSize: .2 },
       ];
       const report = [];
       // View and World X/Y tilt are refused by the runtime.
@@ -150,10 +168,12 @@ const { chromium } = require('playwright');
         if (P.validSimulation(system('refused', alignment, [0, .35, 0], 1))) throw new Error(`alignment ${alignment} tilt drawn`);
       }
       for (const item of cases) {
-        const pixels = await draw(system(item.name, item.alignment, item.angles, item.quad), item.scale, unitEmitter);
+        const maxParticleSize = item.maxParticleSize ?? 10;
+        const pixels = await draw(system(item.name, item.alignment, item.angles, item.quad, undefined, maxParticleSize),
+          item.scale, unitEmitter);
         const got = coverage(pixels);
-        const want = predicted(expectedCorners(item.alignment, item.angles, [item.quad * item.scale[0], item.quad * item.scale[1]],
-          [.4, -.2, .5], unitEmitter), got);
+        const want = predicted(expectedCorners(item.alignment, item.angles, [item.quad, item.quad], [.4, -.2, .5], unitEmitter,
+          item.scale, maxParticleSize), got);
         report.push({ name: item.name, got, want });
         for (const key of ['left', 'right', 'top', 'bottom']) {
           if (Math.abs(got[key] + .5 - want[key]) > 2.5) throw new Error(`${item.name} ${key}: ${got[key]} vs ${want[key].toFixed(2)}`);
@@ -186,7 +206,7 @@ const { chromium } = require('playwright');
       return report;
     });
     assert.deepEqual(errors, []);
-    console.log('MV Studio original particle billboards: tilt, Local scale and stencil passed',
+    console.log('MV Studio original particle billboards: tilt, Local scale, size cap and stencil passed',
       JSON.stringify(results.map(row => row.name)));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

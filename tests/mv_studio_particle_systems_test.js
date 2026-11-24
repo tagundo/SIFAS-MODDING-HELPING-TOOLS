@@ -319,24 +319,34 @@ async function testTiltedAndLocallyScaledBillboards() {
   assert.deepEqual(Object.keys(meshes).sort(), ["beam", "cloud", "flat"], "Automatic culling would pause fx/paused");
   assert.deepEqual(controller.inspect().map(row => row.path).sort(), ["fx/beam", "fx/cloud", "fx/flat"]);
   const attribute = (mesh, name) => Array.from(mesh.geometry.getAttribute(name).array.slice(0, 3));
-  // Local scaling: the quad is 1.2 x (5, 3) and the particle sits at the node.
-  assert.deepEqual(attribute(meshes.cloud, "particleSize"), [f32(f32(1.2) * 5), f32(f32(1.2) * 3), f32(1.2)]);
+  // Local scaling: the quad keeps its 1.2 units; the node's (5, 3, 1) reaches the shader, which scales
+  // the camera axes by it in world components and caps the quad at the limit over 5 (libunity.so
+  // 0xd2844, 0xc35c4). The particle sits at the node.
+  assert.deepEqual(attribute(meshes.cloud, "particleSize"), [f32(1.2), f32(1.2), f32(1.2)]);
   assert.deepEqual(meshes.cloud.position.toArray(), [-1, 2, 3], "Unity X is reflected like the stage");
   assert.equal(meshes.cloud.material.defines.TILTED, undefined);
   assert.equal(meshes.cloud.material.defines.VIEW_FACING, 1);
-  assert.deepEqual(attribute(meshes.beam, "particleSize"), [f32(17 * 1.1), f32(17 * 1.1), 17]);
+  assert.equal(meshes.cloud.material.defines.SCALED, 1);
+  assert.deepEqual(meshes.cloud.material.uniforms.uScale.value.toArray(), [5, 3, 1]);
+  assert.match(meshes.cloud.material.vertexShader, /sizeLimit \/= max\(uScale\.x, 1\.0e-5\);/);
+  assert.match(meshes.cloud.material.vertexShader, /uScale \* \(right \* local\.x \+ up \* local\.y\)/);
+  assert.deepEqual(attribute(meshes.beam, "particleSize"), [17, 17, 17]);
+  assert.equal(meshes.beam.material.defines.SCALED, 1);
   // The X/Y start angles reach the vertex shader; the Z angle stays the roll.
   assert.equal(meshes.beam.material.defines.TILTED, 1);
   assert.deepEqual(Array.from(meshes.beam.geometry.getAttribute("particleTilt").array.slice(0, 2)),
     [f32(.25), f32(.0872664600610733)]);
-  // A Local billboard turns inside the reflected emitter basis, normal included.
+  // A Local billboard turns inside the reflected emitter basis, normal included; each axis is then
+  // scaled by the node's (1.1, 1.1, 1) in world components, not along the emitter's own axes.
   const close = (actual, expected) => actual.every((value, i) => Math.abs(value - expected[i]) < 1e-6);
   const uniforms = meshes.beam.material.uniforms;
-  assert.ok(close(uniforms.uAxisX.value.toArray(), [-Math.SQRT1_2, 0, -Math.SQRT1_2]), uniforms.uAxisX.value.toArray());
-  assert.ok(close(uniforms.uAxisY.value.toArray(), [0, 1, 0]));
-  assert.ok(close(uniforms.uAxisZ.value.toArray(), [-Math.SQRT1_2, 0, Math.SQRT1_2]), uniforms.uAxisZ.value.toArray());
-  // Untilted systems keep the plain roll shader and unscaled quads.
+  assert.ok(close(uniforms.uAxisX.value.toArray(), [-Math.SQRT1_2 * 1.1, 0, -Math.SQRT1_2]), uniforms.uAxisX.value.toArray());
+  assert.ok(close(uniforms.uAxisY.value.toArray(), [0, 1.1, 0]));
+  assert.ok(close(uniforms.uAxisZ.value.toArray(), [-Math.SQRT1_2 * 1.1, 0, Math.SQRT1_2]), uniforms.uAxisZ.value.toArray());
+  // Untilted, unscaled systems keep the plain roll shader and unit axes.
   assert.equal(meshes.flat.material.defines.TILTED, undefined);
+  assert.equal(meshes.flat.material.defines.SCALED, undefined);
+  assert.equal(meshes.flat.material.uniforms.uScale, undefined);
   assert.equal(meshes.flat.geometry.getAttribute("particleTilt"), undefined);
   assert.deepEqual(attribute(meshes.flat, "particleSize"), [2, 2, 2]);
   assert.match(meshes.beam.material.vertexShader, /vec3 turned = vec3\(local.x, cx \* local.y, -sx \* local.y\)/);

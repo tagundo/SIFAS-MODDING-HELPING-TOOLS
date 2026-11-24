@@ -24,13 +24,19 @@ One common rule for every song, taken from the client and the serialized assets:
 * Local-aligned Billboard renderers draw 3D start rotation: the quad turns by
   the negated start angles in Unity's Euler order (Z, X, Y) inside the emitter
   frame, the rule mv-studio-display-lights.js draws its Local strokes with.
-  The camera frame of View alignment and the world frame of World alignment
-  have no evidenced handedness for the X/Y turn (the libunity.so billboard
-  geometry for rotation3D was not found), so X/Y start rotation on View or
-  World billboards is reported, as on the other render modes.
+  libunity.so draws View, World and Local billboards with one geometry routine
+  (0xd242c; its variants 0xd78f4, 0xdd314 and 0xdf694 are picked by flags other
+  than the alignment in 0xcb86c) that turns the quad in its own unscaled
+  coefficients and then maps them through the alignment's three axes. The
+  camera axes of View alignment (0xc37d8) and the X/Y turn on World quads are
+  not yet checked against a game frame, so X/Y start rotation on View or
+  World billboards stays reported, as on the other render modes.
 * Local scaling mode applies the node's own localScale to local-space
-  billboards: positions through the scaled transform, quad X/Y sizes times the
-  scale's X/Y (_scaled_billboard). Other scaled cases are reported.
+  billboards (_scaled_billboard): positions through the scaled transform, and
+  the quad axes times the scale component-wise in world space, after the roll
+  and 3D turn; the min/max size cap is checked on the unscaled quad against
+  the limit over the scale's X (libunity.so 0xc35c4, 0xd2844, 0xd2c30). Other
+  scaled cases are reported.
 * Unity culling pauses a looping Automatic (cullingMode 0) or any Pause
   (cullingMode 2) system while its renderer is invisible and resumes it
   without catching up (libunity.so 2018.4: cull 0x1cc5d8, uncull 0x1cbd10), so
@@ -562,14 +568,26 @@ def _unit_scale(walked, own, scaling):
 def _scaled_billboard(source, render_tree, scale):
     """A Local-mode transform scale the runtime applies as Unity does.
 
-    Local scaling uses the system's own localScale (no parent): local-space
-    particle positions go through the scaled transform and each billboard
-    quad's X/Y size is multiplied by the scale's X/Y, whatever the alignment
-    (the fx_dis_par_so2035_02 display clouds are 1-unit particles on 5x3 and
-    6x3 nodes). Only that evidenced set-up is accepted: a Billboard renderer,
-    local simulation space, a positive scale, and no world-space force or
-    velocity whose conversion into the scaled space is unknown. system() still
-    reports it on a system culling can pause (_paused_off_screen).
+    libunity.so (GL 3.12.0, Unity 2018.4):
+
+    * 0x1cca20 keeps the scaling-mode scale s in the ParticleSystem state at
+      +0x154: Hierarchy the lossy scale, Local the node's own localScale
+      (0x1cd2f0), Shape (1, 1, 1). The local-to-world matrix is the node's
+      world rotation and position times diag(s) (Matrix4x4::Scale 0x210684).
+    * The renderer job copies s (0xc3528) and divides the renderer's min/max
+      particle size by max(s.x, 1e-5) before the camera factor (0xc35c4).
+    * The View/World/Local billboard geometry (0xd242c and its variants
+      0xd78f4, 0xdd314, 0xdf694) multiplies its three quad axes
+      component-wise by s in world space (0xd2844), turns each particle by
+      its roll and 3D rotation in the unscaled quad coefficients (0xd301c),
+      and caps the particle's own, unscaled larger side (0xd2c30).
+
+    So positions go through the scaled transform, the quad keeps its unscaled
+    size and turns, its axes carry s, and the cap sees the size times s.x.
+    Only this set-up is accepted: a Billboard renderer, local simulation space,
+    a positive scale, and no world-space force or velocity whose conversion
+    into the scaled space is unknown. system() still reports it on a system
+    culling can pause (_paused_off_screen).
     """
     initial = source.get("InitialModule") or {}
     velocity, clamp = source.get("VelocityModule") or {}, source.get("ClampVelocityModule") or {}
