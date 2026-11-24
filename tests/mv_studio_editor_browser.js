@@ -669,13 +669,19 @@ async function run() {
         const tabs = document.getElementById('mv-timeline-tabs');
         return { pageOverflow: document.documentElement.scrollWidth - innerWidth, tabsScroll: tabs.scrollWidth > tabs.clientWidth,
           tabsTop: rect('#mv-timeline-tabs').top, controlsBottom: rect('.mv-timeline-toolbar .mv-controls').bottom,
-          searchWidth: rect('#mv-track-search').width, toolbar: rect('.mv-timeline-toolbar').height, scroll: rect('#mv-timeline-scroll').height };
+          searchWidth: rect('#mv-track-search').width, toolbar: rect('.mv-timeline-toolbar').height, scroll: rect('#mv-timeline-scroll').height,
+          tabsWidth: rect('#mv-timeline-tabs').width, navWidth: rect('#mv-timeline-nav').width, chipsWidth: rect('#mv-member-filter').width };
       });
       assert(layout.pageOverflow <= 0, `${name}: no horizontal page scroll (${layout.pageOverflow})`);
       assert(layout.tabsTop >= layout.controlsBottom - 1, `${name}: the tabs have their own row`);
       assert(layout.searchWidth >= 80, `${name}: the search stays usable`);
       assert(layout.scroll >= 60, `${name}: the lanes stay visible (${layout.scroll})`);
       if (width === 408) assert(layout.tabsScroll, 'the tablist scrolls horizontally on a phone');
+      if (height === 420) {
+        // One row for tabs, search and chips: the tabs keep 40 %, the chips at most 30 % (they scroll).
+        assert(layout.tabsWidth >= .4 * layout.navWidth - 1, `${name}: the tabs keep room (${layout.tabsWidth} of ${layout.navWidth})`);
+        assert(layout.chipsWidth > 0 && layout.chipsWidth <= .3 * layout.navWidth + 1, `${name}: the chips are capped (${layout.chipsWidth})`);
+      }
       await page.screenshot({ path: path.join(evidence, name) });
     }
     await page.setViewportSize({ width: 1280, height: 900 });

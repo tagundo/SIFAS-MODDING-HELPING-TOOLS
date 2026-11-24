@@ -154,7 +154,8 @@
 @media (max-width: 720px) {
   .mv-timeline-nav { grid-template-columns: max-content minmax(0, 1fr) minmax(6.5rem, 36%); }
 }
-/* Short landscape: one transport row, then tabs, search and chips share one row. */
+/* Short landscape: one transport row, then tabs, search and chips share one row.
+   The tabs keep most of it; the chips get at most 30 % and scroll inside it. */
 @media (min-width: 540px) and (max-height: 480px) {
   .mv-timeline-toolbar {
     display: grid;
@@ -163,6 +164,6 @@
   }
   .mv-timeline-toolbar > :is(h3, .mv-controls, .mv-seek-label, .mv-zoom-label) { grid-area: auto; }
   .mv-timeline-toolbar > .mv-timeline-nav { grid-area: auto; grid-column: 1 / -1; }
-  .mv-timeline-nav { grid-template: "history tabs search members" auto / max-content minmax(0, 1fr) minmax(7rem, 10rem) minmax(0, max-content); }
+  .mv-timeline-nav { grid-template: "history tabs search members" auto / max-content minmax(min(40%, 26rem), 1fr) minmax(7rem, 10rem) fit-content(30%); }
   #tab-mv .mv-tab, #tab-mv .mv-chip { min-height: 28px; padding-block: 1px; }
 }
