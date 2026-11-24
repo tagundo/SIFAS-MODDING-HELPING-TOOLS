@@ -109,8 +109,17 @@ function fakePage() {
   control.checked = false;
   sceneAntiAliasing = false;
   await assert.rejects(capture.applyAntiAliasing(direct, true), /did not apply the anti-aliasing option/);
+  // A project without quality options has no control: off is checked on the scene, on is refused.
   globalThis.document = { querySelector: () => null };
-  await assert.rejects(capture.applyAntiAliasing(direct, false), /no anti-aliasing control/);
+  sceneAntiAliasing = false;
+  assert.equal(await capture.applyAntiAliasing(direct, false), false);
+  assert.equal(await capture.applyAntiAliasing(direct, undefined), false);
+  await assert.rejects(capture.applyAntiAliasing(direct, true), /no anti-aliasing control/);
+  sceneAntiAliasing = true;
+  await assert.rejects(capture.applyAntiAliasing(direct, false), /did not apply the anti-aliasing option/,
+    'without the control a scene that draws with the option on is still caught');
+  globalThis.mvFrameProbe = { scene: null };
+  await assert.rejects(capture.applyAntiAliasing(direct, false), /did not apply the anti-aliasing option/, 'no scene to check');
   delete globalThis.MVStudioScene;
 
   let page = fakePage();

@@ -148,13 +148,15 @@ async function nativeRenderHeight(page, qualityValues, screenHeight, antiAliasin
 }
 
 // Sets the editor's anti-aliasing option (manifest device.antiAliasing, off by default as in the
-// client) through its control and checks the scene took it.
+// client) through its control and checks the scene took it. The editor offers the control only
+// with the project's quality options; without it the option can only stay off, so off is checked
+// on the scene itself and on is refused.
 async function applyAntiAliasing(page, enabled) {
   const wanted = enabled === true;
   const applied = await page.evaluate((wanted) => {
     const input = document.querySelector('#mv-anti-aliasing');
-    if (!input) return { error: 'The editor has no anti-aliasing control.' };
-    if (input.checked !== wanted) {
+    if (!input && wanted) return { error: 'The editor has no anti-aliasing control.' };
+    if (input && input.checked !== wanted) {
       input.checked = wanted;
       input.dispatchEvent(new Event('change', { bubbles: true }));
     }
