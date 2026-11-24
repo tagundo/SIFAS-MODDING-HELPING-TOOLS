@@ -131,10 +131,19 @@ async function pluginContract(browser, url) {
         if (!['camera', 'edit', 'all'].includes(tab)) return [];
         return [{ id: 'probe-rigs', after: 'camera', label: 'Camera rigs (editor)', title: 'Rigs are baked into the shots.',
           render(lane, layout) {
+            const range = window.probeRigRange ||= { start: 2, end: 4 };
             const clip = ctx.make('button', 'rig', { type: 'button', class: 'mv-rig-clip', id: 'probe-rig' });
-            clip.style.left = `${2 * layout.pixelsPerSecond}px`;
-            clip.style.width = `${2 * layout.pixelsPerSecond}px`;
+            clip.style.left = `${range.start * layout.pixelsPerSecond}px`;
+            clip.style.width = `${(range.end - range.start) * layout.pixelsPerSecond}px`;
             lane.append(clip);
+            // Lane D reuses the clip drag: scale and bounds come from ctx.attachDrag.
+            ctx.attachDrag(clip, { label: 'Move rig', edges: { start: true, end: true }, snapTargets: () => ctx.snapTargets(),
+              getRange: () => ({ ...window.probeRigRange }),
+              setRange: (next, info) => {
+                if (info.phase !== 'commit') return;
+                window.probeRigRange = next;
+                (window.probeRigCommits ||= []).push(info.mode);
+              } });
           } }];
       },
       clipConstraints(ctx, track) { return track.id === 'camera' ? { resize: false, reason: 'Probe lock' } : undefined; },
@@ -188,6 +197,16 @@ async function pluginContract(browser, url) {
   assert.deepEqual(await rows(), ['probe-rigs', 'camera', 'mouth'], 'Edit: plugin lanes, then the editable tracks');
   await page.locator('#mv-tab-all').click();
   assert.equal(await page.locator('#probe-rig').count(), 1);
+  assert.deepEqual(await page.evaluate(() => window.probeCtx.snapTargets()), [0, 0, 4, 4, 8], 'playhead and MainCamera cuts');
+  await page.locator('#mv-zoom').selectOption('48');
+  const rig = await page.locator('#probe-rig').boundingBox();
+  await page.mouse.move(rig.x + 30, rig.y + rig.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(rig.x + 78, rig.y + rig.height / 2, { steps: 5 });
+  await page.mouse.up();
+  assert.deepEqual(await page.evaluate(() => [window.probeRigCommits, window.probeRigRange]), [['move'], { start: 3, end: 5 }],
+    'ctx.attachDrag: 48 px at 48 px/s is one second, one commit');
+  await page.locator('#mv-zoom').selectOption('fit');
 
   // Selection, constraints, value controls, header/footer, history via info.set.
   await page.locator('.mv-clip[data-event=cam-1]').click();

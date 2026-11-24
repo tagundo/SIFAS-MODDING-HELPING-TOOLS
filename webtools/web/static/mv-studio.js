@@ -1295,6 +1295,21 @@
   }
 
   // ---- Editor core: history, plugins, shortcuts ----------------------------------------
+  //
+  // Editor plugins load before this file and register with
+  //   (window.MVStudioPlugins ||= []).push({ id, order, ...hooks });
+  // mount() sorts them by order then id and calls attach(ctx) once. Hooks (all optional):
+  //   panels [{ key, name, open, available(ctx), render(box, ctx) }]  → <details id="mv-panel-<key>">
+  //   projectChanged(ctx, { reason: "load"|"reload"|"reimport"|"history", command?, direction? })
+  //   timeChanged(ctx, time, { playing })        selectionChanged(ctx, { track, event } | null)
+  //   valueControl(ctx, info) → Element | null (hide) | undefined (built-in field)
+  //   eventHeader / eventFooter(ctx, { track, event }) → Element | undefined
+  //   laneDecorate(ctx, track, lane, layout)     extraLanes(ctx, tabId) → [{ id, after, label, title, render(lane, layout), members? }]
+  //   clipConstraints(ctx, track, event) → { move?: false, resize?: false, reason? }
+  //   revertEvent(ctx, track, event) → true when handled    editedCount(ctx) → number
+  //   keydown(ctx, KeyboardEvent) → true when handled        beforeSave / beforeExport(ctx) → Promise; throw to refuse
+  // Writes go through ctx.history (MVStudioEditHistory); a write made outside it (a
+  // derived bake) is followed by ctx.refreshLane(trackId).
 
   function callPlugins(hook, ...args) {
     const results = [];
@@ -1523,7 +1538,11 @@
       snap: (seconds) => Math.round(seconds * 60) / 60,
       activeTab: () => activeTab,
       filters: () => ({ tab: activeTab, member: lastPlan ? lastPlan.member : null, search: searchText, editableOnly, group: groupFilter }),
-      attachDrag: (element, options) => Interact.attachDrag(element, options),
+      // Interact.attachDrag with this timeline's scale and bounds filled in.
+      attachDrag: (element, options) => Interact.attachDrag(element, { pixelsPerSecond: () => pixelsPerSecond,
+        bounds: () => ({ min: 0, max: project ? project.duration : 0, minLength: Interact.FRAME }), ...options }),
+      // Playhead and MainCamera cut times (plus the other clip edges of trackId, except eventId).
+      snapTargets: (trackId = null, eventId = null) => project ? clipSnapTargets(trackId, eventId) : [],
     });
   }
 
@@ -2043,7 +2062,7 @@
     });
     const tabs = byId("mv-timeline-tabs"), members = byId("mv-member-filter");
     Tabs.roving(tabs, "[role=tab]", (item) => item.dataset.mvTab, selectTab);
-    Tabs.roving(members, "[role=radio]", (item) => item.dataset.mvMember, selectMember);
+    Tabs.roving(members, "[role=radio]", (item) => item.dataset.mvMember, selectMember, { vertical: true });
     byId("mv-undo").addEventListener("click", undo);
     byId("mv-redo").addEventListener("click", redo);
     document.addEventListener("keydown", editorKeydown);

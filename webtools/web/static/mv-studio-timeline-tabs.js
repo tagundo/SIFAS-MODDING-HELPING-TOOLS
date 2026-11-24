@@ -269,9 +269,11 @@
   }
 
   // Arrow/Home/End roving on a radiogroup or tablist: moves focus and activates.
-  function roving(container, selector, valueOf, onSelect) {
+  // A tablist uses ←/→ only; a radiogroup also ↑/↓.
+  function roving(container, selector, valueOf, onSelect, { vertical = false } = {}) {
     container.addEventListener("keydown", (event) => {
       if (event.altKey || event.ctrlKey || event.metaKey) return;
+      if (!vertical && (event.key === "ArrowUp" || event.key === "ArrowDown")) return;
       const items = [...container.querySelectorAll(selector)].filter((item) => !item.hidden);
       const current = items.indexOf(document.activeElement);
       if (current < 0) return;
