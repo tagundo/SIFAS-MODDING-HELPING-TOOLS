@@ -325,7 +325,7 @@ def _cached(root, identity, signatures, record=None):
         if manifest.is_symlink() or manifest.stat().st_size > 8 * 1024 * 1024:
             return None
         value = json.loads(manifest.read_text())
-        if value.get("version") != 3 or value["sources"] != signatures or not 1 <= len(value["files"]) <= MAX_BUNDLES:
+        if value.get("version") != 4 or value["sources"] != signatures or not 1 <= len(value["files"]) <= MAX_BUNDLES:
             return None
         if record is not None:
             motion = value.get("motion", {})
@@ -522,7 +522,7 @@ def run_import(job, *, repo_root, output_root, record):
         manifest_fd, name = tempfile.mkstemp(prefix=".motion-", suffix=".part", dir=root)
         manifest_temp = Path(name)
         with os.fdopen(manifest_fd, "w", encoding="utf-8") as handle:
-            json.dump({"version": 3, "sources": signatures, "files": outputs, "timelines": timeline_records, "motion": descriptor}, handle, allow_nan=False)
+            json.dump({"version": 4, "sources": signatures, "files": outputs, "timelines": timeline_records, "motion": descriptor}, handle, allow_nan=False)
         manifest = root / (".motion-" + identity + ".json")
         if manifest.is_symlink():
             raise ValueError("The game motion cache contains a linked file.")
