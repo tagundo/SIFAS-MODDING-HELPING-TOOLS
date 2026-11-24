@@ -103,15 +103,32 @@ def binding(scene, component, tree):
     }, tuple(shafts))
 
 
-def with_sort_center(descriptor, renderer_tree, mesh, *, builtin_mesh=False):
+def with_sort_center(descriptor, renderer_tree, mesh, *, builtin_mesh=False, world=None):
     """Adds the renderer's sort center. Unity draws the renderers of one transparent queue back
     to front by the distance from the camera to their bounds' center, the mesh's m_LocalAABB
     center under the renderer's transform; a renderer with its own sorting layer, order or
-    priority keeps the descriptor without one (as the stage overlay does)."""
+    priority keeps the descriptor without one (as the stage overlay does).
+
+    ``world`` is the Unity local-to-world matrix the exporter baked into the vertices
+    (model_viewer._geometry writes diag(-1, 1, 1, 1) @ world @ vertex). A coloring renderer
+    outside the stage-motion bindings has no node transform, so its center is baked the same
+    way; a renderer under a retained stage node or an AxisBillboard node is placed by its node
+    and passes the identity. The center of a transformed box is the transformed center, so
+    this is also the center of Unity's world bounds."""
     from . import mv_studio_stage_overlay as overlay
 
     bounds = overlay._sort_bounds(renderer_tree, None if builtin_mesh else mesh, builtin_mesh=builtin_mesh)
-    return {**descriptor, **bounds} if bounds else descriptor
+    if not bounds:
+        return descriptor
+    if world is not None:
+        import numpy as np
+
+        x, y, z = bounds["sortCenter"]
+        center = np.asarray(world, dtype=float) @ np.array([-x, y, z, 1.])
+        if not np.isfinite(center[:3]).all():
+            return descriptor
+        bounds = {**bounds, "sortCenter": [-float(center[0]), float(center[1]), float(center[2])]}
+    return {**descriptor, **bounds}
 
 
 def renderer_binding(scene, game, candidates):

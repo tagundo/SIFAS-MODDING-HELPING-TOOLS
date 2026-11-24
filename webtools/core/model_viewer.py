@@ -1994,9 +1994,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 except ValueError:
                     descriptor = None
                 if descriptor is not None:
+                    # world is the matrix baked into these vertices (identity under a retained node).
                     descriptor = mv_studio_stage_coloring.with_sort_center(
                         descriptor, tree, None if builtin_mesh else (raw or {}).get("mesh") or mesh_obj.read(),
-                        builtin_mesh=bool(builtin_mesh))
+                        builtin_mesh=bool(builtin_mesh), world=world)
                     if coloring_uv is None:
                         coloring_uv = glb.attribute(stage_inputs["lightUV"], "VEC2")
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR_INDEX": coloring_uv}
