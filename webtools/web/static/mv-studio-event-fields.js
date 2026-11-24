@@ -76,7 +76,7 @@
       },
       "LiveBloomClip": {
         "intensity": {"control": "number", "min": 0, "max": 100, "label": "Bloom intensity"},
-        "threshold": {"control": "number", "min": 0, "max": 100, "label": "Threshold"},
+        "threshold": {"control": "number", "min": -100, "max": 100, "label": "Threshold"},
         "softKnee": {"control": "slider", "min": 0, "max": 1, "step": 0.001, "label": "Soft knee"},
         "radius": {"control": "slider", "min": 1, "max": 7, "step": 0.01, "label": "Radius"},
         "antiFlicker": {"control": "bool-int", "label": "Anti-flicker"}

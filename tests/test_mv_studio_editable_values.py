@@ -1,6 +1,7 @@
 """Editable MV timeline values: the whitelist, its export guards and the editableValues migration.
 
-Original game samples are optional (ELICHIKA_STUDIO_TIMELINE_DIR with a-1203503-live_timeline.unity)."""
+Original game samples are optional (ELICHIKA_STUDIO_TIMELINE_DIR with a-1203503-live_timeline.unity; every
+other *timeline*.unity there is checked against the inspector's bounds too)."""
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -364,6 +365,51 @@ class ActualTimelineTests(unittest.TestCase):
                 (revised("LiveRimlightClip", memberPosition=2), "read-only")]:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 studio._rewrite_timeline(self.raw, self.fresh, {**self.fresh, "tracks": tracks})
+
+
+def sample_timelines():
+    """Every original timeline bundle in ELICHIKA_STUDIO_TIMELINE_DIR (choreography bundles excluded)."""
+    if not SAMPLES.is_dir():
+        return []
+    return sorted(path for path in SAMPLES.glob("*timeline*.unity") if "choreography" not in path.name)
+
+
+@unittest.skipUnless(sample_timelines(), "Original game samples are optional")
+class SampleTimelineTests(unittest.TestCase):
+    # colorControl and vectorControl bound their number boxes with these (mv-studio-event-fields.js).
+    CHANNELS = (0, 1000)
+    AXES = (-1000000, 1000000)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = {path.name: studio.parse_timeline(path.read_bytes(), path.name)["tracks"] for path in sample_timelines()}
+
+    def test_inspector_bounds_hold_every_native_value(self):
+        """A native value outside its box's bounds would be clamped on the first edit and could not be typed back."""
+        table = descriptors()["classes"]
+        outside = []
+        for name, tracks in self.parsed.items():
+            for track in tracks:
+                for item in track["events"]:
+                    values = item["values"]
+                    specs = table.get(values.get("playableClass"), {})
+                    for field in item["editableValues"]:
+                        spec, value = specs.get(field), values.get(field)
+                        if spec is None:
+                            continue
+                        if spec["control"] in ("number", "slider") and "min" in spec:
+                            numbers, (low, high) = [value], (spec["min"], spec["max"])
+                        elif spec["control"] == "color" and isinstance(value, dict):
+                            numbers, (low, high) = list(value.values()), self.CHANNELS
+                        elif spec["control"] == "vector" and isinstance(value, dict):
+                            numbers, (low, high) = list(value.values()), self.AXES
+                        else:
+                            continue
+                        for number in numbers:
+                            if isinstance(number, (int, float)) and not low <= number <= high:
+                                outside.append(f"{name} {item['id']} {values['playableClass']}.{field}={number} "
+                                               f"outside [{low}, {high}]")
+        self.assertEqual(outside, [])
 
 
 if __name__ == "__main__":

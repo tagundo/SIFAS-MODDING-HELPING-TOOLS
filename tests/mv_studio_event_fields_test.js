@@ -53,8 +53,8 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
             { id: 'coloring-b:0', start: 0, duration: 2, label: 'B0', editableValues: ['textureIndex'],
               values: { asset: 'cab:3', playableClass: 'LiveColoringClip', shift: 0, tintColor: { r: 0, g: 0, b: 0, a: 0 }, speed: 0, textureIndex: 5 } }] },
           { id: 'bloom', kind: 'bloom', events: [
-            { id: 'bloom:0', start: 0, duration: 2, label: 'Bloom', editableValues: ['antiFlicker', 'softKnee'],
-              values: { asset: 'cab:4', playableClass: 'LiveBloomClip', intensity: .3, threshold: 1, softKnee: .3, radius: 4, antiFlicker: 0 } }] },
+            { id: 'bloom:0', start: 0, duration: 2, label: 'Bloom', editableValues: ['antiFlicker', 'softKnee', 'threshold'],
+              values: { asset: 'cab:4', playableClass: 'LiveBloomClip', intensity: .3, threshold: -1.72, softKnee: .3, radius: 4, antiFlicker: 0 } }] },
           { id: 'gaze', kind: 'gaze', events: [
             { id: 'gaze:0', start: 0, duration: 2, label: 'G', editableValues: ['target'],
               values: { asset: 'cab:5', playableClass: 'MemberGazeClip', target: 34, weightForDirection: 1, splitScreenSetting: { UseSetting: 0 } } }] },
@@ -157,6 +157,17 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
       red.value = '0.25';
       red.dispatchEvent(new Event('change', { bubbles: true }));
       out.propExact = { value: { ...find('prop:0').event.values.color }, shown: propIntensity.value, steps: history.size().undo - propBefore };
+
+      // Bloom threshold: real MVs use negative thresholds, so the box keeps them and accepts them.
+      const threshold = control('bloom:0', 'threshold');
+      const thresholdBox = threshold.querySelector('[data-mv-field=threshold]');
+      out.threshold = { min: thresholdBox.min, shown: thresholdBox.value };
+      thresholdBox.value = '-3';
+      thresholdBox.dispatchEvent(new Event('change', { bubbles: true }));
+      out.threshold.typed = find('bloom:0').event.values.threshold;
+      thresholdBox.value = '-1.72';
+      thresholdBox.dispatchEvent(new Event('change', { bubbles: true }));
+      out.threshold.back = find('bloom:0').event.values.threshold;
 
       // Observed options: this track's values only, labelled; not writable → read only.
       const texture = control('coloring:0', 'textureIndex');
@@ -268,6 +279,8 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
     ], 'an intensity below 1 clamps to 1 once: no compounding, and the box shows the stored intensity');
     assert.deepEqual(result.propExact, { value: { r: .25, g: .5, b: .25, a: 1 }, shown: '1', steps: 2 },
       'channels below 1 stay editable in the exact values');
+    assert.deepEqual(result.threshold, { min: '-100', shown: '-1.72', typed: -3, back: -1.72 },
+      'a negative native bloom threshold is shown, kept and can be typed back');
 
     assert.deepEqual(result.texture.options, [['0', '조명 텍스처 0'], ['2', '조명 텍스처 2']], 'observed on this track only');
     assert.deepEqual(result.texture.fields, ['textureIndex']);
