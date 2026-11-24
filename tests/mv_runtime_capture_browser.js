@@ -148,6 +148,25 @@ async function run() {
     assert(timing.captureSeconds >= 0);
     assert.deepEqual(errors, []);
 
+    // Sampler 3 frame clocks: every rendered frame's own director time. A neighbour only the frame
+    // clock read is evaluated at its time ("frameClock"); one a record was taken in stays "recorded".
+    const rows = [[100, 0.44], [101, 0.5], [102, 1.0], [103, 2.5], [104, 1.0], [105, 1.0], [106, 1.06]]
+      .map(([frame, t]) => [frame, t, Math.round(t * 1000), 900 + t, DT, 1000 + frame / 15, 0]);
+    const clocked = { ...read.doc, trailer: { ...read.doc.trailer, frameClocks: { schema: 'sifas-mv-frame-clock/1',
+      fields: runtime.FRAME_CLOCK_FIELDS, rows } } };
+    const clockedRun = await runtime.capturePage(page, clocked, { phases: [-1, 0, 1], preroll: 0.5, rate: 30, batchSize: 8 });
+    const at = (id) => clockedRun.records.find((entry) => entry.id === id).clock;
+    assert.deepEqual([at('f0001@-1').directorTime, at('f0001@-1').phaseSource], [0.44, 'frameClock']);
+    assert.deepEqual([at('f0003@1').directorTime, at('f0003@1').phaseSource], [1.0, 'recorded']);
+    assert.deepEqual([at('p0-members-00@1').directorTime, at('p0-members-00@1').phaseSource], [1.06, 'frameClock']);
+    assert(clockedRun.records.every((entry) => !entry.errors), 'frame clock phases evaluate cleanly');
+    // The game's Time.time for the original particle systems reaches the scene.
+    const samples = runtime.gameClockSamples(clocked);
+    assert.equal(samples.source, 'frameClock');
+    assert.equal(await runtime.setGameClock(page, samples.samples), samples.samples.length);
+    assert.equal(await runtime.setGameClock(page, null), 0);
+    assert.deepEqual(errors, []);
+
     const doc = runtime.editorDocument({ game: read.doc, gameFile, sha256: read.sha256, records, timing,
       conventions: await page.evaluate(() => ({ ...MVStudioAssetDump.CONVENTIONS })), manifest: { source }, viewport,
       quality: applied, phases: [-1, 0, 1], preroll: 0.5, rate: 30, batchSize: 4, keysFile: null,

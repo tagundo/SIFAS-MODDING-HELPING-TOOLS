@@ -172,6 +172,26 @@ class ParticleTest(unittest.TestCase):
         self.assertEqual(len(result.items), 4)
         self.assertIn("particles", C.DIAGNOSTIC_TYPES)
 
+    def test_system_time_wraps_at_the_duration_within_one_game_frame(self):
+        # 12035 dump4 p2-particles-00: fx_par_so2035_02 kirakira_01 (looping, duration 10) at 71.478 s.
+        result = comparison()
+        record = {"id": "p2", "clock": {"directorTime": 71.478, "deltaTime": 0.2}, "particles": [
+            {"path": "/fx_a [Timeline]/root/kira", "isPlaying": True, "particleCount": 40, "time": 2.92, "duration": 10},
+            {"path": "/fx_a [Timeline]/root/wrap", "isPlaying": True, "particleCount": 40, "time": 9.95, "duration": 10},
+            {"path": "/fx_a [Timeline]/root/notime", "isPlaying": True, "particleCount": 40}]}
+        partner = {"particles": [{"path": "fx_a/root/kira", "alive": 40, "time": 3.333}, {"path": "fx_a/root/wrap", "alive": 40, "time": 0.05},
+                                 {"path": "fx_a/root/notime", "alive": 40, "time": 1.0}]}
+        result.compare_particles(record, partner)
+        found = {(item["key"], item["metric"]): item for item in result.items}
+        self.assertAlmostEqual(found[("particles:fx_a/root/kira", "particleTimeS")]["error"], 0.413)
+        self.assertAlmostEqual(found[("particles:fx_a/root/kira", "particleTimeS")]["score"], 0.413 / 0.2)
+        self.assertAlmostEqual(found[("particles:fx_a/root/wrap", "particleTimeS")]["error"], 0.1, msg="around the loop")
+        self.assertNotIn(("particles:fx_a/root/notime", "particleTimeS"), found)
+        # Without a deltaTime one 30 fps frame is the tolerance.
+        result = comparison()
+        result.compare_particles({"id": "p", "clock": {"directorTime": 5}, "particles": record["particles"][:1]}, partner)
+        self.assertAlmostEqual(next(i for i in result.items if i["metric"] == "particleTimeS")["tol"], 1 / 30)
+
 
 class VectorGlobalTest(unittest.TestCase):
     def test_render_texture_resolution_is_exact(self):

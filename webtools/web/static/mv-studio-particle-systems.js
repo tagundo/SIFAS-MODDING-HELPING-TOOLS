@@ -32,6 +32,18 @@
   //    0x1ce1b8).
   //  * The clone root sits at the world origin plus the clip offset; its
   //    systems use their own serialized random seeds.
+  //  * A system advances on the game's frame time (Time.deltaTime, so
+  //    Time.time differences), the director follows the music: when frames
+  //    hit Time.maximumDeltaTime (1/3 s) the game clock falls behind the
+  //    director. Given the game's clock (update's `clock`: director seconds
+  //    to Time.time, gameClock()), a clip's frames count the game seconds
+  //    since its activation frame; the clip window stays on the director.
+  //    Culled systems take each clone frame's cameras at the director time
+  //    the game clock reached it.
+  //    In the 12035 Max 3D dump4 kirakira_01 of fx_par_so2035_02 kept
+  //    ParticleSystem.time - (Time.time since its clip start) within -0.12 ..
+  //    -0.07 s across the clamped frames at 48.9-53.3 s, while the same
+  //    difference on director time moved from -0.24 to -0.63 s.
   //
   //  * Billboard quads with 3D start rotation turn by the negated X/Y/Z angles
   //    in Unity's Euler order (Z, then X, then Y) on the alignment's axes, as
@@ -937,11 +949,64 @@
     return timelineTick((first - 1) / fps) === start ? first - 1 : first;
   }
 
-  function activeFrames(event, time, fps) {
+  // `clock` (optional, gameClock()): director seconds -> the game's Time.time.
+  // The window is the director's; the frames since activation are counted on
+  // the game clock from the activation frame's director time.
+  function activeFrames(event, time, fps, clock = null) {
     if (!event || !finite(event.start) || !finite(event.duration) || event.duration <= 0) return 0;
     const start = timelineTick(event.start), current = timelineTick(time);
     if (current < start || current >= timelineTick(event.start + event.duration)) return 0;
-    return Math.max(0, Math.floor(time * fps + 1e-9) - activationFrame(event, fps) + 1);
+    const activated = activationFrame(event, fps);
+    let local = time;
+    if (typeof clock === "function") {
+      const from = activated / fps, elapsed = clock(time) - clock(from);
+      if (finite(elapsed) && Math.abs(elapsed - (time - from)) > 1e-9) local = from + Math.max(0, elapsed);
+    }
+    return Math.max(local === time ? 0 : 1, Math.floor(local * fps + 1e-9) - activated + 1);
+  }
+
+  // The game's clock as a function of director time from [directorTime,
+  // Time.time] samples of rendered frames (ascending director times): linear
+  // between samples, one game second per director second outside them. Null
+  // without two usable samples.
+  function gameClock(samples) {
+    const rows = [];
+    for (const sample of Array.isArray(samples) ? samples : []) {
+      if (!vector(sample, 2)) continue;
+      const last = rows[rows.length - 1];
+      if (last && (sample[0] <= last[0] || sample[1] < last[1])) continue;
+      rows.push([sample[0], sample[1]]);
+    }
+    if (rows.length < 2) return null;
+    const clock = time => {
+      if (!finite(time)) return time;
+      if (time <= rows[0][0]) return rows[0][1] + (time - rows[0][0]);
+      const end = rows[rows.length - 1];
+      if (time >= end[0]) return end[1] + (time - end[0]);
+      let low = 0, high = rows.length - 1;
+      while (high - low > 1) {
+        const middle = (low + high) >> 1;
+        if (rows[middle][0] <= time) low = middle; else high = middle;
+      }
+      const [t0, u0] = rows[low], [t1, u1] = rows[high];
+      return time === t0 ? u0 : u0 + (u1 - u0) * (time - t0) / (t1 - t0);
+    };
+    // The director time at which the game clock reached `game` (the first one where it stood still).
+    clock.inverse = game => {
+      if (!finite(game)) return game;
+      if (game <= rows[0][1]) return rows[0][0] + (game - rows[0][1]);
+      const end = rows[rows.length - 1];
+      if (game >= end[1]) return end[0] + (game - end[1]);
+      let low = 0, high = rows.length - 1;
+      while (high - low > 1) {
+        const middle = (low + high) >> 1;
+        if (rows[middle][1] < game) low = middle; else high = middle;
+      }
+      const [t0, u0] = rows[low], [t1, u1] = rows[high];
+      return u1 === u0 ? t1 : t0 + (t1 - t0) * (game - u0) / (u1 - u0);
+    };
+    clock.samples = rows.length;
+    return clock;
   }
 
   // ---------------------------------------------------------------- culling
@@ -1291,7 +1356,7 @@
     // index, for the visibility pass (Unity counts a renderer visible when
     // any camera drawing its layer sees it).
     const frusta = new Map();
-    let cullKey = null, cullFps = 0;
+    let cullKey = null, cullFps = 0, cullClock = null;
 
     function frustaAt(index, fps, view) {
       if (frusta.has(index)) return frusta.get(index);
@@ -1327,12 +1392,18 @@
     // system's box to a camera drawing it; otherwise cull 0x1cc5d8 had taken it
     // off the list (the becameInvisible callback, or the update end 0x1cde54
     // finding the renderer not visible), and becameVisible's uncull put it back.
+    // With the game's clock (cullClock) clone frame `index` ran at the director time where the game
+    // clock had advanced (index - 1) / fps past the activation frame's; its cameras are taken at the
+    // director display frame holding that time.
     function advanced(item, entry, event, frames, fps, view) {
       const activated = activationFrame(event, fps);
       let history = item.history;
       if (!history || history.activated !== activated) history = item.history = {activated, count: [0], visible: [false]};
+      const from = cullClock ? cullClock(activated / fps) : 0;
       for (let index = history.count.length; index < frames; index++) {
-        const planes = frustaAt(activated + index - 1, fps, view);
+        const plain = activated + index - 1, at = cullClock ? cullClock.inverse(from + (index - 1) / fps) * fps : plain;
+        const display = Math.abs(at - plain) < 1e-6 ? plain : Math.floor(at + 1e-9);
+        const planes = frustaAt(display, fps, view);
         const poses = planes.length ? posesAt(entry, index, fps) : null;
         const pose = poses ? poses[item.system.node] : item.restPose;
         const box = planes.length ? worldBox(item.box, item.system, pose) : null;
@@ -1478,7 +1549,8 @@
       // key (camera tracks, split data or viewport aspect changed) restarts
       // the visibility pass.
       // Without a view, culled systems simulate as if always visible.
-      update(time, project, view = null) {
+      // clock: the game's clock (gameClock()) or null for the director's.
+      update(time, project, view = null, clock = null) {
         if (disposed) return;
         if (tracks !== project?.tracks) {
           tracks = project?.tracks;
@@ -1488,9 +1560,11 @@
         const quality = project?.quality?.values;
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
         const camera = typeof view?.camerasAt === "function" || typeof view?.cameraAt === "function" ? view : null;
-        if ((camera?.key ?? null) !== cullKey || fps !== cullFps) {
+        const gameClock = typeof clock === "function" ? clock : null;
+        if ((camera?.key ?? null) !== cullKey || fps !== cullFps || gameClock !== cullClock) {
           cullKey = camera?.key ?? null;
           cullFps = fps;
+          cullClock = gameClock;
           frusta.clear();
           for (const entry of cues) {
             entry.poseCache = null;
@@ -1501,7 +1575,7 @@
           const {cue, track, systems} = entry;
           const event = track && !track.muted && quality?.[cue.quality] !== false &&
             track.events.find(row => row.id === cue.eventId);
-          const frames = event ? activeFrames(event, time, fps) : 0;
+          const frames = event ? activeFrames(event, time, fps, clock) : 0;
           if (frames) animate(entry, frames, fps);
           else entry.frames = -1;
           for (const item of systems) {
@@ -1548,7 +1622,7 @@
   }
 
   global.MVStudioParticleSystems = {
-    apply, create, activeFrames, animatorTime, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
+    apply, create, activeFrames, gameClock, animatorTime, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
     nodePoses, eulerQuaternion, blendFactor, depthFunction, renderState, loadTexture, mainCameraMask, salts,
     activationFrame, worldBox, cameraPlanes, boxVisible, prewarmSteps,
   };
