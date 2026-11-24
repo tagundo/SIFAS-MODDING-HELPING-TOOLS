@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import random
 import secrets
+import subprocess
 import tempfile
 import time
 from types import SimpleNamespace
@@ -423,9 +424,14 @@ class BlushSessionTests(unittest.TestCase):
         self.cache(self.payload)
         cheek = tb.layer_bytes(self.payload, 0)
         original = decode._android_image
+        command = ["astcenc", "-dl", "texture.astc", "texture.tga", "-j", "1"]
         for name, error, reason in (("timeout", TimeoutError("Thumbnail decoding timed out"), texture_block_splice.TOO_LONG),
+                                    ("subprocess-timeout", subprocess.TimeoutExpired(command, 5), texture_block_splice.TOO_LONG),
+                                    ("exit-status", subprocess.CalledProcessError(1, command), textures.SPLICE_UNCHECKED),
+                                    ("tga", SyntaxError("not a TGA file"), textures.SPLICE_UNCHECKED),
                                     ("decoder", ValueError("ASTC decoder returned incorrect dimensions"), textures.SPLICE_UNCHECKED),
-                                    ("io", OSError("No space left on device"), textures.SPLICE_UNCHECKED)):
+                                    ("io", OSError("No space left on device"), textures.SPLICE_UNCHECKED),
+                                    ("eof", EOFError(), textures.SPLICE_UNCHECKED)):
             with self.subTest(name):
                 decoded = []
 
@@ -451,6 +457,47 @@ class BlushSessionTests(unittest.TestCase):
                 self.assertEqual((summary["blush"]["encoding"], summary["blush"]["requested"], summary["blush"]["fallback"],
                                   summary["blush"]["note"]), ("exact", "astc-keep", reason, textures.SAVED_EXACT))
                 self.assertEqual(summary["encodingReason"], reason + " " + textures.SAVED_EXACT)
+
+    def check_faulty_decoder(self, target):
+        """A real astcenc executable whose check decode of the first re-encoded
+        level exits non-zero, writes an unreadable image or runs past the
+        splice's budget: each save is exact pixels with the stated reason."""
+        raw, _ = head_fixture(astc=True)
+        self.cache(self.payload)
+        cheek = tb.layer_bytes(self.payload, 0)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        # The slow decoder is stopped by the splice's own budget (shortened
+        # here; it still leaves the encoder plenty of time).
+        for mode, budget, reason in (("fail", textures.SPLICE_SECONDS, textures.SPLICE_UNCHECKED),
+                                     ("garbage", textures.SPLICE_SECONDS, textures.SPLICE_UNCHECKED),
+                                     ("slow", 10, texture_block_splice.TOO_LONG)):
+            with self.subTest(mode):
+                binary = astc_standin.write_faulty(folder.name, target, mode)
+                token, _ = self.open(raw, mode + ".unity")
+                _, row = self.head(token)
+                _, before = levels_of(raw)
+                started = time.monotonic()
+                with patch.dict(os.environ, {"ASTCENC_BIN": binary}), patch.object(textures, "SPLICE_SECONDS", budget):
+                    result, output = self.export(token, self.operation(row, before[0], {"layer": 0, "k": 1.65, "encoding": "astc-keep"}))
+                self.assertLess(time.monotonic() - started, budget + 60)
+                self.assertTrue(os.path.exists(os.path.join(os.path.dirname(binary), "faulted")),
+                                "the splice reached the check of its first re-encoded level")
+                written, after = levels_of(output)
+                self.assertEqual((written.m_TextureFormat, written.m_MipCount), (4, LEVELS))
+                for authored, level in zip(before, after):
+                    self.assertEqual(level.tobytes(), tb.bake_rgba(authored.tobytes(), authored.width, authored.height, cheek, 1.65)[0])
+                summary = result["summary"][0]["textureEdits"][0]
+                self.assertEqual((summary["blush"]["encoding"], summary["blush"]["requested"], summary["blush"]["fallback"],
+                                  summary["blush"]["note"]), ("exact", "astc-keep", reason, textures.SAVED_EXACT))
+                self.assertEqual(summary["encodingReason"], reason + " " + textures.SAVED_EXACT)
+                self.assertEqual(result["recipe"]["state"]["textures"][0]["blush"], {"layer": 0, "k": 1.65, "encoding": "astc-keep"})
+
+    @unittest.skipUnless(astc_standin.available(), "needs astc-encoder-py for the test astcenc")
+    def test_astc_keep_saves_exact_pixels_when_the_astcenc_decoder_fails(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.check_faulty_decoder(astc_standin.write(folder.name))
 
     def test_the_splice_has_its_own_time_budget_and_the_exact_save_a_fresh_one(self):
         raw, images = head_fixture()
@@ -862,6 +909,15 @@ class RealAstcencTests(unittest.TestCase):
                  "blush": {"layer": 0, "k": 3.0, "encoding": "astc-keep"}}]}, root / "output")
             check_astc_keep(self, raw, Path(result["preview_paths"][0]).read_bytes(), result["summary"][0]["textureEdits"][0],
                             tb.layer_bytes(payload, 0), 3.0)
+
+    @unittest.skipUnless(astc_standin.available(), "building the synthetic ASTC head needs astc-encoder-py")
+    def test_astc_keep_saves_exact_pixels_when_the_real_decoder_fails(self):
+        session = BlushSessionTests("test_astc_keep_saves_exact_pixels_when_the_astcenc_decoder_fails")
+        session.setUp()
+        try:
+            session.check_faulty_decoder(REAL_ASTCENC)
+        finally:
+            session.doCleanups()
 
     @unittest.skipUnless(os.environ.get("REAL_MV_SAMPLES"), "set REAL_MV_SAMPLES to a folder with costume bundles")
     def test_astc_keep_on_the_real_head(self):

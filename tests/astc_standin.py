@@ -68,6 +68,45 @@ def write(directory, *, decode_only=False):
     return path
 
 
+FAULTY = r'''
+import os
+import sys
+import time
+target, mode, state = TARGET, MODE, STATE
+args = sys.argv[1:]
+if args[:1] == ["-cl"]:
+    open(os.path.join(state, "encoded"), "w").close()
+elif args[:1] == ["-dl"] and os.path.exists(os.path.join(state, "encoded")) and not os.path.exists(os.path.join(state, "faulted")):
+    open(os.path.join(state, "faulted"), "w").close()
+    if mode == "fail":
+        sys.exit("astcenc: simulated decoder error")
+    if mode == "garbage":
+        with open(args[2], "wb") as stream:
+            stream.write(b"garbage")
+        sys.exit(0)
+    if mode == "slow":
+        time.sleep(600)
+os.execv(target, [target] + args)
+'''
+
+
+def write_faulty(directory, target, mode):
+    """An astcenc that runs ``target`` but spoils the first decode after an encode.
+
+    That decode is the astc-keep splice's check of its first re-encoded level.
+    ``mode`` is "fail" (exits 1), "garbage" (exits 0 with an unreadable image)
+    or "slow" (never finishes in time). Every other call runs ``target``.
+    """
+    state = os.path.join(str(directory), "faulty-" + mode)
+    os.makedirs(state, exist_ok=True)
+    path = os.path.join(state, "astcenc")
+    body = FAULTY.replace("TARGET, MODE, STATE", ", ".join(map(repr, (os.path.abspath(target), mode, state))))
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write("#!" + sys.executable + " -I\n" + body)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+    return path
+
+
 def compress(image, block):
     """Raw ASTC blocks of a PIL image whose first row is block row 0 (tests only)."""
     import astc_encoder as A

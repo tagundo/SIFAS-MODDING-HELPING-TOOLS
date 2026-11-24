@@ -13,6 +13,7 @@ import hashlib
 import io
 import re
 import secrets
+import subprocess
 import threading
 import time
 import zlib
@@ -98,6 +99,8 @@ SAVED_ASTC = ("The baked blush kept the game's ASTC compression: only the blocks
 KEEP_PAINTED = "This texture is also painted, and painted pixels are always saved exactly, so its ASTC compression was not kept."
 KEEP_NOT_ASTC = "This texture is not ASTC-compressed, so there was no ASTC compression to keep."
 SPLICE_UNCHECKED = "The re-encoded ASTC blocks could not be decoded and checked."
+# The astc-keep splice's own time budget (encoder and decoder runs together).
+SPLICE_SECONDS = 60
 CHEEK_UNAVAILABLE = ("No verified stock blush pattern (cheek_array) is available. Open another costume that "
                      "contains it once (most costume bundles do) so it is kept automatically, then reopen this model.")
 
@@ -687,7 +690,8 @@ def _write(obj, edited, blush=None, cheek=None):
     for "astc-keep", alone on an ASTC texture, keeps the ASTC format and
     re-encodes the blocks holding changed texels (_splice_blush); paint on the
     same texture, a non-ASTC source or any failure of the splice (encoder,
-    time budget, decoder) saves exact pixels instead, and the summary says why.
+    time budget, decoder subprocess or its output) saves exact pixels instead,
+    and the summary says why.
     """
     from PIL import Image
     from . import decode, texture_block_splice
@@ -717,16 +721,20 @@ def _write(obj, edited, blush=None, cheek=None):
                 fallback = KEEP_NOT_ASTC
             else:
                 # The splice has its own time budget, and whatever stops it
-                # (the encoder, a timeout, the decoder refusing a re-encoded
-                # level) saves exact pixels instead with a fresh budget. The
-                # splice writes the texture only once every level passed.
+                # saves exact pixels instead with a fresh budget: the encoder,
+                # a timeout (Python's or the decoder subprocess's), or the
+                # decoder failing on a re-encoded level in any way (astcenc
+                # exiting non-zero, Pillow refusing its output, I/O). The
+                # splice writes the texture only once every level passed, so
+                # nothing of a failed attempt is kept.
                 try:
-                    return _splice_blush(obj, original, levels, before, layer, bounds, blush, block, time.monotonic() + 60)
+                    return _splice_blush(obj, original, levels, before, layer, bounds, blush, block,
+                                         time.monotonic() + SPLICE_SECONDS)
                 except texture_block_splice.SpliceUnavailable as error:
                     fallback = str(error)
-                except TimeoutError:
+                except (TimeoutError, subprocess.TimeoutExpired):
                     fallback = texture_block_splice.TOO_LONG
-                except (ValueError, OSError):
+                except Exception:  # the ASTC option must never fail the save
                     fallback = SPLICE_UNCHECKED
                 deadline = time.monotonic() + 60
     finally:
