@@ -423,7 +423,8 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'astc-keep' }); assert(s.blush.previewing);
       assert.match(s.blush.status, /^Preview, not applied yet: Medium \(k 1\.65\) · Cheeks \(Ppo\) · Keep ASTC when saving$/);
       assert.deepStrictEqual(s.blush.displayed, { layer: 0, k: 1.65, encoding: 'astc-keep' }, 'the previewed strength is unchanged');
-      assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), "Save: keeps the game's ASTC compression · only the blush blocks are compressed again");
+      // Only a request until Save reports what it wrote.
+      assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), 'Save: keeping ASTC is requested');
       await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.encoding === 'astc-keep' && !s.pending; });
       edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits[0].blush, { layer: 0, k: 1.65, encoding: 'astc-keep' });
       saved = await saveNow();

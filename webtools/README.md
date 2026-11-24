@@ -593,7 +593,7 @@ opens that face texture.
   five levels in a grid after the "No blush" swatch, and Apply / Show before /
   Remove in one row right under them, followed by one line that says what Save
   will write for this face (exact pixels and how much larger the texture data
-  gets, or the ASTC compression kept).
+  gets, or that keeping ASTC is requested; Save itself reports what it wrote).
   At 1366×900 the status, all five levels and Apply are in view together when
   the tab opens, in English, Korean and Japanese.
 - Each level shows the texture's own cheek-centre colour. Strength k is a

@@ -150,6 +150,9 @@ print(json.dumps({"reason": t.CHEEK_UNAVAILABLE, "ko": i18n.tr("Baked blush", "k
   Array.from(texts).forEach(text => assert.ok(!/赤み/.test(words[text][1]), text));
   // The visible save line carries the size factor of the ASTC texture it describes.
   assert.ok(words['Save: exact pixels (data about {n}× larger)'].every(text => text.includes('{n}')));
+  // Before Save, keeping ASTC is only a request (Save may fall back to exact pixels).
+  assert.deepStrictEqual(['Save: keeping ASTC is requested'].concat(words['Save: keeping ASTC is requested']),
+    ['Save: keeping ASTC is requested', '저장 시 ASTC 유지 요청', '保存: ASTCの保持を要求']);
   // The Remove button keeps the panel's own wording (the viewer's generic "Remove" is 삭제/削除).
   assert.deepStrictEqual(Array.from(words.Remove), Array.from(words['Remove blush']));
   // The hint about the game's own blush names the level exactly as its button does.

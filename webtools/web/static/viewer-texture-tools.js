@@ -208,9 +208,9 @@
     "This texture is not ASTC-compressed, so it is always saved as exact pixels.": ["이 텍스쳐는 ASTC 압축이 아니므로 항상 정확한 픽셀로 저장합니다.", "このテクスチャはASTC圧縮ではないため、常に正確なピクセルで保存します。"],
     "Save mode": ["저장 방식", "保存方法"], "Keep ASTC when saving": ["저장 시 ASTC 유지", "保存時にASTCを保持"],
     // The always-visible one-line save sentence ({n}: how many times larger the
-    // texture data gets).
+    // texture data gets). Keeping ASTC is only a request until Save reports it.
     "Save: exact pixels (data about {n}× larger)": ["저장: 정확한 픽셀(데이터 약 {n}배)", "保存: 正確なピクセル（データ約{n}倍）"],
-    "Save: keeps the game's ASTC compression · only the blush blocks are compressed again": ["저장: 게임 압축 형식(ASTC) 유지 · 홍조 블록만 다시 압축", "保存: ゲームの圧縮形式（ASTC）を保持・頬紅のブロックだけ再圧縮"],
+    "Save: keeping ASTC is requested": ["저장 시 ASTC 유지 요청", "保存: ASTCの保持を要求"],
     "Save: exact pixels (also painted)": ["저장: 정확한 픽셀(그림판 편집 있음)", "保存: 正確なピクセル（ペイントあり）"],
     "Save: exact pixels": ["저장: 정확한 픽셀", "保存: 正確なピクセル"], "Save: exact pixels (larger texture data)": ["저장: 정확한 픽셀(데이터가 커짐)", "保存: 正確なピクセル（データが増加）"],
     "Choose how to save the baked blush: exact pixels or the game's ASTC compression.": ["홍조 저장 방식을 정확한 픽셀 또는 게임 압축 형식(ASTC) 유지 중에서 고르세요.", "頬紅の保存方法を、正確なピクセルかゲームの圧縮形式（ASTC）を保つかから選んでください。"],
@@ -1336,10 +1336,11 @@
     // The save mode is named only when it is not the default exact pixels,
     // as a request: Save may still write exact pixels (and says why).
     function blushSummary(choice) { return levelName(choice) + " · " + t(B.LAYERS[choice.layer].label) + (choice.encoding === "astc-keep" ? " · " + t("Keep ASTC when saving") : ""); }
-    // The always-visible save sentence: what Save will write for this face.
+    // The always-visible one-line save sentence: what Save will write for this face.
     function blushSaveText(entry, choice) {
       var block = astcBlock(entry), format = entry && entry.record && entry.record.format || "";
-      if (choice.encoding === "astc-keep" && block) return t(entry.pixelModified ? "Save: exact pixels (also painted)" : "Save: keeps the game's ASTC compression · only the blush blocks are compressed again");
+      // A request: Save may still write exact pixels, and its status says why.
+      if (choice.encoding === "astc-keep" && block) return t(entry.pixelModified ? "Save: exact pixels (also painted)" : "Save: keeping ASTC is requested");
       // RGBA32 is 32 bits a texel, an ASTC block 128 bits for block² texels.
       if (block) return t("Save: exact pixels (data about {n}× larger)").replace("{n}", String(Math.round(block * block / 4)));
       return t(format === "RGBA32" ? "Save: exact pixels" : "Save: exact pixels (larger texture data)");
