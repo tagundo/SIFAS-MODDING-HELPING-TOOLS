@@ -647,6 +647,91 @@ function orphanRecords() {
   assert.deepEqual(Object.keys(project.editor.camera.shots), [next.event.id], 'the new shot command drops the orphan too');
 }
 
+// The host's Duplicate clip (mv-studio.js duplicateEvent) as one insert command: a copy with the
+// id <track>:u<n>, placed at the source's end. History marks it added (originals null).
+function hostDuplicate(project, history, trackId, eventId) {
+  const owner = project.tracks.find((item) => item.id === trackId);
+  const source = owner.events.find((item) => item.id === eventId);
+  const ids = new Set(project.tracks.flatMap((item) => item.events.map((clip) => clip.id)));
+  let number = 1;
+  while (ids.has(`${owner.id}:u${number}`)) number++;
+  const clone = copy(source);
+  clone.id = `${owner.id}:u${number}`;
+  clone.start = source.start + source.duration;
+  delete clone.editable;
+  assert(history.apply({ label: 'Duplicate clip', changes: [{ target: { kind: 'track', track: owner.id }, path: ['events'], op: 'insert',
+    index: owner.events.indexOf(source) + 1, value: clone }] }));
+  return owner.events.find((item) => item.id === clone.id);
+}
+
+// Samples of a moving shot at `rate` Hz, the importer's way: ceil(duration·rate)+1 of them, the
+// last one at the clip's end.
+function movingSamples(duration, rate) {
+  const count = Math.ceil(duration * rate - 1e-9) + 1;
+  return Array.from({ length: count }, (_, index) => {
+    const time = Math.min(index / rate, duration), s = time / duration;
+    return { time, position: [10 - 2 * s, 3.35 + .1 * Math.sin(5 * s), 30 - 4 * s],
+      rotation: M.normalize(M.eulerZXYToQuaternion({ pan: 160 + 30 * s, tilt: -3, roll: 0 })), fov: 28 + 2 * s };
+  });
+}
+
+// A clip added by Duplicate clip carries its samples, not keys: they are its only motion, so no
+// rebake, resize or undo rewrites them (30 Hz and off-grid clips included). A shot whose keys own
+// its pose takes the 60 Hz grid of its length, and undoing a resize gives its samples back.
+function duplicatedClips() {
+  const modProject = (duration, rate) => ({ version: 1, name: 'Mod MV', duration: 30, nativeTimeline: false, source: { kind: 'mod' }, tracks: [
+    { id: 'cam', kind: 'camera', binding: '/EntryPoint/Live/Cameras/MainCamera', nativeClass: 'AnimationTrack', label: 'Camera', events: [
+      { id: 'cam:0', start: 0, duration, values: { keyframes: movingSamples(duration, rate) }, editableValues: ['keyframes'] }] }] });
+  const resize = (history, trackId, id, duration) => assert(history.apply({ label: 'Resize clip',
+    changes: [{ target: { kind: 'event', track: trackId, event: id }, path: ['duration'], after: duration }] }));
+  for (const [duration, rate, name] of [[4, 60, '60 Hz'], [4, 30, '30 Hz'], [3.205, 60, 'off-grid 3.205 s']]) {
+    const project = modProject(duration, rate);
+    const { ctx, history } = harness(project);
+    const source = copy(project.tracks[0].events[0].values.keyframes);
+    const dup = hostDuplicate(project, history, 'cam', 'cam:0');
+    const arrays = dup.values.keyframes;
+    assert.equal(K.findShot(ctx, dup.id).user, true, `${name}: an added clip`);
+    assert.equal(K.findShot(ctx, dup.id).owned, false, `${name}: no keys own it`);
+    assert.deepEqual(dup.values.keyframes, source, `${name}: the duplicate carries the samples`);
+    K.requestBake(ctx, {});
+    assert.equal(dup.values.keyframes, arrays, `${name}: a rebake leaves them alone`);
+    resize(history, 'cam', dup.id, duration / 2);
+    assert.equal(dup.values.keyframes, arrays, `${name}: a shrink does not cut them`);
+    history.undo();
+    assert.equal(dup.duration, duration);
+    assert.equal(dup.values.keyframes, arrays, `${name}: undo leaves them as they were`);
+    assert.deepEqual(dup.values.keyframes, source, `${name}: bit for bit`);
+    history.redo();
+    history.undo();
+    assert.deepEqual(dup.values.keyframes, source, `${name}: after redo and undo too`);
+  }
+  // A shot made in the editor: its keys own the pose, so its grid follows the clip.
+  const project = { version: 1, name: 'Mod MV', duration: 30, nativeTimeline: false, source: { kind: 'mod' }, tracks: [] };
+  const { ctx, history, at } = harness(project);
+  const made = K.ensureUserShot(ctx, 0, 4);
+  at(3);
+  assert(K.setChannels(ctx, 'absolute', { x: 5 }), 'a second key: the shot moves');
+  const keyed = copy(made.event.values.keyframes);
+  assert.equal(K.findShot(ctx, made.event.id).owned, true);
+  resize(history, K.USER_TRACK, made.event.id, 1);
+  assert.equal(made.event.values.keyframes.length, 61, 'a shorter grid');
+  history.undo();
+  assert.deepEqual(made.event.values.keyframes, keyed, 'undo bakes the same samples again');
+  resize(history, K.USER_TRACK, made.event.id, 3.205);
+  const grid = made.event.values.keyframes;
+  assert.equal(grid.length, 194, 'an off-grid length gets the importer grid: ceil(3.205·60)+1 samples');
+  assert.equal(grid.at(-1).time, 3.205, 'the last one at the clip end');
+  grid.slice(0, -1).forEach((sample, index) => assert.equal(sample.time, index / 60, `grid time ${index}`));
+  near(grid[180].position[0], 5, 1e-12, 'the keys are on the same frames');
+  history.undo();
+  assert.deepEqual(made.event.values.keyframes, keyed);
+  // Its duplicate carries the baked samples and no keys: shrink and undo give them back.
+  const dup = hostDuplicate(project, history, K.USER_TRACK, made.event.id);
+  resize(history, K.USER_TRACK, dup.id, 1);
+  history.undo();
+  assert.deepEqual(dup.values.keyframes, keyed, 'the duplicate of a keyed shot keeps its motion');
+}
+
 (async () => {
   unedited();
   offsetKey();
@@ -666,5 +751,6 @@ function orphanRecords() {
   imeShortcuts();
   valueLimits();
   orphanRecords();
+  duplicatedClips();
   console.log('mv studio camera keys tests passed');
 })().catch((error) => { console.error(error); process.exit(1); });

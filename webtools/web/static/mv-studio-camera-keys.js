@@ -107,22 +107,34 @@
       frames.every((frame) => frame && finite(frame.time) && vector(frame.position, 3) && vector(frame.rotation, 4));
   }
 
+  // The 60 Hz grid of a clip, as the importer samples one: ceil(duration·60)+1 samples at
+  // index/60, the last one at the clip's end.
+  const gridCount = (duration) => Math.max(2, Math.ceil(Math.max(0, duration) * FRAME_RATE - 1e-6) + 1);
+  const gridTime = (index, duration) => Math.min(index / FRAME_RATE, duration);
+
   // A static shot (position/rotation/fov values, non-native projects) on a 60 Hz grid.
   function staticGrid(values, duration) {
-    const count = Math.max(2, Math.ceil(Math.max(0, duration) * FRAME_RATE - 1e-6) + 1);
-    return Array.from({ length: count }, (_, index) => ({ time: Math.min(index / FRAME_RATE, duration),
+    return Array.from({ length: gridCount(duration) }, (_, index) => ({ time: gridTime(index, duration),
       position: values.position.slice(0, 3), rotation: values.rotation.slice(0, 4), fov: finite(values.fov) ? values.fov : null }));
   }
 
-  // An editor-made shot's samples on the grid of its current length: kept as they are while the
-  // count matches, otherwise index/60 times with the poses held from the last sample.
+  // The samples of a shot whose keys own its pose, on the grid of the clip's current length:
+  // kept as they are while they sit on it; otherwise sampled by time as the scene plays them
+  // (the last pose held past the end), never by index.
   function userGrid(frames, duration) {
-    const count = Math.max(2, Math.round(Math.max(0, duration) * FRAME_RATE) + 1);
-    if (frames.length === count) return frames;
+    const count = gridCount(duration);
+    if (frames.length === count && frames.every((frame, index) => frame.time === gridTime(index, duration))) return frames;
+    const ordered = frames.every((frame, index) => !index || frame.time >= frames[index - 1].time);
     return Array.from({ length: count }, (_, index) => {
-      const sample = frames[Math.min(index, frames.length - 1)];
-      return { time: index / FRAME_RATE, position: sample.position.slice(0, 3), rotation: sample.rotation.slice(0, 4),
-        fov: finite(sample.fov) ? sample.fov : null };
+      const time = gridTime(index, duration);
+      // The two samples around `time` (a binary search on ordered samples), then the scene's interpolation.
+      let around = frames;
+      if (ordered) {
+        const [lower, upper] = M.sampleIndex(frames, time);
+        around = lower === upper ? [frames[lower]] : [frames[lower], frames[upper]];
+      }
+      const pose = M.sampleFrames(around, time);
+      return { time, position: pose.position, rotation: pose.rotation, fov: finite(pose.fov) ? pose.fov : null };
     });
   }
 
@@ -187,9 +199,14 @@
       source = staticGrid(current, event.duration);
       staticSource = true;
     }
-    // A shot made in the editor is never exported natively, so it can be resized: its 60 Hz
-    // grid follows the clip's length (the keys own its pose).
-    if (user && source) {
+    // A shot added on the timeline is never exported natively, so it can be resized. When its
+    // keys own its pose (a keys record with keys, as a shot made in the editor starts), its 60 Hz
+    // grid follows the clip's length. Otherwise its samples are its only motion (Duplicate clip
+    // copies a clip's samples, not its keys) and stay exactly as they are.
+    const raw = recordOf(ctx, event.id);
+    const keyed = user && source ? normalizeRecord(raw, source.length) : null;
+    const owned = !!keyed && keyed.mode === "keys" && keyed.keys.length > 0;
+    if (owned) {
       const grid = userGrid(source, event.duration);
       regrid = grid !== source;
       source = grid;
@@ -208,8 +225,8 @@
     }
     const count = source ? source.length : 0;
     const shots = mainCameraShots(ctx);
-    const info = { track, event, source, count, user, native, staticSource, regrid, editable, reason, lengthChanged,
-      record: source ? normalizeRecord(recordOf(ctx, event.id), count) : null,
+    const info = { track, event, source, count, user, owned, native, staticSource, regrid, editable, reason, lengthChanged,
+      record: source ? normalizeRecord(raw, count) : null,
       lens: M.nativeLens(track), index: shots.findIndex((item) => item.event === event), total: shots.length,
       fallbackFov: finite(current.fov) ? current.fov : finite(values.fov) ? values.fov : 30 };
     if (finite(time) && source) info.frame = frameAt(info, time);
