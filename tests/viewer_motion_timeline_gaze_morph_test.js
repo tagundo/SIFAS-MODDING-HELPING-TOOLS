@@ -108,4 +108,14 @@ assert.equal(ended.getGazeState().weights[6], 1, 'the frame after a gaze clip en
 ended.evaluatePose(1.2); ended.evaluateGaze(1.2, right, { continuing: true });
 assert.equal(Object.keys(ended.getGazeState().weights).length, 0, 'and the frame after that none');
 
-console.log('PASS: gaze clip blend shape, one-frame gaze lag');
+// Timeline default mix curves.
+const weight = window.ViewerMotionTimeline.weight;
+close(weight({ start: 0, duration: 4, timing: { easeIn: 1 } }, .25), .15625, 'no serialized mix-in curve: EaseInOut(0,0,1,1)');
+close(weight({ start: 0, duration: 4, timing: { easeOut: 1 } }, 3.25), .84375, 'no serialized mix-out curve: EaseInOut(0,1,1,0)');
+close(weight({ start: 0, duration: 4, timing: { easeIn: 1, mixIn: [{ time: 0, value: 0 }] } }, .25), .15625,
+  'a one-key curve is replaced like an empty one');
+const linear = [{ time: 0, value: 0, inSlope: 1, outSlope: 1 }, { time: 1, value: 1, inSlope: 1, outSlope: 1 }];
+close(weight({ start: 0, duration: 4, timing: { easeIn: 1, mixIn: linear } }, .25), .25, 'an authored curve is evaluated as stored');
+close(weight({ start: 0, duration: 4, timing: { blendIn: .5, easeIn: 1 } }, .25), .5, 'blend-in duration wins over the ease');
+close(weight({ start: 0, duration: 4, weight: .5, timing: { easeIn: 1 } }, .5), .25, 'clip weight scales the eased input');
+console.log('PASS: gaze clip blend shape, one-frame gaze lag, Timeline default EaseInOut mix curves');

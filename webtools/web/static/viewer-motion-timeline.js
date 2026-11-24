@@ -27,14 +27,24 @@
       preMode: read("preMode", "m_PreExtrapolationMode", 0), postMode: read("postMode", "m_PostExtrapolationMode", 0),
       preTime: read("preTime", "m_PreExtrapolationTime", 0), postTime: read("postTime", "m_PostExtrapolationTime", 0) };
   }
+  // TimelineClip.get_mixInCurve / get_mixOutCurve (GL 3.12.0 0x35ce834 /
+  // 0x35ce970) replace a serialized curve with fewer than two keys by
+  // AnimationCurve.EaseInOut(0, 0, 1, 1) / EaseInOut(0, 1, 1, 0): flat
+  // tangents, so the Hermite segment is the smoothstep 3t^2 - 2t^3.
+  // EvaluateMixIn/EvaluateMixOut (0x35c75a8 / 0x35c7720) clamp it to [0, 1].
+  function mixCurve(keys, t, rising) {
+    if (keys && keys.length >= 2) return clamp(curve(keys, t, 0), 0, 1);
+    var x = clamp(t, 0, 1), smooth = x * x * (3 - 2 * x);
+    return rising ? smooth : 1 - smooth;
+  }
   function weightWithTiming(segment, time, spec, sourceWeight) {
     var local = time - segment.start, span = segment.duration, value = number(sourceWeight, number(segment.weight, 1));
     if (local < 0) return spec.preMode && local >= -spec.preTime ? value : 0;
     if (local > span) return spec.postMode && local <= span + spec.postTime ? value : 0;
     var incoming = spec.blendIn >= 0 ? spec.blendIn : spec.easeIn;
     var outgoing = spec.blendOut >= 0 ? spec.blendOut : spec.easeOut;
-    if (incoming > 0 && local < incoming) value *= curve(spec.mixIn, local / incoming, local / incoming);
-    if (outgoing > 0 && local > span - outgoing) value *= curve(spec.mixOut, (local - span + outgoing) / outgoing, (span - local) / outgoing);
+    if (incoming > 0 && local < incoming) value *= mixCurve(spec.mixIn, local / incoming, true);
+    if (outgoing > 0 && local > span - outgoing) value *= mixCurve(spec.mixOut, (local - span + outgoing) / outgoing, false);
     return clamp(value, 0, 1);
   }
   function weight(segment, time) { return weightWithTiming(segment, time, timing(segment.timing)); }
