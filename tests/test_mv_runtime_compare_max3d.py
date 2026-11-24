@@ -448,6 +448,25 @@ class AxisBillboardUpAxisTest(unittest.TestCase):
         self.assertIsNone(result.axis_billboard_role("/EntryPoint/Live/Members/Member1/" + self.REL))
         self.assertIn("stageNodeRotationDeg", self.stage(result, rel="litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani"))
 
+    def test_only_billboards_below_the_stage_effect_count(self):
+        # GetComponentsInChildren<AxisBillboard>(true) runs on the LiveCoreStageEffect GameObject: a billboard
+        # under another prefab:effect root (the member shaft prefabs) never gets targets and keeps its rotation.
+        keys = {"prefab:effect": dict(self.KEYS["prefab:effect"], **{
+            "fx_spo_sha_01": {"components": []},
+            "fx_spo_sha_01/root/spotlight_01": {"components": ["MeshRenderer", "LLAS.Components.AxisBillboard.AxisBillboard"]}})}
+        result = self.comparison(keys)
+        self.assertEqual(result.axis_billboards, {"lit_01/litB_All/" + self.REL})
+        self.assertIsNone(result.axis_billboard_role("/EntryPoint/Live/Stages/MainStage/Effect/root/spotlight_01"))
+        self.assertEqual(result.axis_billboard_role(f"{self.BINDING}/{self.REL}"), "self")
+        # Without a LiveCoreStageEffect row no billboard counts.
+        bare = {"prefab:effect": {path: row for path, row in self.KEYS["prefab:effect"].items() if "/" in path}}
+        self.assertEqual(self.comparison(bare).axis_billboards, set())
+        # LiveCoreStageEffect below the prefab root: only billboards below it.
+        nested = {"prefab:effect": {"bg": {"components": []}, "bg/fx": {"components": ["LLAS.Scene.Live.Components.LiveCoreStageEffect"]},
+                                    "bg/fx/cone": {"components": ["LLAS.Components.AxisBillboard.AxisBillboard"]},
+                                    "bg/other/cone": {"components": ["LLAS.Components.AxisBillboard.AxisBillboard"]}}}
+        self.assertEqual(self.comparison(nested).axis_billboards, {"fx/cone"})
+
     def test_drawn_billboard_stage_node_compares_its_full_turn(self):
         # The editor reports the live camera's turn and that the live camera draws the cone: the game turned it
         # toward that camera in the frame the record shows, so the whole rotation is compared.

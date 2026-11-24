@@ -109,6 +109,7 @@ W2C_TRANSLATION = (12, 13, 14)
 # the editor reports that the live camera draws it (axisBillboardDrawn, with the live camera's turn), and is compared
 # on its up axis elsewhere.
 AXIS_BILLBOARD_CLASS = "LLAS.Components.AxisBillboard.AxisBillboard"
+STAGE_EFFECT_CLASS = "LLAS.Scene.Live.Components.LiveCoreStageEffect"
 
 
 class DumpError(ValueError):
@@ -668,10 +669,21 @@ class Comparison:
 
     def _axis_billboards(self):
         """GameObject paths below the stage effect root that carry an AxisBillboard (the keys' serialized
-        prefab:effect components)."""
+        prefab:effect components). LiveCoreStageEffect.Initialize collects them with
+        GetComponentsInChildren<AxisBillboard>(true) on its own GameObject (0x2f6f554-0x2f6f568), so only rows at or
+        below a row that lists LiveCoreStageEffect count. The other prefab:effect roots (12035: fx_spo_are_01,
+        fx_spo_sha_01, fx_spo_sha_02) are not the Effect GameObject either; a billboard there never gets camera
+        targets (AxisBillboard.Initialize 0x27bff10 enables it only with targets) and keeps its full rotation."""
         rows = (self.keys or {}).get("prefab:effect") or {}
-        return {Conventions.editor_relative_path(path) for path, row in rows.items()
-                if "/" in path and AXIS_BILLBOARD_CLASS in ((row or {}).get("components") or [])}
+        components = {path: (row or {}).get("components") or [] for path, row in rows.items()}
+        effects = {path for path, names in components.items() if STAGE_EFFECT_CLASS in names}
+
+        def below_effect(path):
+            parts = path.split("/")
+            return any("/".join(parts[:end]) in effects for end in range(1, len(parts) + 1))
+
+        return {Conventions.editor_relative_path(path) for path, names in components.items()
+                if "/" in path and AXIS_BILLBOARD_CLASS in names and below_effect(path)}
 
     def axis_billboard_role(self, path):
         """'self' when the effect GameObject at the game path carries an AxisBillboard, 'below' when an ancestor
