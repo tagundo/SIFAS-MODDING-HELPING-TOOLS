@@ -127,10 +127,11 @@ function testPrewarmActivationBuildUp() {
     emission: {enabled: true, rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: .01, probability: 1}],
       ...emission}, culling: procedural});
   const loop = stream => [1, 9, 27, 150, 290, 301, 450].map(frames => alive(stream, frames));
-  // The prewarm's first step emits the burst plus the seeded carry (2 particles, ~10 s old at activation);
-  // its wrap at the loop end fires the burst again only if the batch cap leaves room.
-  assert.deepEqual(loop(P.create(cloud(10), 3)), [2, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(loop(P.create(cloud(2), 3)), [1, 0, 0, 0, 0, 1, 1], "maxParticles 2: an empty first loop");
+  // The prewarm's first .2 s step emits the burst plus the seeded carry: one batch of 2 particles, 9.8 s old
+  // at activation (a procedural batch ages from its step's end); the wrap at the loop end fires the burst
+  // again only if the batch cap leaves room.
+  assert.deepEqual(loop(P.create(cloud(10), 3)), [3, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(loop(P.create(cloud(2), 3)), [2, 0, 0, 0, 0, 1, 1], "maxParticles 2: an empty first loop");
   // Older descriptors without the flag keep the live-particle cap.
   const legacy = kira(true);
   delete legacy.culling.procedural;

@@ -26,9 +26,10 @@
   //    at 1 - (scan carry) + 1e-4, so an enabled module emits one extra
   //    particle in the first step even at rate 0. A procedural system
   //    (culling.procedural) prewarms in one procedural update whose emission
-  //    cap counts every particle emitted so far, live or dead; after the
-  //    prewarm the cap counts live particles again (per-frame updates run
-  //    non-procedurally, 0x1ce1b8).
+  //    cap counts every particle emitted so far, live or dead, and whose
+  //    burst particles start at their step's end; after the prewarm the cap
+  //    counts live particles again (per-frame updates run non-procedurally,
+  //    0x1ce1b8).
   //  * The clone root sits at the world origin plus the clip offset; its
   //    systems use their own serialized random seeds.
   //
@@ -794,10 +795,17 @@
       }
       for (const {count, elapsed} of pulses) {
         const allowed = Math.min(count, Math.max(0, main.maxParticles - used(state)));
-        if (allowed > 0) {
+        if (!(allowed > 0)) continue;
+        if (state.batched === undefined) {
           born(state, allowed, () => Math.max(birthBias, Math.min(dt, elapsed)), systemTime);
-          if (state.batched !== undefined) state.batched += allowed;
+          continue;
         }
+        // A procedural batch starts at age 0 at the end of its step and only
+        // its rate particles get spacing offsets (0x1d7908 stores the rate
+        // count at +0x18; 0x1d7ed8 offsets only those), so its burst
+        // particles are born at the step end.
+        born(state, allowed, () => birthBias, systemTime);
+        state.batched += allowed;
       }
     }
 
