@@ -34,7 +34,15 @@ def stand_in_timelines():
     from webtools.core import mv_studio_register as register, mv_studio_timeline
     stock = {"tl2101": timeline_bytes("android"), "tl2101i": timeline_bytes("ios"),
              "tl2201": timeline_bytes("android", tag="other"), "tl2201i": timeline_bytes("ios", tag="other")}
-    register._load = lambda repo_root, descriptor, *, download, deadline=None: stock.get(descriptor["pack_name"])
+    def load(repo_root, descriptor, *, download, deadline=None):
+        name = descriptor["pack_name"]
+        published = Path(repo_root) / "static" / name
+        if name not in stock and name.startswith("mvstudio_") and published.is_file():
+            # A registered song's timeline pack, as the store published it (its keystream is self-inverse).
+            return native.encrypt_bytes(published.read_bytes())[descriptor["head"]:descriptor["head"] + descriptor["size"]]
+        return stock.get(name)
+
+    register._load = load
     register._blob_platform = lambda raw: json.loads(raw[8:].rstrip(b" "))["platform"]
     mv_studio_timeline.parse_timeline = fake_parse
     mv_studio_timeline.export_timeline = fake_export

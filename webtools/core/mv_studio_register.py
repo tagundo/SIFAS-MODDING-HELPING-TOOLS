@@ -82,6 +82,8 @@ NO_ELICHIKA = "MV registration requires the Elichika server app."
 BUSY = "Another MV registration or removal is running. Try again when it finishes."
 CHOOSE_BASE = "Choose the base MV."
 BASE_UNKNOWN = "The base MV of this song is unknown. Only removal is available."
+SOURCE_REMOVED = ("The registered song this project was opened from was removed. Choose a stock base MV to register "
+                  "this project.")
 BASE_MISMATCH = "This song was made from another base MV. Register the project as a new song."
 STRUCTURE = "The track structure changed, so the timeline cannot go into the game:"
 TIMELINE_UNAVAILABLE = "The original MV timeline is unavailable. Reopen the original timeline before saving."
@@ -142,14 +144,14 @@ AUDIO_SHORTER = "The audio is {seconds} s shorter than the MV. The MV ends with 
 OFFSET_BASE = "The soundtrack offset applies only to the project audio. The original audio starts with the MV."
 EDITS_PENDING = "The edits are counted once the original MV is available. Allow the download to bake them."
 MESSAGES = (
-    NO_ELICHIKA, BUSY, CHOOSE_BASE, BASE_UNKNOWN, BASE_MISMATCH, STRUCTURE, TIMELINE_UNAVAILABLE, MOD_MISMATCH,
-    ORIGINAL_MISSING_IOS, ORIGINAL_MISSING_ANDROID, OTHER_PLATFORM_FAILED_IOS, OTHER_PLATFORM_FAILED_ANDROID,
-    PLATFORMS_DIFFER, STALE, UNBAKED, TITLE, CREDIT, PLATFORMS_CHOICE, REQUEST, MODE, KEEP_NEW, AUDIO_KIND, ENCODER,
-    BPM_REQUIRED, BEAT, PREVIEW_START, PCM_MISSING, PCM_SIZE, AUDIO_TEMPLATE, JACKET_KIND, JACKET_CROP, JACKET_BOX,
-    JACKET_IMAGE, JACKET_SOURCE, CANCELLED, REMOVE_CANCELLED, REVIEW_OUT_OF_DATE, REGISTERED, UPDATED, NO_CHANGES,
-    REMOVED, RESTARTED, RESTART_PENDING, RESTART_MANUAL, STOPPED_MANUAL, NOT_TRACK_SETTINGS, NOT_VALUES, NOT_STAGE,
-    NOT_PERFORMERS, NOT_POSITIONS, NOT_COSTUMES, NOT_QUALITY, NOT_UNBAKED, FOLLOW_NOTE, AUDIO_LONGER, AUDIO_SHORTER,
-    OFFSET_BASE, EDITS_PENDING,
+    NO_ELICHIKA, BUSY, CHOOSE_BASE, BASE_UNKNOWN, SOURCE_REMOVED, BASE_MISMATCH, STRUCTURE, TIMELINE_UNAVAILABLE,
+    MOD_MISMATCH, ORIGINAL_MISSING_IOS, ORIGINAL_MISSING_ANDROID, OTHER_PLATFORM_FAILED_IOS,
+    OTHER_PLATFORM_FAILED_ANDROID, PLATFORMS_DIFFER, STALE, UNBAKED, TITLE, CREDIT, PLATFORMS_CHOICE, REQUEST, MODE,
+    KEEP_NEW, AUDIO_KIND, ENCODER, BPM_REQUIRED, BEAT, PREVIEW_START, PCM_MISSING, PCM_SIZE, AUDIO_TEMPLATE,
+    JACKET_KIND, JACKET_CROP, JACKET_BOX, JACKET_IMAGE, JACKET_SOURCE, CANCELLED, REMOVE_CANCELLED, REVIEW_OUT_OF_DATE,
+    REGISTERED, UPDATED, NO_CHANGES, REMOVED, RESTARTED, RESTART_PENDING, RESTART_MANUAL, STOPPED_MANUAL,
+    NOT_TRACK_SETTINGS, NOT_VALUES, NOT_STAGE, NOT_PERFORMERS, NOT_POSITIONS, NOT_COSTUMES, NOT_QUALITY, NOT_UNBAKED,
+    FOLLOW_NOTE, AUDIO_LONGER, AUDIO_SHORTER, OFFSET_BASE, EDITS_PENDING,
     *STAGES.values(),
 )
 
@@ -269,14 +271,31 @@ def _load(repo_root, descriptor, *, download, deadline=None):
 
 # ---------------------------------------------------------------- base MV
 
+def _registered_source(repo_root, live, region, live_id):
+    """The registered song a project was opened from, or None when it was removed since."""
+    try:
+        return live.describe_mv_song(repo_root, region=region, live_id=live_id)
+    except ValueError:
+        if any(song.get("liveId") == live_id for song in live.list_mv_songs(repo_root, region=region)):
+            raise
+        return None
+
+
 def _base(repo_root, project, template, live):
-    """The base MV: {region, liveId, assetId, fixed, registered, song?}, None (choose one) or BASE_UNKNOWN."""
+    """The base MV: {region, liveId, assetId, fixed, registered, song?}, None (choose one), BASE_UNKNOWN
+    or SOURCE_REMOVED ({"removed": True}: the registered song the project was opened from is gone)."""
     source = project.get("source") if isinstance(project.get("source"), dict) else {}
     if (source.get("kind") == "game" and source.get("region") in REGIONS and _identity(source.get("liveId"))
             and _identity(source.get("assetId"))):
         region = source["region"]
         if source.get("registered") is True:
-            song = live.describe_mv_song(repo_root, region=region, live_id=source["liveId"])
+            song = _registered_source(repo_root, live, region, source["liveId"])
+            if song is None:
+                # The project needs a stock base MV now; its own timeline is then a mod of that base.
+                if template is None:
+                    return {"region": region, "liveId": None, "assetId": None, "fixed": False, "registered": False,
+                            "removed": True}
+                return _chosen(template)
             if song.get("templateAssetId") is None:
                 return {"region": region, "liveId": None, "assetId": None, "fixed": True, "registered": True,
                         "song": song, "unknown": True}
@@ -286,6 +305,11 @@ def _base(repo_root, project, template, live):
                 "registered": False}
     if template is None:
         return None
+    return _chosen(template)
+
+
+def _chosen(template):
+    """A base MV chosen in the panel's picker."""
     if (not isinstance(template, dict) or set(template) != {"region", "liveId", "assetId"}
             or template["region"] not in REGIONS or not _identity(template["liveId"])
             or not _identity(template["assetId"])):
@@ -842,6 +866,12 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
     if base.get("unknown"):
         result["song"] = base["song"]
         result["blocked"].append({"message": BASE_UNKNOWN})
+        return result
+    if base.get("removed"):
+        # Nothing is known about the timeline until a stock base is chosen.
+        result["timeline"]["unchanged"] = False
+        result["blocked"].append({"message": SOURCE_REMOVED})
+        _audio_plan(result, project, None, repo_root, None, hint)
         return result
     facts = _facts(repo_root, base["region"], base["liveId"], base["assetId"], language)
     result["base"] = {"liveId": base["liveId"], "assetId": base["assetId"], "title": facts["title"],
@@ -1505,6 +1535,8 @@ def _register(job, repo_root, request, language):
         raise ValueError(CHOOSE_BASE)
     if base.get("unknown"):
         raise ValueError(BASE_UNKNOWN)
+    if base.get("removed"):
+        raise ValueError(SOURCE_REMOVED)
     region = base["region"]
     song = None
     if request["mode"] == "update":

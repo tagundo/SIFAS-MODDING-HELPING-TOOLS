@@ -937,6 +937,34 @@ class RegisterJobTests(Case):
             with self.subTest(session=current and vars(type(current)), managed=managed, changed=changed):
                 self.assertEqual(register._restart_state(current, managed, changed), expected)
 
+    def test_a_removed_source_song_needs_a_stock_base(self):
+        first, _ = self.run_job(self.request(self.edited(self.project())))
+        live_id = first.song()["song"]["liveId"]
+        reopened = self.reopened(live_id)
+        self.assertEqual(register.plan(self.root, reopened)["target"], live_id)
+        review = register.remove_plan(self.root, region="gl", live_id=live_id)
+        register.run_remove(FakeJob(), self.root, register.validate_remove(
+            {"region": "gl", "liveId": live_id, "reviewToken": review["reviewToken"]}))
+        # The project's own song is gone: a blocked plan (not a failed request) that asks for a stock base.
+        plan = register.plan(self.root, reopened)
+        self.assertEqual((plan["region"], plan["base"], plan["song"], plan["targets"], plan["blocked"]),
+                         ("gl", None, None, [], [{"message": register.SOURCE_REMOVED}]))
+        self.assertEqual((plan["audio"]["default"], plan["timeline"]["unchanged"]), ("base", False))
+        with self.assertRaisesRegex(ValueError, "was removed"):
+            self.run_job(self.request(reopened))
+        # A chosen stock base takes its place: the project's own timeline is then a mod of that base.
+        template = {"region": "gl", "liveId": 21, "assetId": 2101}
+        plan = register.plan(self.root, reopened, template=template)
+        self.assertEqual((plan["base"]["liveId"], plan["base"]["fixed"], plan["timeline"]["kind"], plan["blocked"]),
+                         (21, False, "mod", []))
+        job, _ = self.run_job(self.request(reopened, template=template))
+        self.assertEqual(job.song()["song"]["platforms"], {"android": "custom", "ios": "custom"})
+        # A song that is still listed but cannot be read fails the check as before.
+        listed = self.reopened(job.song()["song"]["liveId"])
+        with mock.patch.object(mv_studio_live, "describe_mv_song", side_effect=ValueError("The game catalog is busy.")):
+            with self.assertRaisesRegex(ValueError, "busy"):
+                register.plan(self.root, listed)
+
     def test_a_plan_made_before_an_edit_cannot_drop_the_edit(self):
         project = self.project()
         stale = register.plan(self.root, project)
@@ -1691,6 +1719,15 @@ class RealSampleUpdateTests(Case):
         after = mv_studio_live.describe_mv_song(self.root, region="gl", live_id=song["liveId"])
         self.assertEqual((after["revision"], after["fingerprints"], after["platforms"]),
                          (song["revision"], song["fingerprints"], song["platforms"]))
+        # The song removed: the opened project asks for a stock base, and with the song's own base it
+        # is a mod of it whose timeline fits that base (no structure or base mismatch).
+        review = register.remove_plan(self.root, region="gl", live_id=song["liveId"])
+        register.run_remove(FakeJob(), self.root, register.validate_remove(
+            {"region": "gl", "liveId": song["liveId"], "reviewToken": review["reviewToken"]}))
+        self.assertEqual(register.plan(self.root, reopened)["blocked"], [{"message": register.SOURCE_REMOVED}])
+        plan = register.plan(self.root, reopened, template={"region": "gl", "liveId": 21, "assetId": 2101})
+        self.assertEqual((plan["timeline"]["kind"], plan["projectPlatform"], plan["blocked"], plan["timeline"]["bake"]),
+                         ("mod", "android", [], ["android", "ios"]))
 
 
 if __name__ == "__main__":

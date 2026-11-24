@@ -411,6 +411,17 @@
         const project = ctx.project();
         const link = project && project.registration;
         if (current === state && link && link.liveId === event.liveId && link.region === event.region) delete project.registration;
+        // The open project was opened from this song: its plan (base, target, kept timelines) went with
+        // it. The next check says so and offers a stock base MV.
+        const from = project && project.source;
+        if (current === state && from && from.registered === true && from.liveId === event.liveId && from.region === event.region) {
+          current.plan = null;
+          current.planned = -1;
+          current.target = undefined;
+          current.jacket = current.jacketInfo = current.crop = null;
+          current.audio = null;
+          current.result = null;
+        }
       } else if (event.type === "done") {
         finished = true;
         events.close();

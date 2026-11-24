@@ -152,6 +152,40 @@ async function nativeTimeline(page, server, panel, posted, log) {
   return song;
 }
 
+// A project opened from a registered song, then that song removed through the panel: the plan says
+// the song is gone and offers a stock base MV (no stale target, no failed check).
+async function removedSource(page, server, panel, song) {
+  const failed = [];
+  const listener = (response) => {
+    if (response.status() >= 400 && /\/api\/mv-studio\/(registration-plan|songs)/.test(response.url())) failed.push(response.url());
+  };
+  page.on('response', listener);
+  await page.unroute('**/api/mv-studio/game?*');
+  const source = { kind: 'game', region: 'gl', platform: 'android', liveId: song.liveId, assetId: song.assetId, mvOnly: true,
+    registered: true };
+  await page.route('**/api/mv-studio/game?*', (route) => route.fulfill({ json: { ...server.nativeProject, name: song.title, source } }));
+  await page.locator('#mv-import-game').click();
+  await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
+  await page.locator('#mv-game-load').click();
+  await page.waitForFunction((id) => MVStudio.getState().project?.source?.liveId === id, song.liveId);
+  if (!(await panel.evaluate((node) => node.open))) await panel.locator(':scope > summary').click();
+  await page.waitForFunction((id) => document.querySelector('#mv-register-target')?.value === String(id), song.liveId);
+  if (!(await page.locator('#mv-register-songs').evaluate((node) => node.open))) await page.locator('#mv-register-songs > summary').click();
+  const row = page.locator(`[data-mv-song="${song.liveId}"]`);
+  await row.locator('[data-mv-song-action=remove]').click();
+  await page.locator('#mv-register-remove-dialog [data-mv-remove=confirm]').click();
+  await page.locator('#mv-register-removed').waitFor({ timeout: 60000 });
+  await page.locator('#mv-register-plan').filter({ hasText: '이 프로젝트를 연 등록 곡이 삭제되었습니다.' }).waitFor({ timeout: 30000 });
+  assert.equal(await page.locator('#mv-register-target').count(), 0, 'The removed song is no longer a target');
+  assert.doesNotMatch(await page.locator('#mv-register-plan').textContent(), /등록된 타임라인을 그대로 둡니다|타임라인 변경 없음/);
+  assert.equal(await page.locator('#mv-register-base').textContent(), '선택 안 함');
+  assert.equal(await page.locator('#mv-register-base-change').textContent(), '기본 MV 고르기');
+  assert(await page.locator('#mv-register-submit').isDisabled());
+  assert.deepEqual(failed, [], 'The check answers a removed source without an error');
+  await shot(page, panel, 'register-source-removed-ko.png');
+  page.off('response', listener);
+}
+
 async function run() {
   if (!elichika) {
     console.log(JSON.stringify({ status: 'SKIP', reason: 'The Elichika server app is not available (set ELICHIKA_DIR).' }));
@@ -302,7 +336,8 @@ async function run() {
     assert.equal(await page.locator('#mv-register-target').count(), 0);
     assert.equal(await page.evaluate(() => MVStudio.getState().project.registration), undefined);
     await shot(page, panel, 'register-removed-ko.png');
-    await nativeTimeline(page, server, panel, posted, log);
+    const nativeSong = await nativeTimeline(page, server, panel, posted, log);
+    await removedSource(page, server, panel, nativeSong);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {

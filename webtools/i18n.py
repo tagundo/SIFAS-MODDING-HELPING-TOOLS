@@ -2891,6 +2891,10 @@ _MV_REGISTER_TRANSLATIONS = {
     "Choose the base MV.": ("기본 MV를 고르세요.", "ベースMVを選んでください。"),
     "The base MV of this song is unknown. Only removal is available.": (
         "이 곡의 기본 MV를 알 수 없습니다. 삭제만 할 수 있습니다.", "この曲のベースMVが不明です。削除のみできます。"),
+    ("The registered song this project was opened from was removed. Choose a stock base MV to register this "
+     "project."): (
+        "이 프로젝트를 연 등록 곡이 삭제되었습니다. 이 프로젝트를 등록하려면 게임의 원래 MV를 기본 MV로 고르세요.",
+        "このプロジェクトを開いた登録済みの曲は削除されました。このプロジェクトを登録するには、ゲームの元のMVをベースMVとして選んでください。"),
     "This song was made from another base MV. Register the project as a new song.": (
         "이 곡은 다른 기본 MV로 만들었습니다. 이 프로젝트는 새 곡으로 등록하세요.",
         "この曲は別のベースMVから作られています。このプロジェクトは新しい曲として登録してください。"),
