@@ -852,6 +852,53 @@ class RegisterJobTests(Case):
 
 
 @NEEDS_STORE
+class RealEncoderTests(Case):
+    """Project audio through the real HCA encoder and ACB/AWB writer, accepted by Elichika's own cue check."""
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(REPO / "tests"))
+        self.addCleanup(sys.path.remove, str(REPO / "tests"))
+        import test_cri_acb_write as cri_tests
+        from webtools.core import cri_hca_encode
+        try:
+            library = cri_tests.Clhca.get()
+        except unittest.SkipTest:
+            raise
+        environment = mock.patch.dict(os.environ, {"ELICHIKA_HCA_LIBRARY": library})
+        environment.start()
+        self.addCleanup(environment.stop)
+        music_acb, music_awb = cri_tests.synthetic_template(cri_hca_encode.encode_hca(cri_tests.tone(1.0, 200)))
+        sabi_acb, sabi_awb = cri_tests.synthetic_template(cri_hca_encode.encode_hca(cri_tests.tone(0.5, 300)))
+        self.local.update(m21acb=music_acb, m21awb=music_awb, sabi21a=sabi_acb, sabi21w=sabi_awb)
+        self.tone = cri_tests.tone
+
+    def test_project_audio_registers_a_music_cue_and_its_preview(self):
+        from webtools.core import cri_audio_decode
+        import struct
+        pcm = self.tone(6.0, 330, 440, level=0.3)
+        data = pcm.tobytes()
+        wav = (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 2, 44100,
+               176400, 4, 16) + b"data" + struct.pack("<I", len(data)) + data)
+        name = register.store_pcm(wav)["name"]
+        self.assertTrue(register.encoder_available())
+        audio = {"kind": "project", "pcm": name, "bpm": 128, "firstBeat": 0.25, "previewStart": 1.0}
+        job, _ = self.run_job(self.request(self.project(), audio=audio))
+        song = job.song()["song"]
+        sheet = f"music_{song['liveId']}"
+        self.assertEqual((song["audio"], song["musicSheet"], song["previewSheet"]), ("custom", sheet, sheet + "_SABI"))
+        self.assertTrue(any(event["type"] == "mv-encode" for event in job.events))
+        with closing(sqlite3.connect(self.root / "assets/db/gl/asset_a_en.db")) as database:
+            rows = dict((row[0], row[1:]) for row in database.execute(
+                "SELECT sheet_name, acb_pack_name, awb_pack_name FROM m_asset_sound WHERE sheet_name LIKE ?", (sheet + "%",)))
+        self.assertEqual(sorted(rows), [sheet, sheet + "_SABI"])
+        acb = (self.root / "static" / rows[sheet][0]).read_bytes()
+        self.assertEqual(cri_audio_decode.inspect_cues(acb)["sheet"], sheet)
+        beat = cri_audio_decode.inspect_beat_sync(acb, sheet)
+        self.assertEqual((beat["bpm"], beat["startSample"]), (128.0, round(0.25 * 44100)))
+
+
+@NEEDS_STORE
 class RequestTests(Case):
     def test_request_validation(self):
         project = self.project()
