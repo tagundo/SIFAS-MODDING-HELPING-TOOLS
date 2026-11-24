@@ -241,6 +241,36 @@ async function synthetic(browser, url) {
   assert.equal(current.project.editor.camera.shots['cam:0'].keys[0].frame, moved + 1);
   assert.equal(current.project.tracks[0].events[0].start, clipStart, 'the shot stays put');
   assert.equal(await focusedKey(), moved + 1, 'the moved diamond has the focus');
+  // Ctrl+Z and Ctrl+Shift+Z on the diamond redraw the lane: the key keeps the focus (the moved-back
+  // key's diamond takes it), so Alt+Arrow after an undo still moves the key, not the shot.
+  const keyFrame = async () => (await state(page)).project.editor.camera.shots['cam:0'].keys[0].frame;
+  await page.keyboard.press('Control+z');
+  assert.equal(await keyFrame(), moved, 'Ctrl+Z moves the key back');
+  assert.equal(await focusedKey(), moved, 'the key diamond keeps the focus after Ctrl+Z');
+  await page.keyboard.press('Control+Shift+z');
+  assert.equal(await keyFrame(), moved + 1);
+  assert.equal(await focusedKey(), moved + 1, 'and after Ctrl+Shift+Z');
+  await page.keyboard.press('Control+z');
+  await page.keyboard.press('Alt+ArrowRight');
+  current = await state(page);
+  assert.equal(current.history.undoLabel, 'Move camera key', 'Alt+Arrow after an undo moves the key');
+  assert.equal(current.project.editor.camera.shots['cam:0'].keys[0].frame, moved + 1);
+  assert.equal(current.project.tracks[0].events[0].start, clipStart, 'the shot stays put');
+  assert.equal(await focusedKey(), moved + 1);
+  // An undo of the shot's own move (the host redraws the lane first) also leaves the focus on the key.
+  await page.locator('.mv-clip[data-event="cam:0"]').focus();
+  await page.keyboard.press('Alt+ArrowRight');
+  assert.equal((await state(page)).history.undoLabel, 'Move clip');
+  await page.locator(`.mv-cam-key[data-event="cam:0"][data-frame="${moved + 1}"]`).focus();
+  await page.keyboard.press('Control+z');
+  current = await state(page);
+  assert.equal(current.project.tracks[0].events[0].start, clipStart, 'Ctrl+Z on the diamond undid the shot move');
+  assert.equal(await focusedKey(), moved + 1, 'the key diamond keeps the focus');
+  await page.keyboard.press('Alt+ArrowLeft');
+  current = await state(page);
+  assert.equal(current.history.undoLabel, 'Move camera key');
+  assert.equal(current.project.editor.camera.shots['cam:0'].keys[0].frame, moved);
+  assert.equal(current.project.tracks[0].events[0].start, clipStart);
 
   // Free camera → orbit → Key current view (K) → the game camera shows the view.
   const shotStart = 241 / 60, keyTime = shotStart + 75 / 60;

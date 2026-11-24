@@ -1157,6 +1157,10 @@
       }
     });
     diamond.addEventListener("keydown", (event) => {
+      // Undo/redo is the host's shortcut (on the document, after this): the diamond is noted
+      // first, since the host may redraw the lane before projectChanged runs.
+      const key = String(event.key || "").toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && (key === "z" || key === "y")) { noteKeyFocus(ctx, eventId, frame); return; }
       if (!event.altKey || (event.key !== "ArrowLeft" && event.key !== "ArrowRight") || ctx.locked()) return;
       event.preventDefault();
       event.stopPropagation();
@@ -1176,6 +1180,39 @@
     if (!global.document || typeof CSS === "undefined") return;
     const lane = document.querySelector(`.mv-lane[data-track="${CSS.escape(trackId)}"]`);
     lane?.querySelector(`.mv-cam-key[data-event="${CSS.escape(eventId)}"][data-frame="${frame}"]`)?.focus({ preventScroll: true });
+  }
+
+  // The key diamond that has the focus: the one an undo/redo shortcut was pressed on (noted for
+  // the length of that key press), else document.activeElement.
+  function noteKeyFocus(ctx, eventId, frame) {
+    const state = stateOf(ctx), note = { event: eventId, frame };
+    state.keyFocus = note;
+    setTimeout(() => { if (state.keyFocus === note) state.keyFocus = null; }, 0);
+  }
+
+  function focusedKey(ctx) {
+    const noted = stateOf(ctx).keyFocus;
+    if (noted) return noted;
+    const element = global.document && document.activeElement;
+    return element && element.classList && element.classList.contains("mv-cam-key")
+      ? { event: element.dataset.event, frame: Number(element.dataset.frame) } : null;
+  }
+
+  // After an undo or redo with a key diamond focused, the lane redraws hand the focus to the
+  // clip: the same key's diamond takes it back, so Alt+Arrow keeps moving a key. When that key is
+  // gone (its move was undone), the nearest key of the same shot takes the focus and the selection.
+  function refocusKey(ctx, focused) {
+    const shot = findShot(ctx, focused.event);
+    const keys = shot && shot.record ? shot.record.keys : [];
+    if (!keys.length) return;
+    let key = keys.find((item) => item.frame === focused.frame);
+    if (!key) {
+      key = keys.reduce((best, item) => Math.abs(item.frame - focused.frame) < Math.abs(best.frame - focused.frame) ? item : best);
+      select(ctx, shot, key.frame);
+      ctx.refreshLane(shot.track.id);
+      renderPanel(ctx);
+    }
+    focusDiamond(shot.track.id, shot.event.id, key.frame);
   }
 
   function selectedFrame(ctx, eventId) {
@@ -1609,6 +1646,7 @@
       // outfits); keys alone rebake to the same samples. Unedited shots are not visited.
       if (info.reason === "reload" || info.reason === "reimport") { state.panel = null; requestBake(ctx, { reason: info.reason }); }
       else if (info.reason === "history") {
+        const focused = focusedKey(ctx);
         const scope = bakeScope(ctx, info.command);
         if (scope) {
           state.refreshed = new Set();
@@ -1617,6 +1655,7 @@
             state.refreshed = null;
           }
         } else renderPanel(ctx);
+        if (focused && info.direction !== "do") refocusKey(ctx, focused);
       } else renderPanel(ctx);
     },
     timeChanged(ctx) {
