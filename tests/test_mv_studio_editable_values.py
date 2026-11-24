@@ -71,6 +71,41 @@ def timeline(*tracks):
 
 
 class WhitelistTests(unittest.TestCase):
+    def test_every_whitelisted_field_has_a_descriptor(self):
+        table = descriptors()["classes"]
+        missing = sorted(f"{native}.{field}" for native, fields in studio._EDITABLE_VALUES.items()
+                         for field in fields if field not in table.get(native, {}))
+        self.assertEqual(missing, [])
+
+    def test_descriptors_for_limited_and_observed_fields_match_the_server(self):
+        data = descriptors()
+        table, sets = data["classes"], data["sets"]
+        for (native, field), (low, high) in studio._LIMITED_VALUES.items():
+            spec = table[native][field]
+            with self.subTest(native=native, field=field):
+                if spec["control"] == "bool-int":
+                    values = [0, 1]
+                elif spec["control"] == "enum":
+                    values = [option[0] for option in sets[spec["set"]]]
+                else:
+                    self.assertIn(spec["control"], ("facial-index", "enum-members"))
+                    continue
+                self.assertEqual((min(values), max(values)), (low, high), values)
+        for (native, field), scope in studio._OBSERVED_VALUES.items():
+            self.assertEqual(table[native][field]["control"], "enum-observed")
+            self.assertEqual(table[native][field]["scope"], scope)
+        scaling = table["LiveMemberScalingClip"]["intensity"]
+        self.assertEqual((scaling["control"], scaling["min"], scaling["max"]), ("slider", 0, 1))
+        controls = {"number", "slider", "vector", "color", "enum", "enum-observed", "enum-members", "bool-int", "text",
+                    "facial-index", "readonly"}
+        for native, fields in table.items():
+            for field, spec in fields.items():
+                self.assertIn(spec["control"], controls, f"{native}.{field}")
+                if "set" in spec:
+                    self.assertIn(spec["set"], sets)
+                if field not in studio._EDITABLE_VALUES.get(native, set()):
+                    self.assertEqual(spec["control"], "readonly", f"{native}.{field} is not exportable")
+
     def test_colour_source_classes_are_the_ones_with_a_member_colour_preview(self):
         self.assertEqual(studio._COLOR_SOURCE_CLASSES, {
             "LiveMemberAmbientClip", "LiveStageAmbientClip", "LiveStageSingleAmbientClip", "LiveStageEmissiveClip",

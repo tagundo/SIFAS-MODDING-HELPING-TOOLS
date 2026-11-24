@@ -1,0 +1,51 @@
+/* MV Studio inspector value controls (mv-studio-event-fields.js). */
+
+/* Rows keep the inspector's two-column grid; colours and vectors take the full width. */
+#tab-mv .mv-value-field { align-items: center; }
+#tab-mv .mv-value-field.mv-value-wide { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+#tab-mv .mv-value-label { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+#tab-mv .mv-field-badge {
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--muted) 60%, transparent);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: .68rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* Slider + number box. */
+#tab-mv .mv-value-slider { display: grid; grid-template-columns: minmax(0, 1fr) minmax(4.6em, 42%); gap: 6px; align-items: center; min-width: 0; }
+#tab-mv .mv-value-slider input[type=range] { width: 100%; min-width: 0; margin: 0; accent-color: var(--accent); }
+
+/* HDR colour: swatch × intensity, then the exact channels on demand. */
+#tab-mv .mv-color-main { display: flex; align-items: center; gap: 6px; min-width: 0; }
+#tab-mv .mv-value-field input.mv-color-swatch[type=color] {
+  flex: 0 0 auto;
+  width: 52px;
+  min-width: 44px;
+  height: 36px;
+  padding: 2px;
+  cursor: pointer;
+}
+#tab-mv .mv-color-times { color: var(--muted); }
+#tab-mv .mv-value-field input.mv-color-intensity { flex: 1 1 5em; min-width: 0; max-width: 9em; }
+#tab-mv .mv-color-channels > summary { width: max-content; color: var(--muted); font-size: .74rem; cursor: pointer; }
+#tab-mv .mv-color-channels[open] > summary { margin-block-end: 4px; }
+
+/* Labelled X/Y/Z (or R/G/B/A) boxes. */
+#tab-mv .mv-axis-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.4em, 1fr)); gap: 4px; }
+#tab-mv .mv-axis { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 3px; min-width: 0; }
+#tab-mv .mv-axis > span { color: var(--muted); font-size: .72rem; font-variant-numeric: tabular-nums; }
+#tab-mv .mv-axis input { width: 100%; min-width: 0; padding-inline: 5px; }
+
+/* Read-only values. */
+#tab-mv .mv-value-readonly { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+#tab-mv .mv-color-chip { flex: none; width: 14px; height: 14px; border-radius: 3px; box-shadow: 0 0 0 1px #0006; }
+
+/* Native identity data, once per clip, collapsed. */
+#tab-mv .mv-native-fields { border: 1px dashed var(--line); border-radius: 6px; padding: 4px 8px; }
+#tab-mv .mv-native-fields > summary { color: var(--muted); font-size: .76rem; cursor: pointer; }
+#tab-mv .mv-native-list { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 2px 10px; margin: 6px 0 2px; font-size: .74rem; }
+#tab-mv .mv-native-list dt { color: var(--muted); }
+#tab-mv .mv-native-list dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem; }
