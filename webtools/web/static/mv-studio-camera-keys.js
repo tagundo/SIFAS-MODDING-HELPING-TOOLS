@@ -202,7 +202,9 @@
     // A shot added on the timeline is never exported natively, so it can be resized. When its
     // keys own its pose (a keys record with keys, as a shot made in the editor starts), its 60 Hz
     // grid follows the clip's length. Otherwise its samples are its only motion (Duplicate clip
-    // copies a clip's samples, not its keys) and stay exactly as they are.
+    // copies a clip's samples, not its keys) and stay exactly as they are: it has no source to
+    // bake from, so a record that does not own the pose is ignored until an edit claims the
+    // shot (editStart).
     const raw = recordOf(ctx, event.id);
     const keyed = user && source ? normalizeRecord(raw, source.length) : null;
     const owned = !!keyed && keyed.mode === "keys" && keyed.keys.length > 0;
@@ -226,7 +228,7 @@
     const count = source ? source.length : 0;
     const shots = mainCameraShots(ctx);
     const info = { track, event, source, count, user, owned, native, staticSource, regrid, editable, reason, lengthChanged,
-      record: source ? normalizeRecord(raw, count) : null,
+      record: source && (!user || owned) ? normalizeRecord(raw, count) : null,
       lens: M.nativeLens(track), index: shots.findIndex((item) => item.event === event), total: shots.length,
       fallbackFov: finite(current.fov) ? current.fov : finite(values.fov) ? values.fov : 30 };
     if (finite(time) && source) info.frame = frameAt(info, time);
@@ -338,10 +340,13 @@
 
   // The baked samples of a shot, or { restore: true } when nothing applies to it.
   function bakeShot(ctx, shot) {
+    // An added clip whose keys do not own its pose has no source but its own samples: a bake
+    // (keys or layers) would build on its last output every time. Nothing is written to it.
+    if (shot.user && !shot.owned) return { restore: true };
     const record = shot.record;
     const active = affecting(ctx, shot);
-    // An editor-made shot has nothing to restore; a resized one still takes its new grid.
-    if ((!record || !record.keys.length) && !active.length && !(shot.user && shot.regrid)) return { restore: true };
+    // A shot whose keys own its pose always bakes (a resized one takes its new grid).
+    if ((!record || !record.keys.length) && !active.length) return { restore: true };
     // Layers get copies (they may write into the arrays); a rotation still equal to its
     // untouched source sample is kept as stored, bit for bit.
     const untouched = [];
@@ -501,6 +506,13 @@
     const changes = [];
     if (!editor || !editor.camera || editor.camera.version !== 1) changes.push({ target: { kind: "editor" }, path: ["camera", "version"], after: 1 });
     changes.push({ target: { kind: "editor" }, path: ["camera", "shots", shot.event.id], after: record ? cleanRecord(record) : undefined });
+    // The edit that claims an added clip (editStart) carries its samples in the same step: the
+    // bake writes outside history, and undoing the edit must give the clip back the samples it
+    // had (no original holds them).
+    if (shot.claimed && record) {
+      const baked = bakeShot(ctx, { ...shot, record: normalizeRecord(cleanRecord(record), shot.count) });
+      if (baked.keyframes) changes.push({ target: { kind: "event", track: shot.track.id, event: shot.event.id }, path: ["values", "keyframes"], after: baked.keyframes });
+    }
     changes.push(...orphanChanges(ctx, shot.event.id));
     return ctx.history.apply({ label, detail: detail || shot.event.label || "", changes });
   }
@@ -519,6 +531,33 @@
 
   function emptyRecord(ctx) {
     return { mode: "offset", space: stateOf(ctx).space, keys: [] };
+  }
+
+  // The shot an edit at `time` applies to and the record it starts from (a copy). An added clip
+  // whose keys do not own its pose (Duplicate clip copies the samples, not the keys) has no fixed
+  // source: an offset over its samples would build on its own last bake. Its first edit claims
+  // it: its motion becomes linear keys (within the simplify tolerance) on its 60 Hz grid, as
+  // ensureUserShot starts a shot with keys, and from then on the keys own its pose.
+  function editStart(ctx, shot, time) {
+    if (!shot.user || shot.owned) return { shot, record: shot.record ? clone(shot.record) : emptyRecord(ctx) };
+    const source = userGrid(shot.source, shot.event.duration);
+    const grid = { ...shot, source, count: source.length, regrid: source !== shot.source, owned: true, claimed: true, record: null };
+    grid.frame = frameAt(grid, time);
+    return { shot: grid, record: { mode: "keys", space: "view", keys: motionKeys(grid, null) } };
+  }
+
+  // The motion of a shot (its keyed pose, or its samples without a record) as linear keys,
+  // kept where the straight line between them leaves 2 mm / 0.05° / 0.01° (M.simplify).
+  function motionKeys(shot, record) {
+    const samples = [];
+    let near = null;
+    for (let frame = 0; frame < shot.count; frame++) {
+      const value = absoluteOf(basePose(shot, record, frame), near);
+      near = value;
+      if (!finite(value.fov)) value.fov = shot.fallbackFov;
+      samples.push(value);
+    }
+    return M.simplify(samples).map((frame) => ({ frame, values: { ...samples[frame] }, interp: "linear", handle: "auto-clamped" }));
   }
 
   function upsertKey(record, frame, values, template) {
@@ -598,10 +637,11 @@
   // The at-playhead fields: row "offset" (deltas) or "absolute" (the keyed pose). Updates the key
   // at the playhead frame, or inserts one holding the current curve values (auto-key).
   function setChannels(ctx, row, patch, { time } = {}) {
-    const shot = requireShot(ctx, playheadShot(ctx, finite(time) ? time : ctx.time()));
-    if (!shot) return false;
+    const at = finite(time) ? time : ctx.time();
+    const found = requireShot(ctx, playheadShot(ctx, at));
+    if (!found) return false;
+    const { shot, record } = editStart(ctx, found, at);
     const frame = shot.frame;
-    const record = shot.record ? clone(shot.record) : emptyRecord(ctx);
     const current = channelValues(shot, record, frame);
     let values;
     if (row === "absolute" && record.mode === "offset") {
@@ -642,8 +682,8 @@
     if (ctx.locked()) return false;
     const found = playheadShot(ctx);
     if (auto && (!found || !found.editable)) return false;
-    const shot = requireShot(ctx, found);
-    if (!shot) return false;
+    if (!requireShot(ctx, found)) return false;
+    const { shot, record } = editStart(ctx, found, ctx.time());
     const frame = shot.frame;
     const view = viewTarget(ctx, shot, frame);
     if (!view) return false;
@@ -651,7 +691,6 @@
       if (!auto) ctx.report(t(ctx, "Switch the preview camera to Free camera to key the view."), true);
       return false;
     }
-    const record = shot.record ? clone(shot.record) : emptyRecord(ctx);
     const current = channelValues(shot, record, frame);
     let values;
     if (record.mode === "keys") {
@@ -671,13 +710,14 @@
   }
 
   function addKey(ctx) {
-    const shot = requireShot(ctx, playheadShot(ctx));
-    if (!shot) return false;
-    const record = shot.record ? clone(shot.record) : emptyRecord(ctx);
+    const found = requireShot(ctx, playheadShot(ctx));
+    if (!found) return false;
+    const { shot, record } = editStart(ctx, found, ctx.time());
     const frame = shot.frame;
     let changed = false;
     select(ctx, shot, frame);
-    if (!record.keys.some((key) => key.frame === frame)) {
+    // Claiming an added clip is itself the edit, even when its keys already hold this frame.
+    if (shot.claimed || !record.keys.some((key) => key.frame === frame)) {
       upsertKey(record, frame, channelValues(shot, record, frame));
       changed = commit(ctx, shot, record, "Add camera key");
     } else ctx.refreshLane(shot.track.id);
@@ -888,13 +928,15 @@
   };
 
   function setMode(ctx, mode, { confirm = true } = {}) {
-    const shot = requireShot(ctx, playheadShot(ctx));
-    if (!shot || !["original", "offset", "keys"].includes(mode)) return false;
-    const current = shot.record ? shot.record.mode : "original";
+    const found = requireShot(ctx, playheadShot(ctx));
+    if (!found || !["original", "offset", "keys"].includes(mode)) return false;
+    const current = found.record ? found.record.mode : "original";
     if (current === mode) return false;
-    if (shot.user && mode !== "keys") return false;
-    const lossy = (current === "offset" && shot.record.keys.length) || current === "keys" || (mode === "keys");
+    if (found.user && mode !== "keys") return false;
+    const lossy = (current === "offset" && found.record.keys.length) || current === "keys" || (mode === "keys");
     if (confirm && lossy && typeof global.confirm === "function" && !global.confirm(t(ctx, CONFIRM[mode]))) { renderPanel(ctx, true); return false; }
+    // An added clip converts on the grid its keys will own (editStart), from its samples.
+    const shot = editStart(ctx, found, ctx.time()).shot;
     const record = convertRecord(shot, shot.record, mode, stateOf(ctx).space);
     const changed = commit(ctx, shot, record, "Change camera mode", mode);
     renderPanel(ctx, true);
@@ -913,20 +955,13 @@
 
   // "Convert to keyframes": the current motion as linear keys within 2 mm / 0.05° / 0.01°.
   function convertToKeys(ctx) {
-    const shot = requireShot(ctx, playheadShot(ctx));
-    if (!shot) return false;
-    const samples = [];
-    let near = null;
-    for (let frame = 0; frame < shot.count; frame++) {
-      const value = absoluteOf(basePose(shot, shot.record, frame), near);
-      near = value;
-      if (!finite(value.fov)) value.fov = shot.fallbackFov;
-      samples.push(value);
-    }
-    const kept = M.simplify(samples);
-    const record = { mode: "keys", space: shot.record ? shot.record.space : stateOf(ctx).space,
-      keys: kept.map((frame) => ({ frame, values: { ...samples[frame] }, interp: "linear", handle: "auto-clamped" })) };
-    const changed = commit(ctx, shot, record, "Convert to keyframes", String(kept.length));
+    const found = requireShot(ctx, playheadShot(ctx));
+    if (!found) return false;
+    // An added clip converts on the grid its keys will own (editStart), from its samples.
+    const shot = editStart(ctx, found, ctx.time()).shot;
+    const keys = motionKeys(shot, shot.record);
+    const record = { mode: "keys", space: shot.record ? shot.record.space : stateOf(ctx).space, keys };
+    const changed = commit(ctx, shot, record, "Convert to keyframes", String(keys.length));
     renderPanel(ctx, true);
     return changed;
   }
@@ -1230,7 +1265,8 @@
       return refs;
     }
     const locked = ctx.locked();
-    const mode = shot.record ? shot.record.mode : "original";
+    // A shot added on the timeline only has keys: its first edit turns its motion into keys.
+    const mode = shot.user ? "keys" : shot.record ? shot.record.mode : "original";
     const modes = shot.user ? MODES.filter(([id]) => id === "keys") : MODES;
     const modeSelect = choice(ctx, { id: "mv-cam-shot-mode" }, modes, (value) => setMode(ctx, value));
     modeSelect.value = mode;

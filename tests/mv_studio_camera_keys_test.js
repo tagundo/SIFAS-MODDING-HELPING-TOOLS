@@ -732,6 +732,90 @@ function duplicatedClips() {
   assert.deepEqual(dup.values.keyframes, keyed, 'the duplicate of a keyed shot keeps its motion');
 }
 
+// The first edit of an added clip claims it: its motion becomes keys on its 60 Hz grid, so later
+// rebakes start from the keys, not from the clip's own last bake (no stacking). Undo gives the
+// clip its samples back bit for bit; a record that does not own the pose is never baked.
+function claimDuplicatedClip() {
+  const modProject = (duration, rate) => ({ version: 1, name: 'Mod MV', duration: 30, nativeTimeline: false, source: { kind: 'mod' }, tracks: [
+    { id: 'cam', kind: 'camera', binding: '/EntryPoint/Live/Cameras/MainCamera', nativeClass: 'AnimationTrack', label: 'Camera', events: [
+      { id: 'cam:0', start: 0, duration, values: { keyframes: movingSamples(duration, rate) }, editableValues: ['keyframes'] }] }] });
+  const close = (actual, expected, message) => {
+    nearVector(actual.position, expected.position, 2.5e-3, `${message} position`);
+    assert(angle(actual.rotation, expected.rotation) < .1, `${message} rotation`);
+    near(actual.fov, expected.fov, .02, `${message} fov`);
+  };
+  {
+    const project = modProject(4, 60);
+    const { ctx, history, at } = harness(project);
+    const dup = hostDuplicate(project, history, 'cam', 'cam:0');
+    const source = copy(dup.values.keyframes);
+    at(dup.start + .5);
+    assert(K.setChannels(ctx, 'absolute', { y: 4 }), 'the Value row of an added clip');
+    const record = project.editor.camera.shots[dup.id];
+    assert.equal(record.mode, 'keys', 'the first edit gives the clip keys');
+    assert(record.keys.length >= 3 && record.keys.some((key) => key.frame === 30), `its motion as keys plus the edit (${record.keys.length})`);
+    assert.equal(K.findShot(ctx, dup.id).owned, true);
+    assert.equal(dup.values.keyframes[30].position[1], 4);
+    close(dup.values.keyframes[0], source[0], 'first frame');
+    close(dup.values.keyframes[240], source[240], 'last frame');
+    close(dup.values.keyframes[150], source[150], 'away from the edit');
+    const baked = copy(dup.values.keyframes);
+    K.requestBake(ctx, {});
+    assert.deepEqual(dup.values.keyframes, baked, 'a rebake starts from the keys: nothing stacks');
+    at(dup.start + 3);
+    assert(K.setChannels(ctx, 'absolute', { x: 9 }));
+    assert.equal(dup.values.keyframes[30].position[1], 4, 'a second key leaves the first edit as it was');
+    // The offset row (API only: the panel shows the Value row for added clips) writes keys too.
+    at(dup.start + 2);
+    assert(K.setChannels(ctx, 'offset', { z: 27 }));
+    K.requestBake(ctx, {});
+    assert.equal(dup.values.keyframes[120].position[2], 27, 'and stays put across rebakes');
+    history.undo();
+    history.undo();
+    assert.deepEqual(dup.values.keyframes, baked);
+    history.undo();
+    assert.deepEqual(dup.values.keyframes, source, 'undoing the first edit gives the samples back bit for bit');
+    assert.equal(project.editor.camera?.shots?.[dup.id], undefined);
+    assert.equal(K.findShot(ctx, dup.id).owned, false);
+    history.redo();
+    assert.deepEqual(dup.values.keyframes, baked, 'redo bakes the same samples');
+    history.undo();
+    // Add key claims the clip even on a frame its keys already hold.
+    at(dup.start);
+    assert(K.addKey(ctx), 'Add key on an added clip is an edit');
+    assert.equal(project.editor.camera.shots[dup.id].mode, 'keys');
+    history.undo();
+    assert.deepEqual(dup.values.keyframes, source);
+    // A record that does not own the pose (an offset record of an older session) is not baked.
+    assert(history.apply({ label: 'Edit camera key', changes: [{ target: { kind: 'editor' }, path: ['camera', 'shots', dup.id],
+      after: { mode: 'offset', space: 'view', keys: [{ frame: 30, values: { x: 0, y: 1, z: 0, pan: 0, tilt: 0, roll: 0, fov: 0 }, interp: 'bezier', handle: 'auto-clamped' }] } }] }));
+    K.requestBake(ctx, {});
+    K.requestBake(ctx, {});
+    assert.deepEqual(dup.values.keyframes, source, 'an offset record on an added clip bakes nothing');
+    at(dup.start + .5);
+    assert(K.setChannels(ctx, 'absolute', { y: 4 }));
+    assert.equal(project.editor.camera.shots[dup.id].mode, 'keys', 'the next edit replaces it with keys');
+    assert.equal(dup.values.keyframes[30].position[1], 4);
+  }
+  {
+    // A 30 Hz clip: claimed on the 60 Hz grid, its motion kept by time.
+    const project = modProject(4, 30);
+    const { ctx, history, at } = harness(project);
+    const dup = hostDuplicate(project, history, 'cam', 'cam:0');
+    const source = copy(dup.values.keyframes);
+    at(dup.start + 1);
+    assert(K.setChannels(ctx, 'absolute', { fov: 40 }));
+    assert.equal(dup.values.keyframes.length, 241, 'the 60 Hz grid of 4 s');
+    dup.values.keyframes.forEach((sample, index) => assert.equal(sample.time, index / 60, `grid time ${index}`));
+    assert.equal(dup.values.keyframes[60].fov, 40, 'the key at 1 s');
+    for (const frame of [0, 15, 150, 211, 240]) close(dup.values.keyframes[frame], M.sampleFrames(source, frame / 60), `30 Hz motion at ${frame / 60} s`);
+    K.requestBake(ctx, {});
+    assert.equal(dup.values.keyframes[60].fov, 40);
+    history.undo();
+    assert.deepEqual(dup.values.keyframes, source, 'undo gives the 30 Hz samples back');
+  }
+}
+
 (async () => {
   unedited();
   offsetKey();
@@ -752,5 +836,6 @@ function duplicatedClips() {
   valueLimits();
   orphanRecords();
   duplicatedClips();
+  claimDuplicatedClip();
   console.log('mv studio camera keys tests passed');
 })().catch((error) => { console.error(error); process.exit(1); });
