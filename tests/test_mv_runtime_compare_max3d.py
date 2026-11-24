@@ -358,6 +358,9 @@ class AxisBillboardUpAxisTest(unittest.TestCase):
         self.assertEqual(sorted(items), ["stageNodePositionM", "stageNodeScaleRel", "stageNodeUpAxisDeg"])
         self.assertLess(items["stageNodeUpAxisDeg"]["error"], 0.01)
         self.assertEqual(result.notes["transforms.stageNodeAxisBillboard"], ["litB_05_bilcone"])
+        # The key's #crc is crc32 of the path below the binding; the items name that path.
+        self.assertEqual(items["stageNodePositionM"]["field"], self.REL)
+        self.assertEqual(items["stageNodeUpAxisDeg"]["field"], self.REL + " (AxisBillboard up axis)")
 
     def test_a_tilted_beam_is_still_found(self):
         result = self.comparison(self.KEYS)

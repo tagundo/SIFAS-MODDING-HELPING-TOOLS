@@ -676,7 +676,7 @@ class Comparison:
             return "self"
         return "below" if any("/".join(parts[:end]) in self.axis_billboards for end in range(1, len(parts))) else None
 
-    def compare_billboard_transform(self, prefix, key, record, game, editor, role, near):
+    def compare_billboard_transform(self, prefix, key, record, game, editor, role, near, field=None):
         """Transform of an AxisBillboard node whose turn is draw history (see AXIS_BILLBOARD_CLASS): position,
         scale and the up axis for the billboard itself; only scale below it (the turn moves its children)."""
         game, editor = dict(game), dict(editor)
@@ -685,11 +685,11 @@ class Comparison:
             game.pop("position", None)
             editor.pop("position", None)
         self.compare_transform("transforms", prefix, key, record, game, editor, self.tol["stagePositionM"],
-                               self.tol["stageRotationDeg"], near)
+                               self.tol["stageRotationDeg"], near, field)
         if role == "self" and vector(rotations[0], 4) and vector(rotations[1], 4):
             converted = self.quat(rotations[1])
-            self.add("transforms", prefix + "UpAxisDeg", key, record, rotations[0], converted,
-                     axis_angle(rotations[0], converted), self.tol["stageRotationDeg"], near_cut=near, field="AxisBillboard up axis")
+            self.add("transforms", prefix + "UpAxisDeg", key, record, rotations[0], converted, axis_angle(rotations[0], converted),
+                     self.tol["stageRotationDeg"], near_cut=near, field=f"{field} (AxisBillboard up axis)" if field else "AxisBillboard up axis")
 
     def _editor_catalog(self):
         """Every editor renderer (renderers parts and census) by key: scope, mesh, GameObject path."""
@@ -994,16 +994,19 @@ class Comparison:
             self.add("globals", "globalAbs", key, record, game_value["f"], editor_value["f"], abs(game_value["f"] - editor_value["f"]), tol,
                      near_cut=near, field=editor_value.get("from"))
 
-    def compare_transform(self, type_, prefix, key, record, game, editor, tol_position, tol_rotation, near):
+    def compare_transform(self, type_, prefix, key, record, game, editor, tol_position, tol_rotation, near, field=None):
         if vector(game.get("position"), 3) and vector(editor.get("position"), 3):
             converted = self.pos(editor["position"])
-            self.add(type_, prefix + "PositionM", key, record, game["position"], converted, distance(game["position"], converted), tol_position, near_cut=near)
+            self.add(type_, prefix + "PositionM", key, record, game["position"], converted, distance(game["position"], converted), tol_position,
+                     near_cut=near, field=field)
         if vector(game.get("rotation"), 4) and vector(editor.get("rotation"), 4):
             converted = self.quat(editor["rotation"])
-            self.add(type_, prefix + "RotationDeg", key, record, game["rotation"], converted, qangle(game["rotation"], converted), tol_rotation, near_cut=near)
+            self.add(type_, prefix + "RotationDeg", key, record, game["rotation"], converted, qangle(game["rotation"], converted), tol_rotation,
+                     near_cut=near, field=field)
         if vector(game.get("lossyScale"), 3) and vector(editor.get("lossyScale"), 3):
             error = max(abs(g - e) / max(abs(e), 1e-9) for g, e in zip(game["lossyScale"], editor["lossyScale"]))
-            self.add(type_, prefix + "ScaleRel", key, record, game["lossyScale"], editor["lossyScale"], error, self.tol["scaleRel"], near_cut=near)
+            self.add(type_, prefix + "ScaleRel", key, record, game["lossyScale"], editor["lossyScale"], error, self.tol["scaleRel"],
+                     near_cut=near, field=field)
 
     def join_renderer(self, game_renderer):
         """Editor key of a game renderer on (scope, GameObject path), schema 1.5:
@@ -1394,6 +1397,8 @@ class Comparison:
             editor_node = editor_nodes.get(key)
             if not editor_node:
                 continue
+            # The key's #crc is crc32 of the path below the binding; name that path so same-named nodes read apart.
+            field = (node.get("relPath") or None) if not self.identity else editor_node.get("name")
             game_visible = node.get("visible") if self.identity else node.get("activeInHierarchy", node.get("visible"))
             if isinstance(game_visible, bool) and isinstance(editor_node.get("visible"), bool):
                 self.add("visibility", "stageNodeVisible", key, record, game_visible, editor_node["visible"],
@@ -1408,9 +1413,10 @@ class Comparison:
                 # A stage node record has no draw state: the turn is the last target camera's draw (AXIS_BILLBOARD_CLASS).
                 if editor_node.get("name") not in self.notes["transforms.stageNodeAxisBillboard"]:
                     self.notes["transforms.stageNodeAxisBillboard"].append(editor_node.get("name"))
-                self.compare_billboard_transform("stageNode", key, record, node, editor_node, role, near)
+                self.compare_billboard_transform("stageNode", key, record, node, editor_node, role, near, field)
                 continue
-            self.compare_transform("transforms", "stageNode", key, record, node, editor_node, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
+            self.compare_transform("transforms", "stageNode", key, record, node, editor_node, self.tol["stagePositionM"], self.tol["stageRotationDeg"],
+                                   near, field)
 
     def compare_members(self, record, partner, near):
         editor_members = {member.get("slot"): member for member in partner.get("members") or [] if isinstance(member, dict)}
