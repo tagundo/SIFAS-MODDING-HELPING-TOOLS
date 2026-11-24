@@ -158,7 +158,9 @@
 
   /* Rows of the timeline for one tab and its filters.
      options: { tab, member (slot|null), search, editableOnly, group, edited: Set<eventId>,
-                extra: [{ id, after, label, title, render, members? }] }
+                extra: [{ id, after, label, title, render, members? }],
+                pluginEdits: the plugins' editedCount sum (Edit tab: the hint shows while
+                no clip is edited and this is 0, even beside an empty plugin lane) }
      → { rows: [{type:"track"|"group"|"extra"|"separator"|"hint", track?, lane?}], tracks, memberTracks, groups } */
   function plan(tracks, options = {}) {
     const tab = TAB_IDS.includes(options.tab) ? options.tab : "all";
@@ -182,7 +184,7 @@
       const changed = base.filter((track) => hasEdit(track));
       for (const track of changed.filter(keep)) { rows.push({ type: "track", track }); shown.push(track); }
       for (const lane of extra.filter(keepLane)) rows.push({ type: "extra", lane });
-      if (!changed.length && !extra.length) rows.push({ type: "hint" });
+      if (!changed.length && !(Number(options.pluginEdits) > 0)) rows.push({ type: "hint" });
       rows.push({ type: "separator" });
       for (const track of base) {
         if (changed.includes(track) || !valueEditable(track) || !keep(track)) continue;

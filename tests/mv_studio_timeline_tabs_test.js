@@ -119,6 +119,10 @@ function plans() {
   const edited = Tabs.plan(tracks, { tab: 'edit', edited: new Set([lip.events[3].id]), extra: [rig] });
   assert.deepEqual(rows(edited).slice(0, 3), ['track:Member1/LipSync', 'extra:camera-rigs', 'separator']);
   assert(!edited.rows.slice(3).some((row) => row.track === lip), 'an edited track is listed once');
+  // A plugin lane that is always there but holds nothing keeps the hint; plugin edits drop it.
+  assert.deepEqual(rows(Tabs.plan(tracks, { tab: 'edit', extra: [rig] })).slice(0, 3), ['extra:camera-rigs', 'hint', 'separator']);
+  assert.deepEqual(rows(Tabs.plan(tracks, { tab: 'edit', extra: [rig], pluginEdits: 2 })).slice(0, 2), ['extra:camera-rigs', 'separator']);
+  assert.deepEqual(rows(Tabs.plan(tracks, { tab: 'edit', pluginEdits: 0 })).slice(0, 2), ['hint', 'separator']);
 
   // Member filter, name search, editable-only and native group combine with the tab.
   const solo = Tabs.plan(tracks, { tab: 'lighting', member: 1 });

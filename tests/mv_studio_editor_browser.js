@@ -149,7 +149,7 @@ async function pluginContract(browser, url) {
       },
       clipConstraints(ctx, track) { return track.id === 'camera' ? { resize: false, reason: 'Probe lock' } : undefined; },
       revertEvent(ctx, track, event) { if (event.id !== 'cam-1') return false; calls.push('revert:' + event.id); return true; },
-      editedCount(ctx) { return ctx.project() ? 2 : 0; },
+      editedCount(ctx) { return ctx.project() && !window.probeNoEdits ? 2 : 0; },
       keydown(ctx, event) { if (event.key !== 'k') return false; calls.push('key:k'); return true; },
       beforeSave() { if (window.probeRefuseSave) throw new Error('Probe refuses to save'); },
     });
@@ -196,6 +196,13 @@ async function pluginContract(browser, url) {
   assert.deepEqual(await rows(), ['mouth']);
   await page.locator('#mv-tab-edit').click();
   assert.deepEqual(await rows(), ['probe-rigs', 'camera', 'mouth'], 'Edit: plugin lanes, then the editable tracks');
+  const hints = () => page.locator('#mv-timeline-grid .mv-lane-hint').count();
+  assert.equal(await hints(), 0, 'the plugin counts edits: no hint');
+  await page.evaluate(() => { window.probeNoEdits = true; window.probeCtx.renderTimeline(); });
+  assert.equal(await hints(), 1, 'an empty plugin lane keeps the hint');
+  assert.equal(Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent()), 0);
+  await page.evaluate(() => { window.probeNoEdits = false; window.probeCtx.renderTimeline(); });
+  assert.equal(await hints(), 0);
   await page.locator('#mv-tab-all').click();
   assert.equal(await page.locator('#probe-rig').count(), 1);
   assert.deepEqual(await page.evaluate(() => window.probeCtx.snapTargets()), [0, 0, 4, 4, 8], 'playhead and MainCamera cuts');

@@ -1140,10 +1140,14 @@
     return label;
   }
 
-  function editCount() {
-    let count = project ? history.editedEvents().size : 0;
+  function pluginEditCount() {
+    let count = 0;
     for (const value of callPlugins("editedCount")) if (finite(value) && value > 0) count += value;
     return count;
+  }
+
+  function editCount() {
+    return (project ? history.editedEvents().size : 0) + pluginEditCount();
   }
 
   function tabCounts() {
@@ -1206,7 +1210,7 @@
     if (!project) return "";
     const edited = history.editedEvents();
     const ids = project.tracks.filter((track) => track.events.some((event) => edited.has(event.id))).map((track) => track.id);
-    return ids.join("\n") + "|" + (activeTab === "edit" ? extraLanes("edit").map((lane) => lane.id).join("\n") : "");
+    return ids.join("\n") + "|" + (activeTab === "edit" ? extraLanes("edit").map((lane) => lane.id).join("\n") + "|" + (pluginEditCount() > 0) : "");
   }
 
   function extraLanes(tab) {
@@ -1258,7 +1262,8 @@
     // A remembered member that this MV does not have is ignored (and kept for the next MV).
     const member = Tabs.memberChoices(project).some((choice) => choice.slot === preferredMember) ? preferredMember : null;
     const plan = Tabs.plan(project.tracks, { tab: activeTab, member, search: searchText,
-      editableOnly: activeTab !== "edit" && editableOnly, group: groupFilter, edited: history.editedEvents(), extra: extraLanes(activeTab) });
+      editableOnly: activeTab !== "edit" && editableOnly, group: groupFilter, edited: history.editedEvents(), extra: extraLanes(activeTab),
+      pluginEdits: activeTab === "edit" ? pluginEditCount() : 0 });
     lastPlan = plan;
     lastEditSignature = editSignature();
     groupFilter = plan.group;
