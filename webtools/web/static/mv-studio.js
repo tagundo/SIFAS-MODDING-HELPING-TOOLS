@@ -35,6 +35,10 @@
   let registered = null, registrationTitle = "", chartTemplates = [], chartTemplate = "", chartPath = "";
   let registrationTimelines = {}, registrationAudio = {}, latestNativeTimeline = null;
   let lastGamePayload = null;
+  // Runtime notes from the 3D preview of the open project (for example a
+  // depth-of-field clip whose focus target the preview cannot find). They are
+  // listed with the project's import notes and never saved into the project.
+  let previewWarnings = [], previewWarningsQueued = false, warningsPanelListed = false;
   // Device option of the original client (off by default): Live3DScene requests
   // the display refresh rate instead of the preset's 30/60 fps, and the swing
   // physics step once per frame at that rate.
@@ -255,7 +259,7 @@
   function availablePanels() {
     return panelKeys.filter((key) => {
       if (key === "registration") return gameSource() !== null;
-      if (key === "warnings") return project && project.warnings && project.warnings.length;
+      if (key === "warnings") return warningLines().length > 0;
       return true;
     });
   }
@@ -275,7 +279,9 @@
   function renderPanelMenu() {
     const menu = byId("mv-panel-options");
     menu.replaceChildren();
-    for (const key of availablePanels()) {
+    const panels = availablePanels();
+    warningsPanelListed = panels.includes("warnings");
+    for (const key of panels) {
       const check = make("input", null, { type: "checkbox", "data-mv-panel-option": key });
       check.checked = !hidden.includes(key);
       const label = make("label");
@@ -756,10 +762,34 @@
     byId("mv-preview-controls").hidden = !hasModels || loading;
   }
 
+  function warningLines() {
+    return project ? [...(project.warnings || []), ...previewWarnings] : [];
+  }
+
+  function renderWarnings() {
+    byId("mv-warning-list").replaceChildren(...warningLines().map((line) => make("li", t(line))));
+  }
+
+  // The scene reports these from inside its own draw (MVStudioDofFocus.sample
+  // runs in renderView and playbackFrame). Opening the warnings panel resizes
+  // the scene, and a resize draws, so the list and the panel update once the
+  // current call stack has returned, never inside the draw that reported.
+  function previewWarning(message) {
+    if (typeof message !== "string" || !message || previewWarnings.includes(message) || previewWarnings.length >= 64) return;
+    previewWarnings.push(message);
+    if (previewWarningsQueued) return;
+    previewWarningsQueued = true;
+    Promise.resolve().then(() => {
+      previewWarningsQueued = false;
+      renderWarnings();
+      if (!warningsPanelListed && warningLines().length) renderPanelMenu();
+    });
+  }
+
   function render() {
     byId("mv-project-title").textContent = project && project.name || t("3D MV");
     renderPreviewStatus();
-    byId("mv-warning-list").replaceChildren(...(project && project.warnings || []).map((line) => make("li", t(line))));
+    renderWarnings();
     byId("mv-save").disabled = !project || !!pending;
     byId("mv-export-timeline").hidden = !(project && project.nativeTimeline);
     byId("mv-export-timeline").disabled = !!pending;
@@ -786,8 +816,8 @@
 
   function ensureScene() {
     if (!scene && global.MVStudioScene) {
-      scene = global.MVStudioScene.create(byId("mv-scene"), { onError: showError, visible: visible && !document.hidden,
-        screenFade: byId("mv-screen-fade").checked });
+      scene = global.MVStudioScene.create(byId("mv-scene"), { onError: showError, onWarning: previewWarning,
+        visible: visible && !document.hidden, screenFade: byId("mv-screen-fade").checked });
       scene.setVisible(visible && !document.hidden);
       if (refreshRateMode) applyRefreshRateMode();
       if (antiAliasingMode) scene.setAntiAliasing?.(true);
@@ -808,6 +838,8 @@
     }
     const previous = selected;
     project = next;
+    // The scene reports its preview notes again for the project it loads.
+    previewWarnings = [];
     selected = preserveTime ? previous : null;
     trackKind = preserveTime ? trackKind : "";
     if (!preserveTime) {

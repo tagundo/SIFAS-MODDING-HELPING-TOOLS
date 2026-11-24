@@ -16,6 +16,31 @@
   // CalcFocusDistance returns the member distance plus -0.1f (0x56f5e14).
   const FOCUS_OFFSET = Math.fround(-0.1);
   const f32 = Math.fround;
+  // CalcFocusDistance reads Members[memberPosition - 1] behind an array bounds
+  // check (IndexOutOfRangeException, 0x2924148) and GetPart(bodyPart).transform
+  // behind a null check (NullReferenceException, 0x29241a0). Nothing in
+  // LiveMixerBase`2.ProcessFrame (0x2b3996c; its only landing pad ends in
+  // _Unwind_Resume) or the DOF mixer catches it, so PostProcess (0x29242f4) is
+  // skipped and the camera keeps the DepthOfFieldModel.Settings the previous
+  // frame wrote. PostProcess is the only per-frame writer of
+  // SetDepthOfFieldEnabled/Settings; the other caller of SetDepthOfFieldEnabled
+  // is LiveCoreCameraPostProcess.SetDisabledAll (0x2f614bc), which only turns
+  // the depth of field off, on the director's reset path
+  // (LiveDirectorBase.ResetComponents 0x2926fb0 -> LiveCoreCameraManager.ResetAll
+  // -> LiveCoreCamera.ResetComponentsState).
+  const KEEP_PREVIOUS = Symbol("keep the previous frame's depth of field");
+
+  // DepthOfFieldComponent.CalculateFocalLength (0x2cce59c) resolves the lens
+  // when the camera renders, not when the settings are written: useCameraFov
+  // takes 0.012 / tan(Camera.fieldOfView / 2), otherwise the settings'
+  // focalLength (millimetres) / 1000. `settings` carries the unresolved lens
+  // (useCameraFov, clipFocalLength) that SetDepthOfFieldSettings (0x2f63aa8)
+  // stores; the result adds focalLength resolved at `fov`, or is null.
+  function resolveLens(settings, fov) {
+    if (!settings) return null;
+    const focal = settings.useCameraFov ? 0.012 / Math.tan(fov * Math.PI / 360) : settings.clipFocalLength / 1000;
+    return focal > 0 && Number.isFinite(focal) ? { ...settings, focalLength: focal } : null;
+  }
 
   function clipValue(value, key) {
     const native = value[key];
@@ -63,11 +88,37 @@
   // 1 takes the nearest member and 2 the member closest to the view axis; every
   // other value uses memberPosition. Only mode 2 runs the focusTransitionTime
   // lerp, when the chosen member changes; modes 0 and 1 reset it every call.
+  // Returns the focus distance, undefined when this preview lacks a part the
+  // client would have (the caller keeps focusDistance), or KEEP_PREVIOUS. The
+  // client throws for a body part partMap never holds and for a memberPosition
+  // the MV has no performer for. The editor also keeps the previous frame
+  // while a performer of the MV is not loaded (still loading, or its load
+  // failed and was reported). That is an editor loading rule, not client
+  // behaviour: the client fills Members for every spawned member in
+  // LiveDirector.PostprocessInitializeAsync, before playback starts.
   function memberFocus(value, local, distance, options, state) {
     const part = clipValue(value, "bodyPart"), mode = clipValue(value, "cameraAutoDistanceMode");
-    if (!BODY_PARTS.has(part)) return undefined;
-    const members = Array.isArray(options.members) ? options.members : [];
+    if (!BODY_PARTS.has(part)) {
+      options.warn?.(`A depth-of-field clip targets body part ${part}, which BodyPartManager never holds; ` +
+        "the game keeps the previous frame's depth of field, and so does this preview.");
+      return KEEP_PREVIOUS;
+    }
+    const loaded = Array.isArray(options.members);
+    const members = loaded ? options.members : [];
     let focus;
+    // Modes 1 and 2 with no loaded member: an editor loading rule. The client's
+    // Members is never empty in an MV with performers; with an empty one, mode 1
+    // would skip its loop and return +inf - 0.1 (0x2923b98 -> 0x2924218) and
+    // mode 2 would throw on Members[0] (0x2923f80). An MV without performers is
+    // reported once; performers still loading are silent (a failed load reports
+    // through onError).
+    if ((mode === 1 || mode === 2) && loaded && !members.length) {
+      if (Array.isArray(options.performers) && !options.performers.length) {
+        options.warn?.(`A depth-of-field clip picks a member by cameraAutoDistanceMode ${mode}, but this MV has no ` +
+          "performers; this preview keeps the previous frame's depth of field.");
+      }
+      return KEEP_PREVIOUS;
+    }
     if (mode === 1) {
       focus = Infinity;
       for (const slot of members) {
@@ -111,7 +162,16 @@
         }
       }
     } else {
-      focus = distance(clipValue(value, "memberPosition"), part);
+      const slot = clipValue(value, "memberPosition");
+      if (loaded && !members.includes(slot)) {
+        // A performer of this MV that has not loaded has its own load error.
+        if (Array.isArray(options.performers) && !options.performers.includes(slot)) {
+          options.warn?.(`A depth-of-field clip targets member ${slot}, which this MV does not have; ` +
+            "the game keeps the previous frame's depth of field, and so does this preview.");
+        }
+        return KEEP_PREVIOUS;
+      }
+      focus = distance(slot, part);
       if (!Number.isFinite(focus)) return undefined;
       settle(state, -1, f32(focus));
     }
@@ -119,9 +179,16 @@
   }
 
   // memberDistance(slot, part): distance from the main camera rig to the
-  // member's BodyPartManager part. options: members (slots in Members order),
-  // angle(slot, part) (Vector3.Angle between the view axis and the part),
-  // state (createState(), persists the mode-2 transition) and warn(message).
+  // member's BodyPartManager part. fov: the main camera's current field of
+  // view, which resolves the lens. options: members (loaded slots in Members
+  // order), performers (every slot the MV has), angle(slot, part)
+  // (Vector3.Angle between the view axis and the part), state (createState(),
+  // persists the mode-2 transition), previous (a result of the previous
+  // evaluated frame; on the client's exception path its settings stay and its
+  // lens resolves again at `fov`) and warn(message).
+  // Result: null (no depth of field) or { distance, aperture, kernelSize,
+  // antiAura, useCameraFov, clipFocalLength (weighted clip focalLength, mm),
+  // focalLength (resolved, metres) }.
   function sample(project, time, fov, memberDistance, options = {}) {
     if (project?.quality?.values?.posteffect !== true || !global.MVStudioLighting?.nativeWeight) return null;
     const tracks = project.tracks.filter(track => !track.muted && track.binding === mainCamera &&
@@ -139,6 +206,7 @@
       if (enabled(clipValue(value, "useMemberDistance"))) {
         const member = typeof memberDistance === "function"
           ? memberFocus(value, localTime(event, time), memberDistance, options, state) : undefined;
+        if (member === KEEP_PREVIOUS) return resolveLens(options.previous, fov);
         if (Number.isFinite(member)) focus = member;
         else {
           options.warn?.(`A depth-of-field clip targets body part ${clipValue(value, "bodyPart")} of member ` +
@@ -158,10 +226,9 @@
     }
     const kernelSize = discrete && clipValue(discrete, "kernelSize");
     if (!discrete || ![0, 1, 2, 3].includes(kernelSize)) return null;
-    const focal = enabled(clipValue(discrete, "useCameraFov")) ? 0.012 / Math.tan(fov * Math.PI / 360) : focalLength / 1000;
-    return focal > 0 && Number.isFinite(focal) ? { distance, aperture, focalLength: focal,
-      kernelSize, antiAura: enabled(clipValue(discrete, "antiAura")) } : null;
+    return resolveLens({ distance, aperture, kernelSize, antiAura: enabled(clipValue(discrete, "antiAura")),
+      useCameraFov: enabled(clipValue(discrete, "useCameraFov")), clipFocalLength: focalLength }, fov);
   }
 
-  global.MVStudioDofFocus = { sample, createState, vectorAngle, CLIP_DEFAULTS };
+  global.MVStudioDofFocus = { sample, createState, resolveLens, vectorAngle, CLIP_DEFAULTS };
 })(typeof window !== "undefined" ? window : globalThis);

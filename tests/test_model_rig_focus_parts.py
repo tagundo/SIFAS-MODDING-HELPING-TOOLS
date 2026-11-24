@@ -3,6 +3,9 @@
 BodyPartManager.Initialize adds Head 0, HeadAll 1, Face 2 (face.gameObject),
 Hips 3 and Neck 4. face is a MemberFace on the separate facial prefab asset, a
 reference Instantiate keeps, so its part is that asset's fixed world point.
+OverrideFacial replaces face only with MemberAssetLoader.Facial, which MV and
+live load only from m_member_override_facial (empty in GL and JP masterdata);
+a loaded *_facedynamic companion never replaces the costume's own reference.
 """
 import unittest
 from types import SimpleNamespace
@@ -84,6 +87,19 @@ class FocusPartTests(unittest.TestCase):
 
     def test_face_inside_the_member_prefab_uses_its_node(self):
         rig, scene = self.build(face_inside=True)
+        self.assertEqual(self.focus(rig, scene)["2"], 9)
+
+    def test_a_loaded_facedynamic_source_does_not_override_the_costume_face(self):
+        # ch9999_co0015: BodyPartManager.face is the prefab's own mesh_face.
+        # A separate facial prefab in the selection is not MemberAssetLoader.Facial.
+        rig, scene = self.build(face_inside=True)
+        facial = SimpleNamespace(source="face")
+        game = scene.add(500, "GameObject", {"m_Name": "ch0212_co0000_facedynamic"}, facial)
+        transform = scene.add(501, "Transform", {"m_GameObject": pointer(500), "m_Father": pointer(0),
+                                                 "m_LocalPosition": {"x": 0, "y": 0, "z": 0}}, facial)
+        scene.transforms[model_viewer._key(game)] = transform
+        scene.add(502, "MonoBehaviour", {"m_GameObject": pointer(500), "memberFaceData": {}}, facial)
+        self.assertEqual(rig.facial_sources, {"face"})
         self.assertEqual(self.focus(rig, scene)["2"], 9)
 
     def test_missing_fields_are_left_out_and_ambiguous_managers_export_nothing(self):

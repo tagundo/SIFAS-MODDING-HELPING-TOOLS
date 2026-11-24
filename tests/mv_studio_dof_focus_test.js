@@ -65,10 +65,78 @@ for (const part of [0, 1, 3, 4]) {
   legacy.values.bodyPart = part;
   assert(Math.abs(sample(project, 0.5, 30, () => 2).distance - 1.9) < 1e-6, `BodyPartType ${part} is in partMap`);
 }
+// The client's exception path: GetPart(5) is null, CalcFocusDistance throws a
+// NullReferenceException, ProcessFrame skips PostProcess and the camera keeps
+// the DepthOfFieldModel.Settings the previous frame wrote. Their lens resolves
+// when the camera renders (DepthOfFieldComponent.CalculateFocalLength), so a
+// useCameraFov lens follows the current FOV and a fixed one keeps focalLength / 1000.
+const previousClip = event(0, 3, { focusDistance: 7, aperture: 3, focalLength: 50, kernelSize: 1, useCameraFov: 1 });
+track.events = [previousClip];
+const previous = Object.freeze(sample(project, 0.5, 30, () => 2));
+const { focalLength: previousFocal, ...previousSettings } = previous;
+assert.deepEqual(previousSettings, { distance: 7, aperture: 3, kernelSize: 1, antiAura: false, useCameraFov: true,
+  clipFocalLength: 50 }, "a result carries the unresolved lens");
+exact(previousFocal, focalFromFov);
+previousClip.values.useCameraFov = 0;
+const previousFixed = Object.freeze(sample(project, 0.5, 30, () => 2));
+exact(previousFixed.focalLength, 0.05);
+assert.equal(previousFixed.useCameraFov, false);
+const focalAt60 = 0.012 / Math.tan(Math.PI / 6);
+const kept = (actual, settings, fov, message) => {
+  assert.notEqual(actual, settings, `${message}: a new lens, not the previous object`);
+  const { focalLength, ...rest } = actual;
+  const { focalLength: _, ...expected } = settings;
+  assert.deepEqual(rest, expected, `${message}: distance, aperture, kernelSize, antiAura and the lens settings stay`);
+  exact(focalLength, settings.useCameraFov ? 0.012 / Math.tan(fov * Math.PI / 360) : settings.clipFocalLength / 1000, message);
+};
+track.events = [legacy];
 legacy.values.bodyPart = 5;
-value = sample(project, 0.5, 30, () => 2, { warn: () => {} });
-exact(value.distance, 1, "HeadMaterial 5 is not in partMap: the clip focusDistance default is used");
+const partWarnings = [];
+value = sample(project, 0.5, 60, () => 2, { previous, warn: (message) => partWarnings.push(message) });
+kept(value, previous, 60, "HeadMaterial 5 is not in partMap: the previous frame's depth of field stays");
+exact(value.focalLength, focalAt60, "a useCameraFov lens resolves at the current FOV");
+assert(Math.abs(value.focalLength - previous.focalLength) > 0.02, "not the previous frame's resolved focal length");
+value = sample(project, 0.5, 60, () => 2, { previous: previousFixed, warn: () => {} });
+kept(value, previousFixed, 60, "a fixed lens");
+exact(value.focalLength, 0.05, "a fixed lens keeps focalLength / 1000 at any FOV");
+assert.equal(partWarnings.length, 1);
+assert.match(partWarnings[0], /body part 5, which BodyPartManager never holds/);
+assert.equal(sample(project, 0.5, 30, () => 2, { warn: () => {} }), null, "no earlier frame: nothing was applied");
 legacy.values.bodyPart = 0;
+
+// Members[memberPosition - 1] out of range or not loaded: the same exception path.
+legacy.values.memberPosition = 3;
+const memberWarnings = [];
+const memberOptions = (extra) => ({ members: [1, 2], previous, warn: (message) => memberWarnings.push(message), ...extra });
+kept(sample(project, 0.5, 45, () => 2, memberOptions({ performers: [1, 2] })), previous, 45,
+  "a member the MV does not have keeps the previous frame's depth of field");
+assert.equal(memberWarnings.length, 1);
+assert.match(memberWarnings[0], /member 3, which this MV does not have/);
+kept(sample(project, 0.5, 45, () => 2, memberOptions({ performers: [1, 2, 3] })), previous, 45,
+  "a performer that has not loaded keeps the previous frame's depth of field");
+assert.equal(memberWarnings.length, 1, "a performer still loading is not reported");
+const keptState = globalThis.MVStudioDofFocus.createState();
+keptState.prevPos = 1;
+sample(project, 0.5, 30, () => 2, memberOptions({ performers: [1, 2], state: keptState }));
+assert.equal(keptState.prevPos, 1, "the throwing clip never reaches the transition state update");
+// A clip that blends with a throwing one is discarded with the whole frame.
+const blended = event(0, 3, { focusDistance: 4 });
+track.events = [blended, legacy];
+kept(sample(project, 0.5, 30, () => 2, memberOptions({ performers: [1, 2] })), previous, 30, "a blended frame");
+// Consecutive throwing frames keep the first settings and follow the FOV.
+let chained = previous;
+for (const fov of [40, 20, 70]) {
+  chained = sample(project, 0.5, fov, () => 2, memberOptions({ performers: [1, 2], previous: chained }));
+  kept(chained, previous, fov, `a throwing frame at FOV ${fov}`);
+}
+track.events = [legacy];
+legacy.values.memberPosition = 2;
+// A loaded member without the exported part is a preview gap: focusDistance stays.
+const gapWarnings = [];
+value = sample(project, 0.5, 30, () => undefined, { members: [1, 2], performers: [1, 2], previous,
+  warn: (message) => gapWarnings.push(message) });
+exact(value.distance, 1, "a loaded member lacking the exported part keeps the clip focusDistance");
+assert.match(gapWarnings[0], /which this preview cannot locate/);
 legacy.values.useMemberDistance = 0;
 value = sample(project, 0.5, 30, () => 2);
 exact(value.distance, 1);
@@ -110,6 +178,20 @@ axis.values.memberPosition = 1;
 sample(project, 5, 30, (slot) => axisDistance[slot], options());
 assert.equal(state.prevPos, -1);
 exact(state.prevDistance, Math.fround(2.1));
+// Modes 1 and 2 with no member loaded keep the previous frame's depth of field
+// (an editor loading rule). Performers still loading are silent; an MV without
+// performers is reported.
+for (const mode of [1, 2]) {
+  axis.values.cameraAutoDistanceMode = mode;
+  const loadingWarnings = [], emptyWarnings = [];
+  kept(sample(project, 5, 30, () => 2, { members: [], performers: [1], angle: () => 0, previous,
+    warn: (message) => loadingWarnings.push(message) }), previous, 30, `mode ${mode} while members load`);
+  assert.deepEqual(loadingWarnings, [], `mode ${mode}: a performer still loading is not reported`);
+  kept(sample(project, 5, 30, () => 2, { members: [], performers: [], angle: () => 0, previous,
+    warn: (message) => emptyWarnings.push(message) }), previous, 30, `mode ${mode} without performers`);
+  assert.equal(emptyWarnings.length, 1);
+  assert.match(emptyWarnings[0], new RegExp(`cameraAutoDistanceMode ${mode}, but this MV has no performers`));
+}
 const vectorAngle = globalThis.MVStudioDofFocus.vectorAngle;
 exact(vectorAngle({ x: 0, y: 0, z: -1 }, { x: 1, y: 0, z: -1 }), 45);
 assert.equal(vectorAngle({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }), 0, "Unity returns 0 for a zero vector");
@@ -122,4 +204,4 @@ const layout = globalThis.MVStudioDof.plan(163, 93, { distance: 1, focalLength: 
 assert.deepEqual(layout.sizes, [[81, 46], [40, 23]]);
 assert.equal(layout.params[1], Infinity, "zero aperture keeps the native lens limit");
 assert.equal(layout.params[2], 0.05);
-console.log("Native DOF focus: BodyPartType parts, clip defaults, member modes 0/1/2 with the mode-2 transition, weighted settings, dominant FOV, lens and quality gate.");
+console.log("Native DOF focus: BodyPartType parts, clip defaults, member modes 0/1/2 with the mode-2 transition, the client exception path keeping the previous frame, weighted settings, dominant FOV, lens and quality gate.");

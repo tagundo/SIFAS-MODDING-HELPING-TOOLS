@@ -413,6 +413,16 @@
     // draws and the asset dump re-evaluate the frame from a copy of the state
     // it started with (dofFrameState).
     let dofState = global.MVStudioDofFocus?.createState?.() ?? null, dofFrameState = dofState && { ...dofState };
+    // The depth of field the last evaluated frame applied, and the one the
+    // frame before it left. A frame on the client's exception path (a missing
+    // member or a body part partMap lacks) keeps dofPrevious's settings and
+    // resolves its lens at the current camera FOV, as
+    // DepthOfFieldComponent.CalculateFocalLength does at render time. With no
+    // earlier evaluated frame (after a load, or a seek, which cannot replay the
+    // frames before it) the preview draws none; the client's only writer
+    // besides the mixer's PostProcess, LiveCoreCameraPostProcess.SetDisabledAll
+    // on the director's reset path, only turns the depth of field off.
+    let dofApplied = null, dofPrevious = null;
     const dofWarnings = new Set();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
     const gaze = { camera: [0, 0, 0], members: {} }, gazeEyePosition = new T.Vector3();
@@ -502,6 +512,11 @@
         .map(record => record.position).sort((a, b) => a - b);
     }
 
+    // Every performer slot of the MV, loaded or not (LiveCoreMemberManager.MemberMax 12).
+    function focusPerformers() {
+      return (project?.performers || []).slice(0, 12).map(performer => performer?.position).filter(Number.isInteger);
+    }
+
     // Distance/angle sources for MVStudioDofFocus.sample: the lagged snapshot
     // while playback continues, else the current pose.
     function focusSource(readOnly = false) {
@@ -511,27 +526,34 @@
       const point = (slot, part) => lagged ? focusLag.points.get(slot + ":" + part) || null :
         focusPoint(records.find(record => record.group === actors && record.position === slot), part, focusPosition, readOnly);
       const distance = (slot, part) => point(slot, part)?.distanceTo(camera);
-      const options = {
+      const sampleOptions = {
         members: focusMembers(),
+        performers: focusPerformers(),
         angle: (slot, part) => {
           const target = point(slot, part);
           return target ? global.MVStudioDofFocus.vectorAngle(direction, focusOffset.subVectors(target, camera)) : undefined;
         },
         state: dofFrameState && { ...dofFrameState },
+        previous: dofPrevious,
+        // Each distinct message reaches the console and the studio's warning
+        // list once per loaded project.
         warn: readOnly ? undefined : (message) => {
           if (dofWarnings.has(message)) return;
           dofWarnings.add(message);
           global.console?.warn?.(message);
+          options?.onWarning?.(message);
         },
       };
-      return { distance, options };
+      return { distance, options: sampleOptions };
     }
 
     function advanceFocus() {
       if (!dofState || !global.MVStudioDofFocus) return;
       dofFrameState = { ...dofState };
+      dofPrevious = dofApplied;
       const source = focusSource();
-      global.MVStudioDofFocus.sample(project, currentTime, liveCamera.fov, source.distance, { ...source.options, state: dofState });
+      dofApplied = global.MVStudioDofFocus.sample(project, currentTime, liveCamera.fov, source.distance,
+        { ...source.options, state: dofState }) ?? null;
     }
 
     function sortRibbonDisplay(camera) {
@@ -1255,6 +1277,8 @@
       const pendingStage = reusableStage(entries, replacement < 0 && preferences?.reuseStage);
       if (!pendingStage) cancelStagePreparation(false);
       project = value;
+      dofWarnings.clear();
+      dofApplied = dofPrevious = null;
       if (request) request.abort();
       request = new AbortController();
       const signal = request.signal, ticket = ++generation;
@@ -1720,7 +1744,9 @@
 
     function resetPhysics(reason) {
       physicsClock?.reset();
+      // A seek cannot replay the frames the game would have applied before it.
       dofState = global.MVStudioDofFocus?.createState?.() ?? null;
+      dofApplied = dofPrevious = null;
       resetShafts = true;
       lastShaftFrame = null;
       for (const record of records) {
