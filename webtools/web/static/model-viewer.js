@@ -858,7 +858,10 @@
       var delta = (event.key === "ArrowLeft" ? 1 : -1) * (files ? -1 : 1) * (event.shiftKey ? 64 : 16);
       if (files) { filesWidthPreference = clampFilesWidth(width + delta); storeFilesWidth(); }
       else { panelWidthPreference = clampPanelWidth(width + delta); storePanelWidth(); }
-      scheduleResize();
+      // Each step starts from the laid-out width, so apply it now. Left to the
+      // next frame, every further press before that frame repeated this one.
+      if (resizeFrame) { window.cancelAnimationFrame(resizeFrame); resizeFrame = 0; }
+      resize();
     });
     listenLayout(handle, "dblclick", resetPanelWidth);
   }
