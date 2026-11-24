@@ -2,6 +2,7 @@
 meshes, the overlay camera, clamped deltaTime, AxisBillboard transforms, editor shader materials and curve-driven
 (MaterialPropertyBlock) properties, cheek floats under _CHEEK 0, the render-target size, particle systems,
 blend shapes joined by channel name and the per-part coverage of the game dump."""
+import math
 import sys
 import tempfile
 import unittest
@@ -309,6 +310,90 @@ class BillboardTest(unittest.TestCase):
         metrics = [item["metric"] for item in result.items if item["type"] == "transforms"]
         self.assertEqual(metrics, ["rendererPositionM"])
         self.assertEqual(result.notes["transforms.offscreenAxisBillboard"], ["renderer:effect:cone"])
+        record["renderers"][0]["isVisible"] = True
+        result.items.clear()
+        result.compare_renderers(record, partner, False)
+        self.assertIn("rendererRotationDeg", [item["metric"] for item in result.items])
+
+
+class AxisBillboardUpAxisTest(unittest.TestCase):
+    """AxisBillboard turns a cone about its own up axis only while a target camera draws it (OnWillRenderObject
+    0x27bf944); an undrawn cone keeps its last turn while its Animator parents move. dump4 p3-stageNodes-00
+    litB_05_bilcone (off screen at 89.422 s): 92.2 deg apart, the up axes 0.0057 deg."""
+    BINDING = "/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litB_All"
+    REL = "litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani/litB_05_bilcone"
+    PREFAB = "bg0006_01_fx_so2035_ex/lit_01/litB_All/" + REL
+    GAME = {"position": [16.1646347, 0.358565003, 2.30999994], "rotation": [-0.0149891181, 0.046079956, 0.308967829, 0.949837327],
+            "lossyScale": [1, 1.00000012, 1]}
+    EDITOR = {"position": [-16.1646504, 0.358576224, 2.30999994], "rotation": [0.212213089, 0.652501641, -0.224993589, 0.691798452],
+              "lossyScale": [1, 1, 1]}
+    KEYS = {"prefab:effect": {
+        "bg0006_01_fx_so2035_ex": {"components": ["LLAS.Scene.Live.Components.LiveCoreStageEffect"]},
+        PREFAB: {"components": ["MeshRenderer", "MeshFilter", "LLAS.Components.AxisBillboard.AxisBillboard"]},
+        PREFAB + "/child": {"components": ["MeshRenderer", "MeshFilter"]}}}
+
+    def comparison(self, keys):
+        game, editor = documents([frame(89.422, 0.2)])
+        return C.Comparison(game, editor, keys=keys)
+
+    def stage(self, result, rel=REL, **editor):
+        key = C.Conventions.stage_node_key(self.BINDING, rel)
+        record = {"id": "p3-stageNodes-00", "clock": {"directorTime": 89.422}, "stageNodes": [
+            dict(self.GAME, binding=self.BINDING, relPath=rel, activeInHierarchy=True)]}
+        node = dict(self.EDITOR, key=key, name=rel.split("/")[-1], visible=True, **editor)
+        result.compare_stage_nodes(record, {"stageNodes": [node]}, False)
+        return {item["metric"]: item for item in result.items if item["type"] == "transforms"}
+
+    def test_axis_angle_ignores_the_turn_about_up(self):
+        turn = [0.0, math.sin(0.6), 0.0, math.cos(0.6)]
+        base = [0.1, 0.2, 0.3, math.sqrt(1 - 0.14)]
+        self.assertAlmostEqual(C.axis_angle(base, C.qmul(base, turn)), 0.0, places=9)
+        self.assertAlmostEqual(C.qangle(base, C.qmul(base, turn)), math.degrees(1.2), places=6)
+        tilt = [math.sin(math.radians(5)), 0.0, 0.0, math.cos(math.radians(5))]
+        self.assertAlmostEqual(C.axis_angle(base, C.qmul(base, tilt)), 10.0, places=6)
+
+    def test_billboard_stage_node_compares_its_up_axis(self):
+        result = self.comparison(self.KEYS)
+        items = self.stage(result)
+        self.assertEqual(sorted(items), ["stageNodePositionM", "stageNodeScaleRel", "stageNodeUpAxisDeg"])
+        self.assertLess(items["stageNodeUpAxisDeg"]["error"], 0.01)
+        self.assertEqual(result.notes["transforms.stageNodeAxisBillboard"], ["litB_05_bilcone"])
+
+    def test_a_tilted_beam_is_still_found(self):
+        result = self.comparison(self.KEYS)
+        tilt = [math.sin(math.radians(1)), 0.0, 0.0, math.cos(math.radians(1))]
+        items = self.stage(result, rotation=C.qmul(self.EDITOR["rotation"], tilt))
+        self.assertGreater(items["stageNodeUpAxisDeg"]["score"], 10)
+
+    def test_a_node_below_a_billboard_compares_its_scale(self):
+        result = self.comparison(self.KEYS)
+        self.assertEqual(result.axis_billboard_role(f"{self.BINDING}/{self.REL}/child"), "below")
+        self.assertEqual(sorted(self.stage(result, rel=self.REL + "/child")), ["stageNodeScaleRel"])
+
+    def test_without_keys_the_editor_flag_drops_the_rotation_only(self):
+        result = self.comparison(None)
+        self.assertEqual(sorted(self.stage(result, axisBillboard=True)), ["stageNodePositionM", "stageNodeScaleRel"])
+        result = self.comparison(None)
+        self.assertGreater(self.stage(result)["stageNodeRotationDeg"]["score"], 900)
+
+    def test_animated_parents_keep_their_full_rotation(self):
+        result = self.comparison(self.KEYS)
+        self.assertIsNone(result.axis_billboard_role(f"{self.BINDING}/litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani"))
+        self.assertIsNone(result.axis_billboard_role("/EntryPoint/Live/Members/Member1/" + self.REL))
+        self.assertIn("stageNodeRotationDeg", self.stage(result, rel="litB_05_All/litB_05_Yrot_Ani/litB_05_Zrot_Ani"))
+
+    def test_off_screen_billboard_renderer_compares_its_up_axis(self):
+        result = self.comparison(self.KEYS)
+        result.joins["renderer:cone"] = ("renderer:effect:litB_05_bilcone", "path")
+        result.editor_catalog["renderer:effect:litB_05_bilcone"] = {"path": self.PREFAB}
+        record = {"id": "g", "clock": {"directorTime": 89.422}, "renderers": [
+            {"key": "renderer:cone", "scope": "effect", "path": f"{self.BINDING}/{self.REL}", "enabled": True,
+             "activeInHierarchy": True, "isVisible": False, "transform": self.GAME}]}
+        partner = {"renderers": [{"key": "renderer:effect:litB_05_bilcone", "visible": True, "axisBillboard": True,
+                                  "transform": self.EDITOR}]}
+        result.compare_renderers(record, partner, False)
+        metrics = sorted(item["metric"] for item in result.items if item["type"] == "transforms")
+        self.assertEqual(metrics, ["rendererPositionM", "rendererScaleRel", "rendererUpAxisDeg"])
         record["renderers"][0]["isVisible"] = True
         result.items.clear()
         result.compare_renderers(record, partner, False)

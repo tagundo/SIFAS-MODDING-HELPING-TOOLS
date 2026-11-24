@@ -95,6 +95,13 @@ VECTOR_GLOBALS = {"_RenderTextureResolution"}   # compared on .v (x, y), exact
 # worldToCamera is column-major: elements 12-14 are its translation in metres, compared with the
 # camera position tolerance; the other elements are unitless rotation and projective terms.
 W2C_TRANSLATION = (12, 13, 14)
+# LiveCoreStageEffect.Initialize (0x2f6f4c4) gives every AxisBillboard below the stage effect its camera targets
+# (0x2f6fa68: the main camera's and the stage display camera's transforms). AxisBillboard.OnWillRenderObject
+# (0x27bf944) turns the Transform about its own up axis (RunAxisBillboardY 0x27bfc14) only when Camera.current is a
+# target or, with split screen on, one of LiveSplitScreenEffect.SubCameraTransforms: a cone no target camera draws
+# keeps the turn of its last draw while its Animator parents move on. Its up axis (the beam) is the parents' and
+# is compared on every sample; the turn about it is draw history.
+AXIS_BILLBOARD_CLASS = "LLAS.Components.AxisBillboard.AxisBillboard"
 
 
 class DumpError(ValueError):
@@ -137,6 +144,20 @@ def qlog_deg(a, b):
         return [0.0, 0.0, 0.0]
     angle = math.degrees(2 * math.atan2(length, w))
     return [x / length * angle, y / length * angle, z / length * angle]
+
+
+def qrotate(q, v):
+    """Vector v rotated by the unit quaternion q (x, y, z, w)."""
+    x, y, z, w = qnorm(q)
+    tx, ty, tz = 2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])
+    return [v[0] + w * tx + y * tz - z * ty, v[1] + w * ty + z * tx - x * tz, v[2] + w * tz + x * ty - y * tx]
+
+
+def axis_angle(a, b, axis=(0.0, 1.0, 0.0)):
+    """Angle in degrees between the local `axis` of two rotations: their swing, without the twist about that axis."""
+    u, v = qrotate(a, axis), qrotate(b, axis)
+    cross = math.sqrt((u[1] * v[2] - u[2] * v[1]) ** 2 + (u[2] * v[0] - u[0] * v[2]) ** 2 + (u[0] * v[1] - u[1] * v[0]) ** 2)
+    return math.degrees(math.atan2(cross, sum(x * y for x, y in zip(u, v))))
 
 
 def distance(a, b):
@@ -601,6 +622,7 @@ class Comparison:
         self.performer_mismatch = {}
         self.culling_masks = self._culling_masks()
         self.editor_catalog = self._editor_catalog()
+        self.axis_billboards = self._axis_billboards()
 
     # -- game- and editor-wide context
     def _member_roots(self):
@@ -636,6 +658,38 @@ class Comparison:
             best = min(self.culling_masks, key=lambda item: (abs(item[0] - t), abs((item[1] or 0) - (record.get("seq") or 0))))
             cache[ident] = (best[2], best[3])
         return cache[ident]
+
+    def _axis_billboards(self):
+        """GameObject paths below the stage effect root that carry an AxisBillboard (the keys' serialized
+        prefab:effect components)."""
+        rows = (self.keys or {}).get("prefab:effect") or {}
+        return {Conventions.editor_relative_path(path) for path, row in rows.items()
+                if "/" in path and AXIS_BILLBOARD_CLASS in ((row or {}).get("components") or [])}
+
+    def axis_billboard_role(self, path):
+        """'self' when the effect GameObject at the game path carries an AxisBillboard, 'below' when an ancestor
+        does, else None."""
+        if not self.axis_billboards or not isinstance(path, str) or not Conventions.SCOPE_ROOTS[0][1].match(path):
+            return None
+        parts = Conventions.game_relative_path(path, "effect").split("/")
+        if "/".join(parts) in self.axis_billboards:
+            return "self"
+        return "below" if any("/".join(parts[:end]) in self.axis_billboards for end in range(1, len(parts))) else None
+
+    def compare_billboard_transform(self, prefix, key, record, game, editor, role, near):
+        """Transform of an AxisBillboard node whose turn is draw history (see AXIS_BILLBOARD_CLASS): position,
+        scale and the up axis for the billboard itself; only scale below it (the turn moves its children)."""
+        game, editor = dict(game), dict(editor)
+        rotations = (game.pop("rotation", None), editor.pop("rotation", None))
+        if role == "below":
+            game.pop("position", None)
+            editor.pop("position", None)
+        self.compare_transform("transforms", prefix, key, record, game, editor, self.tol["stagePositionM"],
+                               self.tol["stageRotationDeg"], near)
+        if role == "self" and vector(rotations[0], 4) and vector(rotations[1], 4):
+            converted = self.quat(rotations[1])
+            self.add("transforms", prefix + "UpAxisDeg", key, record, rotations[0], converted,
+                     axis_angle(rotations[0], converted), self.tol["stageRotationDeg"], near_cut=near, field="AxisBillboard up axis")
 
     def _editor_catalog(self):
         """Every editor renderer (renderers parts and census) by key: scope, mesh, GameObject path."""
@@ -1090,11 +1144,15 @@ class Comparison:
             else:
                 game_transform = dict(game_renderer.get("transform") or {})
                 editor_transform = dict(editor_renderer.get("transform") or {})
-                if billboard_offscreen:
-                    game_transform.pop("rotation", None)
-                    editor_transform.pop("rotation", None)
-                self.compare_transform("transforms", "renderer", key, record, game_transform,
-                                       editor_transform, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
+                role = self.axis_billboard_role(game_renderer.get("path")) if billboard_offscreen else None
+                if role:
+                    self.compare_billboard_transform("renderer", key, record, game_transform, editor_transform, role, near)
+                else:
+                    if billboard_offscreen:
+                        game_transform.pop("rotation", None)
+                        editor_transform.pop("rotation", None)
+                    self.compare_transform("transforms", "renderer", key, record, game_transform,
+                                           editor_transform, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
             editor_slots = {item.get("slot"): item for item in editor_renderer.get("materials") or []}
             for slot in game_renderer.get("materials") or []:
                 editor_slot = editor_slots.get(slot.get("slot"))
@@ -1340,6 +1398,18 @@ class Comparison:
             if isinstance(game_visible, bool) and isinstance(editor_node.get("visible"), bool):
                 self.add("visibility", "stageNodeVisible", key, record, game_visible, editor_node["visible"],
                          int(game_visible != editor_node["visible"]), 0, exact=True, near_cut=near)
+            role = None
+            if not self.identity:
+                binding, rel = node.get("binding"), node.get("relPath")
+                role = self.axis_billboard_role(f"{binding}/{rel}" if rel else binding)
+                if role is None and editor_node.get("axisBillboard") is True:
+                    role = "flagged"     # the editor's flag (a billboard or below one) without the serialized components
+            if role:
+                # A stage node record has no draw state: the turn is the last target camera's draw (AXIS_BILLBOARD_CLASS).
+                if editor_node.get("name") not in self.notes["transforms.stageNodeAxisBillboard"]:
+                    self.notes["transforms.stageNodeAxisBillboard"].append(editor_node.get("name"))
+                self.compare_billboard_transform("stageNode", key, record, node, editor_node, role, near)
+                continue
             self.compare_transform("transforms", "stageNode", key, record, node, editor_node, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
 
     def compare_members(self, record, partner, near):
