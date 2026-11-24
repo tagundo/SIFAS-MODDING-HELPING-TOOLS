@@ -2919,6 +2919,12 @@ _MV_REGISTER_TRANSLATIONS = {
     "The Android and iOS timelines came out different, so nothing was registered.": (
         "Android와 iOS 타임라인이 서로 다르게 만들어져 등록하지 않았습니다.",
         "AndroidとiOSのタイムラインが異なる結果になったため、登録しませんでした。"),
+    "The project changed after the last check. Check it again, then register.": (
+        "마지막 점검 뒤에 프로젝트가 바뀌었습니다. 다시 점검한 다음 등록하세요.",
+        "前回のチェックの後にプロジェクトが変わりました。もう一度チェックしてから登録してください。"),
+    "{platform}: the registered timeline stays": ("{platform}: 등록된 타임라인을 그대로 둡니다", "{platform}：登録済みのタイムラインのままです"),
+    "Register for Android only": ("Android에만 등록", "Androidだけに登録"),
+    "Register for iOS only": ("iOS에만 등록", "iOSだけに登録"),
     "Enter a song title between 1 and 160 characters.": ("곡 제목을 1~160자로 입력하세요.", "曲のタイトルを1〜160文字で入力してください。"),
     "Enter a credit of at most 200 characters on one line.": (
         "크레디트는 한 줄로 200자 이내로 입력하세요.", "クレジットは1行・200文字以内で入力してください。"),

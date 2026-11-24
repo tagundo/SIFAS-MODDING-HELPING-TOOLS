@@ -94,6 +94,7 @@ OTHER_PLATFORM_FAILED_IOS = ("The edits could not be baked into the iOS original
 OTHER_PLATFORM_FAILED_ANDROID = ("The edits could not be baked into the Android original MV. Register for iOS only to "
                                  "play the original MV on Android.")
 PLATFORMS_DIFFER = "The Android and iOS timelines came out different, so nothing was registered."
+STALE = "The project changed after the last check. Check it again, then register."
 UNBAKED = "Some editor changes are not baked into the timeline yet. Wait for them to finish, then register again."
 TITLE = "Enter a song title between 1 and 160 characters."
 CREDIT = "Enter a credit of at most 200 characters on one line."
@@ -141,7 +142,7 @@ EDITS_PENDING = "The edits are counted once the original MV is available. Allow 
 MESSAGES = (
     NO_ELICHIKA, BUSY, CHOOSE_BASE, BASE_UNKNOWN, BASE_MISMATCH, STRUCTURE, TIMELINE_UNAVAILABLE, MOD_MISMATCH,
     ORIGINAL_MISSING_IOS, ORIGINAL_MISSING_ANDROID, OTHER_PLATFORM_FAILED_IOS, OTHER_PLATFORM_FAILED_ANDROID,
-    PLATFORMS_DIFFER, UNBAKED, TITLE, CREDIT, PLATFORMS_CHOICE, REQUEST, MODE, KEEP_NEW, AUDIO_KIND, ENCODER,
+    PLATFORMS_DIFFER, STALE, UNBAKED, TITLE, CREDIT, PLATFORMS_CHOICE, REQUEST, MODE, KEEP_NEW, AUDIO_KIND, ENCODER,
     BPM_REQUIRED, BEAT, PREVIEW_START, PCM_MISSING, PCM_SIZE, AUDIO_TEMPLATE, JACKET_KIND, JACKET_CROP, JACKET_BOX,
     JACKET_IMAGE, JACKET_SOURCE, CANCELLED, REMOVE_CANCELLED, REGISTERED, UPDATED, NO_CHANGES, REMOVED, RESTARTED,
     RESTART_PENDING, RESTART_MANUAL, STOPPED_MANUAL, NOT_TRACK_SETTINGS, NOT_VALUES, NOT_STAGE, NOT_PERFORMERS,
@@ -830,10 +831,7 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
             descriptor = facts["timelines"].get(platform)
             if descriptor is None:
                 continue
-            identity = _stock_identity(descriptor)
-            if mod_raw is not None and platform == blob["platform"]:
-                identity += ":" + hashlib.sha256(mod_raw).hexdigest()
-            fingerprint = timeline_fingerprint(platform, identity, tracks)
+            fingerprint = timeline_fingerprint(platform, _timeline_identity(descriptor, platform, blob), tracks)
             result["timeline"]["fingerprints"][platform] = fingerprint
             if (chosen is not None and chosen.get("platforms", {}).get(platform) == "custom"
                     and chosen.get("fingerprints", {}).get(platform) == fingerprint):
@@ -865,6 +863,8 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
     timeline = result["timeline"]
     timeline["keep"] = keep
     # Platforms whose original the bake needs: every catalogued one with edits, minus kept ones.
+    # The register job sends every catalogued platform in ``platforms`` except those the user
+    # agreed to leave at the original MV (a needed download that was not allowed).
     bake = [] if blob["kind"] is None or timeline["unchanged"] else [
         platform for platform in PLATFORMS if platform in facts["timelines"] and platform not in keep]
     timeline["bake"] = bake
@@ -1058,13 +1058,44 @@ def _restart_state(session, is_managed, changed):
     return "manual"
 
 
+def _timeline_identity(descriptor, platform, blob):
+    """The fingerprinted identity of a platform's base: its stock catalog row, plus the mod blob
+    for a mod project's own platform."""
+    identity = _stock_identity(descriptor)
+    if blob["kind"] == "mod" and platform == blob["platform"]:
+        identity += ":" + hashlib.sha256(blob["raw"]).hexdigest()
+    return identity
+
+
+def _left_out(repo_root, facts, platform, blob, request):
+    """Check that a platform missing from ``platforms`` was left out with the user's consent.
+
+    The panel leaves a platform out only when the user agreed that it plays the original MV:
+    its original needs a download that was not allowed, or (after OTHER_PLATFORM_FAILED_*) the
+    edits do not fit a mod project's other platform. Anything else is a request built from an
+    out-of-date check, refused so that edits never disappear silently.
+    """
+    if blob["kind"] == "mod" and platform != blob["platform"]:
+        return
+    if request["download"]:
+        raise ValueError(STALE)
+    _, status = _original(repo_root, facts, platform, blob, download=False)
+    if status != "download":
+        raise ValueError(STALE)
+
+
 def _bake(job, progress, repo_root, project, base, facts, request, song):
     """Timelines, originals and fingerprints for the store. Runs before the game server stops.
+
+    The server decides what to keep and what to bake from the posted project: an update keeps a
+    platform whose fingerprint is unchanged (no original read, no bake), and every other
+    catalogued platform is baked, unless it was left out of ``platforms`` with the user's
+    consent (``_left_out``), in which case it plays the original MV.
 
     Every baked platform starts from its own stock original (embedded Shader objects differ
     between platforms), except a mod project's own platform, whose base is the mod timeline.
     Both platforms receive the same normalized tracks. A platform whose result equals its
-    stock gets no override; an update keeps a platform whose fingerprint is unchanged.
+    stock gets no override.
     """
     from mv_studio_live import KEEP
     blob = _project_blob(project, base)
@@ -1076,32 +1107,36 @@ def _bake(job, progress, repo_root, project, base, facts, request, song):
     wanted = request["platforms"]
     timelines, originals, fingerprints, outputs = {}, {}, {}, {}
     normalized = None
+    catalogued = {platform: facts["timelines"][platform] for platform in PLATFORMS if facts["timelines"].get(platform)}
+    expected = {platform: timeline_fingerprint(platform, _timeline_identity(descriptor, platform, blob), tracks)
+                for platform, descriptor in catalogued.items()}
+    for platform, fingerprint in expected.items():
+        if (song is not None and song["platforms"].get(platform) == "custom"
+                and song.get("fingerprints", {}).get(platform) == fingerprint):
+            timelines[platform] = KEEP
+            fingerprints[platform] = fingerprint
+    if len(timelines) == len(catalogued):
+        return timelines, originals, fingerprints
 
     def reference_from(raw):
         reference = _parse(raw)
         result, _ = normalize(reference["tracks"], tracks)
-        # Without edits both platforms keep the stock rows: nothing to bake or download.
+        # Without edits the platforms not kept play the stock rows: nothing to bake or download.
         unchanged = mod_raw is None and not count_edits(reference["tracks"], result)["clips"]
         return result, unchanged
 
     if mod_raw is not None or blob["kind"] == "stock":
         normalized, unchanged = reference_from(mod_raw if mod_raw is not None else blob["raw"])
         if unchanged:
-            return {}, {}, {}
-    for platform in PLATFORMS:
-        descriptor = facts["timelines"].get(platform)
-        if platform not in wanted or descriptor is None:
+            return timelines, originals, fingerprints
+    for platform, descriptor in catalogued.items():
+        if timelines.get(platform) is KEEP:
             continue
-        identity = _stock_identity(descriptor)
+        if platform not in wanted:
+            _left_out(repo_root, facts, platform, blob, request)
+            continue
         own = mod_raw is not None and platform == blob["platform"]
-        if own:
-            identity += ":" + hashlib.sha256(mod_raw).hexdigest()
-        fingerprint = timeline_fingerprint(platform, identity, tracks)
-        if (song is not None and song["platforms"].get(platform) == "custom"
-                and song.get("fingerprints", {}).get(platform) == fingerprint):
-            timelines[platform] = KEEP
-            fingerprints[platform] = fingerprint
-            continue
+        fingerprint = expected[platform]
         progress.check()
         progress.stage(platform)
         stock, status = _original(repo_root, facts, platform, blob, download=request["download"])
@@ -1112,7 +1147,7 @@ def _bake(job, progress, repo_root, project, base, facts, request, song):
         if normalized is None:
             normalized, unchanged = reference_from(stock)
             if unchanged:
-                return {}, {}, {}
+                return timelines, {}, fingerprints
         try:
             output = _export(mod_raw if own else stock, request["title"], normalized)
         except ValueError:

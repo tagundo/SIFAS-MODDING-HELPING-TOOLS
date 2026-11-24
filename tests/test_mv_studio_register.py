@@ -771,6 +771,83 @@ class RegisterJobTests(Case):
         self.assertEqual(len(self.server_sessions), 1, "A no-op update does not stop the server")
         self.assertEqual((second.song()["changed"], second.song()["restart"]), (False, "none"))
 
+    @staticmethod
+    def panel_platforms(plan, *, download=False):
+        """platformsFor(plan).send of mv-studio-register.js: every catalogued platform, minus the
+        bakes whose original needs a download the user did not allow (after consent)."""
+        timeline = plan["timeline"]
+        skipped = [] if download else [platform for platform in timeline["download"] if platform in timeline["bake"]]
+        return [platform for platform in register.PLATFORMS
+                if plan["platforms"].get(platform, {}).get("status", "missing") != "missing" and platform not in skipped]
+
+    def test_update_with_the_panel_payload_keeps_custom_timelines(self):
+        """A no-op, title-only or jacket-only update of a song with custom timelines keeps them."""
+        project = self.edited(self.project())
+        first, _ = self.run_job(self.request(project), managed=True)
+        live_id = first.song()["song"]["liveId"]
+        self.assertEqual(first.song()["song"]["platforms"], {"android": "custom", "ios": "custom"})
+        linked = dict(project, registration={"region": "gl", "liveId": live_id})
+        plan = register.plan(self.root, linked)
+        self.assertEqual((plan["target"], plan["timeline"]["keep"], plan["timeline"]["bake"]),
+                         (live_id, ["android", "ios"], []))
+        platforms = self.panel_platforms(plan)
+        self.assertEqual(platforms, ["android", "ios"], "Kept platforms are sent")
+        EXPORTS.clear()
+        sessions = len(self.server_sessions)
+        update = {"mode": "update", "liveId": live_id, "jacket": {"kind": "keep"}, "audio": {"kind": "keep"},
+                  "platforms": platforms}
+        job, summary = self.run_job(self.request(linked, **update), managed=True)
+        self.assertEqual(summary, register.NO_CHANGES)
+        self.assertEqual((job.song()["changed"], job.song()["restart"]), (False, "none"))
+        self.assertEqual(len(self.server_sessions), sessions, "A no-op update does not stop the server")
+        job, summary = self.run_job(self.request(linked, **update, title="새 제목"), managed=True)
+        self.assertEqual(job.song()["parts"], ["title"])
+        jacket = {"kind": "file", "path": self.jacket_file("j.png", png_bytes(400, 400))}
+        job, _ = self.run_job(self.request(linked, **{**update, "jacket": jacket}, title="새 제목"), managed=True)
+        self.assertEqual(job.song()["parts"], ["jacket"])
+        song = mv_studio_live.describe_mv_song(self.root, region="gl", live_id=live_id)
+        self.assertEqual((song["platforms"], song["title"]), ({"android": "custom", "ios": "custom"}, "새 제목"))
+        self.assertEqual(EXPORTS, [], "Kept platforms are neither read nor baked")
+        # A kept platform stays even when a client leaves it out: it needs no original and no bake.
+        job, summary = self.run_job(self.request(linked, **{**update, "platforms": []}, title="새 제목"))
+        self.assertEqual(summary, register.NO_CHANGES)
+        self.assertEqual(mv_studio_live.describe_mv_song(self.root, region="gl", live_id=live_id)["platforms"],
+                         {"android": "custom", "ios": "custom"})
+
+    def test_a_plan_made_before_an_edit_cannot_drop_the_edit(self):
+        project = self.project()
+        stale = register.plan(self.root, project)
+        self.assertEqual(stale["timeline"]["bake"], [])
+        edited = self.edited(project, timing=True)
+        # The panel sends every catalogued platform, whatever the (stale) plan's bake list says.
+        job, _ = self.run_job(self.request(edited, platforms=self.panel_platforms(stale)))
+        self.assertEqual(job.song()["song"]["platforms"], {"android": "custom", "ios": "custom"})
+        # A request that leaves out a platform the user never agreed to leave at the original MV is refused.
+        for platforms, download in (([], False), (["android"], False), (["android"], True)):
+            with self.subTest(platforms=platforms, download=download):
+                with self.assertRaisesRegex(ValueError, "The project changed after the last check"):
+                    self.run_job(self.request(edited, platforms=platforms, download=download))
+        self.assertEqual(len(self.songs()), 1)
+        # Without edits, a left-out platform plays the original MV anyway: nothing to refuse.
+        job, _ = self.run_job(self.request(self.project(), platforms=[]))
+        self.assertEqual(job.song()["song"]["platforms"], {"android": "stock", "ios": "stock"})
+
+    def test_a_mod_project_may_leave_out_its_other_platform(self):
+        mod_tracks = base_tracks()
+        mod_tracks[1]["events"][0]["values"]["intensity"] = 1.75
+        mod = self.project(source={"kind": "mod"}, tracks=mod_tracks,
+                           native_bytes=timeline_bytes("ios", mod_tracks, tag="mod"))
+        template = {"region": "gl", "liveId": 21, "assetId": 2101}
+        with mock.patch.object(register, "_export", side_effect=lambda raw, name, tracks: (
+                (_ for _ in ()).throw(ValueError("no slot")) if json.loads(raw[8:].rstrip(b" "))["platform"] == "android"
+                else fake_export(raw, name, tracks))):
+            with self.assertRaisesRegex(ValueError, "Register for iOS only"):
+                self.run_job(self.request(mod, template=template))
+            job, _ = self.run_job(self.request(mod, template=template, platforms=["ios"]))
+        self.assertEqual(job.song()["song"]["platforms"], {"android": "stock", "ios": "custom"})
+        with self.assertRaisesRegex(ValueError, "The project changed after the last check"):
+            self.run_job(self.request(mod, template=template, platforms=["android"]))
+
     def test_update_of_a_registered_import_bakes_against_the_template_stock(self):
         first, _ = self.run_job(self.request(self.edited(self.project())))
         live_id = first.song()["song"]["liveId"]

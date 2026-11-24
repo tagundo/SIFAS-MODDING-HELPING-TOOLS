@@ -17,16 +17,21 @@
   const RATE = 44100;
   const PCM_LIMIT = 96 * 1024 * 1024;
   const KEY = "register";
+  const PLATFORMS = ["android", "ios"];
   const copy = (value) => JSON.parse(JSON.stringify(value));
   const text = (value) => String(value == null ? "" : value);
   let ctx = null, box = null;
   let state = fresh(), songs = { region: null, list: null, error: "", loading: null, encoder: false, managed: false };
 
+  // revision counts project changes; planned is the revision the shown plan was made from.
+  // consent lists the platforms the user agreed to leave at the original MV for this submit;
+  // exclude is a mod project's other platform after its bake failed (OTHER_PLATFORM_FAILED).
   function fresh() {
-    return { plan: null, planning: null, timer: 0, planError: "", target: undefined, template: null, title: null,
-      credit: null, jacket: null, jacketInfo: null, crop: null, audio: null, bpm: null, firstBeat: null,
-      previewStart: null, segments: null, acb: "", awb: "", download: null, picker: null, job: null, result: null,
-      confirm: null, removing: null, charts: { templates: [], template: "", path: "", busy: false }, error: "" };
+    return { plan: null, planning: null, timer: 0, planError: "", revision: 0, planned: -1, target: undefined,
+      template: null, title: null, credit: null, jacket: null, jacketInfo: null, crop: null, audio: null, bpm: null,
+      firstBeat: null, previewStart: null, segments: null, acb: "", awb: "", download: null, picker: null, job: null,
+      result: null, removed: null, failed: null, confirm: null, consent: [], exclude: null, removing: null,
+      charts: { templates: [], template: "", path: "", busy: false }, error: "" };
   }
 
   // ---- small helpers --------------------------------------------------------------------
@@ -64,6 +69,8 @@
   function source() { const project = ctx.project(); return project && project.source || {}; }
   function open() { const panel = box && box.closest("details"); return !!(panel && panel.open); }
   function updateMode() { return !!(state.plan && state.plan.song && state.target !== "new"); }
+  // The shown plan predates an edit (also one made while the panel was closed).
+  function stale() { return state.planned !== state.revision; }
 
   // ---- export preparation (camera bakes and other plugins) --------------------------------
   async function prepare() {
@@ -91,10 +98,26 @@
     state.timer = setTimeout(runPlan, delay);
   }
 
+  function planBody(project, unbaked) {
+    const body = { project, unbaked };
+    if (state.template) body.template = state.template;
+    if (state.target !== undefined) body.target = state.target;
+    return body;
+  }
+
+  function usePlan(plan, revision) {
+    state.plan = plan;
+    state.planned = revision;
+    state.planError = "";
+    applyDefaults(plan);
+    if (plan.region && songs.region !== plan.region) loadSongs(plan.region);
+  }
+
   async function runPlan() {
     if (!ctx.project()) return;
     if (state.planning) state.planning.abort();
-    const controller = new AbortController(), current = state;
+    clearTimeout(state.timer);
+    const controller = new AbortController(), current = state, revision = state.revision;
     state.planning = controller;
     draw();
     try {
@@ -102,15 +125,9 @@
       try { prepared = await prepare(); }
       catch (error) { prepared = null; current.planError = text(error && error.message); }
       if (!prepared) return;
-      const body = { project: prepared.project, unbaked: prepared.unbaked };
-      if (current.template) body.template = current.template;
-      if (current.target !== undefined) body.target = current.target;
-      const plan = await call("registration-plan", body, controller.signal);
+      const plan = await call("registration-plan", planBody(prepared.project, prepared.unbaked), controller.signal);
       if (current !== state) return;
-      state.plan = plan;
-      state.planError = "";
-      applyDefaults(plan);
-      if (plan.region && songs.region !== plan.region) loadSongs(plan.region);
+      usePlan(plan, revision);
     } catch (error) {
       if (error.name !== "AbortError" && current === state) state.planError = text(error.message);
     } finally {
@@ -222,21 +239,34 @@
   }
 
   // ---- register / update ---------------------------------------------------------------------
+  // `platforms` of the register job: every platform with an original in the catalog, kept ones
+  // included (the server keeps a platform whose fingerprint is unchanged). Only a platform whose
+  // bake needs a download the user did not allow is left out, and only with consent (skipped).
   function platformsFor(plan) {
-    const bake = plan.timeline && plan.timeline.bake || [];
-    const needed = state.download ? [] : (plan.timeline && plan.timeline.download || []);
-    return { send: bake.filter((platform) => !needed.includes(platform)), skipped: needed.filter((platform) => bake.includes(platform)) };
+    const statuses = plan && plan.platforms || {}, timeline = plan && plan.timeline || {};
+    const bake = timeline.bake || [];
+    const excluded = state.exclude && bake.includes(state.exclude) ? [state.exclude] : [];
+    const skipped = state.download ? [] : (timeline.download || []).filter((platform) => bake.includes(platform) && !excluded.includes(platform));
+    const catalogued = PLATFORMS.filter((platform) => statuses[platform] && statuses[platform].status !== "missing");
+    return { send: catalogued.filter((platform) => !skipped.includes(platform) && !excluded.includes(platform)), skipped };
   }
+
+  function consentMessage(skipped) {
+    return skipped.length > 1 ? "Android and iOS will play the original MV. Continue?" :
+      skipped[0] === "ios" ? "iOS will play the original MV. Continue?" : "Android will play the original MV. Continue?";
+  }
+
+  // True when the user already agreed that every skipped platform plays the original MV.
+  function consented(skipped) { return skipped.every((platform) => state.consent.includes(platform)); }
 
   function submit(mode) {
     const plan = state.plan;
-    if (!plan || state.job || plan.blocked.length) return;
+    if (!plan || state.job || plan.blocked.length || stale() || state.planning) return;
     const title = text(state.title).trim();
     if (!title || title.length > 160) { state.error = "Enter a song title between 1 and 160 characters."; draw(); focus("mv-register-title"); return; }
     const { skipped } = platformsFor(plan);
-    if (skipped.length && !(state.confirm && state.confirm.accepted)) {
-      state.confirm = { mode, message: skipped.length > 1 ? "Android and iOS will play the original MV. Continue?" :
-        skipped[0] === "ios" ? "iOS will play the original MV. Continue?" : "Android will play the original MV. Continue?" };
+    if (skipped.length && !consented(skipped)) {
+      state.confirm = { mode, platforms: skipped, message: consentMessage(skipped) };
       draw();
       return;
     }
@@ -245,23 +275,41 @@
   }
 
   async function startJob(mode, title) {
-    const plan = state.plan, controller = new AbortController(), current = state;
+    const plan = state.plan, controller = new AbortController(), current = state, revision = state.revision;
     state.job = { controller, stage: "Preparing the project", index: 0, total: 1, id: null, events: null };
     state.error = "";
-    state.result = null;
+    state.result = state.removed = state.failed = null;
     draw();
     try {
       const prepared = await prepare();
       if (prepared.unbaked.length) throw new Error("Some editor changes are not baked into the timeline yet. Wait for them to finish, then register again.");
+      // Check again with exactly the project that is posted: an edit since the shown plan (made
+      // while the panel was closed, or inside the debounce) must not change what is registered.
+      const fresh = await call("registration-plan", planBody(prepared.project, []), controller.signal);
+      if (current !== state) return;
+      usePlan(fresh, revision);
+      const freshMode = fresh.song && state.target !== "new" ? "update" : "new";
+      const { send, skipped } = platformsFor(fresh);
+      if (fresh.blocked.length || freshMode !== mode || mode === "update" && fresh.song.liveId !== plan.song.liveId) {
+        state.job = null;
+        draw();
+        return;
+      }
+      if (skipped.length && !consented(skipped)) {
+        state.job = null;
+        state.confirm = { mode, platforms: skipped, message: consentMessage(skipped) };
+        draw();
+        return;
+      }
       const audio = { kind: state.audio };
       if (state.audio === "project") {
         state.job.stage = "Decoding the soundtrack";
         draw();
-        audio.pcm = await uploadPcm(plan.audio.soundtrack, controller.signal);
+        audio.pcm = await uploadPcm(fresh.audio.soundtrack, controller.signal);
         audio.bpm = Number(state.bpm); audio.firstBeat = Number(state.firstBeat);
         audio.previewStart = Number(state.previewStart) || 0;
-        if (state.segments && plan.audio.beat && Number(state.bpm) === plan.audio.beat.bpm &&
-            Number(state.firstBeat) === plan.audio.beat.firstBeat) audio.segments = state.segments;
+        if (state.segments && fresh.audio.beat && Number(state.bpm) === fresh.audio.beat.bpm &&
+            Number(state.firstBeat) === fresh.audio.beat.firstBeat) audio.segments = state.segments;
       } else if (state.audio === "files") {
         audio.acbPath = state.acb;
         if (state.awb) audio.awbPath = state.awb;
@@ -269,11 +317,13 @@
       const jacket = state.jacket.kind === "file" ? { kind: "file", path: state.jacket.path, ...(state.crop ? { crop: state.crop } : {}) }
         : { kind: state.jacket.kind };
       const body = { mode, project: prepared.project, title, credit: text(state.credit).trim() || null, jacket, audio,
-        platforms: platformsFor(plan).send, download: !!state.download, unbaked: [] };
-      if (plan.base && !plan.base.fixed) body.template = { region: plan.region, liveId: plan.base.liveId, assetId: plan.base.assetId };
-      if (mode === "update") body.liveId = plan.song.liveId;
+        platforms: send, download: !!state.download, unbaked: [] };
+      if (fresh.base && !fresh.base.fixed) body.template = { region: fresh.region, liveId: fresh.base.liveId, assetId: fresh.base.assetId };
+      if (mode === "update") body.liveId = fresh.song.liveId;
       if (current !== state) return;
       const receipt = await call("register-job", body, controller.signal);
+      // The consent covered this job only; the next registration asks again.
+      current.consent = [];
       follow(receipt.job_id, current);
     } catch (error) {
       if (current !== state) return;
@@ -323,7 +373,9 @@
         current.job = null;
         if (event.status === "error") current.error = text(event.summary);
         else if (event.status === "cancelled") current.error = "MV registration was cancelled.";
-        if (current === state) { loadSongs(songs.region); if (event.status === "done") runPlan(); }
+        else current.exclude = null;
+        // Check again after every job: the songs and the originals may have changed.
+        if (current === state) { loadSongs(songs.region); runPlan(); }
       }
       if (current === state) draw();
     };
@@ -553,6 +605,8 @@
     if (state.confirm) nodes.push(confirmBox());
     if (state.job) nodes.push(progressBox());
     if (state.error) nodes.push(make("p", t(state.error), { class: "mv-register-error", role: "alert", id: "mv-register-error" }));
+    const only = otherPlatformBox();
+    if (only) nodes.push(only);
     if (state.result) nodes.push(resultBox(state.result));
     nodes.push(songsSection(), chartsSection(plan, busy));
     return nodes;
@@ -715,7 +769,10 @@
     } else {
       item("ok", t("No native timeline: the base MV's timeline plays unchanged."));
     }
-    const bake = timeline.bake || [], downloads = timeline.download || [];
+    const bake = timeline.bake || [], downloads = timeline.download || [], kept = timeline.keep || [];
+    if (kept.length && plan.song) {
+      item("ok", format("{platform}: the registered timeline stays", { platform: kept.map(platformName).join(" · ") }));
+    }
     if (bake.length) {
       const ready = bake.filter((platform) => !downloads.includes(platform));
       if (ready.length === 2) item("ok", t("Applied on Android and iOS"));
@@ -757,7 +814,8 @@
     const control = box && box.querySelector("#mv-register-submit");
     const plan = state.plan;
     if (!control || !plan) return;
-    control.disabled = !!state.job || !!(plan.blocked && plan.blocked.length) || !!state.planError || !!state.planning || incomplete();
+    control.disabled = !!state.job || !!(plan.blocked && plan.blocked.length) || !!state.planError || !!state.planning ||
+      stale() || incomplete();
   }
 
   function actions(plan, busy) {
@@ -772,15 +830,31 @@
       row.append(button("Register as an MV-only song", () => submit("new"), { id: "mv-register-submit", class: "primary" }));
     }
     for (const control of row.querySelectorAll("button")) control.disabled = busy || blocked || !!state.planning;
-    row.querySelector("#mv-register-submit").disabled ||= invalid;
+    // Until the plan covers the latest edit, Register waits for the check.
+    row.querySelector("#mv-register-submit").disabled ||= invalid || stale();
     return row;
+  }
+
+  // After OTHER_PLATFORM_FAILED_*: register the mod's own platform only; the other plays the original MV.
+  function otherPlatformBox() {
+    const failed = { "The edits could not be baked into the iOS original MV. Register for Android only to play the original MV on iOS.": "ios",
+      "The edits could not be baked into the Android original MV. Register for iOS only to play the original MV on Android.": "android" }[state.error];
+    if (!failed || !state.plan || state.job) return null;
+    const control = button(failed === "ios" ? "Register for Android only" : "Register for iOS only", () => {
+      state.exclude = failed;
+      state.error = "";
+      submit(updateMode() ? "update" : "new");
+    }, { id: "mv-register-only" });
+    control.disabled = !!state.planning || stale() || !!(state.plan.blocked && state.plan.blocked.length) || incomplete();
+    return control;
   }
 
   function confirmBox() {
     const dialog = make("div", null, { class: "mv-register-confirm", role: "alertdialog", id: "mv-register-confirm", tabindex: "-1",
       "aria-label": t(state.confirm.message) });
     const row = make("div", null, { class: "mv-controls" });
-    row.append(button("Continue", () => { const mode = state.confirm.mode; state.confirm.accepted = true; submit(mode); }, { id: "mv-register-confirm-yes" }),
+    row.append(button("Continue", () => { const { mode, platforms } = state.confirm; state.consent = platforms; state.confirm = null; submit(mode); },
+      { id: "mv-register-confirm-yes" }),
       button("Cancel", () => { state.confirm = null; draw(); }, { id: "mv-register-confirm-no" }));
     dialog.append(make("p", t(state.confirm.message)), row);
     return dialog;
@@ -983,7 +1057,8 @@
           const panel = element.closest("details");
           if (panel) panel.addEventListener("toggle", () => {
             if (!panel.open) return;
-            if (!state.plan && !state.planning) runPlan();
+            // Edits made while the panel was closed are checked again before anything is posted.
+            if ((!state.plan || stale()) && !state.planning) runPlan();
             if (!songs.list && !songs.loading) loadSongs();
           });
         }
@@ -1002,6 +1077,9 @@
         if (open()) runPlan();
         return;
       }
+      // Every change makes the shown plan stale, also while the panel is closed.
+      state.revision++;
+      syncSubmit();
       schedulePlan(reason === "history" ? 1000 : 0);
     },
   };
@@ -1021,6 +1099,7 @@
     "No native timeline: the base MV's timeline plays unchanged.", "Camera: {count} shots edited",
     "Camera: {count} shots edited (follow camera included)", "Values: {values} · clip timing: {timing}",
     "Applied on Android and iOS", "Applied on {platform}", "Download (about {size} MB)", "No {platform} original",
+    "{platform}: the registered timeline stays", "Register for Android only", "Register for iOS only",
     "{platform} has no original in this region: it plays the base MV.", "Not in the game:", "Choose outfits in the game's MV deck.",
     "Checking what reaches the game…", "Open this panel to check what reaches the game.", "Region: {region}", "New song",
     "Update {title} ({id})", "Register as", "Songs registered from this base MV: {songs}", "Not chosen", "Game region", "Search MV",
