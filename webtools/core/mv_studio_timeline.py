@@ -960,15 +960,38 @@ def restore_emissive_track_metadata(tracks, originals):
     return restored
 
 
-def needs_editable_values_sync(track):
-    """A saved track with an event whose whitelisted fields are not all in its editableValues."""
+def shared_playables(tracks):
+    """Asset ids that more than one saved clip references.
+
+    The parser lists value fields as editable only for a playable that one clip
+    references, so a clip of a shared playable never needs an editableValues sync."""
+    counts = Counter()
+    for track in tracks if isinstance(tracks, list) else ():
+        events = track.get("events") if isinstance(track, dict) else None
+        for event in events if isinstance(events, list) else ():
+            values = event.get("values") if isinstance(event, dict) else None
+            asset = values.get("asset") if isinstance(values, dict) else None
+            if isinstance(asset, str):
+                counts[asset] += 1
+    return frozenset(asset for asset, count in counts.items() if count > 1)
+
+
+def needs_editable_values_sync(track, shared=None):
+    """A saved track with an event whose whitelisted fields are not all in its editableValues.
+
+    `shared` is shared_playables() of the whole project; by default the clips of this
+    track alone tell which playables are shared."""
     if not isinstance(track, dict) or not isinstance(track.get("events"), list):
         return False
+    if shared is None:
+        shared = shared_playables([track])
     for event in track["events"]:
         values = event.get("values") if isinstance(event, dict) else None
         saved = event.get("editableValues") if isinstance(event, dict) else None
         native = values.get("playableClass") if isinstance(values, dict) else None
-        if isinstance(native, str) and isinstance(saved, list) and (_EDITABLE_VALUES.get(native, set()) & values.keys()) - set(saved):
+        asset = values.get("asset") if isinstance(values, dict) else None
+        if (isinstance(native, str) and isinstance(saved, list) and not (isinstance(asset, str) and asset in shared)
+                and (_EDITABLE_VALUES.get(native, set()) & values.keys()) - set(saved)):
             return True
     return False
 

@@ -238,6 +238,29 @@ class SyncEditableValuesTests(unittest.TestCase):
         for value in (None, {}, {"events": None}, {"events": [None, {"values": None}, {"values": {"playableClass": 3}}]}):
             self.assertFalse(studio.needs_editable_values_sync(value))
 
+    def test_shared_playables_never_need_a_sync(self):
+        # The parser lists no value field for a playable that more than one clip references.
+        timing = ["clipIn"]
+        shared = [event("s:0", "LiveColoringClip", {"textureIndex": 0, "shift": 0}, timing),
+                  event("s:1", "LiveColoringClip", {"textureIndex": 0, "shift": 0}, timing)]
+        shared[1]["values"]["asset"] = shared[0]["values"]["asset"]
+        same_track = {"id": "s", "kind": "stage", "events": shared}
+        self.assertEqual(studio.shared_playables([same_track]), {"cab:s:0"})
+        self.assertFalse(studio.needs_editable_values_sync(same_track))
+        # Across tracks only the whole project tells.
+        first = {"id": "a", "kind": "stage", "events": [shared[0]]}
+        second = {"id": "b", "kind": "stage", "events": [deepcopy(shared[1])]}
+        self.assertTrue(studio.needs_editable_values_sync(first))
+        project = studio.shared_playables([first, second])
+        self.assertFalse(any(studio.needs_editable_values_sync(track, project) for track in (first, second)))
+        # An unshared clip saved with an older list still needs one, beside a shared playable.
+        old = event("s:2", "LivePropAmbientClip", {"color": {"r": 1, "g": 1, "b": 1, "a": 1}}, timing)
+        self.assertTrue(studio.needs_editable_values_sync({**same_track, "events": [*shared, old]}))
+        for value in (None, [None, {"events": [None, {"values": {"asset": 3}}, {"values": {"asset": {}}}]}]):
+            self.assertEqual(studio.shared_playables(value), frozenset())
+        self.assertFalse(studio.needs_editable_values_sync(
+            {"events": [{"values": {"asset": {}, "playableClass": "LiveColoringClip"}, "editableValues": []}]}))
+
     def test_saved_project_reopens_with_the_current_lists(self):
         work = TemporaryDirectory()
         self.addCleanup(work.cleanup)
@@ -265,6 +288,17 @@ class SyncEditableValuesTests(unittest.TestCase):
                 reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
             parse.assert_not_called()
             self.assertEqual(reopened["tracks"], self.fresh)
+            # Nor does one whose only listless clips play a shared playable (on two tracks here).
+            project["tracks"] = deepcopy(self.fresh)
+            twin = deepcopy(project["tracks"][0]["events"][0])
+            twin.update(id="u:0", editableValues=["clipIn"])
+            project["tracks"][1]["events"] = [twin]
+            project["tracks"][0]["events"][0]["editableValues"] = ["clipIn"]
+            saved = mv_studio.save(mv_studio._register(project, native))
+            with ZipFile(saved["path"]) as archive, patch("webtools.core.mv_studio_timeline.parse_timeline") as parse:
+                reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+            parse.assert_not_called()
+            self.assertEqual(reopened["tracks"], project["tracks"])
 
 
 @unittest.skipUnless((SAMPLES / "a-1203503-live_timeline.unity").is_file(), "Original game samples are optional")
@@ -436,6 +470,11 @@ class SampleTimelineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.parsed = {path.name: studio.parse_timeline(path.read_bytes(), path.name)["tracks"] for path in sample_timelines()}
+
+    def test_a_fresh_parse_never_needs_a_sync(self):
+        for name, tracks in self.parsed.items():
+            shared = studio.shared_playables(tracks)
+            self.assertEqual([track["id"] for track in tracks if studio.needs_editable_values_sync(track, shared)], [], name)
 
     def test_inspector_bounds_hold_every_native_value(self):
         """A native value outside its box's bounds would be clamped on the first edit and could not be typed back."""

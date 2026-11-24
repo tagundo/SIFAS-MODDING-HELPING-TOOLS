@@ -1164,7 +1164,9 @@ def _open_saved(archive, entries):
         } for event in track["events"]) for track in project["tracks"])
     restore_emissive_tracks = any(mv_studio_timeline.needs_emissive_track_metadata(track) for track in project["tracks"])
     restore_camera_points = any(mv_studio_timeline.needs_camera_keyframe_check(track) for track in project["tracks"])
-    restore_editable_values = any(mv_studio_timeline.needs_editable_values_sync(track) for track in project["tracks"])
+    shared_playables = mv_studio_timeline.shared_playables(project["tracks"])
+    restore_editable_values = any(mv_studio_timeline.needs_editable_values_sync(track, shared_playables)
+                                  for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
                                or restore_spotlight or restore_butterfly or restore_rain or restore_leaves or restore_momiji
                                or restore_confetti or restore_glow or restore_lens or restore_speed_back
