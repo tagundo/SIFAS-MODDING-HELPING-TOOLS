@@ -545,6 +545,25 @@ async function testCullingFreezesTheClockOffScreen() {
   // Without a view (no main camera), the system simulates as if always visible.
   controller.update(4, project);
   assert.equal(rows()["fx/culled"].updates, frames);
+  // Several cameras draw the frame (split-screen sub cameras): the box counts as seen when any of them
+  // sees it, and a frame no camera draws sees nothing.
+  const away = new T.PerspectiveCamera(30, 1, .1, 1000);
+  away.lookAt(0, 0, -10);
+  away.updateMatrixWorld();
+  const split = {key: {}, camerasAt(time) {
+    camera.lookAt(0, 0, 10);
+    camera.updateMatrixWorld();
+    return time >= 2 && time < 3 ? [away, camera] : [away];
+  }};
+  controller.update(4, project, split);
+  let lit = 0;
+  for (let frame = 1; frame < frames; frame++) {
+    const time = (activated + frame - 1) / 30;
+    if (time >= 2 && time < 3) lit++;
+  }
+  assert.equal(rows()["fx/culled"].updates, 1 + lit);
+  controller.update(4, project, {key: {}, camerasAt: () => []});
+  assert.equal(rows()["fx/culled"].updates, 1, "no camera draws the frame: the clock stays at the activation frame");
   controller.dispose();
 }
 

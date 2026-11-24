@@ -79,10 +79,36 @@ assert.throws(() => compositor.draw(() => { throw Error('view failed'); }, null)
 assert.equal(target, null);
 assert.equal(renderer.autoClear, true);
 
+// Culling cameras (camerasAt): the enabled sub cameras with their mask aspect and the main camera's
+// clip planes, without touching the live frame; null outside a split clip, or when a view cannot be drawn.
+compositor.sample(4.5, sample);
+const live = compositor.inspect()[0].position.slice();
+assert.equal(compositor.camerasAt(3.99, sample), null);
+const routed = compositor.camerasAt(5, sample);
+assert.equal(routed.main, false);
+assert.equal(routed.cameras.length, 1);
+const [cull] = routed.cameras;
+assert.deepEqual(cull.position.toArray(), [5, 3, 4]);
+assert.deepEqual([cull.aspect, cull.near, cull.far], [1, .1, 1000]);
+assert.deepEqual(compositor.inspect()[0].position, live, 'the layer camera keeps the live frame pose');
+assert.equal(compositor.draw(view, null), true, 'the sampled frame is still drawable');
+first.values.mainCamera = 1;
+assert.equal(compositor.camerasAt(5, sample).main, true);
+first.values.mainCamera = 0;
+assert.equal(compositor.camerasAt(5, () => false), null, 'an unposed sub camera leaves the main view');
+first.values.mask1 = { ...pointer, m_PathID: '43' };
+assert.equal(compositor.camerasAt(5, sample), null, 'a missing mask leaves the main view');
+first.values.mask1 = pointer;
+project.quality.values.split_screen = false;
+compositor.setProject(project);
+assert.equal(compositor.camerasAt(5, sample), null, 'split screen off in quality');
+project.quality.values.split_screen = true;
+compositor.setProject(project);
+
 let released = 0;
 geometry.addEventListener('dispose', () => { released++; });
 panel.material.addEventListener('dispose', () => { released++; });
 compositor.setProject({ tracks: [] });
 compositor.dispose();
 assert.equal(released, 2);
-console.log('MV Studio native split masks, routing, quality toggle, fallback and ownership passed');
+console.log('MV Studio native split masks, routing, culling cameras, quality toggle, fallback and ownership passed');

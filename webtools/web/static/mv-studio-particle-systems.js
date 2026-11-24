@@ -47,11 +47,13 @@
   //  * Unity culling (core/mv_studio_particle_systems.py culling()): a system
   //    whose clock culling freezes off screen (looping procedural Automatic,
   //    or Pause) and whose culling box the importer reproduced advances only
-  //    in display frames whose previous frame showed its box to the main
-  //    camera (the activation frame always advances). The box is the local
-  //    procedural box through the local-to-world matrix; View alignment takes
-  //    the largest scale on every axis (libunity.so 0xc0e3c). Particles keep
-  //    their state while culled; PauseAndCatchup systems keep simulating.
+  //    in display frames whose previous frame showed its box to a camera
+  //    that draws it: the main camera, and the split-screen sub cameras
+  //    while a split clip is active (the activation frame always advances).
+  //    The box is the local procedural box through the local-to-world
+  //    matrix; View alignment takes the largest scale on every axis
+  //    (libunity.so 0xc0e3c). Particles keep their state while culled;
+  //    PauseAndCatchup systems keep simulating.
   //
   // Not reproduced, so the importer reports these systems and this runtime
   // refuses them as well: X/Y start rotation on other render modes than
@@ -1271,14 +1273,17 @@
     });
     const local = new T.Vector3(), center = new T.Vector3();
     let tracks, disposed = false;
-    // Main-camera culling planes per display frame index, for the visibility pass.
+    // Culling planes of every camera that draws the frame, per display frame
+    // index, for the visibility pass (Unity counts a renderer visible when
+    // any camera drawing its layer sees it).
     const frusta = new Map();
     let cullKey = null, cullFps = 0;
 
-    function frustumAt(index, fps, view) {
+    function frustaAt(index, fps, view) {
       if (frusta.has(index)) return frusta.get(index);
-      const camera = view.cameraAt(index / fps);
-      const planes = camera ? cameraPlanes(camera) : null;
+      const time = index / fps;
+      const cameras = typeof view.camerasAt === "function" ? view.camerasAt(time) : [view.cameraAt(time)];
+      const planes = (cameras || []).filter(Boolean).map(cameraPlanes).filter(Boolean);
       frusta.set(index, planes);
       return planes;
     }
@@ -1305,7 +1310,7 @@
     // Display frames whose update the system ran by clone frame `frames`: the
     // activation frame always runs (Play adds the system to the update list),
     // and a later frame runs only when the previous frame's culling showed the
-    // system's box to the main camera; otherwise cull 0x1cc5d8 had taken it
+    // system's box to a camera drawing it; otherwise cull 0x1cc5d8 had taken it
     // off the list (the becameInvisible callback, or the update end 0x1cde54
     // finding the renderer not visible), and becameVisible's uncull put it back.
     function advanced(item, entry, event, frames, fps, view) {
@@ -1313,10 +1318,11 @@
       let history = item.history;
       if (!history || history.activated !== activated) history = item.history = {activated, count: [0], visible: [false]};
       for (let index = history.count.length; index < frames; index++) {
-        const planes = frustumAt(activated + index - 1, fps, view);
-        const poses = planes && posesAt(entry, index, fps);
+        const planes = frustaAt(activated + index - 1, fps, view);
+        const poses = planes.length ? posesAt(entry, index, fps) : null;
         const pose = poses ? poses[item.system.node] : item.restPose;
-        const seen = !!planes && boxVisible(worldBox(item.box, item.system, pose), planes);
+        const box = planes.length ? worldBox(item.box, item.system, pose) : null;
+        const seen = planes.some(sides => boxVisible(box, sides));
         history.visible.push(seen);
         history.count.push(history.count[index - 1] + (seen ? 1 : 0));
       }
@@ -1452,8 +1458,11 @@
     }
 
     return {
-      // view: {cameraAt(time) -> posed main camera or null, key}; a new key
-      // (camera tracks or viewport aspect changed) restarts the visibility pass.
+      // view: {camerasAt(time) -> every posed camera drawing the frame (the
+      // main camera, and split-screen sub cameras while a split clip is
+      // active), or cameraAt(time) -> the main camera or null; key}; a new
+      // key (camera tracks, split data or viewport aspect changed) restarts
+      // the visibility pass.
       // Without a view, culled systems simulate as if always visible.
       update(time, project, view = null) {
         if (disposed) return;
@@ -1464,7 +1473,7 @@
         }
         const quality = project?.quality?.values;
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
-        const camera = typeof view?.cameraAt === "function" ? view : null;
+        const camera = typeof view?.camerasAt === "function" || typeof view?.cameraAt === "function" ? view : null;
         if ((camera?.key ?? null) !== cullKey || fps !== cullFps) {
           cullKey = camera?.key ?? null;
           cullFps = fps;

@@ -101,15 +101,21 @@
       return item;
     }
 
-    function sample(time, sampleCamera) {
-      frame = null;
+    // The LiveSplitScreenClip that drives the frame at `time`, or null.
+    function activeEvent(time) {
       if (!enabledInQuality) return null;
       let event = null;
       for (const track of tracks) for (const clip of track.events) {
         if (time >= clip.start && time < clip.start + clip.duration && (!event || clip.start >= event.start) &&
             clip.values?.playableClass === "LiveSplitScreenClip") event = clip;
       }
-      if (!event || ![0, 1, false, true].includes(event.values.mainCamera)) return null;
+      return event && [0, 1, false, true].includes(event.values.mainCamera) ? event : null;
+    }
+
+    function sample(time, sampleCamera) {
+      frame = null;
+      const event = activeEvent(time);
+      if (!event) return null;
       const gaze = {}, views = [];
       let complete = true;
       for (let slot = 0; slot < 4; slot++) {
@@ -187,6 +193,36 @@
       return true;
     }
 
+    // The cameras that draw the frame at `time`, for Unity's renderer
+    // visibility (a renderer is visible when any camera that draws its layer
+    // sees it). Every SubCamera of the client's split prefab
+    // (Resources Live/SplitScreen/SplitScreenEffect, LiveCoreCameraManager
+    // .SplitScreenPrefabPath) culls the MainCamera's layers 0x0C0BC013 with
+    // near .1 and far 1000. Returns null without an active split clip (the
+    // main camera alone), or when a view this module cannot draw is enabled
+    // (the preview then draws the main view); else whether the main camera
+    // draws and the enabled sub cameras, posed on scratch cameras with their
+    // mask aspect. Leaves the live frame and layer cameras untouched.
+    const scratch = [];
+    function camerasAt(time, sampleCamera) {
+      const event = activeEvent(time);
+      if (!event) return null;
+      const cameras = [];
+      for (let slot = 0; slot < 4; slot++) {
+        if (!enabled(event.values[`subCamera${slot + 1}`])) continue;
+        const [track] = viewTracks[slot], mask = findMask(event, slot);
+        const camera = scratch[slot] || (scratch[slot] = new T.PerspectiveCamera(30, 1, 0.1, 1000));
+        if (viewTracks[slot].length !== 1 || !mask || !sampleCamera(camera, track, time)) return null;
+        camera.aspect = mask.bounds[0] / mask.bounds[1];
+        camera.near = 0.1;
+        camera.far = 1000;
+        camera.updateProjectionMatrix();
+        camera.updateMatrixWorld(true);
+        cameras.push(camera);
+      }
+      return { main: enabled(event.values.mainCamera), cameras };
+    }
+
     // Read-only view of the sub cameras of the last sample (runtime value dump).
     // A sub camera's aspect is set when its layer is drawn.
     function inspect() {
@@ -201,7 +237,7 @@
       });
     }
 
-    return { setProject, sample, draw, inspect, dispose: clearMedia };
+    return { setProject, sample, camerasAt, draw, inspect, dispose: clearMedia };
   }
 
   global.MVStudioSplit = { create, aspectCorrection };

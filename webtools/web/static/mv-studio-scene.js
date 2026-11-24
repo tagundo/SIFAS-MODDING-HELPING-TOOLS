@@ -1557,15 +1557,25 @@
       return cullingCamera;
     }
 
+    // Every camera that draws the particle layers at `time`: the main camera,
+    // or while a LiveSplitScreenClip is active the enabled sub cameras plus
+    // the main camera when the clip keeps it on (mv-studio-split.js camerasAt).
+    function cullingCamerasAt(time) {
+      const views = split?.camerasAt?.(time, sampleSplitCamera) ?? null;
+      const main = !views || views.main ? mainCameraAt(time) : null;
+      return [...(views?.cameras || []), ...(main ? [main] : [])];
+    }
+
     // Recreated when the camera tracks or the aspect change, so the particle
     // visibility pass starts over.
     function particleCullingView() {
       // applyProject rebuilds renderTracks on every seek; its source array changes only with an edit.
       const cameras = renderTracks.filter((track) => track.kind === "camera").map((track) => track.id).join("|");
       if (!cullingView || cullingView.tracks !== trackSource || cullingView.cameras !== cameras ||
-          cullingView.aspect !== liveCamera.aspect || cullingView.hold !== (project?.source?.kind === "game")) {
+          cullingView.aspect !== liveCamera.aspect || cullingView.hold !== (project?.source?.kind === "game") ||
+          cullingView.split !== project?.splitScreen || cullingView.splitQuality !== settings?.split_screen) {
         cullingView = { tracks: trackSource, cameras, aspect: liveCamera.aspect, hold: project?.source?.kind === "game",
-          cameraAt: mainCameraAt };
+          split: project?.splitScreen, splitQuality: settings?.split_screen, cameraAt: mainCameraAt, camerasAt: cullingCamerasAt };
         cullingView.key = cullingView;
       }
       return cullingView;
