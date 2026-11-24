@@ -39,7 +39,9 @@
       var target = element(id); if (!target) return;
       target.addEventListener(name, fn); events.push(function () { target.removeEventListener(name, fn); });
     }
-    function notesText() { return statusNotes.map(function (key) { return " " + translate(key); }).join(""); }
+    // Sentences are joined with a space, except after a full-width stop (ja).
+    function joinSentences(parts) { return parts.reduce(function (text, part) { return !part ? text : !text ? part : text + (/[。！？]$/.test(text) ? "" : " ") + part; }, ""); }
+    function statusText(key, detail) { return joinSentences([translate(key), detail && detail !== key ? translate(detail) : ""].concat(statusNotes.map(function (note) { return translate(note); }))); }
     // The save summary of each baked blush: the encoding it was saved with and,
     // when keeping ASTC was requested but not possible, why (server sentences).
     function textureSaveNotes(data) {
@@ -53,7 +55,7 @@
     function say(key, next, detail, notes) {
       statusKey = key; status = next || status; error = next === "error" ? detail || key : ""; statusNotes = notes || [];
       var target = element("viewer-save-status");
-      target.textContent = translate(key) + (detail && detail !== key ? " " + translate(detail) : "") + notesText();
+      target.textContent = statusText(key, detail);
       target.classList.toggle("viewer-save-error", !!error); refresh();
     }
     function setBusy(value) {
@@ -641,7 +643,7 @@
     });
     refresh();
     return { refresh: refresh, getState: state, restoreRecipe: restoreRecipe,
-      updateLanguage: function () { renderOutputs(); element("viewer-save-status").textContent = translate(statusKey) + notesText(); refresh(); },
+      updateLanguage: function () { renderOutputs(); element("viewer-save-status").textContent = statusText(statusKey); refresh(); },
       dispose: function () {
         disposed = true;
         if (!installing) { if (requestController) requestController.abort(); if (eventSource) eventSource.close(); }

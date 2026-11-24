@@ -184,11 +184,13 @@
     // Korean uses 세기 (never 강도) and 뺨/볼 for the cheek, Japanese 強さ, for one control.
     "Bake blush": ["홍조 굽기", "頬紅の焼き込み"], "Blush type": ["홍조 종류", "頬紅の種類"], "Blush strength": ["홍조 세기", "頬紅の強さ"],
     // Blush types name the pattern's shape; strength words belong only to the levels.
-    "Cheeks (Ppo)": ["볼 홍조(Ppo)", "頬の赤み(Ppo)"], "Cheeks and nose (Akarame)": ["볼·콧등 홍조(Akarame)", "頬・鼻すじの赤み(Akarame)"],
+    // Japanese names the place only: 頬紅 is the one word for blush in this panel.
+    "Cheeks (Ppo)": ["볼 홍조(Ppo)", "頬(Ppo)"], "Cheeks and nose (Akarame)": ["볼·콧등 홍조(Akarame)", "頬・鼻すじ(Akarame)"],
     "Round patches on both cheeks": ["양 볼의 동그란 홍조", "両頬の丸い頬紅"], "Band across the nose and both cheeks": ["코와 양 볼을 가로지르는 띠", "鼻と両頬をまたぐ帯"],
     "Very light": ["아주 약하게", "ごく薄く"], "Light": ["약하게", "薄く"], "Medium": ["보통", "普通"], "Strong": ["진하게", "濃く"], "Very strong": ["아주 진하게", "とても濃く"],
     "Custom": ["직접 입력", "カスタム"], "No blush": ["홍조 없음", "頬紅なし"],
     "Swatches show this face at the centre of the chosen type's pattern.": ["색 견본은 고른 종류의 무늬 중심에서 이 얼굴이 보일 색입니다.", "色見本は、選んだ種類の模様の中心でこの顔がどう見えるかを示します。"],
+    "Light is closest to the strongest blush the game shows in songs.": ["게임 곡에서 나오는 가장 진한 홍조는 ‘약하게’에 가장 가깝습니다.", "ゲームの楽曲で出る最も濃い頬紅は「薄く」がいちばん近い強さです。"],
     "Apply blush": ["홍조 적용", "頬紅を適用"], "Remove blush": ["홍조 제거", "頬紅を外す"], "Show before": ["적용 전 보기", "適用前を表示"],
     "Advanced": ["고급 설정", "詳細設定"], "Strength value": ["세기 값", "強さの値"],
     "1 = the strongest blush the game uses in songs.": ["1은 게임 곡에서 쓰는 가장 진한 홍조와 같습니다.", "1 はゲームの楽曲で使われる最も濃い頬紅と同じです。"],
@@ -401,6 +403,8 @@
       listen(item, "click", function () { chooseBlushLevel(level.id); }); return { node: item, swatch: swatch, level: level };
     });
     node("p", blushPanel, "Swatches show this face at the centre of the chosen type's pattern.", "viewer-texture-hint");
+    // Strength words name the five levels; this says where the game itself is.
+    var blushGameLevel = node("p", blushPanel, "Light is closest to the strongest blush the game shows in songs.", "viewer-texture-hint"); blushGameLevel.id = "viewer-texture-blush-game-level";
     var blushAdvanced = node("details", blushPanel, null, "viewer-texture-blush-advanced"); node("summary", blushAdvanced, "Advanced");
     var blushKField = number(blushAdvanced, "Strength value", blushChoice.k, 0.05, B ? B.MAX_K : 4, 0.05, "viewer-texture-blush-k");
     var blushCustomSwatch = node("span", blushKField.parentNode, null, "viewer-texture-blush-swatch"); blushCustomSwatch.setAttribute("aria-hidden", "true");
@@ -551,6 +555,7 @@
       if (!workspace.inspector) return;
       var chosen = activeTab === "paint" ? paintTool.value : selectTool.value, uvAvailable = !!(active && !active.standalone && bindings(active).length), blocked = !active || !active.engine || !canEdit(active) || !!loading || !!pendingRestore;
       selectTool.parentNode.hidden = activeTab === "paint" || activeTab === "blush"; selectionMode.parentNode.hidden = activeTab === "blush"; paintTool.parentNode.hidden = activeTab !== "paint"; colorLabel.hidden = activeTab !== "paint"; compare.parentNode.hidden = activeTab === "paint" || activeTab === "blush";
+      showSelection.parentNode.hidden = activeTab === "blush";  // the bake uses no selection
       workspace.floatingBar.hidden = !floating(active);
       toolButtons.forEach(function (item) { var pressed = item.tool === chosen, disabled = blocked || item.tool.indexOf("select-uv-") === 0 && !uvAvailable; item.node.hidden = item.paintOnly && activeTab !== "paint" || activeTab === "blush" && item.tool !== "pan"; if (item.node.disabled !== disabled) item.node.disabled = disabled; if (item.node.getAttribute("aria-pressed") !== String(pressed)) item.node.setAttribute("aria-pressed", String(pressed)); item.node.classList.toggle("active", pressed); });
       [selectTool, paintTool].forEach(function (select) { Array.from(select.options).forEach(function (option) { if (option.value.indexOf("select-uv-") === 0 && option.disabled !== !uvAvailable) option.disabled = !uvAvailable; }); });

@@ -595,7 +595,9 @@ opens that face texture.
   the ASTC compression kept).
 - Each level shows the texture's own cheek-centre colour. Strength k is a
   permanent blush of intensity k (k = 1 is the strongest stock clip):
-  Very light 0.5, Light 1.05, Medium 1.65 (default), Strong 2.3, Very strong 3.
+  Very light 0.5, Light 1.05, Medium 1.65 (default), Strong 2.3, Very strong 3
+  (so Light is the closest to the game's own strongest song blush, which the
+  panel says too).
   Neighbouring levels differ by CIEDE2000 4.6–5.0 at the darkest stock texel on
   a typical cheek (4.2 or more on every head sampled); the strongest keeps
   every channel far from 0. **Advanced** accepts any k up to 4.

@@ -134,8 +134,9 @@ async function main() {
     }
     await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = false; document.querySelector('.viewer-texture-properties').scrollTop = 0; });
     await page.setViewportSize({ width: 1480, height: 1100 }); await frames(page);
-    // How Save writes this RGBA32 face is always in view.
+    // How Save writes this RGBA32 face is always in view; the selection display does not apply here.
     assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), 'Save: exact pixels');
+    assert.equal(await page.locator('#viewer-texture-show-selection').isVisible(), false, 'the selection toggle is hidden in the blush tab');
     assert.match(await page.locator('#viewer-texture-blush-layer-1 .viewer-texture-blush-shape').textContent(), /^Band across the nose and both cheeks$/);
     const swatches = await page.evaluate(() => Array.from(document.querySelectorAll('#viewer-texture-blush-levels .viewer-texture-blush-level')).map(b => ({ id: b.dataset.blushLevel, colour: b.dataset.colour, text: b.textContent })));
     assert.deepStrictEqual(swatches.map(r => r.text), ['Very light', 'Light', 'Medium', 'Strong', 'Very strong']);
@@ -184,6 +185,7 @@ async function main() {
     s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 2, level: 'custom', encoding: 'exact' }); assert(same(await live(page), expected(1, 2)));
     await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.k === 2 && !s.pending; });
     report.cases.push({ name: 'apply, undo/redo, re-bake without compounding and advanced strength' });
+
     // Cancel preview drops the previewed choice: the next change starts from the applied bake.
     await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = false; });
     await click(page, '#viewer-texture-blush-level-veryStrong'); s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 3, level: 'veryStrong', encoding: 'exact' }); assert(s.blush.previewing);
@@ -198,7 +200,6 @@ async function main() {
     await click(page, '#viewer-texture-cancel'); s = await state(page);
     assert.deepStrictEqual([s.blush.choice, s.blush.pending], [{ layer: 1, k: 2, level: 'custom', encoding: 'exact' }, false]);
     report.cases.push({ name: 'Cancel preview restores the applied choice; the next type click starts from it' });
-
 
     // Keyboard undo/redo from the panel: a click on its text leaves focus on the page body.
     await page.locator('#viewer-texture-blush-status').click(); await page.keyboard.press('Control+z'); await frames(page);
@@ -228,6 +229,13 @@ async function main() {
     // The save summary names the encoding used for the baked blush.
     assert.deepStrictEqual(persistence.notes, [fixture.savedExact]);
     assert.ok((await page.locator('#viewer-save-status').textContent()).endsWith(' ' + fixture.savedExact));
+    // Japanese sentences follow one another without a space after 。.
+    await page.selectOption('#lang-select', 'ja');
+    await page.waitForFunction(() => document.getElementById('viewer-texture-tab-blush').textContent === '頬紅の焼き込み', null, { timeout: 20000 });
+    const jaSaved = await page.locator('#viewer-save-status').textContent();
+    assert.ok(jaSaved.includes('。頬紅を正確なピクセル') && !/。 /.test(jaSaved), jaSaved);
+    await page.selectOption('#lang-select', 'en');
+    await page.waitForFunction(() => document.getElementById('viewer-texture-tab-blush').textContent === 'Bake blush', null, { timeout: 20000 });
     const written = py(`
 import base64, json, sys, time
 import UnityPy
@@ -287,7 +295,7 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
     report.cases.push({ name: 'Export PNG then Import PNG never bakes twice' });
 
     // Korean and Japanese labels.
-    for (const [lang, tabText, medium, apply, types] of [['ko', '홍조 굽기', '보통', '홍조 적용', ['볼 홍조(Ppo)', '볼·콧등 홍조(Akarame)']], ['ja', '頬紅の焼き込み', '普通', '頬紅を適用', ['頬の赤み(Ppo)', '頬・鼻すじの赤み(Akarame)']]]) {
+    for (const [lang, tabText, medium, apply, types] of [['ko', '홍조 굽기', '보통', '홍조 적용', ['볼 홍조(Ppo)', '볼·콧등 홍조(Akarame)']], ['ja', '頬紅の焼き込み', '普通', '頬紅を適用', ['頬(Ppo)', '頬・鼻すじ(Akarame)']]]) {
       await page.selectOption('#lang-select', lang);
       await page.waitForFunction(text => document.getElementById('viewer-texture-tab-blush').textContent === text, tabText, { timeout: 20000 });
       const labels = await page.evaluate(() => ({ tab: document.getElementById('viewer-texture-tab-blush').textContent, medium: document.querySelector('#viewer-texture-blush-level-medium .viewer-texture-blush-name').textContent, apply: document.getElementById('viewer-texture-blush-apply').textContent,
@@ -295,6 +303,14 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       assert.deepStrictEqual(labels, { tab: tabText, medium, apply, types }, lang);
       // The blush types name a shape, never a strength.
       assert.ok(labels.types.every(text => !/진한|진하|濃/.test(text)), JSON.stringify(labels.types));
+      // The two type buttons are the same height (one per row, nothing wraps).
+      const heights = await page.evaluate(() => Array.from(document.querySelectorAll('#viewer-texture-blush-types .viewer-texture-blush-layer')).map(e => Math.round(e.getBoundingClientRect().height)));
+      assert.equal(heights[0], heights[1], lang + ' ' + JSON.stringify(heights));
+      // Status and Apply in view on a 1366x900 screen in this language too.
+      await page.setViewportSize({ width: 1366, height: 900 }); await frames(page);
+      const where = await blushLayout(page, 'top'); assert.ok(where.status.inside && where.apply.inside && where.save.inside, lang + ' ' + JSON.stringify(where));
+      await page.setViewportSize({ width: 1480, height: 1100 }); await frames(page);
+      assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), lang === 'ko' ? '저장: 정확한 픽셀' : '保存: 正確なピクセル');
     }
     report.cases.push({ name: 'ko and ja labels' });
 

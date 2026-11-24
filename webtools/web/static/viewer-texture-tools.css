@@ -175,7 +175,8 @@
 .viewer-texture-blush-notes:empty { display: none; }
 /* Notes that change what to bake: right under the status, never below the fold. */
 .viewer-texture-blush-alerts { color: inherit; border-left: 2px solid var(--accent); padding-left: 18px; }
-.viewer-texture-tools button.viewer-texture-blush-layer { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; flex: 1 1 120px; min-height: 36px; text-align: left; }
+/* One type per row: its name and shape hint each fit on one line, both buttons the same height. */
+.viewer-texture-tools button.viewer-texture-blush-layer { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; flex: 1 1 100%; min-height: 36px; text-align: left; }
 .viewer-texture-blush-shape { font-size: 10px; line-height: 1.25; color: var(--muted); font-weight: normal; }
 .viewer-texture-blush-advanced .viewer-texture-check { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; font-size: 11px; }
 /* Apply / Show before / Remove and the save line stay pinned to the bottom of

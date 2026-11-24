@@ -142,10 +142,12 @@ print(json.dumps({"reason": t.CHEEK_UNAVAILABLE, "ko": i18n.tr("Baked blush", "k
   // The two types differ in shape, not strength: their labels name the shape and
   // never carry a strength word (those belong to the five levels only).
   assert.deepStrictEqual(B.LAYERS.map(layer => [layer.label].concat(words[layer.label])), [
-    ['Cheeks (Ppo)', '볼 홍조(Ppo)', '頬の赤み(Ppo)'], ['Cheeks and nose (Akarame)', '볼·콧등 홍조(Akarame)', '頬・鼻すじの赤み(Akarame)']]);
+    ['Cheeks (Ppo)', '볼 홍조(Ppo)', '頬(Ppo)'], ['Cheeks and nose (Akarame)', '볼·콧등 홍조(Akarame)', '頬・鼻すじ(Akarame)']]);
   assert.deepStrictEqual(B.LAYERS.map(layer => [layer.hint].concat(words[layer.hint])), [
     ['Round patches on both cheeks', '양 볼의 동그란 홍조', '両頬の丸い頬紅'], ['Band across the nose and both cheeks', '코와 양 볼을 가로지르는 띠', '鼻と両頬をまたぐ帯']]);
   B.LAYERS.forEach(layer => [layer.label].concat(words[layer.label]).forEach(text => assert.ok(!/strong|deep|dark|light|진한|진하|짙|연한|약한|濃|薄|強|弱/i.test(text), text)));
+  // One Japanese word for blush in the panel (頬紅), never 赤み beside it.
+  Array.from(texts).forEach(text => assert.ok(!/赤み/.test(words[text][1]), text));
   // The visible save line carries the size factor of the ASTC texture it describes.
   assert.ok(words['Save: exact pixels (texture data about {n}× larger) · keeping ASTC is under Advanced'].every(text => text.includes('{n}')));
 });
