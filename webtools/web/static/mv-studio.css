@@ -15,7 +15,9 @@
   --mv-group-h: 20px;
   --mv-icon: 18px;
   --mv-split: 10px;         /* visible band of a splitter */
-  --mv-split-hit: 28px;     /* its pointer target */
+  --mv-split-hit: 28px;     /* its pointer target, measured across the band */
+  --mv-split-reach: 7px;    /* how far that target reaches over the stage: inside the 8 px
+                               inset that stage overlay controls keep from its edges */
   --mv-track-label: clamp(6rem, 12vw, 12rem);
   color: var(--text);
   min-width: 0;
@@ -153,12 +155,16 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding-inline: 2px;
+  /* The splitter's target reaches over the panel's edge (hit - band - reach); the panel's
+     fields and names start a pixel past it (after a panel's 1 px border and 8 px padding). */
+  padding-inline: max(2px, calc(var(--mv-split-hit) - var(--mv-split) - var(--mv-split-reach) - 8px)) 2px;
 }
 /* Stage / side panel splitter (setupInspectorResizer in mv-studio.js). The band is narrow;
-   its pointer target reaches into the stage side only, so the panel's own controls keep
-   their edge. Only CSS variables change while it moves: the scene's ResizeObserver sizes
-   the renderer and the camera aspect after layout, before the frame is painted. */
+   its pointer target (--mv-split-hit across) reaches --mv-split-reach over the stage, inside
+   the inset its overlay controls keep, and the rest over the panel's padding, so no control
+   on either side loses its edge. Folded, the band is wide enough to be the whole target.
+   Only CSS variables change while it moves: the scene's ResizeObserver sizes the renderer
+   and the camera aspect after layout, before the frame is painted. */
 .mv-inspector-resizer {
   grid-area: split;
   position: relative;
@@ -172,7 +178,16 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
   -webkit-tap-highlight-color: transparent;
 }
 .mv-inspector-resizer[hidden], .mv-hide-inspector > .mv-inspector-resizer { display: none; }
-.mv-inspector-resizer::before { content: ""; position: absolute; inset-block: 0; inset-inline: calc(var(--mv-split) - var(--mv-split-hit)) 0; }
+.mv-inspector-resizer::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline: calc(-1 * var(--mv-split-reach)) calc(var(--mv-split) + var(--mv-split-reach) - var(--mv-split-hit));
+}
+.mv-workspace.mv-inspector-collapsed:not(.mv-hide-inspector) {
+  grid-template-columns: minmax(0, 1fr) calc(var(--mv-split-hit) - var(--mv-split-reach)) 0;
+}
+.mv-inspector-collapsed > .mv-inspector-resizer::before { inset-inline-end: 0; }
 .mv-inspector-resizer > .mv-split-grip {
   position: absolute;
   inset-block-start: 50%;
@@ -321,7 +336,7 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
 .mv-dialog .mv-check { margin-block: 8px; }
 /* Stage overlay controls: compact pills over the canvas. No backdrop-filter: it would
    composite the WebGL canvas again on every frame. */
-.mv-workspace .mv-preview-controls { gap: 4px; inset: 6px auto auto 6px; max-width: calc(100% - 12px); flex-wrap: wrap; }
+.mv-workspace .mv-preview-controls { gap: 4px; inset: 6px auto auto 6px; max-width: calc(100% - 6px - var(--mv-split-reach)); flex-wrap: wrap; }
 #tab-mv .mv-preview-controls :is(button, select) { min-height: var(--mv-control-h-sm); padding: 1px 6px; font-size: .72rem; background: color-mix(in srgb, var(--panel) 85%, transparent); }
 #tab-mv .mv-preview-controls .mv-icon-btn { min-width: var(--mv-control-h-sm); padding: 0; }
 .mv-preview-controls .mv-check {
@@ -360,11 +375,16 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
     row-gap: 0;
   }
   .mv-workspace > .mv-timeline { margin-top: var(--mv-gap); }
+  .mv-workspace.mv-inspector-collapsed:not(.mv-hide-inspector) { grid-template-columns: minmax(0, 1fr); }
   .mv-inspector-resizer { height: var(--mv-split); cursor: row-resize; }
-  .mv-inspector-resizer::before { inset-inline: 0; inset-block: calc(var(--mv-split) - var(--mv-split-hit)) 0; }
+  .mv-inspector-resizer::before {
+    inset-inline: 0;
+    inset-block: calc(-1 * var(--mv-split-reach)) calc(var(--mv-split) + var(--mv-split-reach) - var(--mv-split-hit));
+  }
   .mv-inspector-resizer > .mv-split-grip { width: 32px; height: 3px; }
   /* Folded away: a labelled bar brings the panel back (a tap, or a drag upward). */
   .mv-inspector-collapsed > .mv-inspector-resizer { height: auto; cursor: pointer; }
+  .mv-inspector-collapsed > .mv-inspector-resizer::before { inset: 0; }
   .mv-inspector-collapsed > .mv-inspector-resizer > .mv-split-grip { display: none; }
   .mv-inspector-collapsed > .mv-inspector-resizer > .mv-inspector-reopen {
     display: flex;
