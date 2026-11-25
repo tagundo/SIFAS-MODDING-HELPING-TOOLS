@@ -337,12 +337,18 @@
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
     const transparentSort = global.MVStudioTransparentSort?.create(T, renderer);
+    // The Live* mixers' input walk over the frame clock (LiveMixerBase`2.ProcessWithoutSeek):
+    // MVStudioLighting.nativeWeight leaves out the inputs it skipped.
+    const mixers = global.MVStudioMixer?.controller((event, time) => global.MVStudioLighting.clipWeight(event, time)) ?? null;
+    global.MVStudioMixer?.activate(mixers);
 
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const liveCamera = new T.PerspectiveCamera(42, 1, 0.02, 1000);
     // The game main camera's culling frustum at past frames (particle culling).
     const cullingCamera = new T.PerspectiveCamera(30, 1, 0.1, 1000);
+    // Scratch for the shaft anchor sample (shaftAnchorAt).
+    const anchorSample = [0, 0, 0];
     let cullingView = null;
     const stageCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const controls = new T.OrbitControls(editorCamera, renderer.domElement);
@@ -390,6 +396,9 @@
     // continues it; a seek replays the rendered frame times it is given (seek's
     // `history`) or, without them, uses exact values. One frame clock serves all.
     let pendingHistory = null, frameClock = { advancing: false, history: [] }, historyLighting = new Map();
+    // The game's Time.time as a function of director time (setGameClock; null: the director's clock).
+    // Original particle systems advance on it (MVStudioParticleSystems.gameClock).
+    let particleClock = null;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
     let antiAliasing = options?.antiAliasing === true;
@@ -1563,6 +1572,29 @@
       return cullingCamera;
     }
 
+    // The main camera's world position at `time` (mainCameraAt), or false with no shot.
+    function mainCameraPositionAt(time, out) {
+      const camera = mainCameraAt(time);
+      if (!camera) return false;
+      out.setFromMatrixPosition(camera.matrixWorld);
+      return true;
+    }
+
+    // The world position of a member's Move node (the shaft anchor) at `time`
+    // from the dance alone (ViewerMotionTimeline sampleLocal): nothing is posed.
+    // Its ancestors keep their current transforms, which the timeline does not
+    // animate below the member root.
+    function shaftAnchorAt(record, time, out) {
+      const node = record.shaftAnchor;
+      const local = record.motion?.sampleLocal?.(node, "position", time, anchorSample);
+      out.fromArray(local || node.position.toArray(anchorSample));
+      if (node.parent) {
+        node.parent.updateWorldMatrix(true, false);
+        out.applyMatrix4(node.parent.matrixWorld);
+      }
+      return true;
+    }
+
     // Every camera that draws the particle layers at `time`: the main camera,
     // or while a LiveSplitScreenClip is active the enabled sub cameras plus
     // the main camera when the clip keeps it on (mv-studio-split.js camerasAt).
@@ -1858,6 +1890,7 @@
     // colors stay exact there (unevidenced choice).
     function heldLiveLighting(record, slot, value, valueAt, lighting) {
       const holds = (record.lightingHolds ||= {})[slot] ||= { ambient: {}, tint: {} };
+      value = heldRim(holds, value, valueAt);
       if (!value || lighting?.baseTrack || !global.MVStudioLighting?.heldColor) {
         holds.ambient.color = holds.tint.color = null;
         return value;
@@ -1868,6 +1901,31 @@
           currentTime, frameClock) : (holds[key].color = null, value[key]);
       }
       return held;
+    }
+
+    // LiveRimlightMixer / LivePropRimlightMixer.PostProcess apply colour,
+    // sharpness and direction only in a frame an input ran; otherwise they
+    // only ApplyIntensity(0) (mv_studio_member_rim_test). The rimlight keeps
+    // the colour, power and direction of the last frame a clip wrote (the
+    // previous playing frame, or after a seek the last frame of the frame
+    // clock's history with an active clip), and LiveCoreMemberRimlight.ResetAll's
+    // state (SifasMaterial's live default) before any.
+    function heldRim(holds, value, valueAt) {
+      const written = (rim) => Array.isArray(rim?.color) && Array.isArray(rim?.direction) && Number.isFinite(rim?.power);
+      if (written(value?.rim)) {
+        holds.rim = value.rim;
+        return value;
+      }
+      if (!frameClock.advancing) {
+        holds.rim = null;
+        for (let index = frameClock.history.length - 1; index >= 0 && !holds.rim; index--) {
+          const rim = valueAt(frameClock.history[index])?.rim;
+          if (written(rim)) holds.rim = rim;
+        }
+      }
+      if (!holds.rim) return value;
+      return { ...(value || {}), rim: { color: holds.rim.color, direction: holds.rim.direction, power: holds.rim.power,
+        intensity: value?.rim?.intensity ?? 0 } };
     }
 
     function setPlaying(value) {
@@ -1892,6 +1950,7 @@
       frameClock = nextFrameClock(Number.isFinite(frameTimestamp) || pendingHistory !== null ? time : NaN);
       historyLighting = new Map();
       currentTime = Number.isFinite(time) ? time : 0;
+      mixers?.update(project, currentTime, frameClock);
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
       if (adaptivePreview && playing && Number.isFinite(frameTimestamp) && previewScale > 0.5) {
@@ -1930,7 +1989,7 @@
       stageSparksA?.update(currentTime, project);
       stageSparksB?.update(currentTime, project);
       stageSparksRoop?.update(currentTime, project);
-      stageParticleSystems?.update(currentTime, project, particleCullingView());
+      stageParticleSystems?.update(currentTime, project, particleCullingView(), particleClock);
       stageControlPrefabs?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
@@ -1998,8 +2057,12 @@
           if (!record.shaft && clips) {
             record.shaft = global.MVStudioShaft?.create(T, shaftTemplates, record.root, record.shaftAnchor);
           }
+          // A reset rebuilds a hidden shaft from its last drawn frame: the game's
+          // frame history when a seek handed one, else the spring clock's grid.
           record.shaft?.frame(settings.member_spot_light_area !== false ? clips : null,
-            currentTime, Math.max(0, elapsed), liveCamera, project, resetShafts || elapsed < 0 || elapsed > 0.25);
+            currentTime, Math.max(0, elapsed), liveCamera, project, resetShafts || elapsed < 0 || elapsed > 0.25,
+            { history: frameClock.advancing ? null : frameClock.history, rate: physicsRate(),
+              anchorAt: (time, out) => shaftAnchorAt(record, time, out), cameraAt: mainCameraPositionAt });
         }
         lastShaftFrame = timestamp;
         resetShafts = false;
@@ -2494,6 +2557,14 @@
         viewportDirty = true;
         resize();
       },
+      // A game run's clock for the original particle systems: [directorTime, Time.time] of its
+      // rendered frames (a runtime dump's frame clock or record clocks), or null for the
+      // director's clock. Returns the number of samples used (0: director's clock).
+      setGameClock(samples) {
+        particleClock = Array.isArray(samples) ? global.MVStudioParticleSystems?.gameClock?.(samples) ?? null : null;
+        requestDraw();
+        return particleClock ? particleClock.samples : 0;
+      },
       // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
       setPhysicsTiming(value) {
         physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
@@ -2556,6 +2627,10 @@
         split?.dispose();
         post?.dispose();
         screenFade?.dispose();
+        if (mixers) {
+          mixers.reset();
+          global.MVStudioMixer?.release(mixers);
+        }
         cameraDepth?.dispose();
         release(grid);
         controls.dispose();

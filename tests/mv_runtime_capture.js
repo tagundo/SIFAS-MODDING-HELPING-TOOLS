@@ -4,7 +4,7 @@
         [--library DIR] [--server-root DIR] [--url URL] [--phases -1,0,1] [--preroll 3]
         [--software true] [--chromium PATH] [--keys FILE] [--batch 100] [--physics-order game|same-frame]
         [--physics-grid game|clock|rule] [--frame-history game|none] [--physics-read-point update|none]
-        [--suits dump|POSITION:SUIT,...]
+        [--particle-clock game|director] [--suits dump|POSITION:SUIT,...]
 
    The game dump (schema sifas-mv-runtime-dump/1, side "game") is read as a gzip
    or plain JSON document, or extracted from a GitHub job log (@@RTDUMP blobs;
@@ -19,10 +19,12 @@
    members[].suitId), or list POSITION:SUIT pairs; the import fails unless the
    editor dresses every pinned slot so. Every game record is then evaluated at
    each phase: at the director time the dump recorded for frame
-   clock.frameCount + phase whenever a record of that frame exists (the
-   director follows the millisecond music clock, so t - deltaTime can miss the
-   previous frame by a few milliseconds, and a director pinned at the song end
-   does not move), else at t = clock.directorTime + phase * clock.deltaTime: a
+   clock.frameCount + phase whenever a record of that frame exists or the
+   sampler's frame clock read it (trailer.frameClocks, clock.prevFrame /
+   nextFrame: every rendered frame's clock; the director follows the
+   millisecond music clock, so t - deltaTime can miss the previous frame by a
+   few milliseconds, and a director pinned at the song end does not move),
+   else at t = clock.directorTime + phase * clock.deltaTime: a
    plain deferred seek for pure parts, a fixed-step physics preroll ending
    exactly at t for members and springs. The sampler reads every record in the
    frame after the evaluation its transforms show (see PHYSICS_READ_POINT), so
@@ -40,7 +42,10 @@
    requested rate) and rule the requested rate, for A/B checks. The read-only
    MVStudioScene.assetDump() supplies
    the values; DIR/editor-dump.json.gz is written in the same schema with
-   side "editor". Values stay in editor space: tests/mv_runtime_compare.py
+   side "editor". With --particle-clock game (default) the original particle
+   systems run on the game's Time.time (the frame clock rows, else the record
+   clocks: MVStudioScene.setGameClock), which falls behind the director when
+   frames hit Time.maximumDeltaTime; director runs them on director time. Values stay in editor space: tests/mv_runtime_compare.py
    owns every conversion. Pixels are never read back or resampled.
 */
 'use strict';
@@ -175,9 +180,11 @@ function mergeDumps(docs) {
   const trailers = docs.map((doc) => doc.trailer).filter(Boolean);
   const trailer = trailers.find((item) => item.stopReason) || trailers[0] || null;
   const truncation = trailers.map((item) => item.truncation).find(Boolean) || trailer?.truncation || null;
+  // The frame clock rows travel in rtdump-core only (rtdump-full's trailer points there).
+  const frameClocks = trailers.map((item) => item.frameClocks).find((item) => Array.isArray(item?.rows)) ?? trailer?.frameClocks;
   return { schema: first.schema, side: first.side, header: first.header,
     records: [...records.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || String(a.id).localeCompare(String(b.id))),
-    trailer: trailer ? { ...trailer, truncation } : null };
+    trailer: trailer ? { ...trailer, truncation, ...(frameClocks !== undefined ? { frameClocks } : {}) } : null };
 }
 
 function readDump(file) {
@@ -331,8 +338,52 @@ function filterFor(record, renderers) {
   return null;
 }
 
-// Director time of every frame a record was taken in (frameCount -> seconds):
-// the frames whose time the dump knows exactly. Pre-start records (director 0)
+// ------------------------------------------------------------- frame clocks
+
+// qa-mvdump sampler 3 (sifas-mv-frame-clock/1): one row per rendered frame,
+// read by the agent's per-frame tick or a record's own clock section.
+const FRAME_CLOCK_FIELDS = ['frameCount', 'directorTime', 'musicTime', 'unityTime', 'deltaTime', 'realtimeSinceStartup', 'source'];
+
+function mainDuration(doc) {
+  for (const record of doc.records || []) {
+    const main = (record.directors || []).find((director) => director?.main);
+    if (Number.isFinite(main?.duration) && main.duration > 0) return main.duration;
+  }
+  return null;
+}
+
+// frameCount -> {frameCount, directorTime, musicTime, unityTime, deltaTime,
+// realtimeSinceStartup, source}: the trailer's frame clock rows plus the
+// clock.prevFrame / nextFrame the records carry; empty for dumps without them.
+// A row whose director was not reached keeps the director time
+// LiveTimeSynchronizer.SyncMusicPlayingTime sets from the music time
+// (0x20f7c3c-0x20f7ca8: max(0, min(ms * .001, duration))), to the 9 significant
+// digits the agent records every director time with.
+function frameClocks(doc) {
+  const out = new Map(), duration = mainDuration(doc);
+  const add = (clock) => {
+    if (!Number.isInteger(clock?.frameCount) || out.has(clock.frameCount)) return;
+    const value = { ...clock };
+    if (!Number.isFinite(value.directorTime) && Number.isFinite(value.musicTime)) {
+      const time = Math.max(0, duration ? Math.min(value.musicTime * 0.001, duration) : value.musicTime * 0.001);
+      value.directorTime = Number(time.toPrecision(9));
+      value.directorFrom = 'musicTime';
+    }
+    out.set(value.frameCount, value);
+  };
+  const table = doc.trailer?.frameClocks;
+  if (Array.isArray(table?.rows) && JSON.stringify(table.fields) === JSON.stringify(FRAME_CLOCK_FIELDS)) {
+    for (const row of table.rows) {
+      if (Array.isArray(row)) add(Object.fromEntries(FRAME_CLOCK_FIELDS.map((name, index) => [name, row[index] ?? null])));
+    }
+  }
+  for (const record of doc.records || []) for (const key of ['prevFrame', 'nextFrame']) add(record.clock?.[key]);
+  return new Map([...out].sort((a, b) => a[0] - b[0]));
+}
+
+// Director time of every frame a record was taken in (frameCount -> seconds),
+// and of every frame the frame clock read: the frames whose time the dump
+// knows exactly. Pre-start records (director 0)
 // are left out, as in gameFrames. planRequests evaluates phase -1/+1 at the
 // time recorded for frame frameCount -/+ 1 whenever the dump holds that frame,
 // whatever its distance from t +/- deltaTime: it is the director time of the
@@ -342,12 +393,15 @@ function filterFor(record, renderers) {
 // millisecond: LiveDirectorBase.Update (0x2926e74) reads
 // LiveMusicMachine.MusicPlayingTime, an int of milliseconds, and the director
 // follows it.
-function recordedFrameTimes(doc) {
+function recordedFrameTimes(doc, { records = true, clocks = true } = {}) {
   const frames = new Map();
-  for (const record of doc.records || []) {
+  if (records) for (const record of doc.records || []) {
     const clock = record.clock;
     if (!Number.isInteger(clock?.frameCount) || !Number.isFinite(clock?.directorTime) || !(clock.directorTime > 0)) continue;
     if (!frames.has(clock.frameCount)) frames.set(clock.frameCount, clock.directorTime);
+  }
+  if (clocks) for (const [frame, clock] of frameClocks(doc)) {
+    if (!frames.has(frame) && Number.isFinite(clock.directorTime) && clock.directorTime > 0) frames.set(frame, clock.directorTime);
   }
   return frames;
 }
@@ -360,7 +414,10 @@ function millisecondClock(doc) {
 function planRequests(doc, phases, { readPoint = 'update' } = {}) {
   assert(PHYSICS_READ_POINTS.includes(readPoint), '--physics-read-point is update or none');
   const renderers = rendererIndex(doc.records);
-  const recorded = recordedFrameTimes(doc), milliseconds = millisecondClock(doc);
+  // A neighbour another record was taken in is "recorded" (as before frame clocks); one only the
+  // frame clock read is "frameClock". Both are the frame's own director time.
+  const recorded = recordedFrameTimes(doc, { clocks: false }), clocked = recordedFrameTimes(doc, { records: false });
+  const milliseconds = millisecondClock(doc);
   const requests = [];
   for (const record of doc.records) {
     const time = record.clock?.directorTime;
@@ -370,8 +427,10 @@ function planRequests(doc, phases, { readPoint = 'update' } = {}) {
     const sections = record.kind === 'frame' ? FRAME_SECTIONS : ['clock', part];
     const frame = record.clock?.frameCount;
     for (const phase of phases) {
-      const neighbour = phase !== 0 && Number.isInteger(frame) && time > 0 ? recorded.get(frame + phase) : undefined;
-      const phaseSource = phase === 0 ? 'record' : neighbour !== undefined ? 'recorded' : 'deltaTime';
+      const fromRecord = phase !== 0 && Number.isInteger(frame) && time > 0 ? recorded.get(frame + phase) : undefined;
+      const fromClock = phase !== 0 && Number.isInteger(frame) && time > 0 && fromRecord === undefined ? clocked.get(frame + phase) : undefined;
+      const neighbour = fromRecord ?? fromClock;
+      const phaseSource = phase === 0 ? 'record' : fromRecord !== undefined ? 'recorded' : fromClock !== undefined ? 'frameClock' : 'deltaTime';
       const estimate = time + phase * deltaTime;
       const t = neighbour ?? (milliseconds && phase !== 0 ? Math.round(estimate * 1000) / 1000 : estimate);
       if (t < 0) continue;
@@ -408,11 +467,50 @@ function gameClockRate(doc, qualityValues, device) {
   return { source, rate: Math.min(achieved, target), target, achieved, frames, seconds, meanDeltaTime };
 }
 
+// The game's clock for the original particle systems (--particle-clock game): [directorTime,
+// Time.time] of every rendered frame the dump knows, in frame order: the frame clock rows (exact,
+// every frame), else the record clocks (the editor interpolates between them). Frames before the
+// director starts, and frames that do not advance it (pinned at the song end, rewound), are left
+// out, so the samples are a function of director time. lagMax is how far Time.time fell behind the
+// director over the dump (Time.maximumDeltaTime clamps).
+function gameClockSamples(doc) {
+  const points = new Map();
+  const clocks = frameClocks(doc);
+  for (const [frame, clock] of clocks) {
+    if (Number.isFinite(clock.directorTime) && Number.isFinite(clock.unityTime)) points.set(frame, [clock.directorTime, clock.unityTime]);
+  }
+  const fromClock = points.size;
+  for (const record of doc.records || []) {
+    const clock = record.clock;
+    if (Number.isInteger(clock?.frameCount) && !points.has(clock.frameCount) && Number.isFinite(clock?.directorTime) &&
+        Number.isFinite(clock?.unityTime)) points.set(clock.frameCount, [clock.directorTime, clock.unityTime]);
+  }
+  const samples = [];
+  for (const [, point] of [...points].sort((a, b) => a[0] - b[0])) {
+    const last = samples.at(-1);
+    if (!(point[0] > 0) || (last && (point[0] <= last[0] || point[1] < last[1]))) continue;
+    samples.push(point);
+  }
+  let lagMax = 0;
+  for (const [time, unity] of samples) lagMax = Math.max(lagMax, (time - samples[0][0]) - (unity - samples[0][1]));
+  return { source: fromClock ? (fromClock === points.size ? 'frameClock' : 'frameClock+records') : 'records', samples,
+    lagMax: samples.length ? lagMax : null };
+}
+
 // ------------------------------------------------------------- browser side
 
 // The game's rendered frame times the seeks hand to the editor (--frame-history).
 async function setFrameHistory(page, times) {
   await page.evaluate((times) => { mvFrameProbe.frameHistory = times; }, times || null);
+}
+
+// The game's clock for the original particle systems (gameClockSamples), or null for the director's.
+async function setGameClock(page, samples) {
+  return page.evaluate((samples) => {
+    const scene = mvFrameProbe.scene;
+    if (typeof scene.setGameClock !== 'function') throw new Error('This editor build has no MVStudioScene.setGameClock()');
+    return scene.setGameClock(samples);
+  }, samples || null);
 }
 
 async function evaluatePure(page, batch, keys) {
@@ -448,6 +546,12 @@ function gameFrames(doc) {
     const clock = record.clock;
     if (!Number.isInteger(clock?.frameCount) || !Number.isFinite(clock?.directorTime) || !(clock.directorTime > 0)) continue;
     if (!anchors.has(clock.frameCount)) anchors.set(clock.frameCount, { frame: clock.frameCount, t: clock.directorTime, dt: clock.deltaTime });
+  }
+  // Frames the frame clock read are anchors too: with every frame read, nothing is estimated.
+  for (const [frame, clock] of frameClocks(doc)) {
+    if (!anchors.has(frame) && Number.isFinite(clock.directorTime) && clock.directorTime > 0) {
+      anchors.set(frame, { frame, t: clock.directorTime, dt: clock.deltaTime });
+    }
   }
   const sorted = [...anchors.values()].sort((a, b) => a.frame - b.frame);
   const frames = new Map(sorted.map(({ frame, t }) => [frame, t]));
@@ -779,6 +883,8 @@ async function run() {
   assert(['game', 'none'].includes(historyMode), '--frame-history is game or none');
   const readPoint = options['physics-read-point'] ?? 'update';
   assert(PHYSICS_READ_POINTS.includes(readPoint), '--physics-read-point is update or none');
+  const particleClock = options['particle-clock'] ?? 'game';
+  assert(['game', 'director'].includes(particleClock), '--particle-clock is game or director');
   const batchSize = Number(options.batch ?? 100);
   assert(Number.isInteger(batchSize) && batchSize > 0, '--batch is a positive integer');
   const manifest = capture.readManifest(options.manifest);
@@ -835,8 +941,18 @@ async function run() {
     const history = historyMode === 'game' ? gameFrameTimes(game) : null;
     physics.frameHistory = history ? history.length : null;
     physics.readPoint = readPoint;
+    const clockPlan = particleClock === 'game' ? gameClockSamples(game) : null;
+    const clockSamples = await setGameClock(page, clockPlan?.samples ?? null);
+    physics.particleClock = { mode: particleClock, source: clockPlan?.source ?? 'director', samples: clockSamples,
+      lagMax: clockPlan?.lagMax ?? null };
+    physics.frameClock = { frames: frameClocks(game).size, phaseSources: null };
     const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target,
       history, readPoint });
+    physics.frameClock.phaseSources = records.reduce((counts, record) => {
+      const source = record.clock?.phaseSource ?? 'none';
+      counts[source] = (counts[source] || 0) + 1;
+      return counts;
+    }, {});
     timing.importSeconds = importSeconds;
     const webgl = await capture.rendererInfo(page);
     const producer = { name: 'mv_runtime_capture.js', modtools: { commit: capture.gitHead(MODTOOLS), dirty: capture.gitDirty(MODTOOLS) },
@@ -869,4 +985,5 @@ module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planReq
   gameSuits, suitPlan, pinCostumes, checkCostumes,
   qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
   gameFrames, gameFrameTimes, recordedFrameTimes, setFrameHistory, prerollTimes, memberMeshAlias, PHYSICS_READ_POINTS,
+  FRAME_CLOCK_FIELDS, frameClocks, gameClockSamples, setGameClock,
   prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };

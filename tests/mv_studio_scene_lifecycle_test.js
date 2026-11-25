@@ -128,6 +128,9 @@ function fixture(visible = true, options = {}) {
   if (options.lighting) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-lighting.js'), 'utf8'), context);
   }
+  if (options.mixer) {
+    vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-mixer.js'), 'utf8'), context);
+  }
   if (options.axisBillboard) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-axis-billboard.js'), 'utf8'), context);
   }
@@ -562,6 +565,65 @@ async function checkMemberRimQuality() {
   assert(Math.abs(info.liveLighting.rim.intensity - .7) < 1e-9, 'with the quality on the rim track adds to the base');
   assert.deepEqual(info.rimlight || [], []);
   f.app.dispose();
+}
+
+// LiveRimlightMixer.PostProcess applies colour, sharpness and direction only in a frame a clip ran,
+// otherwise only ApplyIntensity(0): between clips the rim keeps the last written values (intensity 0),
+// from the previous playing frame or, after a seek, from the frame history; before any write, and on a
+// plain seek, SifasMaterial's live default (LiveCoreMemberRimlight.ResetAll) stays.
+async function checkMemberRimHold() {
+  const f = fixture(true, { lighting: true }), value = project(59);
+  value.quality = { values: { member_rim_light: true, base_light: true } };
+  const clip = (start, sharpness, x) => ({ start, duration: 1, values: { playableClass: 'LiveRimlightClip', colorSpecifiedType: 0,
+    color: [.5, .25, 1, 1], intensity: .6, sharpness, direction: { x, y: 1, z: 0 } } });
+  value.tracks.push({ nativeClass: 'LiveRimlightTrack', binding: '/EntryPoint/Live/Members/Member1', events: [clip(0, 4, 2), clip(2, 9, -3)] });
+  await f.app.load(value);
+  const info = f.models.get(59);
+  // The scene runs in the fixture's own realm: compare plain copies.
+  const rim = () => JSON.parse(JSON.stringify(info.liveLighting?.rim ?? null));
+  f.app.seek(.5, value, true);
+  assert.deepEqual(rim(), { color: [.5, .25, 1, 1], intensity: .6, power: 5, direction: [2, 1, 0, 0] }, 'a clip writes everything');
+  f.app.seek(1.5, value, true);
+  assert.deepEqual(rim(), { intensity: 0 }, 'a plain seek between clips has no earlier frame to hold');
+  f.app.seek(1.5, value, true, [.3, .9, 1.2]);
+  assert.deepEqual(rim(), { color: [.5, .25, 1, 1], direction: [2, 1, 0, 0], power: 5, intensity: 0 },
+    'after a seek with the frame history the last frame a clip ran holds colour, power and direction');
+  f.app.seek(1.6, value, true, [1.1, 1.2]);
+  assert.deepEqual(rim(), { intensity: 0 }, 'a history without a written frame holds nothing');
+  f.app.seek(2.5, value, true);
+  f.app.setPlaying(true);
+  f.app.playbackFrame(3.2, 100, true);
+  assert.deepEqual(rim(), { color: [.5, .25, 1, 1], direction: [-3, 1, 0, 0], power: 10, intensity: 0 }, 'a playing frame holds the previous one');
+  f.app.playbackFrame(3.4, 200, true);
+  assert.deepEqual(rim().direction, [-3, 1, 0, 0], 'and keeps holding it');
+  f.app.setPlaying(false);
+  f.app.dispose();
+}
+
+// The scene runs the Live* mixers' input walk (LiveMixerBase`2.ProcessWithoutSeek) on its frame
+// clock: a seek replays the history it is handed, playback frames continue it, and a seek without
+// history processes every input (ProcessWithSeek). MVStudioLighting.nativeWeight reads the walk.
+async function checkMixerWalk() {
+  const f = fixture(true, { lighting: true, mixer: true }), value = project(59);
+  const clip = (start, duration, values = {}) => ({ start, duration, values: { playableClass: 'LiveColoringClip', ...values } });
+  const late = clip(47.233, .7, { blendIn: .15 });
+  value.tracks.push({ nativeClass: 'LiveColoringTrack', label: 'StageEffect/Expert/Coloring/LED_panel_03', binding: '/x',
+    events: [clip(42.6, 2.533), clip(46.467, .566, { blendOut: .25 }), clip(46.783, .384, { blendIn: .25 }),
+      clip(47.167, .216, { blendOut: .15 }), late] });
+  const history = [];
+  for (let time = 47.138; time > 42; time -= .19) history.unshift(Math.round(time * 1e4) / 1e4);
+  await f.app.load(value);
+  const { MVStudioLighting: lighting } = f.window;
+  f.app.seek(47.328, value, true);
+  assert(lighting.nativeWeight(late, 47.328) > .6, 'a seek without history processes every input');
+  f.app.seek(47.328, value, true, history);
+  assert.equal(lighting.nativeWeight(late, 47.328), 0, 'the game frames leave the 47.233 s clip out at 47.328 s');
+  f.app.setPlaying(true);
+  f.app.playbackFrame(47.518, 100, true);
+  assert(lighting.nativeWeight(late, 47.518) > .9, 'the next playback frame takes it');
+  f.app.setPlaying(false);
+  f.app.dispose();
+  assert(lighting.nativeWeight(late, 47.328) > .6, 'a disposed scene leaves no walk behind');
 }
 
 // A member prop's ambient mixer writes its LiveCoreMemberAmbient every frame, shown or not: the
@@ -1009,7 +1071,9 @@ function checkAssetDumpHelpers() {
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
   await checkMemberRimQuality();
+  await checkMemberRimHold();
   await checkMemberPropHold();
+  await checkMixerWalk();
   await checkOriginalEndHold();
   await checkShadowPrefabRelease();
   await checkTwelvePerformers();

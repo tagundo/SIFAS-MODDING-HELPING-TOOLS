@@ -165,7 +165,59 @@
       object.quaternion.copy(parentRotation.invert()).multiply(rotation);
     }
 
-    function frame(events, time, deltaTime, mainCamera, project, resetClock = false) {
+    // The latest frame before `time` in which the selected variant was drawn:
+    // the game's rendered frames (context.history, ascending director times)
+    // or, without them, a grid at context.rate ending at `time`. A frame
+    // counts as drawn when its mixed color alpha reaches visibleAlpha for this
+    // variant's drawObjectIndex. Unevidenced simplification: the colorChange
+    // gate that can keep the renderer's previous state for a change below
+    // 1e-5 is not replayed here.
+    function lastDrawnFrame(events, time, project, context) {
+      let earliest = Infinity;
+      for (const event of events) if (Number.isFinite(event.start)) earliest = Math.min(earliest, event.start);
+      if (!Number.isFinite(earliest)) return null;
+      const history = Array.isArray(context?.history) && context.history.length ? context.history : null;
+      const rate = Number.isFinite(context?.rate) && context.rate > 0 ? context.rate : 30;
+      const probe = { color: new T.Vector4(), scale: new T.Vector3() };
+      let cursor = history ? history.length : 0;
+      for (let step = 1; step <= 100000; step++) {
+        let at;
+        if (history) {
+          do cursor--; while (cursor >= 0 && !(history[cursor] < time - 1e-9));
+          if (cursor < 0) return null;
+          at = history[cursor];
+        } else at = time - step / rate;
+        if (at < earliest - 1e-9) return null;
+        mix(events, at, project, probe, index);
+        if (probe.index === index && Math.fround(probe.color.w) >= visibleAlpha) return at;
+      }
+      return null;
+    }
+
+    // LiveCoreMemberSpotLightShaft.UpdateSpotlightShaft (0x2f6d380) returns
+    // at 0x2f6d44c while the renderer is disabled, before its LookAt and move,
+    // so a hidden shaft keeps the transform its last drawn frame gave it. A
+    // reset (a seek) restores the prefab transform; it then rebuilds that
+    // frame instead: settled on the member's Move anchor of that frame (as the
+    // drawn reset below) and turned level toward that frame's main camera.
+    // The height stays the one written in this frame.
+    function placeHidden(events, time, project, context) {
+      const drawn = lastDrawnFrame(events, time, project, context);
+      if (drawn === null || !context.anchorAt?.(drawn, target)) return;
+      const shaft = selected.root;
+      shaft.getWorldPosition(position);
+      position.x = target.x;
+      position.z = target.z;
+      if (context.cameraAt?.(drawn, look)) {
+        look.sub(position);
+        look.y = 0;
+        point(shaft, look, worldUp);
+      }
+      lastPosition.copy(position);
+      shaft.position.copy(memberRoot.worldToLocal(position));
+    }
+
+    function frame(events, time, deltaTime, mainCamera, project, resetClock = false, context = null) {
       if (resetClock) reset();
       if (!events?.length) {
         if (selected) selected.mesh.visible = false;
@@ -197,7 +249,10 @@
       const shaft = selected.root;
       shaft.position.y = height;
       shaft.scale.copy(scale);
-      if (!selected.mesh.visible) return false;
+      if (!selected.mesh.visible) {
+        if (resetClock && context) placeHidden(events, time, project, context);
+        return false;
+      }
 
       // LiveCoreMemberSpotLightShaft.UpdateSpotlightShaft (0x2f6d380): the
       // shaft root LookAt()s (0x2f6d4f4) the camera, level with itself, from

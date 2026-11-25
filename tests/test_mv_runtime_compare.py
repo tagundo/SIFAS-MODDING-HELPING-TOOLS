@@ -438,6 +438,50 @@ class TimingTest(unittest.TestCase):
         self.assertTrue(all(item["record"] != "f0004" for item in report["ranked"]["overall"] if item["type"] == "camera"))
 
 
+class FrameClockTest(unittest.TestCase):
+    """qa-mvdump sampler 3: the game records carry the previous and next frame's own clock (clock.prevFrame /
+    nextFrame) and the editor evaluates those phases at them (clock.phaseSource "frameClock")."""
+
+    def clamped(self, source):
+        editor = editor_doc()
+        game = synthetic.game_from_editor(editor)
+        record = frames(game)[2]
+        record["clock"]["deltaTime"] = 1 / 3
+        for item in editor["records"]:
+            if item["sourceRecord"] == record["id"] and item["phase"] != 0:
+                item["clock"]["phaseSource"] = source
+        comparison = compare.Comparison(game, editor)
+        comparison.run()
+        return comparison, record
+
+    def test_clamped_delta_time_is_exact_with_a_frame_clock_phase(self):
+        for source, uncertain in (("deltaTime", True), ("recorded", False), ("frameClock", False)):
+            comparison, record = self.clamped(source)
+            self.assertEqual(comparison.timing_uncertain(record, -1), uncertain, source)
+            self.assertEqual(record["id"] in comparison.notes["timing.clampedDeltaTime"], uncertain, source)
+        self.assertEqual(compare.EXACT_PHASE_SOURCES, {"recorded", "frameClock"})
+
+    def test_cut_window_is_the_neighbouring_frames_own_times(self):
+        clock = {"directorTime": 4.0, "deltaTime": 1 / 3}
+        self.assertEqual(compare.Comparison.frame_window(clock), (4.0 - 1 / 3, 4.0 + 1 / 3), "today's rule: t -/+ deltaTime")
+        # A clamped frame: the director moved 0.45 s since the previous frame, which the frame clock read.
+        clock.update(prevFrame={"frameCount": 99, "directorTime": 3.55}, nextFrame={"frameCount": 101, "directorTime": 4.2})
+        self.assertEqual(compare.Comparison.frame_window(clock), (3.55, 4.2))
+        clock["nextFrame"] = {"frameCount": 101, "directorTime": None}
+        self.assertEqual(compare.Comparison.frame_window(clock), (3.55, 4.0 + 1 / 3), "a neighbour without a time keeps the rule")
+
+    def test_a_cut_the_previous_frame_straddles_is_near(self):
+        editor = editor_doc(times=(1.0, 2.5, 3.3, 4.4, 6.1, 7.9))
+        game = synthetic.game_from_editor(editor)
+        record = next(item for item in frames(game) if item["id"] == "f0004")
+        comparison = compare.Comparison(copy.deepcopy(game), copy.deepcopy(editor))
+        comparison.run()
+        cuts = [3.9]
+        self.assertFalse(comparison.near_cut(record, 0, cuts), "4.4 - 1/15 does not reach the cut at 3.9")
+        record["clock"]["prevFrame"] = {"frameCount": 1, "directorTime": 3.85}
+        self.assertTrue(comparison.near_cut(record, 0, cuts), "the previous frame was drawn before the cut")
+
+
 class ToleranceTest(unittest.TestCase):
     """(f) Tolerance boundaries are inclusive."""
 

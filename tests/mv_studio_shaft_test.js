@@ -184,6 +184,46 @@ async function run() {
   pointNear(worldDirection(root, new T.Vector3(0, 0, 1)).toArray(), level(camera.position, settled).toArray());
   assert.ok(root.position.x > settled.x && root.position.x < move.position.x);
 
+  // UpdateSpotlightShaft returns while the renderer is disabled (0x2f6d44c): a hidden
+  // shaft keeps what its last drawn frame left. A reset rebuilds that frame from the
+  // game's frame history (else the spring-clock grid): settled on that frame's Move
+  // anchor and turned level toward that frame's camera, at this frame's height.
+  const shown = event({ offsetHeight: 1.5 }, 0, 2), hidden = event({ offsetHeight: 2.2, color: { r: .6, g: .8, b: .4, a: 0 } }, 2, 8);
+  const anchorAt = (time, out) => { out.set(time, 50, -2 * time); return true; };
+  const cameraAt = (time, out) => { out.set(-10 * time, 30, 40 + time); return true; };
+  const asked = [];
+  const context = { history: [.5, 1, 1.5, 1.9, 2.4, 3, 6], rate: 10, cameraAt,
+    anchorAt: (time, out) => { asked.push(time); return anchorAt(time, out); } };
+  const drawnAt = (time) => {
+    const at = new T.Vector3(); anchorAt(time, at);
+    const placed = new T.Vector3(at.x, 12 + 2 * 2.2, at.z), eye = new T.Vector3(); cameraAt(time, eye);
+    return { placed, look: level(eye, placed) };
+  };
+  assert.equal(controller.frame([shown, hidden], 5, 0, camera, {}, true, context), false);
+  assert.equal(mesh.visible, false);
+  assert.deepEqual(asked, [1.9], 'the last history frame before the seek in which the shaft was drawn');
+  let expected = drawnAt(1.9);
+  pointNear(root.getWorldPosition(new T.Vector3()).toArray(), expected.placed.toArray());
+  pointNear(worldDirection(root, new T.Vector3(0, 0, 1)).toArray(), expected.look.toArray());
+  // Without a history the grid at the spring rate ends at the seek time.
+  controller.frame([shown, hidden], 5, 0, camera, {}, true, { rate: 10, anchorAt, cameraAt });
+  expected = drawnAt(5 - 31 / 10);
+  pointNear(root.getWorldPosition(new T.Vector3()).toArray(), expected.placed.toArray());
+  pointNear(worldDirection(root, new T.Vector3(0, 0, 1)).toArray(), expected.look.toArray());
+  // A history that starts after the shaft was last drawn, a shaft never drawn, and a
+  // reset without the context keep the prefab transform.
+  for (const [events, extra] of [[[shown, hidden], { history: [2.4, 3] }], [[hidden], {}], [[shown, hidden], null]]) {
+    controller.frame(events, 5, 0, camera, {}, true, extra && { rate: 10, anchorAt, cameraAt, ...extra });
+    pointNear(root.getWorldPosition(new T.Vector3()).toArray(), [0, 12 + 2 * 2.2, 0]);
+    pointNear(root.quaternion.toArray(), [0, 0, 0, 1]);
+  }
+  // Playing on from a placed hidden shaft keeps it there (no reset, nothing drawn).
+  controller.frame([shown, hidden], 5, 0, camera, {}, true, context);
+  const kept = root.position.clone();
+  move.position.x += 3;
+  controller.frame([shown, hidden], 5.1, .1, camera, {}, false, context);
+  pointNear(root.position.toArray(), kept.toArray());
+
   let materialDisposals = 0, geometryDisposals = 0;
   mesh.material.addEventListener("dispose", () => materialDisposals++);
   shared.geometry.addEventListener("dispose", () => geometryDisposals++);
@@ -195,7 +235,7 @@ async function run() {
   another.dispose();
   prepared.dispose();
   assert.equal(geometryDisposals, 1);
-  console.log("Native spotlight shafts: template ownership, shape mixing, GPU state, move anchor, damping, look-at origin (first show, seek, playing) and per-camera billboard.");
+  console.log("Native spotlight shafts: template ownership, shape mixing, GPU state, move anchor, damping, look-at origin (first show, seek, playing), hidden-shaft seeks and per-camera billboard.");
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; });

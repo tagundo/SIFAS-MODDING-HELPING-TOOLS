@@ -73,6 +73,9 @@ DEFAULT_TOLERANCES = {
 # Unity Time.maximumDeltaTime default (1/3 s): a frame whose deltaTime is clamped to it advanced the director by
 # more than deltaTime (the director follows the music clock), so t - deltaTime is not the previous frame's time.
 MAX_DELTA_TIME = 1 / 3
+# Editor phase times that are the neighbouring frame's own director time (mv_runtime_capture.js planRequests):
+# another record of that frame ("recorded") or the sampler's per-frame clock ("frameClock", qa-mvdump sampler 3).
+EXACT_PHASE_SOURCES = {"recorded", "frameClock"}
 # Cameras besides the main camera that draw stage content into the MV picture (LiveCoreCameraManager.overlayCamera:
 # layer 20 overlay effects at qualities with StageOverlayEffect, cullingMask 0 otherwise).
 PICTURE_CAMERAS = {"camera:overlay"}
@@ -857,24 +860,36 @@ class Comparison:
         """Any record (frame or full part) whose Time.deltaTime was clamped to maximumDeltaTime while the director
         followed the music clock: the pose phase t + phase * deltaTime is not the neighbouring frame's time, so the
         record is timing-uncertain at every phase but 0, unless the editor evaluated that phase at the director time the
-        dump recorded for the neighbouring frame (clock.phaseSource "recorded"). Each record is noted once."""
+        dump recorded for the neighbouring frame (clock.phaseSource "recorded", or "frameClock" from the sampler's
+        per-frame clock). Each record is noted once."""
         dt = (record.get("clock") or {}).get("deltaTime")
         if self.identity or phase == 0 or not number(dt) or dt < MAX_DELTA_TIME - 1e-6:
             return False
         partner = self.partner(record, phase)
-        if ((partner or {}).get("clock") or {}).get("phaseSource") == "recorded":
+        if ((partner or {}).get("clock") or {}).get("phaseSource") in EXACT_PHASE_SOURCES:
             return False
         if record.get("id") not in self.notes["timing.clampedDeltaTime"]:
             self.notes["timing.clampedDeltaTime"].append(record.get("id"))
         return True
 
+    @staticmethod
+    def frame_window(clock):
+        """Director times a record's phases -1..+1 can show: from the previous to the next frame's own time when
+        the sampler read them (clock.prevFrame / nextFrame), else t -/+ deltaTime."""
+        t, dt = clock.get("directorTime"), clock.get("deltaTime") or 1 / 30
+        before = (clock.get("prevFrame") or {}).get("directorTime")
+        after = (clock.get("nextFrame") or {}).get("directorTime")
+        return (before if number(before) else t - dt, after if number(after) else t + dt)
+
     def near_cut(self, record, phase, cuts):
         clock = record.get("clock") or {}
-        t, dt = clock.get("directorTime"), clock.get("deltaTime") or 1 / 30
+        t = clock.get("directorTime")
         if self.timing_uncertain(record, phase):
             return True
-        if number(t) and any(abs(t - cut) <= dt + 1e-9 for cut in cuts):
-            return True
+        if number(t):
+            low, high = self.frame_window(clock)
+            if any(low - 1e-9 <= cut <= high + 1e-9 for cut in cuts):
+                return True
         if record.get("kind") == "frame" and not self.identity:
             events = []
             for candidate in (phase - 1, phase, phase + 1):
@@ -1583,6 +1598,17 @@ class Comparison:
                 self.add("particles", "particleCount", f"particles:{key}", record, game_count, editor_count,
                          abs(game_count - editor_count), tol, near_cut=near,
                          field=f"seed game {item.get('randomSeed')} editor {match.get('seed')}")
+            # ParticleSystem.time against the editor's system clock: both wrap at the duration when looping, so
+            # the distance is taken around it. The game's time moves in whole game frames, so one frame
+            # (the record's deltaTime) is the tolerance. Diagnostic: the editor steps a fixed 30 fps grid.
+            game_time, editor_time, duration = item.get("time"), match.get("time"), item.get("duration")
+            if number(game_time) and number(editor_time):
+                error = abs(game_time - editor_time)
+                if number(duration) and duration > 0:
+                    error = min(error % duration, duration - error % duration)
+                dt = (record.get("clock") or {}).get("deltaTime")
+                self.add("particles", "particleTimeS", f"particles:{key}", record, game_time, editor_time, error,
+                         dt if number(dt) and dt > 0 else 1 / 30, near_cut=near)
             if number(item.get("randomSeed")) and number(match.get("seed")) and not item.get("useAutoRandomSeed"):
                 self.add("particles", "particleSeed", f"particles:{key}", record, item["randomSeed"], match["seed"],
                          int(int(item["randomSeed"]) & 0xFFFFFFFF != int(match["seed"]) & 0xFFFFFFFF), 0, exact=True, near_cut=near)

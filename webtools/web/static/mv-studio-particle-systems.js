@@ -10,8 +10,15 @@
   //  * Unity's xorshift128 stream (nativeRandom). Four SIMD lanes each own an
   //    "initial" and a "shape" stream seeded with seed + 367 * lane; a birth
   //    group always draws all four lanes (mv-studio-stage-dust-simulation.js).
-  //  * InitialModule draw order per birth: particle word, lifetime, size X
-  //    (Y, Z when size3D), rotation (Z, X, Y when rotation3D), color.
+  //    libunity.so: the InitialModule (+0x180) and ShapeModule (+0x230) Rand4
+  //    seed lane i with seed + 0x16f * i (0x4141e0), and ResetSeeds 0x1d24f8
+  //    reseeds them from the serialized seed (or a fresh global draw with
+  //    autoRandomSeed) on every Play from stopped and every restarting
+  //    Simulate, so a fixed seed repeats its draws in every run.
+  //  * InitialModule draw order per birth of a per-step start (0x60bd60):
+  //    particle word, lifetime, size X (Y, Z when size3D), rotation (Z, X, Y
+  //    when rotation3D), color. A procedural prewarm's particles are built
+  //    from its batches instead (0x60fe08, lifetime first; regenerate()).
   //  * Per-particle module randoms come from a fresh stream seeded with the
   //    particle word plus the module salt (velocity, size, color, rotation...).
   //  * Age runs from 0 to 100 at dt * 100 / lifetime per step (reciprocal
@@ -25,13 +32,25 @@
   //    runs after the first display frame's full steps. Its rate carry starts
   //    at 1 - (scan carry) + 1e-4, so an enabled module emits one extra
   //    particle in the first step even at rate 0. A procedural system
-  //    (culling.procedural) prewarms in one procedural update whose emission
-  //    cap counts every particle emitted so far, live or dead, and whose
-  //    burst particles start at their step's end; after the prewarm the cap
-  //    counts live particles again (per-frame updates run non-procedurally,
-  //    0x1ce1b8).
+  //    (culling.procedural) prewarms in one procedural update that records
+  //    emission batches, whose cap counts every particle emitted so far, live
+  //    or dead, and builds the particles from the batches at its end (burst
+  //    particles at their step's end); after the prewarm the cap counts live
+  //    particles again (per-frame updates run non-procedurally, 0x1ce1b8).
   //  * The clone root sits at the world origin plus the clip offset; its
   //    systems use their own serialized random seeds.
+  //  * A system advances on the game's frame time (Time.deltaTime, so
+  //    Time.time differences), the director follows the music: when frames
+  //    hit Time.maximumDeltaTime (1/3 s) the game clock falls behind the
+  //    director. Given the game's clock (update's `clock`: director seconds
+  //    to Time.time, gameClock()), a clip's frames count the game seconds
+  //    since its activation frame; the clip window stays on the director.
+  //    Culled systems take each clone frame's cameras at the director time
+  //    the game clock reached it.
+  //    In the 12035 Max 3D dump4 kirakira_01 of fx_par_so2035_02 kept
+  //    ParticleSystem.time - (Time.time since its clip start) within -0.12 ..
+  //    -0.07 s across the clamped frames at 48.9-53.3 s, while the same
+  //    difference on director time moved from -0.24 to -0.63 s.
   //
   //  * Billboard quads with 3D start rotation turn by the negated X/Y/Z angles
   //    in Unity's Euler order (Z, then X, then Y) on the alignment's axes, as
@@ -68,6 +87,8 @@
   const f32 = Math.fround;
   const gravityMagnitude = f32(9.81), ageScale = f32(.01);
   const fixedStep = f32(.02), catchUpStep = f32(.2), clockBias = f32(.0001), birthBias = f32(1e-6);
+  // InitialModule +0x1e8 outside sub-emitter emission (see birth()).
+  const inheritedLifetime = 1;
   const maxElapsed = 1200;
   const salts = {
     speed: 0x96aa4de3, gravity: 0xe2b7c3c3, velocity: 0xe0fbd834, size: 0x8d2c8431, color: 0x591bc05c,
@@ -565,9 +586,20 @@
       }
     }
 
-    function birth({initial}, systemTime) {
+    // InitialModule start values of one lane. A per-step start (0x60bd60)
+    // draws the particle word first, then the lifetime; the procedural
+    // regeneration (0x60fe08) has drawn the lifetime before the word and
+    // passes it as `drawnLife`. The per-step start scales the lifetime by
+    // InitialModule +0x1e8 and keeps at least 1e-5 (0x60c2b0-0x60c2cc).
+    // +0x1e8 is the sub-emitter inherited lifetime: 1 (constructor 0x60bb38,
+    // Reset 0x60bc84, restored at 0x1cf9d8 after every sub-emitter emission),
+    // the parent's remaining lifetime only while a sub-emitter with Inherit
+    // Lifetime emits (0x1c9aec bit 3 from 0x1c6420). This runtime runs no
+    // sub-emitters, so the factor is always 1.
+    function birth({initial}, systemTime, drawnLife) {
       const word = initial();
-      const life = Math.max(f32(1e-4), lifetime.sample(systemTime, nativeUnit(initial())));
+      const life = drawnLife ??
+        Math.max(f32(1e-5), f32(lifetime.sample(systemTime, nativeUnit(initial())) * inheritedLifetime));
       const size = sizes.map(curve => curve.sample(systemTime, nativeUnit(initial())));
       const angles = rotations.map(curve => curve.sample(systemTime, nativeUnit(initial())));
       const rgba = startColor(nativeUnit(initial()), systemTime);
@@ -591,9 +623,11 @@
       };
     }
 
-    function advance(atom, dt) {
+    // One step of a particle's motion; `falling` false leaves gravity out
+    // (the procedural rebuild adds it in closed form, fall()).
+    function advance(atom, dt, falling = true) {
       const {source} = atom, phase = f32(atom.age * ageScale);
-      if (source.gravity) {
+      if (falling && source.gravity) {
         const force = f32(f32(gravityMagnitude * dt) * source.gravity);
         atom.vx = f32(atom.vx + f32(force * g[0]));
         atom.vy = f32(atom.vy + f32(force * g[1]));
@@ -753,8 +787,8 @@
     }
 
     // Particles the emission cap counts: the live ones, or during a
-    // procedural prewarm every particle emitted so far (state.batched).
-    const used = state => state.batched ?? state.active.length;
+    // procedural prewarm every particle of every batch so far, live or dead.
+    const used = state => state.batches ? state.batches.reduce((sum, batch) => sum + batch.count, 0) : state.active.length;
 
     function step(state, rawDt) {
       simulate(state, f32(rawDt * speedScale));
@@ -765,6 +799,8 @@
       const {active} = state;
       for (const atom of active) advance(atom, dt);
       cull(active);
+      // 0x1d7490 ages every batch by the step before it emits (0x1d7634).
+      if (state.batches) for (const batch of state.batches) batch.age = f32(batch.age + dt);
       if (state.delay > 0) {
         state.delay = f32(state.delay - dt);
         if (state.delay > 0) return;
@@ -786,30 +822,135 @@
       state.clock = clock;
       if (wrapped) state.loop++;
       if (!main.looping && next >= cycle) state.stopped = true;
+      // 0x65b770 leaves 1 / amount (1 below 1e-4) at emission state +0.
+      const inverse = amount < clockBias ? 1 : f32(1 / amount);
+      if (state.batches) {
+        // A procedural step appends one emission batch (0x1d7908): the loop
+        // time at the step end, age 0, the carry left over, the spacing
+        // dt / amount, the rate and burst particles together capped by every
+        // batch so far (maxNumParticles, ring buffer off), and the uncapped
+        // rate count. 0x1d7a94 turns the batches into particles at the end.
+        const before = used(state);
+        const total = requested + pulses.reduce((sum, pulse) => sum + pulse.count, 0);
+        const count = Math.min(before + total, main.maxParticles) - before;
+        if (count > 0) {
+          state.batches.push({time: clock, age: 0, carry: state.carry, spacing: f32(dt * inverse), count, rate: requested,
+            step: state.step});
+        }
+        return;
+      }
       const room = Math.max(0, main.maxParticles - used(state));
       const regular = Math.min(requested, room);
       if (regular > 0) {
-        const inverse = amount < clockBias ? 1 : f32(1 / amount);
         born(state, regular, index => f32(dt * Math.min(1, Math.max(birthBias, f32(f32(index + state.carry) * inverse)))),
           systemTime);
-        if (state.batched !== undefined) state.batched += regular;
       }
       for (const {count, elapsed} of pulses) {
         const allowed = Math.min(count, Math.max(0, main.maxParticles - used(state)));
         if (!(allowed > 0)) continue;
-        if (state.batched === undefined) {
-          born(state, allowed, () => Math.max(birthBias, Math.min(dt, elapsed)), systemTime);
-          continue;
-        }
-        // A procedural batch starts at age 0 at the end of its step and only
-        // its rate particles get spacing offsets (0x1d7908 stores the rate
-        // count at +0x18; 0x1d7ed8 offsets only those), so its burst
-        // particles are born at the step end.
-        born(state, allowed, () => birthBias, systemTime);
-        state.batched += allowed;
+        born(state, allowed, () => Math.max(birthBias, Math.min(dt, elapsed)), systemTime);
       }
     }
 
+    // Gravity over `time` seconds in closed form, as the procedural rebuild
+    // moves its particles (0x1d8284-0x1d8334): x += G t * (t * .5) and
+    // v += G t, G the gravity times the particle's gravity modifier in the
+    // simulation space.
+    function fall(atom, time) {
+      const pull = f32(gravityMagnitude * atom.source.gravity), half = f32(time * .5);
+      ["x", "y", "z"].forEach((axis, index) => {
+        const gained = f32(f32(pull * g[index]) * time);
+        atom[axis] = f32(atom[axis] + f32(gained * half));
+        atom[`v${axis}`] = f32(atom[`v${axis}`] + gained);
+        atom[`m${axis}`] = f32(atom[`m${axis}`] + gained);
+      });
+    }
+
+    // 0x1d7a94: the particles of a procedural prewarm's batches, built once
+    // its steps are done (libunity.so GL 3.12.0, Unity 2018.4.23f1).
+    //  * Per batch in order, the InitialModule's four lanes (0x60fe08) start
+    //    groups of 4 lanes. A group first draws its lifetime; lane i of the
+    //    batch is (lifetime - age) - (carry + i) * spacing seconds from death,
+    //    the offset for rate lanes only (i < the rate count). When all four
+    //    lanes are dead the group ends there, one draw spent, and keeps no
+    //    particle. Otherwise the lanes draw the rest of their start values
+    //    (word, size, rotation, colour) and the group keeps min(left, 4)
+    //    particles, `left` going down by 4 only for kept groups, so a group
+    //    after a skipped one can keep lanes past the batch count.
+    //  * Their age is (1 - (seconds from death) / lifetime) * 100 (+0x3c0),
+    //    from the lane's own offset.
+    //  * The ShapeModule's lanes (0x15ab60 over all kept particles) give kept
+    //    particle k lane k % 4 of group k / 4.
+    //  * Positions advance by the kept particle's own offset age (0x1d7ed8:
+    //    batch age + (carry + j) * spacing while carry + j is below the rate
+    //    count, j counting the batch's kept particles), here by the step
+    //    partition the batch lived through (the client integrates velocity
+    //    and rotation curves in closed form, 0x5d9aec / 0x659264), and the
+    //    kill pass (0x1d8370) removes particles older than 100 as cull() does.
+    //  * Gravity is integrated in closed form over the particle's whole time
+    //    t = batch age + offset (0x1d8284-0x1d8334): with G the gravity
+    //    times the (constant) gravity modifier in the simulation space
+    //    (0x60bc94 times InitialModule +0x15c, 0x1d7b14-0x1d7b9c),
+    //    x += G t * (t * .5) and v += G t, beside v t.
+    // Emulating 0x60fe08 under unicorn on crafted batches reproduced the
+    // RNG state, kept count and words of this rule, skipped groups included.
+    function regenerate(state, steps) {
+      const kept = [];
+      for (const batch of state.batches) {
+        const time = f32(batch.time / cycle);
+        const first = kept.length;
+        let left = batch.count;
+        for (let base = 0; base < batch.count; base += 4) {
+          const lives = lanes.map(lane => Math.max(f32(1e-6), lifetime.sample(time, nativeUnit(lane.initial()))));
+          const death = lives.map((life, lane) => {
+            const index = base + lane;
+            const offset = index < batch.rate ? f32(f32(batch.carry + index) * batch.spacing) : 0;
+            return f32(f32(life - batch.age) - offset);
+          });
+          if (death.every(value => value <= 0)) continue;
+          const group = lanes.map((lane, index) => birth(lane, time, lives[index]));
+          for (let lane = 0; lane < Math.min(left, 4); lane++) {
+            const inverse = group[lane].life;
+            const age = f32(Math.max(0, f32(1 - f32(death[lane] * inverse))) * 100);
+            kept.push({source: group[lane], age});
+          }
+          left -= 4;
+        }
+        const scaled = f32(batch.time * f32(1 / cycle));
+        let order = f32(batch.carry);
+        for (let index = first; index < kept.length; index++) {
+          const offset = order < batch.rate ? f32(order * batch.spacing) : 0;
+          kept[index].lived = offset;
+          kept[index].batch = batch;
+          kept[index].source.speed = startSpeed.sample(scaled, salted(kept[index].source.word, salts.speed));
+          order = f32(order + 1);
+        }
+      }
+      for (let base = 0; base < kept.length; base += 4) {
+        lanes.forEach(({shape: draw}, lane) => {
+          const {position, direction} = shape.draw(draw, base + lane, kept.length);
+          const entry = kept[base + lane];
+          if (!entry) return;
+          entry.source.position = position;
+          entry.source.velocity = direction.map(value => f32(value * entry.source.speed));
+        });
+      }
+      state.active = kept.map(({source, age, lived, batch}) => {
+        const atom = {source, x: source.position[0], y: source.position[1], z: source.position[2],
+          vx: source.velocity[0], vy: source.velocity[1], vz: source.velocity[2], mx: 0, my: 0, mz: 0,
+          age: 0, roll: source.roll};
+        advance(atom, lived, false);
+        for (let index = batch.step + 1; index < steps.length; index++) advance(atom, steps[index], false);
+        if (atom.source.gravity) fall(atom, f32(batch.age + lived));
+        atom.age = age;
+        return atom;
+      });
+      cull(state.active);
+      prewarmBatches = state.batches.map(batch => Object.freeze({...batch}));
+      delete state.batches;
+    }
+
+    let prewarmBatches = null;
     const clone = state => ({...state, active: state.active.map(atom => ({...atom}))});
     const delay = main.prewarm && main.looping ? 0 : compileCurve(main.startDelay, native).sample(0, nativeUnit(nativeRandom(seed)()));
     let warm = {frame: 0, clock: 0, carry: 0, loop: 0, group: 0, delay: f32(delay), stopped: false, active: []};
@@ -833,21 +974,24 @@
       // 0x1d1e54 seeds the carry with 1 - (the scan's carry) + 1e-4 whatever the
       // rate: an enabled module emits that one extra particle in the first
       // step even at rate 0 (0x65b770 adds the carry after its rate branch).
-      // The particles' random draws (start colour, size, roll, shape position) follow emission order here, so
-      // every particle the prewarm emits shifts the draws of the later ones. Unity's own RNG consumption (per-step
-      // groups under the game's frame steps, 0x60fe08 batch regeneration) is not modelled: counts and ages match
-      // the game while random placement and colour do not. 12035 dump4 shots 6, 13 and 17 (the gradient_01 glow:
-      // same ages, a shifted colour/position sequence) belong to this class with the line_up and kira dots.
       warm = {...warm, clock: f32(start % cycle), carry: emitting ? f32(f32(1 - carry) + clockBias) : 0};
       // A procedural system prewarms in one procedural update (Simulate
       // 0x1cbf64 -> 0x1ce4b0 with flag 2): 0x1d7490 appends emission batches
       // and caps each step by the particles of every batch so far, live or
-      // dead, since only the closing 0x1d7a94 rebuilds the live ones.
-      if (system.culling?.procedural) warm.batched = 0;
+      // dead, and the closing 0x1d7a94 builds the particles from the batches
+      // (regenerate). Play and Simulate reseed every lane from the serialized
+      // seed first (ResetSeeds 0x1d24f8 at 0x1cc3b8 / 0x1cbfb4), so the
+      // prewarm's draws are the same in every run. A non-procedural prewarm
+      // starts its particles step by step, as live updates do.
+      if (system.culling?.procedural) warm.batches = [];
       const plan = prewarmSteps(horizon, cycle);
-      for (const dt of plan.steps) simulate(warm, dt);
+      plan.steps.forEach((dt, index) => {
+        warm.step = index;
+        simulate(warm, dt);
+      });
+      delete warm.step;
+      if (warm.batches) regenerate(warm, plan.steps);
       remainder = plan.remainder;
-      delete warm.batched;
     }
     const layouts = new Map(), checkpointInterval = 2 * nativeStepRate;
 
@@ -863,6 +1007,9 @@
     }
 
     return {
+      // The emission batches a procedural prewarm built its particles from
+      // (time, age, carry, spacing, count, rate, step), or null.
+      batches: prewarmBatches,
       // frames: display frames since activation (1 in the activation frame).
       sample(frames, fps) {
         if (!Number.isInteger(frames) || frames < 0 || (fps !== 30 && fps !== 60) || frames / fps > maxElapsed) return [];
@@ -937,11 +1084,64 @@
     return timelineTick((first - 1) / fps) === start ? first - 1 : first;
   }
 
-  function activeFrames(event, time, fps) {
+  // `clock` (optional, gameClock()): director seconds -> the game's Time.time.
+  // The window is the director's; the frames since activation are counted on
+  // the game clock from the activation frame's director time.
+  function activeFrames(event, time, fps, clock = null) {
     if (!event || !finite(event.start) || !finite(event.duration) || event.duration <= 0) return 0;
     const start = timelineTick(event.start), current = timelineTick(time);
     if (current < start || current >= timelineTick(event.start + event.duration)) return 0;
-    return Math.max(0, Math.floor(time * fps + 1e-9) - activationFrame(event, fps) + 1);
+    const activated = activationFrame(event, fps);
+    let local = time;
+    if (typeof clock === "function") {
+      const from = activated / fps, elapsed = clock(time) - clock(from);
+      if (finite(elapsed) && Math.abs(elapsed - (time - from)) > 1e-9) local = from + Math.max(0, elapsed);
+    }
+    return Math.max(local === time ? 0 : 1, Math.floor(local * fps + 1e-9) - activated + 1);
+  }
+
+  // The game's clock as a function of director time from [directorTime,
+  // Time.time] samples of rendered frames (ascending director times): linear
+  // between samples, one game second per director second outside them. Null
+  // without two usable samples.
+  function gameClock(samples) {
+    const rows = [];
+    for (const sample of Array.isArray(samples) ? samples : []) {
+      if (!vector(sample, 2)) continue;
+      const last = rows[rows.length - 1];
+      if (last && (sample[0] <= last[0] || sample[1] < last[1])) continue;
+      rows.push([sample[0], sample[1]]);
+    }
+    if (rows.length < 2) return null;
+    const clock = time => {
+      if (!finite(time)) return time;
+      if (time <= rows[0][0]) return rows[0][1] + (time - rows[0][0]);
+      const end = rows[rows.length - 1];
+      if (time >= end[0]) return end[1] + (time - end[0]);
+      let low = 0, high = rows.length - 1;
+      while (high - low > 1) {
+        const middle = (low + high) >> 1;
+        if (rows[middle][0] <= time) low = middle; else high = middle;
+      }
+      const [t0, u0] = rows[low], [t1, u1] = rows[high];
+      return time === t0 ? u0 : u0 + (u1 - u0) * (time - t0) / (t1 - t0);
+    };
+    // The director time at which the game clock reached `game` (the first one where it stood still).
+    clock.inverse = game => {
+      if (!finite(game)) return game;
+      if (game <= rows[0][1]) return rows[0][0] + (game - rows[0][1]);
+      const end = rows[rows.length - 1];
+      if (game >= end[1]) return end[0] + (game - end[1]);
+      let low = 0, high = rows.length - 1;
+      while (high - low > 1) {
+        const middle = (low + high) >> 1;
+        if (rows[middle][1] < game) low = middle; else high = middle;
+      }
+      const [t0, u0] = rows[low], [t1, u1] = rows[high];
+      return u1 === u0 ? t1 : t0 + (t1 - t0) * (game - u0) / (u1 - u0);
+    };
+    clock.samples = rows.length;
+    return clock;
   }
 
   // ---------------------------------------------------------------- culling
@@ -1291,7 +1491,7 @@
     // index, for the visibility pass (Unity counts a renderer visible when
     // any camera drawing its layer sees it).
     const frusta = new Map();
-    let cullKey = null, cullFps = 0;
+    let cullKey = null, cullFps = 0, cullClock = null;
 
     function frustaAt(index, fps, view) {
       if (frusta.has(index)) return frusta.get(index);
@@ -1327,12 +1527,18 @@
     // system's box to a camera drawing it; otherwise cull 0x1cc5d8 had taken it
     // off the list (the becameInvisible callback, or the update end 0x1cde54
     // finding the renderer not visible), and becameVisible's uncull put it back.
+    // With the game's clock (cullClock) clone frame `index` ran at the director time where the game
+    // clock had advanced (index - 1) / fps past the activation frame's; its cameras are taken at the
+    // director display frame holding that time.
     function advanced(item, entry, event, frames, fps, view) {
       const activated = activationFrame(event, fps);
       let history = item.history;
       if (!history || history.activated !== activated) history = item.history = {activated, count: [0], visible: [false]};
+      const from = cullClock ? cullClock(activated / fps) : 0;
       for (let index = history.count.length; index < frames; index++) {
-        const planes = frustaAt(activated + index - 1, fps, view);
+        const plain = activated + index - 1, at = cullClock ? cullClock.inverse(from + (index - 1) / fps) * fps : plain;
+        const display = Math.abs(at - plain) < 1e-6 ? plain : Math.floor(at + 1e-9);
+        const planes = frustaAt(display, fps, view);
         const poses = planes.length ? posesAt(entry, index, fps) : null;
         const pose = poses ? poses[item.system.node] : item.restPose;
         const box = planes.length ? worldBox(item.box, item.system, pose) : null;
@@ -1478,7 +1684,8 @@
       // key (camera tracks, split data or viewport aspect changed) restarts
       // the visibility pass.
       // Without a view, culled systems simulate as if always visible.
-      update(time, project, view = null) {
+      // clock: the game's clock (gameClock()) or null for the director's.
+      update(time, project, view = null, clock = null) {
         if (disposed) return;
         if (tracks !== project?.tracks) {
           tracks = project?.tracks;
@@ -1488,9 +1695,11 @@
         const quality = project?.quality?.values;
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
         const camera = typeof view?.camerasAt === "function" || typeof view?.cameraAt === "function" ? view : null;
-        if ((camera?.key ?? null) !== cullKey || fps !== cullFps) {
+        const gameClock = typeof clock === "function" ? clock : null;
+        if ((camera?.key ?? null) !== cullKey || fps !== cullFps || gameClock !== cullClock) {
           cullKey = camera?.key ?? null;
           cullFps = fps;
+          cullClock = gameClock;
           frusta.clear();
           for (const entry of cues) {
             entry.poseCache = null;
@@ -1501,7 +1710,7 @@
           const {cue, track, systems} = entry;
           const event = track && !track.muted && quality?.[cue.quality] !== false &&
             track.events.find(row => row.id === cue.eventId);
-          const frames = event ? activeFrames(event, time, fps) : 0;
+          const frames = event ? activeFrames(event, time, fps, clock) : 0;
           if (frames) animate(entry, frames, fps);
           else entry.frames = -1;
           for (const item of systems) {
@@ -1548,7 +1757,7 @@
   }
 
   global.MVStudioParticleSystems = {
-    apply, create, activeFrames, animatorTime, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
+    apply, create, activeFrames, gameClock, animatorTime, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
     nodePoses, eulerQuaternion, blendFactor, depthFunction, renderState, loadTexture, mainCameraMask, salts,
     activationFrame, worldBox, cameraPlanes, boxVisible, prewarmSteps,
   };

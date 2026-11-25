@@ -194,5 +194,76 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
     }
   }
 
+  // Sampler 3 frame clocks (trailer.frameClocks, clock.prevFrame / nextFrame): every rendered
+  // frame's own director time. Records of those frames still come first ("recorded"); a frame
+  // only the frame clock read is "frameClock"; without either the deltaTime rule stays.
+  {
+    const fields = capture.FRAME_CLOCK_FIELDS;
+    assert.deepEqual(fields, ['frameCount', 'directorTime', 'musicTime', 'unityTime', 'deltaTime', 'realtimeSinceStartup', 'source']);
+    const row = (frameCount, directorTime, unityTime, deltaTime, extra = {}) => fields.map((name) => (
+      { frameCount, directorTime, musicTime: directorTime === null ? extra.musicTime : Math.round(directorTime * 1000), unityTime, deltaTime,
+        realtimeSinceStartup: 1000 + frameCount, source: extra.source ?? 0 })[name] ?? null);
+    const doc = { records: [
+      { id: 'f0001', kind: 'frame', directors: [{ main: true, duration: 106.683333 }],
+        clock: { frameCount: 500, directorTime: 50.1, deltaTime: 1 / 3, unityTime: 990.1,
+          prevFrame: { frameCount: 499, directorTime: 49.62, musicTime: 49620, unityTime: 989.767, deltaTime: 1 / 3 } } },
+      { id: 'p1-members-00', kind: 'full', part: 'members', clock: { frameCount: 503, directorTime: 50.9, deltaTime: 0.2, unityTime: 990.6 } }],
+      trailer: { frameClocks: { schema: 'sifas-mv-frame-clock/1', fields, rows: [row(498, 49.2, 989.434, 0.25), row(500, 50.1, 990.1, 1 / 3, { source: 1 }),
+        row(501, null, 990.3, 0.2, { musicTime: 50300 }), row(502, 50.6, 990.4, 0.1), row(503, 50.9, 990.6, 0.2, { source: 1 }),
+        row(504, 51.12, 990.82, 0.22)] } } };
+    const clocks = capture.frameClocks(doc);
+    assert.deepEqual([...clocks.keys()], [498, 499, 500, 501, 502, 503, 504], 'rows plus the prevFrame a record carries');
+    assert.deepEqual([clocks.get(501).directorTime, clocks.get(501).directorFrom], [50.3, 'musicTime'],
+      'no director read: SyncMusicPlayingTime sets it from the music time');
+    const planned = new Map(capture.planRequests(doc, [-1, 0, 1]).map((request) => [request.id, [request.t, request.phaseSource]]));
+    assert.deepEqual(planned.get('f0001@-1'), [49.62, 'frameClock'], 'clamped deltaTime: the previous frame was read');
+    assert.deepEqual(planned.get('f0001@1'), [50.3, 'frameClock']);
+    assert.deepEqual(planned.get('p1-members-00@-1'), [50.6, 'frameClock']);
+    assert.deepEqual(planned.get('p1-members-00@1'), [51.12, 'frameClock']);
+    // A record of the neighbouring frame stays the source it was.
+    const both = { records: [...doc.records, { id: 'f0002', kind: 'frame', clock: { frameCount: 501, directorTime: 50.3, deltaTime: 0.2 } }],
+      trailer: doc.trailer };
+    assert.deepEqual(new Map(capture.planRequests(both, [1]).map((request) => [request.id, request.phaseSource])).get('f0001@1'), 'recorded');
+    // Every frame read is an anchor of the game frame grid: nothing is spread between records.
+    assert.deepEqual([...capture.gameFrames(doc)], [[498, 49.2], [499, 49.62], [500, 50.1], [501, 50.3], [502, 50.6], [503, 50.9], [504, 51.12]]);
+    // Older dumps (no frame clock): the same requests and grid as before.
+    const older = { records: doc.records.map((record) => ({ ...record, clock: { ...record.clock, prevFrame: undefined } })) };
+    assert.equal(capture.frameClocks(older).size, 0);
+    assert.deepEqual(capture.planRequests(older, [-1]).map((request) => request.phaseSource), ['deltaTime', 'deltaTime']);
+    // The rows travel in rtdump-core only: merging keeps them whatever the blob order.
+    const core = { schema: capture.SCHEMA, side: 'game', header: {}, records: [doc.records[0]], trailer: { stopReason: 'mv-ended', ...doc.trailer } };
+    const fullBlob = { schema: capture.SCHEMA, side: 'game', header: {}, records: [doc.records[1]],
+      trailer: { stopReason: 'mv-ended', frameClocks: { in: 'rtdump-core', frames: 6 } } };
+    for (const order of [[core, fullBlob], [fullBlob, core]]) assert.equal(capture.mergeDumps(order).trailer.frameClocks.rows.length, 6);
+
+    // The particle clock: [directorTime, Time.time] of every frame read; records fill frames the frame
+    // clock missed; pre-start and non-advancing frames are left out. 12035 dump4 ran Time.time 0.87 s
+    // behind the director between 47.1 and 96.7 s (Time.maximumDeltaTime clamps).
+    const game = capture.gameClockSamples(doc);
+    assert.equal(game.source, 'frameClock');
+    assert.deepEqual(game.samples.map(([t, u]) => [t, Math.round(u * 1e3) / 1e3]),
+      [[49.2, 989.434], [49.62, 989.767], [50.1, 990.1], [50.3, 990.3], [50.6, 990.4], [50.9, 990.6], [51.12, 990.82]]);
+    assert.ok(Math.abs(game.lagMax - ((50.9 - 49.2) - (990.6 - 989.434))) < 1e-9, `lagMax ${game.lagMax}`);
+    const fromRecords = capture.gameClockSamples({ records: [
+      { clock: { frameCount: 1, directorTime: 0, unityTime: 900 } }, { clock: { frameCount: 2, directorTime: 1, unityTime: 901 } },
+      { clock: { frameCount: 3, directorTime: 106.666, unityTime: 1005 } }, { clock: { frameCount: 4, directorTime: 106.666, unityTime: 1005.2 } }] });
+    assert.deepEqual([fromRecords.source, fromRecords.samples], ['records', [[1, 901], [106.666, 1005]]]);
+    assert.deepEqual(capture.gameClockSamples({ records: [] }), { source: 'records', samples: [], lagMax: null });
+
+    // The capture hands the samples to the scene (MVStudioScene.setGameClock); null keeps the director's clock.
+    const calls = [];
+    globalThis.mvFrameProbe = { scene: { setGameClock: (samples) => { calls.push(samples); return samples ? samples.length : 0; } } };
+    const fake = { evaluate: async (fn, arg) => fn(arg) };
+    try {
+      assert.equal(await capture.setGameClock(fake, game.samples), 7);
+      assert.equal(await capture.setGameClock(fake, null), 0);
+      assert.deepEqual(calls, [game.samples, null]);
+      globalThis.mvFrameProbe = { scene: {} };
+      await assert.rejects(capture.setGameClock(fake, game.samples), /setGameClock/);
+    } finally {
+      delete globalThis.mvFrameProbe;
+    }
+  }
+
   console.log('MV_RUNTIME_CAPTURE_PASS viewport, stage-scene selector and pinned suits');
 })().catch((error) => { console.error(error); process.exitCode = 1; });
