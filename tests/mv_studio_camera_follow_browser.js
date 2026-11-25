@@ -5,6 +5,8 @@
    MainCamera AnimationTrack with two dense 60 Hz shots whose editableValues include keyframes;
    not a native timeline, so it saves without a source bundle):
    - no regression: the opened project stays deep-equal to its input, with no editor layer;
+   - the Follow camera panel open while an import runs, and while the saved project is opened
+     again: every control in it is enabled once the import ends;
    - Camera tab: the rig lane "카메라 리그 (편집기)" is listed after the MainCamera track;
    - Add follow camera → a rig clip on that lane covering the shot at the playhead, and mid-rig the
      game camera aims at the head (< 0.5°) from the set distance (front view, audience side);
@@ -135,6 +137,22 @@ const aimError = (page, point) => page.evaluate((target) => {
   return { degrees: forward.angleTo(toward) * 180 / Math.PI, distance: toward.length(), position: view.position, fov: view.authoredFov };
 }, point);
 
+// Every control of the open Follow camera panel becomes enabled once the editor is unlocked (the
+// host re-renders only its own panels then). Returns the number of controls.
+async function panelEnabled(page, message) {
+  await page.waitForFunction(() => !window.probeCtx.locked());
+  const result = await page.waitForFunction(() => {
+    const panel = document.getElementById('mv-panel-follow');
+    const controls = panel && panel.open && !panel.hidden ? [...panel.querySelectorAll('input, select, button')] : [];
+    return controls.length && controls.every((node) => !node.disabled) ? controls.length : 0;
+  }, null, { timeout: 3000 }).catch(async () => {
+    const disabled = await page.evaluate(() => [...document.querySelectorAll('#mv-panel-follow input, #mv-panel-follow select, #mv-panel-follow button')]
+      .filter((node) => node.disabled).map((node) => node.id || node.dataset.mvFollow || node.dataset.mvFollowView || node.tagName));
+    assert.fail(`${message}: ${disabled.length} panel controls stay disabled ${JSON.stringify(disabled.slice(0, 8))}`);
+  });
+  return result.jsonValue();
+}
+
 async function newPage(browser, errors) {
   const page = await browser.newPage({ locale: 'ko', viewport: { width: 1400, height: 1000 } });
   page.on('pageerror', (error) => errors.push(error.message));
@@ -153,7 +171,11 @@ async function synthetic(browser, url) {
   const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
   assert(local.stage && local.stage.glb, 'the stage fixture opens');
   const project = gameProject(local);
+  // The Follow camera panel is open while the import runs (a remembered open panel): it is built
+  // while the editor is still locked, and its controls must be enabled once the import ends.
+  await page.evaluate(() => { document.getElementById('mv-panel-follow').open = true; });
   await importGame(page, project);
+  await panelEnabled(page, 'after an import that ran with the panel open');
   await page.locator('#mv-camera-mode').waitFor();
   await page.waitForFunction(() => window.probeCtx.scene()?.memberTargets?.().some((member) => member.slot === 1));
 
@@ -171,7 +193,7 @@ async function synthetic(browser, url) {
 
   // The panel: Korean, with the add button and its explanation.
   assert.equal(await page.locator('#mv-panel-follow > summary').textContent(), '따라가기 카메라');
-  await page.locator('#mv-panel-follow > summary').click();
+  assert.equal(await page.evaluate(() => document.getElementById('mv-panel-follow').open), true, 'the panel stayed open');
   assert.equal(await page.locator('#mv-follow-add').textContent(), '따라가기 카메라 추가');
   assert.match(await page.locator('#mv-follow-empty').textContent(), /Cinemachine/);
 
@@ -420,6 +442,12 @@ async function synthetic(browser, url) {
   for (const index of [0, 1]) assert.deepEqual(current.project.tracks[0].events[index].values.keyframes, project.tracks[0].events[index].values.keyframes);
   assert.equal(await page.locator('.mv-rig-clip').count(), 0);
   assert.deepEqual(await lanes(), ['cam'], 'the rig lane leaves with the last rig');
+
+  // Reopening the saved project (with its rig) while the panel is open: the rig controls are enabled.
+  await importGame(page, { ...restored, name: 'Follow camera MV (reopened)' });
+  const controls = await panelEnabled(page, 'after reopening a project with a rig, the panel open');
+  assert(controls > 20, `the rig controls are shown (${controls})`);
+  assert.equal(await page.locator('#mv-follow-name').inputValue(), '따라가기 카메라 1');
   assert.deepEqual(errors, []);
   await page.close();
 }

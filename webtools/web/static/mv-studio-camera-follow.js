@@ -277,7 +277,7 @@
     let state = states.get(ctx);
     if (!state) {
       state = { cache: new Map(), evals: new Map(), inflight: new Map(), unavailable: new Map(), selected: null,
-        dirty: false, cancelled: false, saving: false, retry: null, panel: null, toggle: null, lane: null,
+        dirty: false, cancelled: false, saving: false, retry: null, unlock: null, loads: 0, panel: null, toggle: null, lane: null,
         progressQueued: false, normalized: { source: null, rigs: [] } };
       states.set(ctx, state);
     }
@@ -476,6 +476,22 @@
       requestBake(ctx, "retry");
     };
     state.retry = setTimeout(tick, 200);
+  }
+
+  // The host re-renders only its own panels when an open or import releases the editor. A panel
+  // built while it was locked (projectChanged "load" runs before the unlock) has its controls
+  // disabled, so it is rendered again once the editor is unlocked. Another load stops the wait.
+  function renderWhenUnlocked(ctx) {
+    const state = stateOf(ctx);
+    if (state.unlock || !ctx.locked()) return;
+    const loads = state.loads;
+    const tick = () => {
+      state.unlock = null;
+      if (state.loads !== loads) return;
+      if (ctx.locked()) { state.unlock = setTimeout(tick, 100); return; }
+      renderPanel(ctx);
+    };
+    state.unlock = setTimeout(tick, 100);
   }
 
   // Layer prepare (awaited by MVStudioCameraKeys.requestBake; a newer request aborts `signal`).
@@ -1270,6 +1286,8 @@
         state.panel = null;
         for (const task of state.inflight.values()) task.controller.abort();
         if (state.retry) { clearTimeout(state.retry); state.retry = null; }
+        state.loads++;
+        if (state.unlock) { clearTimeout(state.unlock); state.unlock = null; }
       } else if (info.reason === "history") {
         // The camera keys plugin rebakes after camera edits too; a rig change asks explicitly.
         if (rigsChanged(info.command) || pathTouched(ctx, info.command)) requestBake(ctx, "follow");
@@ -1278,6 +1296,7 @@
       syncLanePresence(ctx);
       drawLane(ctx);
       renderPanel(ctx);
+      renderWhenUnlocked(ctx);
     },
     // The rig lane, while the project has rigs (an MV without one keeps its timeline as it was).
     extraLanes(ctx, tab) {
