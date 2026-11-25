@@ -24,15 +24,18 @@ rotation = {0: [(0, .10, 0, .3), (.3, .19, .2, -.1), (.7, .12, .4, .4), (1, .3, 
             3: [(0, .97, 0, -.1), (1, .94, .05, 0)]}
 position = {4: [(0, 0, 0, 1), (.25, .3, 1.5, 1.5), (1, .9, 0, 0)], 5: [(0, 1.2, 0, 0), (.6, 1.0, -.8, -.8), (1, 1.1, 0, 0)],
             6: [(0, -.4, 0, 0), (1, .4, 0, 0)]}
+hand = {7: [(0, 10, 0, 90), (.4, 40, 60, 60), (1, -20, 0, 0)], 8: [(0, -30, 0, 0), (.55, 25, 120, 120), (1, 5, 0, 0)],
+        9: [(0, 5, 0, -40), (.3, -15, 30, 30), (.8, 35, 80, 80), (1, 0, 0, 0)]}
 eye = {0: [(0, 0, 0, 0), (1, .2, 0, 0)], 1: [(0, 0, 0, 0), (1, .1, 0, 0)], 2: [(0, 0, 0, 0), (1, 0, 0, 0)], 3: [(0, 1, 0, 0), (1, 1.3, 0, 0)]}
-body = T.AnimationTests.hermite_frames({**rotation, **position})
+body = T.AnimationTests.hermite_frames({**rotation, **position, **hand})
 gaze = T.AnimationTests.hermite_frames(eye)
-trees = [T.clip([T.binding(1, 2), T.binding(1, 1)], stream={"curveCount": 7, "data": T.words(body)}, duration=1., name="Original dance"),
+trees = [T.clip([T.binding(1, 2), T.binding(1, 1), T.binding(3, 4, custom=0)], stream={"curveCount": 10, "data": T.words(body)},
+                duration=1., name="Original dance"),
          T.clip([T.binding(2, 2)], stream={"curveCount": 4, "data": T.words(gaze)}, duration=1., name="ch0201_LiveFacial_eye_006")]
-glb = T.builder(3)
-glb.doc["nodes"] = [{"name": "Root", "children": [1, 2]}, {"name": "Hips"}, {"name": "LeftEye1"}]
+glb = T.builder(4)
+glb.doc["nodes"] = [{"name": "Root", "children": [1, 2, 3]}, {"name": "Hips"}, {"name": "LeftEye1"}, {"name": "LeftHand"}]
 glb.doc["scenes"][0]["nodes"] = [0]
-result = animation.append_animations(T.scene(trees), glb, {1: 1, 2: 2})
+result = animation.append_animations(T.scene(trees), glb, {1: 1, 2: 2, 3: 3})
 assert result["warnings"] == [], result["warnings"]
 frames = lambda rows: [[stamp if stamp > -1e38 else -3.4e38, [[index, list(c)] for index, c in keys]] for stamp, keys in rows if stamp != float("inf")]
 print(json.dumps({"glb": base64.b64encode(glb.finish()).decode(), "body": frames(body), "gaze": frames(gaze),
@@ -41,7 +44,8 @@ print(json.dumps({"glb": base64.b64encode(glb.finish()).decode(), "body": frames
 const run = spawnSync(process.env.VIEWER_PYTHON || 'python3', ['-c', script, ROOT], { encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
 assert.strictEqual(run.status, 0, run.stderr);
 const fixture = JSON.parse(run.stdout);
-assert.deepStrictEqual(fixture.interpolation, ['CUBICSPLINE', 'CUBICSPLINE', 'CUBICSPLINE']);
+// Hips rotation and position are exact cubics; the Euler hand keeps a LINEAR quaternion grid channel.
+assert.deepStrictEqual(fixture.interpolation, ['CUBICSPLINE', 'CUBICSPLINE', 'LINEAR', 'CUBICSPLINE']);
 
 // libunity GL 3.12.0: the seek (0x591304) keeps each curve's last key at or before the time and
 // SampleClip (0x591078) evaluates t*(t*(t*c0 + c1) + c2) + c3 with float32 fmul/fadd.
@@ -54,6 +58,12 @@ function unity(frames, curve, time) {
 function unityRotation(frames, time, first = 0) {
   const raw = [0, 1, 2, 3].map((i) => unity(frames, first + i, time)), q = new THREE.Quaternion(raw[0], -raw[1], -raw[2], raw[3]);
   return { raw, q: q.normalize() };
+}
+// unity_euler_quaternion (model_animation.py) for Unity OrderXYZ: q = qz * qy * qx (three.js 'ZYX'), then the glTF mirror.
+function unityEuler(frames, time) {
+  const [x, y, z] = [7, 8, 9].map((curve) => unity(frames, curve, time) * Math.PI / 180);
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z, 'ZYX'));
+  return new THREE.Quaternion(q.x, -q.y, -q.z, q.w);
 }
 function angle(a, b) { return 2 * Math.acos(Math.min(1, Math.abs(a.dot(b)))) * 180 / Math.PI; }
 const failures = [];
@@ -94,6 +104,31 @@ const times = Array.from({ length: 97 }, (_, index) => (index + .37) / 97);
     }
     assert(worst < 2e-4, `rotation ${worst} deg`);
     assert(position < 2e-6, `position ${position}`);
+  });
+  await check('an Euler rotation evaluates its exact cubic after loadUnityEuler, not the 60 Hz quaternion grid', async () => {
+    const gltf = await load(), hand = gltf.scene.getObjectByName('LeftHand');
+    const metadata = { clips: [{ name: 'Original dance', sourceHash: 'dance', sourceName: 'Original dance', bindingComplete: true }] };
+    const descriptor = { version: 2, category: 'mv', bodySegments: [{ sourceHash: 'dance', sourceName: 'Original dance', start: 0, duration: 1, clipIn: 0, timeScale: 1 }],
+      facial: { duration: 1, events: [] }, facialClips: [] };
+    function worst(player) {
+      let error = 0;
+      for (const time of times) { player.evaluate(time); error = Math.max(error, angle(hand.quaternion, unityEuler(fixture.body, time))); }
+      return error;
+    }
+    const grid = worst(window.ViewerMotionTimeline.create(gltf.scene, gltf.animations, metadata, descriptor, { indexTiming: true }));
+    assert(grid > 1e-3, `the LINEAR grid deviates (${grid} deg), so the check is sensitive`);
+    await window.ViewerMotionTimeline.loadUnityEuler(gltf);
+    const track = gltf.animations[0].tracks.find((item) => item.name === 'LeftHand.quaternion');
+    assert(track.unityEuler);
+    assert.strictEqual(window.ViewerMotionTimeline.trackValueSize(track), 4);
+    const exact = worst(window.ViewerMotionTimeline.create(gltf.scene, gltf.animations, metadata, descriptor, { indexTiming: true }));
+    assert(exact < 1e-4, `exact Euler ${exact} deg`);
+    const mixer = new THREE.AnimationMixer(gltf.scene);
+    mixer.clipAction(gltf.animations[0]).play();
+    for (const time of [.123, .5, .987]) {
+      mixer.setTime(time);
+      assert(angle(hand.quaternion, unityEuler(fixture.body, time)) < 1e-4, `mixer at ${time}`);
+    }
   });
   await check('AnimationMixer and a replayed interpolant read normalized rotations, the raw cubic is not unit length', async () => {
     const gltf = await load(), hips = gltf.scene.getObjectByName('Hips');

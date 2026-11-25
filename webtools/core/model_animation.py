@@ -4,7 +4,8 @@ Sources are read only. Cubic (streamed or editor Hermite) translation, rotation
 and scale channels are exported exactly as CUBICSPLINE samplers on their own key
 stamps; a value jump or a Float32 stamp collision keeps the LINEAR grid. Dense
 samples, Euler rotations and morph weights are evaluated at the source sample
-rate (at most 60 Hz) into LINEAR glTF samplers; constant channels keep their
+rate (at most 60 Hz) into LINEAR glTF samplers; an Euler rotation also carries
+its exact cubic in the clip extras (unityEuler). Constant channels keep their
 two end samples.
 Unsupported visibility/material/humanoid channels are reported, never guessed.
 No clip, including SIFAS's eye_900, is implicitly selected as a neutral pose.
@@ -258,8 +259,8 @@ def _evaluate(curve, stamp):
 # its values and first derivatives at both ends, so a channel keeps every key
 # stamp of its components (a component without a key there is split, with
 # equal in and out derivatives). Dense curves interpolate linearly (SampleClip
-# 0x591210) and Euler rotations become quaternions per sample; both stay on
-# the LINEAR sample grid.
+# 0x591210) and stay on the LINEAR sample grid, as do Euler rotations, which
+# become quaternions per sample; their Euler cubic is kept beside that grid.
 _CUBIC_KINDS = ("translation", "rotation", "scale")
 # Float32 coefficients of a continuous curve meet the next key's value within
 # about 1e-7 (12035 and 12023 dances); a stepped key or an infinite editor
@@ -289,7 +290,7 @@ def _cubic_channel(track, start, stop, deadline=None):
     sign-flipped, as each component is its own curve in the client.
     """
     curves = track["curves"]
-    if (track["kind"] not in _CUBIC_KINDS or not any(mode == "cubic" for mode, _ in curves)
+    if (track["kind"] not in _CUBIC_KINDS + ("euler",) or not any(mode == "cubic" for mode, _ in curves)
             or any(mode not in ("cubic", "constant") for mode, _ in curves)):
         return None
     stamps = {start, stop}
@@ -917,6 +918,14 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                     unbound += 1
                     continue
                 cubic = _cubic_channel(track, times[0], times[-1], deadline)
+                euler = None
+                if cubic is not None and track["kind"] == "euler":
+                    # Unity evaluates the three Euler cubics, then converts the angles to a
+                    # quaternion, which no glTF sampler interpolates. The LINEAR quaternion
+                    # grid below stays the standard channel; the exact Euler cubic rides along
+                    # in the clip's extras (ViewerMotionTimeline.loadUnityEuler evaluates it).
+                    euler, cubic = cubic, None
+                    planned_values += 9 * len(euler[0]) * len(targets)
                 if cubic is not None:
                     stamps, rows = cubic
                     planned_frames += len(stamps) * len(targets)
@@ -926,7 +935,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                     # glTF CUBICSPLINE output: in-tangent, value, out-tangent per input stamp.
                     values = [_mirror(track["kind"], part) for row in rows for part in row]
                     for node in targets:
-                        outputs.append((int(node), track["kind"], values, stamps, "CUBICSPLINE"))
+                        outputs.append((int(node), track["kind"], values, stamps, "CUBICSPLINE", None))
                     continue
                 # A constant channel needs only its two end samples, not the clip's grid.
                 constant = all(mode == "constant" for mode, _ in track["curves"])
@@ -952,7 +961,8 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                     values = [[-row[0], row[1], row[2]] for row in values]
                 stamps = [stamp - clip["start"] for stamp in samples] if constant else None
                 for node in targets:
-                    outputs.append((int(node), kind, values, stamps, "LINEAR"))
+                    outputs.append((int(node), kind, values, stamps, "LINEAR", euler and (
+                        euler[0], [part for row in euler[1] for part in row], track.get("rotationOrder", DEFAULT_EULER_ORDER))))
             # Unity may retain editor Euler and quaternion curves for the same
             # target. glTF permits one channel per node/property; prefer the
             # first authored quaternion track (editor order places it first).
@@ -960,14 +970,15 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             for node, kind, *rest in outputs:
                 unique.setdefault((node, kind), rest)
             outputs = [(node, kind, *rest) for (node, kind), rest in unique.items()]
-            outputs.extend((node, "weights", rows, None, "LINEAR") for node, rows in morph_outputs.items())
+            outputs.extend((node, "weights", rows, None, "LINEAR", None) for node, rows in morph_outputs.items())
             visibility_tracks = _merge_visibility(visibility_tracks, deadline)
             channels = len(outputs) + len(visibility_tracks)
             if used_channels + channels > MAX_CHANNELS:
                 raise AnimationError("The supplied animations exceed the preview channel limit.")
-            frames = sum(len(times if stamps is None else stamps) for _, _, _, stamps, _ in outputs) + sum(
-                len(row["times"]) for row in visibility_tracks)
-            values = sum(len(row) for _, _, rows, _, _ in outputs for row in rows) + sum(
+            frames = sum(len(times if stamps is None else stamps) + (len(euler[0]) if euler else 0)
+                         for _, _, _, stamps, _, euler in outputs) + sum(len(row["times"]) for row in visibility_tracks)
+            values = sum(len(row) for _, _, rows, _, _, _ in outputs for row in rows) + sum(
+                len(euler[1]) * 3 for *_, euler in outputs if euler) + sum(
                 len(row["values"]) + 5 * len(row.get("sourceScalarKeys", ())) for row in visibility_tracks)
             if used_frames + frames > MAX_KEYFRAMES or used_values + values > MAX_VALUES:
                 raise AnimationError("The supplied animations exceed the mobile preview keyframe limit.")
@@ -983,7 +994,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                 suffix += 1
             animation = {"name": exported_name, "samplers": [], "channels": [],
                          "extras": {"loop": clip["loop"], "sourceSampling": clip["sampling"]}}
-            for node, kind, rows, stamps, interpolation in outputs:
+            for node, kind, rows, stamps, interpolation, euler in outputs:
                 if stamps is None:
                     if grid_accessor is None:
                         grid_accessor = _attribute(glb, [stamp - clip["start"] for stamp in times], "SCALAR", accessors, bounds=True)
@@ -995,6 +1006,12 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                 sampler = len(animation["samplers"])
                 animation["samplers"].append({"input": input_accessor, "output": accessor, "interpolation": interpolation})
                 animation["channels"].append({"sampler": sampler, "target": {"node": node, "path": kind}})
+                if euler:
+                    # Raw Unity Euler degrees as CUBICSPLINE rows (in, value, out), before mirroring.
+                    animation["extras"].setdefault("unityEuler", []).append({
+                        "channel": len(animation["channels"]) - 1, "rotationOrder": euler[2],
+                        "input": _attribute(glb, euler[0], "SCALAR", accessors, bounds=True),
+                        "output": _attribute(glb, euler[1], "VEC3", accessors)})
             index = len(glb.doc.setdefault("animations", [])) if outputs else None
             if outputs:
                 glb.doc["animations"].append(animation)

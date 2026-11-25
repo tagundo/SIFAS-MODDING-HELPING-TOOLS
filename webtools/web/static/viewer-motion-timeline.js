@@ -21,7 +21,7 @@
   // glTF loader marks their interpolant factory; such a track's values hold an in-tangent, a value and
   // an out-tangent per key, so its sample is a third of getValueSize().
   function cubicTrack(track) { return !!(track && track.createInterpolant && track.createInterpolant.isInterpolantFactoryMethodGLTFCubicSpline); }
-  function trackValueSize(track) { return cubicTrack(track) ? track.getValueSize() / 3 : track.getValueSize(); }
+  function trackValueSize(track) { return track && track.unityEuler ? 4 : cubicTrack(track) ? track.getValueSize() / 3 : track.getValueSize(); }
   // Unity evaluates the four rotation components as separate cubics and the client's transforms hold
   // the normalized result (the GL 3.12.0 runtime dump's localRotation is unit length to 1e-7 where the
   // raw component cubic is 7e-4 off). r128 does not normalize a CUBICSPLINE quaternion, so every
@@ -47,6 +47,67 @@
       });
     });
     return animations;
+  }
+  // An animated Euler rotation (Transform attribute 4) is three cubics the client converts to a
+  // quaternion every frame: unity_euler_quaternion in model_animation.py (q = qc * qb * qa for the
+  // rotation order's axes a, b, c), then the glTF mirror (x, -y, -z, w). The GLB's quaternion channel is
+  // a 60 Hz LINEAR approximation; the clip extras carry the exact Euler cubic, which replaces that track.
+  var EULER_ORDERS = ["xyz", "xzy", "yzx", "yxz", "zxy", "zyx"];
+  function eulerQuaternion(degrees, order, out) {
+    var axes = EULER_ORDERS[order] || EULER_ORDERS[4], x = 0, y = 0, z = 0, w = 1;
+    for (var step = 0; step < 3; step += 1) {
+      var axis = "xyz".indexOf(axes[step]), half = degrees[axis] * Math.PI / 360, s = Math.sin(half), c = Math.cos(half);
+      var ax = axis === 0 ? s : 0, ay = axis === 1 ? s : 0, az = axis === 2 ? s : 0;
+      // A later axis applies on the left: q = axis * q.
+      var nx = c * x + ax * w + ay * z - az * y, ny = c * y - ax * z + ay * w + az * x, nz = c * z + ax * y - ay * x + az * w, nw = c * w - ax * x - ay * y - az * z;
+      x = nx; y = ny; z = nz; w = nw;
+    }
+    var length = Math.sqrt(x * x + y * y + z * z + w * w) || 1;
+    out[0] = x / length; out[1] = -y / length; out[2] = -z / length; out[3] = w / length;
+    return out;
+  }
+  function eulerInterpolant(times, values, order, result) {
+    var degrees = [0, 0, 0], last = times.length - 1;
+    var interpolant = { parameterPositions: times, sampleValues: values, valueSize: 4, settings: null,
+      resultBuffer: result || new Float64Array(4) };
+    interpolant.evaluate = function (time) {
+      var index = 0, high = last;
+      if (!(time > times[0])) index = -1;
+      else if (time >= times[last]) index = -2;
+      else {
+        while (index < high - 1) { var middle = (index + high) >> 1; if (times[middle] <= time) index = middle; else high = middle; }
+      }
+      for (var axis = 0; axis < 3; axis += 1) {
+        if (index < 0) { degrees[axis] = values[9 * (index === -1 ? 0 : last) + 3 + axis]; continue; }
+        var span = times[index + 1] - times[index], s = (time - times[index]) / span, s2 = s * s, s3 = s2 * s;
+        degrees[axis] = (2 * s3 - 3 * s2 + 1) * values[9 * index + 3 + axis] + (s3 - 2 * s2 + s) * span * values[9 * index + 6 + axis] +
+          (-2 * s3 + 3 * s2) * values[9 * index + 12 + axis] + (s3 - s2) * span * values[9 * index + 9 + axis];
+      }
+      return eulerQuaternion(degrees, order, this.resultBuffer);
+    };
+    return interpolant;
+  }
+  function loadUnityEuler(gltf) {
+    var parser = gltf && gltf.parser, definitions = parser && parser.json && parser.json.animations, THREE = global.THREE;
+    if (!Array.isArray(definitions) || !Array.isArray(gltf.animations)) return Promise.resolve(gltf);
+    return Promise.all(definitions.map(function (definition, index) {
+      var rows = definition && definition.extras && definition.extras.unityEuler, clip = gltf.animations[index];
+      if (!Array.isArray(rows) || !clip) return null;
+      return Promise.all(rows.map(function (row) {
+        var channel = definition.channels && definition.channels[row.channel];
+        if (!channel || !channel.target || channel.target.path !== "rotation" || !Number.isInteger(row.input) || !Number.isInteger(row.output)) return null;
+        return Promise.all([parser.getDependency("node", channel.target.node), parser.getDependency("accessor", row.input),
+          parser.getDependency("accessor", row.output)]).then(function (loaded) {
+          var name = (loaded[0].name ? loaded[0].name : loaded[0].uuid) + ".quaternion", times = loaded[1].array, values = loaded[2].array;
+          var position = clip.tracks.findIndex(function (track) { return track.name === name; });
+          if (position < 0 || values.length !== 9 * times.length || !times.length) return;
+          var track = new THREE.QuaternionKeyframeTrack(name, times, values), order = row.rotationOrder;
+          track.unityEuler = true;
+          track.createInterpolant = function (result) { return eulerInterpolant(this.times, this.values, order, result); };
+          clip.tracks[position] = track;
+        });
+      }));
+    })).then(function () { return gltf; });
   }
   function timing(source) {
     source = source || {};
@@ -991,5 +1052,6 @@
     };
   }
   global.ViewerGaze = { create: createGaze, axes: gazeAxes };
-  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve, prepareAnimations: prepareAnimations, trackValueSize: trackValueSize };
+  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve, prepareAnimations: prepareAnimations, trackValueSize: trackValueSize,
+    loadUnityEuler: loadUnityEuler };
 }(window));

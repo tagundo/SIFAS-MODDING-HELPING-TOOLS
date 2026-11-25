@@ -536,6 +536,34 @@ class AnimationTests(unittest.TestCase):
                     self.assertEqual(rows[stamps.index(f32(.5)) - 1][0], 0., "held until the stepped key")
                     self.assertEqual(rows[stamps.index(f32(.5))][0], -1.)
 
+    def test_euler_rotation_keeps_the_linear_quaternion_and_carries_its_exact_cubic(self):
+        curves = {0: [(0, 10, 0, 90), (.4, 40, 60, 60), (1, -20, 0, 0)], 1: [(0, -30, 0, 0), (.55, 25, 120, 120), (1, 5, 0, 0)],
+                  2: [(0, 5, 0, -40), (.3, -15, 30, 30), (.8, 35, 80, 80), (1, 0, 0, 0)]}
+        frames = self.hermite_frames(curves)
+        stepped = words([(-3.4e38, [(index, (0, 0, 0, 0)) for index in range(3)]), (0, [(index, (0, 0, 0, 0)) for index in range(3)]),
+                         (f32(.5), [(1, (0, 0, 0, 30))]), (math.inf, [])])
+        for data, exact in ((frames, True), (stepped, False)):
+            tree = clip([binding(1, 4, custom=0)], stream={"curveCount": 3, "data": words(data) if exact else data}, duration=1.)
+            glb = builder()
+            animation.append_animations(scene([tree]), glb, {1: 1})
+            exported = glb.doc["animations"][0]
+            self.assertEqual(exported["channels"][0]["target"]["path"], "rotation")
+            self.assertEqual(exported["samplers"][0]["interpolation"], "LINEAR")
+            with self.subTest(exact=exact):
+                if not exact:
+                    self.assertNotIn("unityEuler", exported["extras"], "a stepped Euler key keeps only the grid")
+                    continue
+                row, = exported["extras"]["unityEuler"]
+                self.assertEqual((row["channel"], row["rotationOrder"]), (0, 0))
+                stamps = [item[0] for item in values(glb, row["input"])]
+                self.assertEqual(stamps, sorted({f32(key[0]) for keys in curves.values() for key in keys}))
+                rows = values(glb, row["output"])
+                for step in range(1, 200):
+                    time = step / 200 + 1 / 7919
+                    if time < 1:
+                        for actual, axis in zip(hermite(stamps, rows, time), range(3)):
+                            self.assertAlmostEqual(actual, unity_streamed(frames, axis, time), delta=2e-4, msg="raw Unity degrees")
+
     def test_single_stamp_pose_clip_exports_one_cubic_key(self):
         frames = self.hermite_frames({0: [(0, .1, 0, 0)], 1: [(0, .2, 0, 0)], 2: [(0, .3, 0, 0)], 3: [(0, .9, 0, 0)]})
         tree = clip([binding(1, 2)], stream={"curveCount": 4, "data": words(frames)}, duration=0., name="Pose")

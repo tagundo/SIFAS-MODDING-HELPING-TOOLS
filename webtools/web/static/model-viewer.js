@@ -1789,6 +1789,7 @@
       var gltf = await new Promise(function (resolve, reject) {
         new window.THREE.GLTFLoader().parse(data, "", resolve, reject);
       });
+      if (window.ViewerMotionTimeline && window.ViewerMotionTimeline.loadUnityEuler) await window.ViewerMotionTimeline.loadUnityEuler(gltf);
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) {
         disposeObject(gltf.scene); return;
       }
