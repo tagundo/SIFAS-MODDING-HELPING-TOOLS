@@ -388,7 +388,9 @@
     // _OutlineStencilComp: 3 (Equal, the outline is kept over stencil-1 member
     // pixels) while the rim is lit, 8 (Always) otherwise. The stencil follows
     // the rim the material draws, so a rim switched off here (setRimlight)
-    // draws as intensity 0 and keeps Always.
+    // draws as intensity 0 and keeps Always. LivePropRimlight inherits
+    // ApplyEnable (0x2f6c074) for every material it owns, so a member prop
+    // (AS/MemberProp, whose rim is always evaluated) follows the same rule.
     function liveOutlineStencil(pair) {
       return rimlightEnabled && pair.uniforms.uRimglightIntensity.value > 0 ? 3 : 8;
     }
@@ -815,7 +817,7 @@
           // BaseLight and Member Rim Light write their current values.
           var depthRim = pair.main.userData.mvStageMemberDepthRim;
           if (depthRim) depthRim.value = finite(rim?.intensity, 0);
-          if (liveMember) setOutlineStencil(pair, liveOutlineStencil(pair));
+          if (liveMember || memberProp) setOutlineStencil(pair, liveOutlineStencil(pair));
         });
       },
       // MemberCheekBase on BodyPartManager.headMaterial: Initialize -> ResetAll

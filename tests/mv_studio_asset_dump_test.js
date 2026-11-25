@@ -55,4 +55,17 @@ assert.deepEqual(owners.get(shaft), [shaft]);
 assert.equal(D.runtimeObject(area), true);
 assert.equal(D.runtimeObject(glbMesh), false);
 
-console.log("MV asset dump: runtime renderer owners and uTextureST spaces of the editor shaders.");
+
+// SifasMaterial's AS/MemberProp main pass always evaluates its rim (no SIFAS_RIMLIGHT define);
+// an AS/Member pass evaluates it only with the define.
+function sifas(shader, defines = {}) {
+  const material = new T.ShaderMaterial({ vertexShader: "void main() {}", fragmentShader: "void main() {}", defines,
+    uniforms: { uRimglightIntensity: { value: .3 } } });
+  material.userData.sifas = { version: 1, shader };
+  return D.memberUniforms(material);
+}
+assert.equal(sifas("AS/MemberProp").rimlightEvaluated, true);
+assert.equal(sifas("AS/Member").rimlightEvaluated, false);
+assert.equal(sifas("AS/Member", { SIFAS_RIMLIGHT: 1 }).rimlightEvaluated, true);
+
+console.log("MV asset dump: runtime renderer owners, uTextureST spaces and rim evaluation of the editor shaders.");

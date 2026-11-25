@@ -279,6 +279,34 @@ class LoadGamePropCoverageTests(unittest.TestCase):
             ("ActivationTrack", coverage.RENDERED, "Performer prop visibility."): 1})
         self.preview.assert_called_once()
 
+    def test_each_member_merges_its_own_prop_skeleton(self):
+        # LiveCoreMember.Initialize merges <ske_*>/Member<N> into member N, whatever
+        # prop the preview can draw; another slot's skeleton never reaches it.
+        from webtools.core import mv_studio_props
+        nodes = {1: [{"path": "Reference", "position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]}],
+                 2: [{"path": "Other", "position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]}]}
+        read = []
+        skeleton = patch.object(mv_studio_props, "skeleton",
+                                side_effect=lambda path, deadline: read.append(path.read_bytes()) or nodes).start()
+        calls = []
+
+        def preview(path, **options):
+            calls.append(options)
+            return "/api/mv-studio/media/" + "a" * 32 + ".glb", {}
+
+        patch.object(self.mv_studio, "_preview", side_effect=preview).start()
+        self.mv_studio.load_game(self.root, region="gl", platform="ios", live_id=1, asset_id=2, language="en")
+        skeleton.assert_called_once()
+        self.assertEqual(read, [b"props"])
+        actor, = [options for options in calls if options.get("performer")]
+        self.assertEqual(actor["prop_skeleton"], nodes[1])
+        # Without a prop bundle nothing is merged.
+        del self.selection["stage"]["props"]
+        calls.clear()
+        self.mv_studio.load_game(self.root, region="gl", platform="ios", live_id=1, asset_id=2, language="en")
+        actor, = [options for options in calls if options.get("performer")]
+        self.assertEqual(actor["prop_skeleton"], ())
+
     def test_stage_effect_shadow_prefab_failure_is_reported(self):
         # The stage effect preview warns that its member-shadow prefabs were not exported.
         self.selection["stage"]["effect"] = {"table": "stage_effect", "asset": "effect", "available": True}
