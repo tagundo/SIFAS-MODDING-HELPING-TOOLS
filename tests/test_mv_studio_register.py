@@ -277,6 +277,18 @@ def wav_bytes(frames, *, rate=44100, channels=2, bits=16):
             struct.pack("<I", len(data)) + data)
 
 
+def opened_song(song):
+    """source.registeredSong as a game import of the registered ``song`` records it (mv_studio_game)."""
+    return {"revision": song["revision"], "updatedAt": song["updatedAt"], "templateLiveId": song["templateLiveId"]}
+
+
+@contextmanager
+def store_clock(seconds):
+    """The Elichika store's update time (int(time.time()) in mv_studio_manage) fixed at ``seconds``."""
+    with mock.patch.object(mv_studio_manage, "time", type("Clock", (), {"time": staticmethod(lambda: seconds)})):
+        yield
+
+
 class FakeJob:
     def __init__(self):
         self.events, self.cancel_event = [], threading.Event()
@@ -538,6 +550,30 @@ class NormalizeTests(unittest.TestCase):
         shifted = register.shift_beat(segments, 0.5)
         self.assertEqual(shifted["segments"], [{"bpm": 120.0, "startSample": 0}, {"bpm": 90.0, "startSample": 22050}])
         self.assertIsNone(register.shift_beat({"bpm": "x"}, 0))
+
+
+class SourceSongTests(unittest.TestCase):
+    """register._same_song: is the song now under a project's source ID the one it was opened from?"""
+
+    def test_updates_keep_the_song_and_a_later_song_under_the_id_is_another(self):
+        opened = {"revision": 2, "updatedAt": 1000, "templateLiveId": 21}
+        song = lambda revision, updated, template=21: {"revision": revision, "updatedAt": updated,  # noqa: E731
+                                                       "templateLiveId": template}
+        for current, expected in ((song(2, 1000), True), (song(3, 1060), True), (song(9, 1000), True),
+                                  (song(2, 1060), False), (song(1, 1060), False), (song(1, 1000), False),
+                                  (song(3, 1060, template=22), False), (song(2, 1000, template=22), False)):
+            with self.subTest(current=current):
+                self.assertIs(register._same_song(opened, current), expected)
+        # Rows from before the store's revisions: revision 0 and no update time.
+        self.assertTrue(register._same_song({"revision": 0, "updatedAt": None, "templateLiveId": 21},
+                                            {"revision": 0, "updatedAt": None, "templateLiveId": 21}))
+        self.assertTrue(register._same_song({"revision": 0, "updatedAt": None, "templateLiveId": 21}, song(1, 1060)))
+        # Projects opened before the song was recorded, or with a damaged record, follow the ID.
+        for opened in (None, "song", {}, {"revision": "2", "updatedAt": 1000, "templateLiveId": 21},
+                       {"revision": 2, "updatedAt": 1000.5, "templateLiveId": 21},
+                       {"revision": 2, "updatedAt": 1000, "templateLiveId": 0}, {"revision": -1, "templateLiveId": 21}):
+            with self.subTest(opened=opened):
+                self.assertTrue(register._same_song(opened, song(1, 2000, template=22)))
 
 
 class JacketTests(Case):
@@ -851,7 +887,7 @@ class RegisterJobTests(Case):
         song = mv_studio_live.describe_mv_song(self.root, region="gl", live_id=live_id)
         raw = register._registered_timelines(self.root, song)[platform]
         source = {"kind": "game", "region": "gl", "platform": platform, "liveId": live_id, "assetId": song["assetId"],
-                  "mvOnly": True, "registered": True}
+                  "mvOnly": True, "registered": True, "registeredSong": opened_song(song)}
         return self.project(platform=platform, source=source, tracks=fake_parse(raw, "reopen")["tracks"],
                             native_bytes=raw)
 
@@ -964,6 +1000,74 @@ class RegisterJobTests(Case):
         with mock.patch.object(mv_studio_live, "describe_mv_song", side_effect=ValueError("The game catalog is busy.")):
             with self.assertRaisesRegex(ValueError, "busy"):
                 register.plan(self.root, listed)
+
+    def test_a_song_that_took_a_removed_source_songs_id_is_not_the_source(self):
+        keep = {"jacket": {"kind": "keep"}, "audio": {"kind": "keep"}}
+        with store_clock(1_800_000_000):
+            first, _ = self.run_job(self.request(self.edited(self.project())))
+        live_id = first.song()["song"]["liveId"]
+        reopened = self.reopened(live_id)
+        self.assertEqual(reopened["source"]["registeredSong"],
+                         {"revision": 1, "updatedAt": 1_800_000_000, "templateLiveId": 21})
+        unkept = copy.deepcopy(reopened)
+        del unkept["source"]["registeredSong"]
+        # An update, here from another project of the same base MV, keeps it the song the project was opened from.
+        with store_clock(1_800_000_060):
+            self.run_job(self.request(self.edited(self.project(), keyframe=False, timing=True), mode="update",
+                                      liveId=live_id, **keep))
+        self.assertEqual(register.plan(self.root, reopened)["target"], live_id)
+        reopened_later = self.reopened(live_id)
+        self.assertEqual(reopened_later["source"]["registeredSong"]["revision"], 2)
+        self.remove(live_id)
+        # Another project of the same base MV registers a new song: the store gives it the removed song's ID.
+        with store_clock(1_800_000_120):
+            other, _ = self.run_job(self.request(self.edited(self.project(), keyframe=False), title="다른 곡"))
+        self.assertEqual(other.song()["song"]["liveId"], live_id)
+        # Opened at revision 1 (same revision, earlier update) and at revision 2 (a later revision): both are removed.
+        for project in (reopened, reopened_later):
+            plan = register.plan(self.root, project)
+            self.assertEqual((plan["base"], plan["song"], plan["targets"], plan["blocked"]),
+                             (None, None, [], [{"message": register.SOURCE_REMOVED}]))
+            with self.assertRaisesRegex(ValueError, "was removed"):
+                self.run_job(self.request(project, mode="update", liveId=live_id, **keep))
+        self.assertEqual(self.songs()[0]["title"], "다른 곡")
+        # A project opened before the song's identity was recorded follows the ID as before.
+        self.assertEqual(register.plan(self.root, unkept)["target"], live_id)
+        # The same revision and update time, another base MV: not the song the project was opened from.
+        opened_other = self.reopened(live_id)
+        self.remove(live_id)
+        base22 = {"kind": "game", "region": "gl", "platform": "android", "liveId": 22, "assetId": 2201, "mvOnly": False,
+                  "registered": False}
+        with store_clock(1_800_000_120):
+            third, _ = self.run_job(self.request(self.project(source=base22, native_bytes=self.local["tl2201"]),
+                                                 title="세 번째 곡"))
+        song = third.song()["song"]
+        self.assertEqual((song["liveId"], song["revision"], song["updatedAt"], song["templateLiveId"]),
+                         (live_id, 1, 1_800_000_120, 22))
+        self.assertEqual(register.plan(self.root, opened_other)["blocked"], [{"message": register.SOURCE_REMOVED}])
+
+    def test_a_game_import_records_the_registered_song_it_opens(self):
+        from webtools.core import mv_studio_game
+        with store_clock(1_800_000_000):
+            job, _ = self.run_job(self.request(self.edited(self.project())))
+        song = job.song()["song"]
+        with closing(sqlite3.connect(self.root / "assets/db/gl/masterdata.db")) as master:
+            self.assertEqual(mv_studio_game._registered_song(master, song["liveId"]), opened_song(song))
+            self.assertEqual(opened_song(song), {"revision": 1, "updatedAt": 1_800_000_000, "templateLiveId": 21})
+            self.assertIsNone(mv_studio_game._registered_song(master, 21), "A stock song is not registered")
+        with closing(sqlite3.connect(":memory:")) as empty:
+            self.assertIsNone(mv_studio_game._registered_song(empty, song["liveId"]), "No MV Studio songs table")
+            # A first-version songs table: no revisions yet.
+            empty.execute("CREATE TABLE _elichika_mv_studio_song (live_id INTEGER PRIMARY KEY, source_live_id INTEGER "
+                          "NOT NULL, asset_3d_id INTEGER NOT NULL, title TEXT NOT NULL)")
+            empty.execute("INSERT INTO _elichika_mv_studio_song VALUES (93000, 21, 9300001, 'old')")
+            self.assertEqual(mv_studio_game._registered_song(empty, 93000),
+                             {"revision": 0, "updatedAt": None, "templateLiveId": 21})
+
+    def remove(self, live_id):
+        review = register.remove_plan(self.root, region="gl", live_id=live_id)
+        register.run_remove(FakeJob(), self.root, register.validate_remove(
+            {"region": "gl", "liveId": live_id, "reviewToken": review["reviewToken"]}))
 
     def test_a_plan_made_before_an_edit_cannot_drop_the_edit(self):
         project = self.project()
@@ -1712,7 +1816,7 @@ class RealSampleUpdateTests(Case):
         # Open it from the songs list: the registered Android timeline, imported again.
         reopened = self.imported(registered["android"], {
             "kind": "game", "region": "gl", "platform": "android", "liveId": song["liveId"], "assetId": song["assetId"],
-            "mvOnly": True, "registered": True})
+            "mvOnly": True, "registered": True, "registeredSong": opened_song(song)})
         self.assertEqual(self.bloom(reopened)["values"]["intensity"], struct.unpack("<f", struct.pack("<f", 0.7))[0])
         plan = register.plan(self.root, reopened)
         self.assertNotEqual(plan["timeline"]["fingerprints"], song["fingerprints"], "The values came back as float32")

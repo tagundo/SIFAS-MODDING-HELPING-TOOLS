@@ -152,17 +152,24 @@ async function nativeTimeline(page, server, panel, posted, log) {
   return song;
 }
 
+// source.registeredSong as a game import of the registered song records it.
+const openedSong = (song) => ({ revision: song.revision, updatedAt: song.updatedAt, templateLiveId: song.templateLiveId });
+
 // A project opened from a registered song, then that song removed through the panel: the plan says
-// the song is gone and offers a stock base MV (no stale target, no failed check).
+// the song is gone and offers a stock base MV (no stale target, no failed check), also once another
+// song takes the removed song's ID.
 async function removedSource(page, server, panel, song) {
   const failed = [];
+  let checked = 0;
   const listener = (response) => {
     if (response.status() >= 400 && /\/api\/mv-studio\/(registration-plan|songs)/.test(response.url())) failed.push(response.url());
+    if (response.ok() && /\/api\/mv-studio\/registration-plan/.test(response.url())) checked += 1;
   };
   page.on('response', listener);
   await page.unroute('**/api/mv-studio/game?*');
+  song = (await songsNow(page)).find((item) => item.liveId === song.liveId);
   const source = { kind: 'game', region: 'gl', platform: 'android', liveId: song.liveId, assetId: song.assetId, mvOnly: true,
-    registered: true };
+    registered: true, registeredSong: openedSong(song) };
   await page.route('**/api/mv-studio/game?*', (route) => route.fulfill({ json: { ...server.nativeProject, name: song.title, source } }));
   await page.locator('#mv-import-game').click();
   await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
@@ -170,6 +177,15 @@ async function removedSource(page, server, panel, song) {
   await page.waitForFunction((id) => MVStudio.getState().project?.source?.liveId === id, song.liveId);
   if (!(await panel.evaluate((node) => node.open))) await panel.locator(':scope > summary').click();
   await page.waitForFunction((id) => document.querySelector('#mv-register-target')?.value === String(id), song.liveId);
+  // An update from this project: its source names the song's new revision from then on.
+  await settled(page);
+  await page.locator('#mv-register-title').fill('네이티브 MV 3');
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-result').filter({ hasText: '업데이트했습니다' }).waitFor({ timeout: 60000 });
+  const updated = (await songsNow(page)).find((item) => item.liveId === song.liveId);
+  assert.equal(updated.revision, song.revision + 1);
+  assert.deepEqual(await page.evaluate(() => MVStudio.getState().project.source.registeredSong), openedSong(updated));
+  await settled(page);
   if (!(await page.locator('#mv-register-songs').evaluate((node) => node.open))) await page.locator('#mv-register-songs > summary').click();
   const row = page.locator(`[data-mv-song="${song.liveId}"]`);
   await row.locator('[data-mv-song-action=remove]').click();
@@ -201,6 +217,37 @@ async function removedSource(page, server, panel, song) {
   assert(await page.locator('#mv-register-submit').isDisabled());
   assert.deepEqual(failed, [], 'The check answers a removed source without an error');
   await shot(page, panel, 'register-source-removed-ko.png');
+  // Another project registers a new song of the same base MV: the store gives it the removed song's
+  // ID. The project opened from the removed song still asks for a stock base and offers no update.
+  const other = await page.evaluate(async (project) => {
+    const body = { mode: 'new', project, title: '다른 곡', credit: null, jacket: { kind: 'base' }, audio: { kind: 'base' },
+      platforms: ['android', 'ios'], download: false, unbaked: [] };
+    const receipt = await (await fetch('/api/mv-studio/register-job?lang=ko', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    if (!receipt.job_id) return receipt;
+    return new Promise((resolve) => {
+      const events = new EventSource('/api/jobs/' + encodeURIComponent(receipt.job_id) + '/events');
+      events.onmessage = (raw) => {
+        const event = JSON.parse(raw.data);
+        if (event.type === 'done') { events.close(); resolve(event); }
+      };
+    });
+  }, server.nativeProject);
+  assert.equal(other.status, 'done', JSON.stringify(other));
+  const reused = (await songsNow(page)).find((item) => item.title === '다른 곡');
+  assert.equal(reused.liveId, song.liveId, 'The store reuses the removed song ID');
+  const before = checked;
+  await moveFirstClip(page, 0.75);
+  await page.waitForFunction(() => MVStudio.getState().history.undo > 0);
+  for (let tries = 0; checked === before && tries < 600; tries += 1) await page.waitForTimeout(50);
+  assert(checked > before, 'The edit is checked again');
+  // The panel shows that check once it is no longer checking.
+  await page.waitForFunction(() => !document.querySelector('#mv-panel-register').textContent.includes('게임 반영 점검 중…'));
+  await page.locator('#mv-register-plan').filter({ hasText: '이 프로젝트를 연 등록 곡이 삭제되었습니다.' }).waitFor({ timeout: 30000 });
+  assert.equal(await page.locator('#mv-register-target').count(), 0, 'The song that took the ID is not offered as an update');
+  assert.equal(await page.locator('#mv-register-base').textContent(), '선택 안 함');
+  assert.deepEqual(failed, []);
+  await shot(page, panel, 'register-reused-id-ko.png');
   page.off('response', listener);
 }
 

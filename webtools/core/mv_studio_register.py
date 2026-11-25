@@ -271,14 +271,35 @@ def _load(repo_root, descriptor, *, download, deadline=None):
 
 # ---------------------------------------------------------------- base MV
 
-def _registered_source(repo_root, live, region, live_id):
-    """The registered song a project was opened from, or None when it was removed since."""
+def _registered_source(repo_root, live, region, live_id, opened=None):
+    """The registered song a project was opened from, or None when it was removed since, also when
+    another song took its ID (``opened`` is the project's source.registeredSong)."""
     try:
-        return live.describe_mv_song(repo_root, region=region, live_id=live_id)
+        song = live.describe_mv_song(repo_root, region=region, live_id=live_id)
     except ValueError:
         if any(song.get("liveId") == live_id for song in live.list_mv_songs(repo_root, region=region)):
             raise
         return None
+    return song if _same_song(opened, song) else None
+
+
+def _same_song(opened, song):
+    """Whether ``song`` is still the song a project was opened from. ``opened`` is that song's
+    {revision, updatedAt, templateLiveId} at the time (projects opened before it was kept have none).
+
+    The store reuses the IDs of removed songs. An update keeps a song's base song and raises its
+    revision; a song registered later under the same ID starts again at revision 1, with a later
+    update time, and may have another base song."""
+    if not isinstance(opened, dict):
+        return True
+    revision, updated, template = opened.get("revision"), opened.get("updatedAt"), opened.get("templateLiveId")
+    if (type(revision) is not int or revision < 0 or (updated is not None and type(updated) is not int)
+            or not _identity(template)):
+        return True
+    if song.get("templateLiveId") != template:
+        return False
+    current = song.get("revision") or 0
+    return current > revision or (current == revision and song.get("updatedAt") == updated)
 
 
 def _base(repo_root, project, template, live):
@@ -289,7 +310,7 @@ def _base(repo_root, project, template, live):
             and _identity(source.get("assetId"))):
         region = source["region"]
         if source.get("registered") is True:
-            song = _registered_source(repo_root, live, region, source["liveId"])
+            song = _registered_source(repo_root, live, region, source["liveId"], source.get("registeredSong"))
             if song is None:
                 # The project needs a stock base MV now; its own timeline is then a mod of that base.
                 if template is None:

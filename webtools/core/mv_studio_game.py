@@ -462,7 +462,8 @@ def resolve(repo_root, *, region, platform, live_id, asset_id, language="en", co
             raise ValueError("The selected game MV and stage are no longer available. Refresh the list.")
         song = master.execute("SELECT music_id,bgm_path,chorus_bgm_path,live_member_mapping_id,background_asset_path "
                               "FROM m_live WHERE live_id=?", ids[:1]).fetchone()
-        registered = bool(_rows(master, "SELECT 1 FROM _elichika_mv_studio_song WHERE live_id=?", ids[:1]))
+        registered_song = _registered_song(master, ids[0])
+        registered = registered_song is not None
         asset = master.execute("SELECT timeline,stage_effect_asset_path,live_prop_skeleton_asset_path,"
                                "quality_setitng_set_id,shader_variant_asset_path FROM m_live_3d_asset WHERE id=?", ids[1:]).fetchone()
         chosen = catalogs[0]
@@ -483,7 +484,25 @@ def resolve(repo_root, *, region, platform, live_id, asset_id, language="en", co
                   "userId": (deck or {}).get("userId"),
                   "saved": any(name in (deck or {}) for name in ("original", "custom"))}
     return dict(result, region=region, platform=platform, assetCatalog=chosen.name, registered=registered,
-                deck=deck_state)
+                **({"registeredSong": registered_song} if registered else {}), deck=deck_state)
+
+
+def _registered_song(master, live_id):
+    """The MV Studio song registered under ``live_id`` (Elichika's _elichika_mv_studio_song row), or None.
+
+    Its revision, last update and base song, as the store describes them: the store reuses the IDs
+    of removed songs, so a project opened from this song keeps them to tell it from a later song
+    registered under the same ID. Rows from before the store's revisions have revision 0."""
+    columns = _columns(master, "_elichika_mv_studio_song")
+    if not {"live_id", "source_live_id"} <= columns:
+        return None
+    fields = ["source_live_id"] + [name for name in ("revision", "updated_at") if name in columns]
+    rows = _rows(master, f"SELECT {','.join(fields)} FROM _elichika_mv_studio_song WHERE live_id=?", (live_id,))
+    if not rows:
+        return None
+    row = dict(zip(fields, rows[0]))
+    return {"revision": row.get("revision") or 0, "updatedAt": row.get("updated_at"),
+            "templateLiveId": row["source_live_id"]}
 
 
 def _cached_pack(extractor, root, name):

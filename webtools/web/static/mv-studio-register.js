@@ -313,7 +313,8 @@
 
   async function startJob(mode, title) {
     const plan = state.plan, controller = new AbortController(), current = state, revision = state.revision;
-    state.job = { controller, stage: "Preparing the project", index: 0, total: 1, id: null, events: null };
+    // project: this job registers the open project (not a songs-list action).
+    state.job = { controller, stage: "Preparing the project", index: 0, total: 1, id: null, events: null, project: true };
     state.error = "";
     state.result = state.removed = state.failed = null;
     draw();
@@ -395,6 +396,14 @@
           restart: event.restart, warnings: event.warnings || [] };
         const project = ctx.project();
         if (project && current === state) project.registration = { region: event.song.region, liveId: event.song.liveId };
+        // The project registered the song at its source's ID: an update of the song it was opened
+        // from, or a new song that took that removed song's ID. Later checks compare with this song.
+        const from = project && project.source;
+        if (current === state && current.job && current.job.project && from && from.registered === true &&
+            from.region === event.song.region && from.liveId === event.song.liveId && Number.isInteger(event.song.revision)) {
+          from.registeredSong = { revision: event.song.revision, updatedAt: event.song.updatedAt ?? null,
+            templateLiveId: event.song.templateLiveId };
+        }
         current.target = event.song.liveId;
         // The song now holds this jacket and audio: the next update keeps them unless changed again.
         current.jacket = current.jacketInfo = current.crop = null;

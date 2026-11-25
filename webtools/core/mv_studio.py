@@ -464,6 +464,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         source = {"kind": "game", "region": selected["region"], "platform": selected["platform"],
                   "liveId": selected["liveId"], "assetId": selected["assetId"], "mvOnly": selected.get("mvOnly", False),
                   "registered": selected.get("registered", False),
+                  # Which registered song this is (its revision and base): the store reuses removed songs' IDs.
+                  **({"registeredSong": selected["registeredSong"]} if selected.get("registeredSong") else {}),
                   # The deck tab / local player and every position's suit source, so a saved
                   # project or a frame capture says which player state dressed the members.
                   **mv_studio_suits.provenance(selected.get("deck"), selected.get("performers"))}
