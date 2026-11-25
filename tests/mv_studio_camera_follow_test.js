@@ -140,6 +140,24 @@ const constantPath = (count, point, yaw = null) => {
   const positions = new Float64Array(3 * count);
   for (let n = 0; n < count; n++) positions.set(point, 3 * n);
   return { count, positions, yaw: yaw === null ? null : new Float64Array(count).fill(yaw) };
+
+// Fixed angle (the default for new rigs): the camera keeps the preset direction and only moves
+// with the member; "look" (rigs saved before the field) turns toward the damped look-at point.
+{
+  const moving = { count: 121, positions: new Float64Array(363), yaw: null };
+  for (let n = 0; n < 121; n++) moving.positions.set([n * .02, 1.4, -n * .01], 3 * n);
+  const fresh = (fields) => F.normalizeRig({ ...JSON.parse(JSON.stringify(F.DEFAULTS)), id: 'rig-angle', start: 0, end: 2,
+    target: { slot: 1, part: 0 }, ...fields });
+  assert.equal(fresh({}).angle, 'fixed');
+  assert.equal(rigOf({}).angle, 'look', 'a rig saved without the field keeps looking at the member');
+  const fixed = F.evaluateRig(fresh({}), moving), look = F.evaluateRig(fresh({ angle: 'look' }), moving);
+  for (let n = 0; n < 121; n += 10) assert.deepEqual(Array.from(fixed.rotations.subarray(4 * n, 4 * n + 4)), Array.from(fixed.rotations.subarray(0, 4)));
+  assert.deepEqual(Array.from(fixed.positions), Array.from(look.positions), 'the angle setting never changes where the camera is');
+  assert(Math.abs(look.rotations[4 * 120 + 1]) > 1e-3, 'look at member turns the camera');
+  const side = F.evaluateRig(fresh({ view: 'right' }), moving);
+  assert.deepEqual(Array.from(side.rotations.subarray(480, 484)), Array.from(side.rotations.subarray(0, 4)));
+}
+
 };
 const pathOf = (count, fn) => {
   const positions = new Float64Array(3 * count), yaw = new Float64Array(count);

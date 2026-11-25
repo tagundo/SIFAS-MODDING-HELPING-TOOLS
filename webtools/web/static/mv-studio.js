@@ -1843,10 +1843,25 @@
 
   function save() { return saveResult("save", "Saving MV project…", "MV project saved."); }
 
+  // "MV 3 · 특별 스테이지 · bg0018_02 · 3D 1012003": the slot in the client's MV stage list (or
+  // live-only 3D), the stage name, its scene (same-named stages differ there) and the 3D asset id.
+  function gameVariantLabel(variant) {
+    const parts = [variant.source === "mv" && variant.position ? format("MV stage {n}", { n: variant.position }) : t("Live 3D only"),
+      t(variant.label)];
+    if (variant.scene) parts.push(variant.scene);
+    parts.push("3D " + variant.id);
+    return parts.join(" · ");
+  }
+
+  function gameSongLabel(song) {
+    return `${song.title} (${song.id})` + (song.mvOnly ? " · " + t("MV only") : "") +
+      (song.inMvList === false ? " · " + t("Not in the MV list") : "");
+  }
+
   function syncVariants() {
     const song = songs.find((item) => text(item.id) === byId("mv-game-song").value);
     const variants = byId("mv-game-variant");
-    replaceOptions(variants, song && song.variants || [], variants.value);
+    replaceOptions(variants, (song && song.variants || []).map((variant) => ({ id: variant.id, label: gameVariantLabel(variant) })), variants.value);
     byId("mv-game-download").checked = false;
     byId("mv-game-load").disabled = !song || !variants.value || !!catalogRequest;
   }
@@ -1858,7 +1873,7 @@
     const query = foldSearch(byId("mv-game-search").value.trim());
     const select = byId("mv-game-song");
     songs = catalogIndex.filter((entry) => !query || entry.search.includes(query)).map((entry) => entry.song);
-    replaceOptions(select, songs.map((song) => ({ id: song.id, label: song.title + (song.mvOnly ? " · " + t("MV only") : "") })), select.value);
+    replaceOptions(select, songs.map((song) => ({ id: song.id, label: gameSongLabel(song) })), select.value);
     byId("mv-game-status").textContent = songs.length ? "" : t("No matching MVs.");
     syncVariants();
   }
@@ -1889,7 +1904,7 @@
         !player.dataset.chosen && players.length === 1 ? players[0].id : player.value, t("New player"));
       byId("mv-game-player-field").hidden = !players.length;
       catalogIndex = (Array.isArray(data.songs) ? data.songs : []).map((song) => ({ song,
-        search: foldSearch([song.id, song.title, ...(song.variants || []).flatMap((variant) => [variant.id, variant.label])].join("\n")) }));
+        search: foldSearch([song.id, song.title, ...(song.variants || []).flatMap((variant) => [variant.id, variant.label, t(variant.label), variant.scene || ""])].join("\n")) }));
       catalogRequest = null;
       filterCatalog();
     } catch (error) {

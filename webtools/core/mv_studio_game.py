@@ -113,7 +113,11 @@ def catalog(repo_root, *, region="", platform="android", language="en", search="
             by_song[live]["variants"].append({"id": asset, "label": label, "stageId": stage_id,
                                                "pickerStageId": picker_stage,
                                                "sceneName": scene, "position": position,
+                                               # bg0018_02_s1 -> bg0018_02: tells same-named stages apart.
+                                               "scene": re.sub(r"_s\d+$", "", scene) if isinstance(scene, str) else None,
                                                "source": "difficulty" if priority else "mv"})
+            # Only m_live_mv rows appear in the client's MV screen; the others are live (rhythm game) 3D.
+            by_song[live]["inMvList"] = by_song[live].get("inMvList", False) or not priority
     finally:
         if dictionary is not None:
             dictionary.close()

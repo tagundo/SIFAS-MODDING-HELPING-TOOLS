@@ -111,6 +111,9 @@ class MVGameCatalogTests(unittest.TestCase):
         self.assertEqual([(row["id"], row["mvOnly"]) for row in rows], [(12, True), (13, False)])
         self.assertEqual(rows[0]["variants"][0]["label"], "Stage & lights")
         self.assertEqual(rows[1]["variants"][0]["source"], "difficulty")
+        # The picker tells same-named stages apart and marks lives the client's MV screen lacks.
+        self.assertEqual([row.get("inMvList") for row in rows], [True, False])
+        self.assertEqual(rows[1]["variants"][0]["scene"], "scene_stage")
         self.assertEqual(self.selection(live=13)["stage"]["sceneName"], "scene_stage")
         with self.assertRaisesRegex(ValueError, "no longer available"):
             self.selection(live=14)

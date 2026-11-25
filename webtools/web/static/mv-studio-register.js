@@ -723,7 +723,8 @@
     let timer = 0;
     search.addEventListener("input", () => { picker.search = search.value; clearTimeout(timer); timer = setTimeout(loadCatalog, 300); });
     const song = make("select", null, { id: "mv-register-base-song" });
-    for (const item of picker.songs) song.append(new Option(`${item.title} (${item.id})`, String(item.id)));
+    for (const item of picker.songs) song.append(new Option(`${item.title} (${item.id})` +
+      (item.inMvList === false ? " · " + t("Not in the MV list") : ""), String(item.id)));
     if (picker.song != null) song.value = String(picker.song);
     song.addEventListener("change", () => {
       picker.song = Number(song.value);
@@ -733,7 +734,11 @@
     });
     const variant = make("select", null, { id: "mv-register-base-variant" });
     const chosen = picker.songs.find((item) => item.id === picker.song);
-    for (const item of chosen ? chosen.variants : []) variant.append(new Option(t(item.label), String(item.id)));
+    for (const item of chosen ? chosen.variants : []) {
+      const parts = [item.source === "mv" && item.position ? format("MV stage {n}", { n: item.position }) : t("Live 3D only"), t(item.label)];
+      if (item.scene) parts.push(item.scene);
+      variant.append(new Option([...parts, "3D " + item.id].join(" · "), String(item.id)));
+    }
     if (picker.variant != null) variant.value = String(picker.variant);
     variant.addEventListener("change", () => { picker.variant = Number(variant.value); });
     const use = button("Use this base MV", () => {
@@ -1202,6 +1207,7 @@
 
   // Every UI string of this module (English sources of webtools/i18n.py).
   const STRINGS = Object.freeze([
+    "MV stage {n}", "Live 3D only", "Not in the MV list",
     "Register as an MV-only song", "Update song", "Register as a new song", "Base MV", "Choose base MV", "Change",
     "Stage, choreography, props and members come from the base MV.", "Title", "Credit", "Leave empty to use the base song's credit.",
     "Jacket", "Choose image", "Choose jacket image", "Use the base jacket", "Keep the registered jacket",

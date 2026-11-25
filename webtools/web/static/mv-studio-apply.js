@@ -303,7 +303,8 @@
     const wrap = make("div", null, { class: "mv-apply-summary", id: "mv-apply-summary" });
     const target = plan.target, game = plan.game || {}, source = plan.source || {};
     wrap.append(make("p", format(target.kind === "song" ? "MV-only song: {title} ({id})" : "Game MV: {title} ({id})",
-      { title: target.title || target.liveId, id: target.liveId }) + (target.stage ? " · " + target.stage : ""), { id: "mv-apply-target" }));
+      { title: target.title || target.liveId, id: target.liveId }) + (target.stage ? " · " + target.stage : "") +
+      (target.kind !== "song" && target.assetId ? " · 3D " + target.assetId : ""), { id: "mv-apply-target" }));
     const inGame = game.state === "custom" ? format("In the game: MV Studio version {revision} ({date})", { revision: game.revision, date: date(game.updatedAt) })
       : t("In the game: the original MV");
     const loaded = source.state === "song" ? t("Loaded from: the registered song") : source.state === "custom" ?
