@@ -1,9 +1,9 @@
 /* MV Studio free camera views in the real workbench (Korean UI).
 
-   Synthetic game project (stage fixture model; two performers built from the same fixture: the
-   first one's head focus part is the animated Tip bone (node 3), so that member target moves
-   with time, the second has head, neck and hips points; a MainCamera AnimationTrack with one
-   dense 60 Hz shot):
+   Synthetic game project (stage fixture model; two performers with member-length names built
+   from the same fixture: the first one's head focus part is the animated Tip bone (node 3), so
+   that member target moves with time, the second has head, neck and hips points; a MainCamera
+   AnimationTrack with one dense 60 Hz shot):
    - the bar shows only with the free camera, in Korean, with the 3D model tab's view labels;
    - for the stage centre and for the member, each view button puts the free camera on that side
      of the target: the target projects to the screen centre and the camera's direction from the
@@ -94,11 +94,11 @@ function gameProject(local) {
     editableValues: ['clipIn', 'timeScale', 'preExtrapolationMode', 'postExtrapolationMode', 'preExtrapolationTime', 'postExtrapolationTime', 'keyframes'] };
   return {
     version: 1, name: 'Free camera MV', duration: 8, nativeTimeline: false, assets: local.assets, stage: local.stage, warnings: [], quality: {},
-    performers: [{ id: 'actor-1', label: 'Actor 1', position: 1, glb: local.stage.glb, transform: { position: [0, 0, 0] },
+    performers: [{ id: 'actor-1', label: 'Honoka Kousaka', position: 1, glb: local.stage.glb, transform: { position: [0, 0, 0] },
       rig: { focusParts: { 0: 3 } } },
     // Head, neck and hips focus points in Unity space: the member's point is the chest between
     // the neck and the hips, (-1.5, 1.15, 0.2) in three space.
-    { id: 'actor-2', label: 'Actor 2', position: 2, glb: local.stage.glb, transform: { position: [1.5, 0, 0] },
+    { id: 'actor-2', label: 'Kotori Minami', position: 2, glb: local.stage.glb, transform: { position: [1.5, 0, 0] },
       rig: { focusParts: { 0: { world: [1.5, 1.7, .3] }, 3: { world: [1.5, .9, .1] }, 4: { world: [1.5, 1.4, .3] } } } }],
     source: { kind: 'game', region: 'gl', platform: 'android', liveId: 79, assetId: 1 },
     tracks: [{ id: 'cam', kind: 'camera', label: 'CameraMotion/Camera1', nativeClass: 'AnimationTrack', binding: '/EntryPoint/Live/Cameras/MainCamera',
@@ -321,7 +321,7 @@ async function synthetic(browser, url) {
   assert.equal(await bar.getAttribute('aria-label'), '자유 카메라 시점');
   assert.deepEqual(await page.locator('[data-mv-freecam-view]').allTextContents(), LABELS_KO);
   assert.equal(await page.locator('[data-mv-freecam-view="front"]').getAttribute('title'), '관객석 쪽(멤버가 바라보는 쪽)에서 봅니다.');
-  assert.deepEqual(await page.locator('#mv-freecam-target option').allTextContents(), ['무대 중앙', '1 · Actor 1', '2 · Actor 2']);
+  assert.deepEqual(await page.locator('#mv-freecam-target option').allTextContents(), ['무대 중앙', '1 · Honoka Kousaka', '2 · Kotori Minami']);
   // A member's point is its chest, halfway between its neck and hips.
   const chest = await page.evaluate(() => window.probeCtx.scene().freeView.targetPoint('member:2'));
   assert(distance(chest, [-1.5, 1.15, .2]) < 1e-9, `the member's point is between its neck and hips (${chest})`);
