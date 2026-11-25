@@ -197,7 +197,8 @@
           } else if (event?.type === "error" && typeof event.error === "string" && event.error) {
             terminal = { error: event.error };
           } else if (onProgress && (event?.type === "plan" || event?.type === "progress")) {
-            onProgress(event);
+            // Showing progress must never fail the import itself.
+            try { onProgress(event); } catch (_) {}
           } else throw invalid();
         }
         scanned = buffer.length;
