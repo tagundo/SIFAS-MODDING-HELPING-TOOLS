@@ -32,8 +32,9 @@
   let settings, scene, project, selected, pending, gameImport, catalogRequest, catalogIndex = [], songs = [];
   let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
   let previewLoading = false, playheadNode, seekInput, timeOutput, lastReadout = -Infinity;
-  let hidden = [], assetKind = "stage", performerId = "", resizeObserver, timelineResizer, inspectorResizer;
+  let hidden = [], assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
   let lastGamePayload = null;
+  let inspectorResizer;
   // Runtime notes from the 3D preview of the open project (for example a
   // depth-of-field clip whose focus target the preview cannot find). They are
   // listed with the project's import notes and never saved into the project.
