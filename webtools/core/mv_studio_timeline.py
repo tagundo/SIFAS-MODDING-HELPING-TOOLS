@@ -1211,7 +1211,23 @@ def _rewrite_timeline(raw, original, revised):
 
     import hashlib
     untouched = {key: hashlib.sha256(obj.get_raw_data()).digest() for key, obj in objects.items() if key not in dirty}
-    edited_payloads = {key: objects[key].save_typetree(tree) for key, tree in dirty.items()}
+    # m_MuscleClipSize of a camera clip _write_camera rewrote (the only AnimationClips in dirty).
+    # Every inspected stock camera clip records it as its serialized size + 188 bytes, and a dense
+    # rewrite can grow a clip past it (a constant shot baked dense: so2036_2840f_2931f_camera,
+    # 2432 -> 4972 bytes against 2620). Unity allocates the muscle-clip blob with this size, so a
+    # clip that grew gets old value + growth + 64, rounded up to 16 (over-allocating is the safe
+    # direction; unverified on device); it is never shrunk. A uint32, so the length is kept.
+    camera_sizes = {key: len(objects[key].get_raw_data()) for key in dirty if objects[key].type.name == "AnimationClip"}
+
+    def save(key, tree):
+        payload = objects[key].save_typetree(tree)
+        growth = len(payload) - camera_sizes[key] if key in camera_sizes and "m_MuscleClipSize" in tree else 0
+        if growth > 0:
+            tree["m_MuscleClipSize"] = (int(tree["m_MuscleClipSize"]) + growth + 64 + 15) // 16 * 16
+            payload = objects[key].save_typetree(tree)
+        return payload
+
+    edited_payloads = {key: save(key, tree) for key, tree in dirty.items()}
     # The existing native timeline tools use Unity's LZ4 bundle container.
     # UnityPy's "original" only retains the first block's compression mode,
     # which can make mixed-compression stock timelines several times larger.
