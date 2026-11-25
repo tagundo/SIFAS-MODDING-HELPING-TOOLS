@@ -5,6 +5,7 @@ import os
 import struct
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +16,112 @@ from webtools.core import mv_studio_stage_particles, mv_studio_timeline
 _FIXTURE = os.environ.get("ELICHIKA_AION_PROP_FIXTURE")
 _HAND = "Reference/Move/Hips_Position/Hips/Spine/Spine1/Spine2/RightShoulder/RightArm/RightForeArm/RightHand"
 _TARGET = "/EntryPoint/Live/Members/ske_so2028/Member1/Model/" + _HAND + "/chp0001"
+
+
+def _identity(path):
+    return {"path": path, "position": [0., 0., 0.], "rotation": [0., 0., 0., 1.], "scale": [1., 1., 1.]}
+
+
+def _rig(paths):
+    """A RigBuilder holding primary bones at these paths (path "" is the prefab root)."""
+    import numpy as np
+    from webtools.core.model_rig import RigBuilder
+    rig = RigBuilder.__new__(RigBuilder)
+    rig.deadline, rig.node_bindings, rig.worlds = float("inf"), {}, {}
+    rig.glb = SimpleNamespace(doc={"nodes": [{"name": "Character"}]})
+    rig.bones = []
+    for path in paths:
+        node = len(rig.glb.doc["nodes"])
+        rig.glb.doc["nodes"].append({"name": path.rsplit("/", 1)[-1] or "Model"})
+        rig.bones.append({"node": node, "path": path, "sourceIndex": 0, "transformId": str(node)})
+        rig.worlds[node] = np.eye(4)
+        rig._binding(path, node)
+    return rig
+
+
+class MemberPropSkeletonMergeTests(unittest.TestCase):
+    """UnityObjectUtility.MergeHierarchy: name matches recurse, the rest keep their local TRS."""
+
+    def test_unmatched_nodes_move_below_their_matched_parent_with_authored_locals(self):
+        from zlib import crc32
+        hand = "Reference/RightHand"
+        rig = _rig(["", "Reference", hand, hand + "/RightHandIndex1"])
+        nodes = [_identity("Reference"), _identity(hand), _identity(hand + "/RightHandIndex1"),
+                 _identity(hand + "/chp0001"),
+                 {"path": hand + "/chp0001/Attach_01", "position": [.25, 0., 0.], "rotation": [0., .6, 0., .8],
+                  "scale": [1., 2., 1.]},
+                 _identity(hand + "/chp0001/Attach_01/Decor"), _identity("Member1_chp0007")]
+        merged = rig.merge_prop_skeleton(nodes)
+        self.assertEqual([rig.glb.doc["nodes"][node]["extras"]["originalName"] for node in merged],
+                         ["chp0001", "Attach_01", "Decor", "Member1_chp0007"])
+        bones = {bone["path"]: bone for bone in rig.bones}
+        # Matched names reuse the member's own bones; nothing is duplicated.
+        self.assertEqual(sum(bone["path"] == hand for bone in rig.bones), 1)
+        self.assertEqual(bones[hand + "/chp0001"]["parent"], bones[hand]["node"])
+        self.assertEqual(bones[hand + "/chp0001/Attach_01"]["parent"], bones[hand + "/chp0001"]["node"])
+        self.assertEqual(bones["Member1_chp0007"]["parent"], bones[""]["node"])
+        self.assertTrue(all(bones[path]["propSkeleton"] for path in (hand + "/chp0001", "Member1_chp0007")))
+        # SetParent(parent, false) keeps the authored local (mirrored into glTF space).
+        attach = rig.glb.doc["nodes"][bones[hand + "/chp0001/Attach_01"]["node"]]
+        self.assertEqual(attach["translation"], [-.25, 0., 0.])
+        self.assertEqual(attach["rotation"], [0., -.6, -0., .8])
+        self.assertEqual(attach["scale"], [1., 2., 1.])
+        self.assertIn(bones[hand + "/chp0001/Attach_01"]["node"],
+                      rig.glb.doc["nodes"][bones[hand + "/chp0001"]["node"]]["children"])
+        # The member's dance clips bind the merged nodes by the usual path hash.
+        for path in (hand + "/chp0001", hand + "/chp0001/Attach_01", hand + "/chp0001/Attach_01/Decor"):
+            self.assertEqual(model_animation._nodes(rig.node_bindings, crc32(path.encode())), [bones[path]["node"]])
+
+    def test_a_missing_bone_reparents_the_skeleton_branch_at_its_deepest_match(self):
+        rig = _rig(["", "Reference", "Reference/RightArm"])
+        nodes = [_identity("Reference"), _identity("Reference/RightArm"), _identity("Reference/RightArm/RightHand"),
+                 _identity("Reference/RightArm/RightHand/chp0001")]
+        merged = rig.merge_prop_skeleton(nodes)
+        bones = {bone["path"]: bone for bone in rig.bones}
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(bones["Reference/RightArm/RightHand"]["parent"], bones["Reference/RightArm"]["node"])
+        self.assertEqual(bones["Reference/RightArm/RightHand/chp0001"]["parent"], bones["Reference/RightArm/RightHand"]["node"])
+
+    def test_an_ambiguous_member_path_skips_only_its_branch(self):
+        rig = _rig(["", "Reference", "Reference/LeftHand", "Reference/RightHand", "Reference/RightHand"])
+        nodes = [_identity("Reference"), _identity("Reference/RightHand"), _identity("Reference/RightHand/chp0001"),
+                 _identity("Reference/LeftHand"), _identity("Reference/LeftHand/chp0002")]
+        for bone in rig.bones[-1:]:
+            bone["sourceIndex"] = 0
+        merged = rig.merge_prop_skeleton(nodes)
+        self.assertEqual([rig.glb.doc["nodes"][node]["extras"]["originalName"] for node in merged], ["chp0002"])
+
+    def test_the_merge_is_all_or_nothing(self):
+        from webtools.core import model_rig
+        rig = _rig(["", "Reference"])
+        before = len(rig.glb.doc["nodes"])
+        broken = [_identity("Reference"), _identity("Reference/chp0001"),
+                  {**_identity("Reference/chp0001/Attach_01"), "rotation": [0., 0., 0., 0.]}]
+        with self.assertRaises(ValueError):
+            rig.merge_prop_skeleton(broken)
+        self.assertEqual(len(rig.glb.doc["nodes"]), before)
+        with patch.object(model_rig, "MAX_NODES", before + 1):
+            with self.assertRaisesRegex(model_rig.RigError, "node limit"):
+                rig.merge_prop_skeleton([_identity("Reference"), _identity("Reference/chp0001"),
+                                         _identity("Reference/chp0001/Decor")])
+        self.assertEqual(len(rig.glb.doc["nodes"]), before)
+
+    def test_each_member_builds_and_caches_its_own_merged_skeleton(self):
+        from webtools.core import mv_studio_actor_cache
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model, face = root / "model", root / "face"
+            model.write_bytes(b"model")
+            face.write_bytes(b"face")
+            cache = mv_studio_actor_cache.ActorCache(root, ("gl", "android"), lambda name: (root / name, "glb"))
+            shared = cache.inputs(b"timeline", [])
+            plain = cache.key(shared, 1, 208, model, [face], [])
+            self.assertEqual(cache.key(shared, 1, 208, model, [face], [], props=()), plain)
+            merged = cache.key(shared, 1, 208, model, [face], [], props=[_identity("Reference/chp0001")])
+            self.assertNotIn(merged, (None, plain))
+            moved = cache.key(shared, 1, 208, model, [face], [], props=[
+                {**_identity("Reference/chp0001"), "position": [0., .1, 0.]}])
+            self.assertNotIn(moved, (None, plain, merged))
 
 
 class MVStudioPropBindingsTests(unittest.TestCase):

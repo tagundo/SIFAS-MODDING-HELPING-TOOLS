@@ -181,11 +181,12 @@ def _path(value):
 
 
 def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, stage_bindings=(),
-             native_stage_effect=False, attach="", warnings=None):
+             native_stage_effect=False, attach="", prop_skeleton=(), warnings=None):
     """Return (media URL, rig) of a model preview; ``warnings`` receives its conversion warnings.
 
-    ``attach`` is the performer's m_suit_attach key. A stage preview is reused
-    from the cache only when it converted without warnings.
+    ``attach`` is the performer's m_suit_attach key and ``prop_skeleton`` the
+    member's merged prop skeleton (mv_studio_props.skeleton). A stage preview
+    is reused from the cache only when it converted without warnings.
     """
     models = [path, *companions]
     key = None
@@ -195,7 +196,8 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         # also need explicit companions to rule out local face discovery.
         key = (_root(), tuple((item.name, game_models._sha(item)) for item in models),
                tuple((item.name, game_models._sha(item)) for item in motions), tuple(stage_bindings),
-               native_stage_effect) + ((attach,) if attach else ())
+               native_stage_effect) + ((attach,) if attach else ()) + (
+            (json.dumps(list(prop_skeleton), sort_keys=True),) if prop_skeleton else ())
         cached = model_viewer._conversion_get(cache, key, time.monotonic() + model_viewer.BUILD_SECONDS)
         if cached is not None:
             name, rig = json.loads(cached)
@@ -210,7 +212,8 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
                       "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions),
                       "_mv_stage_motion_bindings": stage_bindings, "_mv_performer": performer,
                       "_mv_native_stage_effect": native_stage_effect,
-                      **({"_mv_attach_key": attach} if performer and attach else {})},
+                      **({"_mv_attach_key": attach} if performer and attach else {}),
+                      **({"_mv_prop_skeleton": list(prop_skeleton)} if performer and prop_skeleton else {})},
         motion_paths=list(map(str, motions)) or None)
     payload = model_viewer.get_model(prepared["id"])
     if payload is None:
@@ -571,6 +574,17 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                         warnings.append(f"{prop_row['label']}: {error}")
             if on_stage is not None and project["stage"] is not None:
                 on_stage(_stage_snapshot(project, rows.values(), performers))
+            # Every member merges its own ske_ prop skeleton (whatever prop the
+            # preview can draw), so its dance clips animate the prop nodes.
+            prop_skeletons = {}
+            if stage.get("props"):
+                _, skeleton_file = load(stage.get("props"), "props", "Performer prop" if performer_prop else "Stage props")
+                if skeleton_file is not None:
+                    try:
+                        prop_skeletons = mv_studio_props.skeleton(skeleton_file, deadline)
+                    except (ValueError, OSError, KeyError, TypeError, AttributeError) as error:
+                        # An unreadable skeleton leaves the members without merged prop nodes.
+                        warnings.append(f"Member prop skeleton: {error}")
             if performer_prop is not None:
                 prop_row, prop_file = load(stage.get("props"), "props", "Performer prop")
                 prop_gap = mv_studio_import_coverage.PROP_UNAVAILABLE
@@ -630,8 +644,9 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                         _, facial_file = load(descriptor, "eyes", f"{label} facial clips")
                         if facial_file is not None:
                             facial_files.append(facial_file)
+                    skeleton = prop_skeletons.get(number, ())
                     key = actor_cache.key(motion_inputs, number, result["memberId"], model, companions, facial_files,
-                                          attach=attach) if actor_cache else None
+                                          attach=attach, props=skeleton) if actor_cache else None
                     saved = actor_cache.get(key) if key is not None else None
                     if saved is not None:
                         name, rig, motion = saved
@@ -645,7 +660,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             warnings.append(f"{label} choreography: {error}")
                         try:
                             url, rig = _preview(model, performer=True, motions=clips, companions=companions, reuse=True,
-                                                attach=attach)
+                                                attach=attach, prop_skeleton=skeleton)
                             if motion is not None:
                                 try:
                                     motion = _facial(timeline, motion, number, project["tracks"], rig.get("memberHead"))

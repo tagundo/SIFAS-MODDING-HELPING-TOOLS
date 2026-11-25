@@ -264,6 +264,63 @@ class RigBuilder:
         self.scene, self.faces, self.deadline = scene, faces, deadline
         self._path_cache.clear()
 
+    def merge_prop_skeleton(self, nodes):
+        """Merge a member prop skeleton (mv_studio_props.skeleton) into this rig.
+
+        UnityObjectUtility.MergeHierarchy (GL 3.12.0 0x296058c): a skeleton
+        child whose name matches a child of the merged parent recurses into
+        it; any other child is moved below that parent with
+        SetParent(parent, worldPositionStays=false), keeping its authored
+        local TRS and whole subtree. The paths stay relative to the member's
+        Model, so the member's dance clips bind those nodes (chp*/Attach_*)
+        by the same path hash as every rig bone. Returns the merged nodes."""
+        import numpy as np
+        from .model_viewer import _remaining, _trs as authored_matrix
+        candidates = defaultdict(list)
+        for bone in self.bones:
+            if "transformId" in bone:
+                candidates[bone["path"]].append(bone)
+
+        def matched(path):
+            rows = candidates.get(path, ())
+            if len(rows) > 1:
+                rows = [bone for bone in rows if bone.get("sourceIndex") == 0]
+            return rows[0]["node"] if len(rows) == 1 else None
+
+        # The skeleton's Model is the member's Model: the body prefab root.
+        states, plan = {"": ("matched", matched(""))}, []
+        for entry in nodes:
+            _remaining(self.deadline)
+            path = entry["path"]
+            parent_path, _, name = path.rpartition("/")
+            kind, parent = states.get(parent_path, ("skipped", None))
+            if kind == "skipped" or parent is None:
+                states[path] = ("skipped", None)
+            elif kind == "matched" and path in candidates:
+                # IndexOf takes the first child of that name; an ambiguous
+                # editor path cannot say which one, so its subtree is skipped.
+                node = matched(path)
+                states[path] = ("matched", node) if node is not None else ("skipped", None)
+            else:
+                tree = {"m_LocalPosition": dict(zip("xyz", entry["position"])),
+                        "m_LocalRotation": dict(zip("xyzw", entry["rotation"])),
+                        "m_LocalScale": dict(zip("xyz", entry["scale"]))}
+                states[path] = ("merged", path)
+                plan.append((path, name, parent_path, _authored_trs(tree, allow_zero_scale=True), authored_matrix(tree)))
+        if len(self.glb.doc["nodes"]) + len(plan) > MAX_NODES:
+            raise RigError("The member prop skeleton exceeds the rig node limit.")
+        created = {}
+        for path, name, parent_path, local, matrix in plan:
+            kind, parent = states[parent_path]
+            parent = created[parent_path] if kind == "merged" else parent
+            node = self._node(name, local, "bone")
+            self.worlds[node] = self.worlds.get(parent, np.eye(4)) @ matrix
+            self.glb.doc["nodes"][parent].setdefault("children", []).append(node)
+            self.bones.append({"node": node, "name": name, "parent": parent, "path": path, "propSkeleton": True})
+            self._binding(path, node)
+            created[path] = node
+        return list(created.values())
+
     def record_bounds(self, positions):
         import numpy as np
         low, high = positions.min(axis=0), positions.max(axis=0)

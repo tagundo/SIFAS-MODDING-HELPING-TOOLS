@@ -2150,6 +2150,13 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
         except ValueError:
             glb = _Glb()
             scene.warn("rig_unavailable")
+        skeleton = (face_context or {}).get("_mv_prop_skeleton")
+        if rig is not None and skeleton:
+            # An MV member merges its prop skeleton before any clip binds.
+            try:
+                rig.merge_prop_skeleton(skeleton)
+            except ValueError as error:
+                rig.warnings.append(str(error))
     materials = _append_scene(scene, glb, disabled_faces, deadline, rig=rig)
     if rig is not None and (face_context or {}).get("_mv_performer"):
         from . import mv_studio_member_shadow

@@ -14,6 +14,83 @@ _MEMBER_PROP = re.compile(
 _FAN_ANGLE = crc32(b"clipUV2Angle")
 _FAN_SHADER = ("cab-2e396210aff4c20f7175085dc1e3e4e6", -8442881240486637179)
 _FAN_TEXTURES = {"_MainTex": 1024, "_RimlightTex": 256}
+# LiveCoreMemberManager.MemberPropSkeletonPrefix: FindMemberPropSkeleton takes
+# the Members child whose name starts with it.
+_SKELETON_PREFIX = "ske_"
+_SKELETON_MEMBER = re.compile(r"Member([1-9][0-9]*)\Z")
+_SKELETON_NODES = 256
+
+
+def _children(scene, transform):
+    for pointer in scene.tree(transform).get("m_Children", ()):
+        child = viewer._ref(transform, pointer)
+        if child is not None:
+            yield child
+
+
+def _transform_name(scene, transform):
+    game_object = viewer._ref(transform, scene.tree(transform).get("m_GameObject"))
+    return scene.name(game_object) if game_object is not None else ""
+
+
+def _local(tree):
+    values = {"position": [float(tree.get("m_LocalPosition", {}).get(axis, 0)) for axis in "xyz"],
+              "rotation": [float(tree.get("m_LocalRotation", {}).get(axis, 1 if axis == "w" else 0)) for axis in "xyzw"],
+              "scale": [float(tree.get("m_LocalScale", {}).get(axis, 1)) for axis in "xyz"]}
+    if not all(math.isfinite(value) for row in values.values() for value in row):
+        raise ValueError("The member prop skeleton has an invalid transform.")
+    return values
+
+
+def skeleton(path, deadline):
+    """Each member's prop skeleton Model subtree.
+
+    LiveCoreMember.Initialize merges <ske_*>/Member<N> into the member's own
+    hierarchy with UnityObjectUtility.MergeHierarchy (GL 3.12.0 0x296058c),
+    then LiveCoreMemberManager destroys the ske_ root. The merge matches
+    children by name; a child without a match is moved with
+    Transform.SetParent(parent, worldPositionStays=false), so its authored
+    local TRS (and its whole subtree) is kept below the matched parent. The
+    member's Animator then binds those nodes by path like any rig bone: the
+    dance clips animate chp*/Attach_* below the hand.
+
+    Returns {member slot: [{"path", "position", "rotation", "scale"}, ...]}
+    with paths relative to Model (the member Animator's root, the rig root
+    here), each parent before its children, and Unity-space authored local
+    values. Nodes beside Model (e.g. 12087's microphone stands below
+    Member<N>) are outside the rig and the dance clips, so they are not listed.
+    """
+    scene = viewer._Scene(viewer._environment([str(path)], deadline), deadline)
+    roots = [transform for transform in scene.transforms.values()
+             if viewer._ref(transform, scene.tree(transform).get("m_Father")) is None
+             and _transform_name(scene, transform).startswith(_SKELETON_PREFIX)]
+    if len(roots) != 1:
+        return {}
+    result = {}
+    for member in _children(scene, roots[0]):
+        slot = _SKELETON_MEMBER.fullmatch(_transform_name(scene, member))
+        models = [child for child in _children(scene, member) if _transform_name(scene, child) == "Model"]
+        if slot is None or int(slot[1]) in result or len(models) != 1:
+            continue
+        nodes, pending, seen = [], [(models[0], "")], set()
+        try:
+            while pending:
+                transform, prefix = pending.pop()
+                children = []
+                for child in _children(scene, transform):
+                    name = _transform_name(scene, child)
+                    if not name or "/" in name or viewer._key(child) in seen or len(nodes) >= _SKELETON_NODES:
+                        raise ValueError("The member prop skeleton has an unsupported hierarchy.")
+                    seen.add(viewer._key(child))
+                    node = {"path": prefix + name, **_local(scene.tree(child))}
+                    nodes.append(node)
+                    children.append((child, node["path"] + "/"))
+                pending.extend(reversed(children))
+        except ValueError:
+            continue
+        if nodes:
+            result[int(slot[1])] = nodes
+    return result
 
 
 def bindings(tracks):
