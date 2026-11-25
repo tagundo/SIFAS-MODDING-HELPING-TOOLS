@@ -17,6 +17,37 @@
     }
     return keys[keys.length - 1].value;
   }
+  // Exact Unity streamed TRS curves arrive as glTF CUBICSPLINE tracks (model_animation.py). The r128
+  // glTF loader marks their interpolant factory; such a track's values hold an in-tangent, a value and
+  // an out-tangent per key, so its sample is a third of getValueSize().
+  function cubicTrack(track) { return !!(track && track.createInterpolant && track.createInterpolant.isInterpolantFactoryMethodGLTFCubicSpline); }
+  function trackValueSize(track) { return cubicTrack(track) ? track.getValueSize() / 3 : track.getValueSize(); }
+  // Unity evaluates the four rotation components as separate cubics and the client's transforms hold
+  // the normalized result (the GL 3.12.0 runtime dump's localRotation is unit length to 1e-7 where the
+  // raw component cubic is 7e-4 off). r128 does not normalize a CUBICSPLINE quaternion, so every
+  // interpolant of such a track normalizes what it evaluates, including the clamped end keys. Shared
+  // tracks are wrapped once; AnimationMixer, the timeline, gaze poses and rig replay all use the wrap.
+  function prepareAnimations(animations) {
+    (animations || []).forEach(function (clip) {
+      (clip && clip.tracks || []).forEach(function (track) {
+        var factory = track.createInterpolant;
+        if (!cubicTrack(track) || track.ValueTypeName !== "quaternion" || factory.normalizesQuaternion) return;
+        var normalized = function (result) {
+          var interpolant = factory.call(this, result), evaluate = interpolant.evaluate;
+          interpolant.evaluate = function (time) {
+            var value = evaluate.call(this, time), length = Math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3]);
+            if (length > 0 && isFinite(length)) for (var i = 0; i < 4; i += 1) value[i] /= length;
+            return value;
+          };
+          return interpolant;
+        };
+        normalized.isInterpolantFactoryMethodGLTFCubicSpline = true;
+        normalized.normalizesQuaternion = true;
+        track.createInterpolant = normalized;
+      });
+    });
+    return animations;
+  }
   function timing(source) {
     source = source || {};
     function read(short, original, fallback) { return number(source[short], number(source[original], fallback)); }
@@ -105,6 +136,7 @@
     options = options || {};
     var T = global.THREE, info = metadata || {}, byName = {}, groups = {}, poses = {}, warnings = [], lastWeights = {}, missingTargets = [];
     var gazeWrites = options.restorePose ? [] : null;
+    prepareAnimations(animations);
     var face = null, eyeCandidates = [], faceCandidates = [], headCandidates = [];
     function name(node) { return node.userData && node.userData.originalName || node.name.replace(/__\d+$/, ""); }
     root.traverse(function (node) {
@@ -136,7 +168,7 @@
       id = owner && owner.userData.elichika_node;
       var bound = entry.morphTargets.filter(function (row) { return row && row.node === id && Array.isArray(row.indices); })[0];
       var size = mesh.morphTargetInfluences.length;
-      if (!bound || track.getValueSize() !== size) return [];
+      if (!bound || trackValueSize(track) !== size) return [];
       var value = track.createInterpolant().evaluate(clip.duration), result = [];
       bound.indices.forEach(function (index) {
         if (!Number.isInteger(index) || index < 0 || index >= size || typeof value[index] !== "number" || !isFinite(value[index]) ||
@@ -269,6 +301,7 @@
   function create(root, animations, metadata, descriptor, options) {
     options = options || {};
     var THREE = global.THREE, warnings = [], compatibilityDetails = [], groups = {}, facialGroups = {}, gazeGroups = {}, visibility = [], nativeEvents = new Set(), used = 0;
+    prepareAnimations(animations);
     var info = metadata || {}, clips = info.clips || [], expressions = info.expressionCatalog || {};
     var animationByName = {}, nodeByIndex = {}, faceChannels = {}, facePresets = {}, morphGroups = {}, sampleFrame = 0;
     var clipIdentities = new Map(), bindingsByName = new Map(), staticSamples = new WeakMap(), facialMatches = new Map();
@@ -437,7 +470,7 @@
         var key = track.name, group = collection[key], binding = group && group.binding || bindingsByName.get(key);
         if (!binding) { binding = THREE.PropertyBinding.create(root, key); binding.bind(); bindingsByName.set(key, binding); }
         if (gazeOnly && (!binding.node || !binding.node.isBone || !/^(?:Left|Right)Eye(?:[12]|_Root)$/.test(binding.node.userData.originalName || binding.node.name.replace(/__\d+$/, "")))) return;
-        var base = new Array(track.getValueSize()); binding.getValue(base, 0);
+        var base = new Array(trackValueSize(track)); binding.getValue(base, 0);
         if (!denseFinite(base)) return;
         var node = binding.targetObject || binding.node;
         var morph = collection === facialGroups && binding.parsedPath && binding.parsedPath.propertyName === "morphTargetInfluences";
@@ -958,5 +991,5 @@
     };
   }
   global.ViewerGaze = { create: createGaze, axes: gazeAxes };
-  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve };
+  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve, prepareAnimations: prepareAnimations, trackValueSize: trackValueSize };
 }(window));

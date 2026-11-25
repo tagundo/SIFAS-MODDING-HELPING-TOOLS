@@ -1154,6 +1154,7 @@
             if (typeof cheekMaterial === "string" && cheekMaterial) record.cheekMaterial = cheekMaterial;
             updateMotion(record);
           } else if (gltf.animations.length) {
+            global.ViewerMotionTimeline?.prepareAnimations?.(gltf.animations);
             record.mixer = new T.AnimationMixer(gltf.scene);
             record.mixer.clipAction(gltf.animations[0]).play();
           }

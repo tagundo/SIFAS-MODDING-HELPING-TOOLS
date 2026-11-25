@@ -1,7 +1,11 @@
 """Bounded Unity AnimationClip curves exported as standard glTF animations.
 
-Sources are read only. Streamed polynomials, dense samples and constants are
-evaluated at the source sample rate (at most 60 Hz) into LINEAR glTF samplers.
+Sources are read only. Cubic (streamed or editor Hermite) translation, rotation
+and scale channels are exported exactly as CUBICSPLINE samplers on their own key
+stamps; a value jump or a Float32 stamp collision keeps the LINEAR grid. Dense
+samples, Euler rotations and morph weights are evaluated at the source sample
+rate (at most 60 Hz) into LINEAR glTF samplers; constant channels keep their
+two end samples.
 Unsupported visibility/material/humanoid channels are reported, never guessed.
 No clip, including SIFAS's eye_900, is implicitly selected as a neutral pose.
 """
@@ -244,6 +248,96 @@ def _evaluate(curve, stamp):
     return value
 
 
+# Exact TRS export. Unity 2018.4 keeps, per streamed curve, the coefficients of
+# that curve's last key at or before the sample time and evaluates
+# t*(t*(t*c0 + c1) + c2) + c3 with t = time - key time (libunity GL 3.12.0:
+# StreamedClip seek 0x591304 caches {key time, c0..c3} per curve index, and
+# SampleClip 0x591078 evaluates that cache with separate fmul/fadd). A key has
+# no in/out weights: the four coefficients are the whole segment. Between two
+# stamps a cubic is exactly the glTF CUBICSPLINE (Hermite) segment built from
+# its values and first derivatives at both ends, so a channel keeps every key
+# stamp of its components (a component without a key there is split, with
+# equal in and out derivatives). Dense curves interpolate linearly (SampleClip
+# 0x591210) and Euler rotations become quaternions per sample; both stay on
+# the LINEAR sample grid.
+_CUBIC_KINDS = ("translation", "rotation", "scale")
+# Float32 coefficients of a continuous curve meet the next key's value within
+# about 1e-7 (12035 and 12023 dances); a stepped key or an infinite editor
+# tangent jumps. A jump keeps the LINEAR grid, which does not invent a ramp.
+_CUBIC_JUMP = 1e-5
+
+
+def _float32(value):
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
+def _cubic_at(key, stamp):
+    """Value and derivative of one key's cubic segment at `stamp` (as `_evaluate`)."""
+    start, (a, b, c, d) = key
+    if abs(start) > 1e20:
+        return d, 0.  # Unity's negative sentinel seeds a constant first value.
+    delta = stamp - start
+    if delta <= 0:
+        return d, (c if delta == 0 else 0.)
+    return ((a * delta + b) * delta + c) * delta + d, (3 * a * delta + 2 * b) * delta + c
+
+
+def _cubic_channel(track, start, stop, deadline=None):
+    """(relative Float32 stamps, per-stamp [in, value, out] rows) or None for the LINEAR grid.
+
+    Rows hold raw Unity components: a cubic rotation is not normalized or
+    sign-flipped, as each component is its own curve in the client.
+    """
+    curves = track["curves"]
+    if (track["kind"] not in _CUBIC_KINDS or not any(mode == "cubic" for mode, _ in curves)
+            or any(mode not in ("cubic", "constant") for mode, _ in curves)):
+        return None
+    stamps = {start, stop}
+    for mode, keys in curves:
+        if mode == "cubic":
+            if not keys:
+                raise AnimationError("An animation binding has no scalar curve values.")
+            stamps.update(stamp for stamp, _ in keys if start < stamp < stop)
+    stamps = sorted(stamps)
+    if len(stamps) > MAX_KEYFRAMES:
+        raise AnimationError("The animation has too many sampled frames.")
+    relative = [_float32(stamp - start) for stamp in stamps]
+    if any(a >= b for a, b in zip(relative, relative[1:])):
+        return None  # glTF inputs cannot tell these Float32 times apart.
+    columns = []
+    for mode, keys in curves:
+        _check(deadline)
+        if mode == "constant":
+            columns.append([(0., keys, 0.)] * len(stamps))
+            continue
+        times, column = [stamp for stamp, _ in keys], []
+        for row, stamp in enumerate(stamps):
+            if row % 1024 == 0:
+                _check(deadline)
+            index = max(0, bisect.bisect_right(times, stamp) - 1)
+            value, outgoing = _cubic_at(keys[index], stamp)
+            incoming = outgoing
+            if row and times[index] == stamp:
+                # The incoming side is the previous segment (or the hold before the first key).
+                left, incoming = _cubic_at(keys[index - 1], stamp) if index else (keys[0][1][3], 0.)
+                if abs(left - value) > _CUBIC_JUMP * max(1., abs(left), abs(value)):
+                    return None
+            column.append((incoming, value, outgoing))
+        columns.append(column)
+    rows = []
+    for row in range(len(stamps)):
+        rows.append([[column[row][part] for column in columns] for part in range(3)])
+    return relative, rows
+
+
+def _mirror(kind, values):
+    if kind == "translation":
+        return [-values[0], values[1], values[2]]
+    if kind == "rotation":
+        return [values[0], -values[1], -values[2], values[3]]
+    return list(values)
+
+
 def _editor_scalar(keys, axis=None, deadline=None):
     rows = []
     for index, key in enumerate(keys):
@@ -409,7 +503,7 @@ def decode_clip(tree, deadline=None):
             "unsupported": unsupported,
             "unsupportedKinds": [{"typeID": key[0], "attribute": key[1], "customType": key[2], "count": count}
                                  for key, count in sorted(unsupported_kinds.items())],
-            "sampling": "source_curves_at_most_60_hz"}
+            "sampling": "cubic_source_keys_else_curves_at_most_60_hz"}
 
 
 def _nodes(bindings, path):
@@ -822,12 +916,27 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                 if not targets:
                     unbound += 1
                     continue
-                planned_frames += len(times) * len(targets)
-                planned_values += len(times) * len(track["curves"]) * len(targets)
+                cubic = _cubic_channel(track, times[0], times[-1], deadline)
+                if cubic is not None:
+                    stamps, rows = cubic
+                    planned_frames += len(stamps) * len(targets)
+                    planned_values += 3 * len(stamps) * len(track["curves"]) * len(targets)
+                    if used_frames + planned_frames > MAX_KEYFRAMES or used_values + planned_values > MAX_VALUES:
+                        raise AnimationError("The supplied animations exceed the mobile preview keyframe limit.")
+                    # glTF CUBICSPLINE output: in-tangent, value, out-tangent per input stamp.
+                    values = [_mirror(track["kind"], part) for row in rows for part in row]
+                    for node in targets:
+                        outputs.append((int(node), track["kind"], values, stamps, "CUBICSPLINE"))
+                    continue
+                # A constant channel needs only its two end samples, not the clip's grid.
+                constant = all(mode == "constant" for mode, _ in track["curves"])
+                samples = sorted({times[0], times[-1]}) if constant else times
+                planned_frames += len(samples) * len(targets)
+                planned_values += len(samples) * len(track["curves"]) * len(targets)
                 if used_frames + planned_frames > MAX_KEYFRAMES or used_values + planned_values > MAX_VALUES:
                     raise AnimationError("The supplied animations exceed the mobile preview keyframe limit.")
                 values = []
-                for sample_index, stamp in enumerate(times):
+                for sample_index, stamp in enumerate(samples):
                     if sample_index % 128 == 0:
                         _check(deadline)
                     values.append([_evaluate(curve, stamp) for curve in track["curves"]])
@@ -841,43 +950,50 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                     kind = "rotation"
                 elif kind == "translation":
                     values = [[-row[0], row[1], row[2]] for row in values]
+                stamps = [stamp - clip["start"] for stamp in samples] if constant else None
                 for node in targets:
-                    outputs.append((int(node), kind, values))
+                    outputs.append((int(node), kind, values, stamps, "LINEAR"))
             # Unity may retain editor Euler and quaternion curves for the same
             # target. glTF permits one channel per node/property; prefer the
             # first authored quaternion track (editor order places it first).
             unique = {}
-            for node, kind, rows in outputs:
-                unique.setdefault((node, kind), rows)
-            outputs = [(node, kind, rows) for (node, kind), rows in unique.items()]
-            outputs.extend((node, "weights", rows) for node, rows in morph_outputs.items())
+            for node, kind, *rest in outputs:
+                unique.setdefault((node, kind), rest)
+            outputs = [(node, kind, *rest) for (node, kind), rest in unique.items()]
+            outputs.extend((node, "weights", rows, None, "LINEAR") for node, rows in morph_outputs.items())
             visibility_tracks = _merge_visibility(visibility_tracks, deadline)
             channels = len(outputs) + len(visibility_tracks)
             if used_channels + channels > MAX_CHANNELS:
                 raise AnimationError("The supplied animations exceed the preview channel limit.")
-            frames = len(times) * len(outputs) + sum(len(row["times"]) for row in visibility_tracks)
-            values = sum(len(row) for _, _, rows in outputs for row in rows) + sum(
+            frames = sum(len(times if stamps is None else stamps) for _, _, _, stamps, _ in outputs) + sum(
+                len(row["times"]) for row in visibility_tracks)
+            values = sum(len(row) for _, _, rows, _, _ in outputs for row in rows) + sum(
                 len(row["values"]) + 5 * len(row.get("sourceScalarKeys", ())) for row in visibility_tracks)
             if used_frames + frames > MAX_KEYFRAMES or used_values + values > MAX_VALUES:
                 raise AnimationError("The supplied animations exceed the mobile preview keyframe limit.")
-            if any(not 0 <= node < len(glb.doc["nodes"]) for node, _, _ in outputs):
+            if any(not 0 <= node < len(glb.doc["nodes"]) for node, *_ in outputs):
                 raise AnimationError("An animation points to an unavailable rig node.")
             if not outputs and not visibility_tracks:
                 warn("animation_unbound", name, "This clip has no supported channels bound to the displayed rig.")
                 continue
-            relative_times = [stamp - clip["start"] for stamp in times]
-            input_accessor = _attribute(glb, relative_times, "SCALAR", accessors, bounds=True) if outputs else None
+            grid_accessor = None
             exported_name, suffix = clip["name"], 2
             while exported_name in used_names:
                 exported_name = clip["name"] + "__" + str(suffix)
                 suffix += 1
             animation = {"name": exported_name, "samplers": [], "channels": [],
                          "extras": {"loop": clip["loop"], "sourceSampling": clip["sampling"]}}
-            for node, kind, rows in outputs:
+            for node, kind, rows, stamps, interpolation in outputs:
+                if stamps is None:
+                    if grid_accessor is None:
+                        grid_accessor = _attribute(glb, [stamp - clip["start"] for stamp in times], "SCALAR", accessors, bounds=True)
+                    input_accessor = grid_accessor
+                else:
+                    input_accessor = _attribute(glb, stamps, "SCALAR", accessors, bounds=True)
                 accessor = _attribute(glb, [value for row in rows for value in row] if kind == "weights" else rows,
                                       "SCALAR" if kind == "weights" else ("VEC4" if kind == "rotation" else "VEC3"), accessors)
                 sampler = len(animation["samplers"])
-                animation["samplers"].append({"input": input_accessor, "output": accessor, "interpolation": "LINEAR"})
+                animation["samplers"].append({"input": input_accessor, "output": accessor, "interpolation": interpolation})
                 animation["channels"].append({"sampler": sampler, "target": {"node": node, "path": kind}})
             index = len(glb.doc.setdefault("animations", [])) if outputs else None
             if outputs:
