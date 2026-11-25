@@ -154,6 +154,10 @@ const constantPath = (count, point, yaw = null) => {
   for (let n = 0; n < 121; n += 10) assert.deepEqual(Array.from(fixed.rotations.subarray(4 * n, 4 * n + 4)), Array.from(fixed.rotations.subarray(0, 4)));
   assert.deepEqual(Array.from(fixed.positions), Array.from(look.positions), 'the angle setting never changes where the camera is');
   assert(Math.abs(look.rotations[4 * 120 + 1]) > 1e-3, 'look at member turns the camera');
+  // Pan: the camera stays at its rig-start position and only turns toward the member.
+  const pan = F.evaluateRig(fresh({ angle: 'pan' }), moving);
+  for (let n = 0; n < 121; n += 10) assert.deepEqual(Array.from(pan.positions.subarray(3 * n, 3 * n + 3)), Array.from(pan.positions.subarray(0, 3)));
+  assert(Math.abs(pan.rotations[4 * 120 + 1]) > 1e-3, 'pan turns toward the member');
   const side = F.evaluateRig(fresh({ view: 'right' }), moving);
   assert.deepEqual(Array.from(side.rotations.subarray(480, 484)), Array.from(side.rotations.subarray(0, 4)));
 }

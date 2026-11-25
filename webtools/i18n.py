@@ -2772,11 +2772,12 @@ _MV_EDITOR_D_TRANSLATIONS = {
     "Stage front": ("무대 정면", "ステージ正面"),
     "Member facing": ("멤버가 보는 방향", "メンバーの向き"),
     "Camera angle": ("카메라 각도", "カメラの角度"),
-    "Fixed (follow position only)": ("고정 (위치만 따라가기)", "固定（位置だけ追従）"),
-    "Look at member": ("멤버 바라보기", "メンバーを見る"),
-    "Fixed: the camera keeps its direction and only follows the member's position. Look at member: it turns toward the member.": (
-        "고정: 카메라 방향은 그대로 두고 멤버의 위치만 따라갑니다. 멤버 바라보기: 카메라가 멤버 쪽으로 돌아갑니다.",
-        "固定：カメラの向きはそのままで、メンバーの位置だけを追います。メンバーを見る：カメラがメンバーの方へ向きを変えます。"),
+    "Fixed (follow position only)": ("위치만 따라가기 (각도 고정)", "位置だけ追従（角度固定）"),
+    "Pan (follow angle only)": ("각도만 따라가기 (위치 고정)", "角度だけ追従（位置固定）"),
+    "Look at member": ("위치·각도 모두 따라가기", "位置と角度の両方を追従"),
+    "Fixed: the camera keeps its direction and only follows the member's position. Pan: the camera stays where the rig starts and only turns toward the member. Look at member: it moves and turns.": (
+        "위치만: 카메라 방향은 그대로 두고 멤버의 위치만 따라 움직입니다. 각도만: 카메라는 리그 시작 위치에 그대로 있고 멤버 쪽으로만 돌아갑니다. 모두: 움직이면서 멤버 쪽으로 돌아갑니다.",
+        "位置だけ：カメラの向きはそのままで、メンバーの位置だけを追って動きます。角度だけ：カメラはリグ開始位置にとどまり、メンバーの方へ向きだけを変えます。両方：動きながらメンバーの方を向きます。"),
     "Placement": ("배치", "配置"),
     "Framing": ("구도", "構図"),
     "Close-up": ("클로즈업", "クローズアップ"),

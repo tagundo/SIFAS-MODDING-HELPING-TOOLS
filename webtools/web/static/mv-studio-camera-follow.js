@@ -7,7 +7,7 @@
        target: { slot, part },                                        // BodyPartType: 0 Head, 1 Head (all), 2 Face, 3 Hips, 4 Neck
        view: "front" | "back" | "left" | "right" | "custom", yaw,     // yaw (deg) is added to the preset
        frame: "stage" | "member", turnDamping,                        // member facing smoothing (s)
-       angle: "fixed" | "look",                                       // fixed: keep the view direction, follow by position only
+       angle: "fixed" | "pan" | "look",                               // what follows: position only / angle only / both
        distance, height, lateral,                                     // m, in the view frame; height above the look-at point
        aim: { height, side, forward },                                // look-at offset (m) in the reference frame
        fov, roll,                                                     // authored deg
@@ -45,10 +45,13 @@
   // Front puts the camera on the audience side (+Z); right is the member's right (+X).
   const VIEW_YAW = Object.freeze({ front: 0, right: 90, back: 180, left: -90, custom: 0 });
   const FRAMES = Object.freeze(["stage", "member"]);
-  // "fixed" keeps the camera's direction (the view preset from the reference frame) and only moves
-  // it with the member; "look" turns it toward the damped look-at point every frame. Rigs saved
-  // before the field existed keep "look".
-  const ANGLES = Object.freeze(["fixed", "look"]);
+  // What follows the member:
+  // - "fixed": position only. The camera keeps its direction (the view preset in the reference
+  //   frame) and moves with the member.
+  // - "pan": angle only. The camera stays where the rig starts and turns toward the member.
+  // - "look": both. It moves with the member and turns toward the damped look-at point.
+  // Rigs saved before the field existed keep "look".
+  const ANGLES = Object.freeze(["fixed", "pan", "look"]);
   const LOCKS = Object.freeze(["off", "camera", "aim", "both"]);
   const PARTS = Object.freeze([0, 1, 2, 3, 4]);
   const DEFAULTS = Object.freeze({
@@ -198,7 +201,7 @@
     const outerRadius = rig.deadZone.radius, outerBand = rig.deadZone.height, inner = 1 - rig.deadZone.hysteresis;
     const member = rig.frame === "member" && !!Y;
     const lock = rig.heightLock, lockAim = lock.mode === "aim" || lock.mode === "both", lockBody = lock.mode === "camera" || lock.mode === "both";
-    const view = VIEW_YAW[rig.view] + rig.yaw, fixed = rig.angle === "fixed";
+    const view = VIEW_YAW[rig.view] + rig.yaw, fixed = rig.angle === "fixed", pan = rig.angle === "pan";
     // Tracked point A (dead zone + look-at damping).
     let ax = P[0], ay = P[1], az = P[2], moving = false;
     const startAim = ay;
@@ -223,7 +226,7 @@
       const goal = turnY(reference + view, rig.lateral, rig.height, rig.distance);
       const gx = aim[0] + goal[0], gy = aim[1] + goal[1], gz = aim[2] + goal[2];
       if (n === 0) { bx = gx; by = gy; bz = gz; startBody = by; }
-      else { bx += bodyXZ * (gx - bx); bz += bodyXZ * (gz - bz); by += bodyY * (gy - by); }
+      else if (!pan) { bx += bodyXZ * (gx - bx); bz += bodyXZ * (gz - bz); by += bodyY * (gy - by); }
       const eye = [bx, lockBody ? (lock.value === "start" ? startBody : lock.value) : by, bz];
       positions.set(eye, 3 * n);
       aims.set(aim, 3 * n);
@@ -1090,8 +1093,8 @@
     labelled(ctx, view, "Reference", select(ctx, { id: "mv-follow-frame" }, [["stage", t(ctx, "Stage front")], ["member", t(ctx, "Member facing")]],
       rig.frame, (value) => setField(ctx, rig.id, "frame", value)));
     if (rig.frame === "member") slider(ctx, refs, view, rig, "turnDamping");
-    labelled(ctx, view, "Camera angle", select(ctx, { id: "mv-follow-angle", title: t(ctx, "Fixed: the camera keeps its direction and only follows the member's position. Look at member: it turns toward the member.") },
-      [["fixed", t(ctx, "Fixed (follow position only)")], ["look", t(ctx, "Look at member")]],
+    labelled(ctx, view, "Camera angle", select(ctx, { id: "mv-follow-angle", title: t(ctx, "Fixed: the camera keeps its direction and only follows the member's position. Pan: the camera stays where the rig starts and only turns toward the member. Look at member: it moves and turns.") },
+      [["fixed", t(ctx, "Fixed (follow position only)")], ["pan", t(ctx, "Pan (follow angle only)")], ["look", t(ctx, "Look at member")]],
       rig.angle, (value) => setField(ctx, rig.id, "angle", value)));
 
     // Placement and framing.
@@ -1360,8 +1363,8 @@
     "Target", "Member", "Body part", ...Object.values(PART_LABELS),
     "Camera view", "Front puts the camera on the audience side; Right is the member's right.", ...Object.values(VIEW_LABELS),
     "Custom: the direction is this angle alone.", "Added to the preset direction.",
-    "Reference", "Stage front", "Member facing", "Camera angle", "Fixed (follow position only)", "Look at member",
-    "Fixed: the camera keeps its direction and only follows the member's position. Look at member: it turns toward the member.",
+    "Reference", "Stage front", "Member facing", "Camera angle", "Fixed (follow position only)", "Pan (follow angle only)", "Look at member",
+    "Fixed: the camera keeps its direction and only follows the member's position. Pan: the camera stays where the rig starts and only turns toward the member. Look at member: it moves and turns.",
     "Placement", "Framing", ...Object.values(FRAMING_LABELS),
     "Camera height above the look-at point.", "+ moves the camera toward the member's right in the front view (the camera's left).",
     "Moves the point the camera looks at, in the reference frame.", "Lens", "Dead zone",
