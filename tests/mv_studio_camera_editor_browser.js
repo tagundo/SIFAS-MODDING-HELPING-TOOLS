@@ -351,6 +351,23 @@ async function synthetic(browser, url) {
   assert((await page.locator('#mv-cam-curves polyline.mv-cam-dense').count()) >= 3, 'baked curves drawn');
   assert((await page.locator('#mv-cam-curves .mv-cam-curve-key').count()) >= 6, 'key points drawn');
   assert((await page.locator('#mv-cam-curves .mv-cam-handle').count()) >= 1, 'handles of the selected key');
+  // The curve view follows its panel's width when the stage / side panel splitter moves.
+  const curveWidth = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+    const view = document.getElementById('mv-cam-curves');
+    resolve({ drawn: Number(view.querySelector('svg').getAttribute('width')), room: Math.max(160, Math.round(view.clientWidth)) });
+  }))));
+  const curveBefore = await curveWidth();
+  assert.equal(curveBefore.drawn, curveBefore.room, 'the curve view fills its panel');
+  await page.locator('#mv-inspector-resizer').focus();
+  await page.keyboard.press('Shift+ArrowLeft');
+  await page.keyboard.press('Shift+ArrowLeft');
+  const curveWider = await curveWidth();
+  assert(curveWider.room >= curveBefore.room + 100, `the panel is wider (${curveBefore.room} -> ${curveWider.room})`);
+  assert.equal(curveWider.drawn, curveWider.room, 'the curve view redraws at the wider panel width');
+  await page.keyboard.press('Home');
+  const curveBack = await curveWidth();
+  assert.equal(curveBack.room, curveBefore.room);
+  assert.equal(curveBack.drawn, curveBack.room, 'and at the default width again');
   // Drag a key's value in the curve view: one undo step.
   const undoBefore = (await state(page)).history.undo;
   const selectedKey = page.locator('#mv-cam-curves .mv-cam-curve-key.mv-selected[data-channel="y"]');

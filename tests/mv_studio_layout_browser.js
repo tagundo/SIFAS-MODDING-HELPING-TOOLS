@@ -7,9 +7,11 @@
    folding the panel away and back, the toolbar toggle, the values kept across a reload,
    and the stacked phone layout where the splitter sets the panel height. Where taps land on
    touch screens: each splitter's target spans 32 px, and controls beside it (stage overlay
-   controls at their 8 px inset, the side panel's fields) keep their whole box. Also a short
-   phone where folding and Home come back to the layout it loaded with. Korean UI, with
-   screenshots in EVIDENCE_DIR. */
+   controls at their 8 px inset, the side panel's fields) keep their whole box. Also the
+   splitter's limits (a too narrow window, the stage's 320 px minimum on a tablet, a short
+   phone where folding and Home come back to the layout it loaded with), panel open states
+   kept across a reload, every panel hidden, and the selected tab kept in view in a phone's
+   tab strip. Korean UI, with screenshots in EVIDENCE_DIR. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -450,6 +452,23 @@ async function desktop(browser, url) {
   assert.equal(state.inspector.width, initial.inspector.width, 'double click restores the default');
   assert.equal(state.stored.width, null);
 
+  // A window too narrow for the default width beside a 320 px stage: the default is
+  // narrowed to fit, and comes back with the room.
+  await page.setViewportSize({ width: 560, height: 420 });
+  state = await read(page);
+  const narrowRoom = state.workspace.width;
+  assert.equal(state.grip.max, Math.min(Math.round(narrowRoom * .6), Math.floor(narrowRoom - 6 - 320)));
+  assert(state.grip.max < 240, `the default (15rem) does not fit (${state.grip.max})`);
+  assert.equal(state.inspector.width, state.grip.max, 'the default narrows to the room there is');
+  assert.equal(state.grip.now, state.inspector.width);
+  assert(state.stage.width >= 320, `the stage keeps its minimum (${state.stage.width})`);
+  assert.equal(state.pageOverflow, 0);
+  assert.equal(state.stored.width, null, 'fitting the default stores nothing');
+  assertRenderer(state, 'narrow window');
+  await page.setViewportSize({ width: 1366, height: 768 });
+  state = await read(page);
+  assert.equal(state.inspector.width, initial.inspector.width, 'the default again with the room');
+
   // ---- Kept across a reload ---------------------------------------------------------------
   await grip.focus();
   await grip.press('Shift+ArrowLeft');
@@ -477,6 +496,8 @@ async function desktop(browser, url) {
   await settle(page);
   state = await read(page);
   assert.equal(state.inspector.width, state.grip.max, 'clamped to the room there is');
+  assert.equal(state.grip.now, state.inspector.width, 'the splitter reports the clamped width');
+  assert.equal(state.grip.text, `${state.inspector.width} px`);
   assert.equal(state.stored.width, '1500');
   await page.evaluate((key) => localStorage.setItem(key, 'wide'), WIDTH_KEY);
   await page.reload();
@@ -578,6 +599,33 @@ async function phonePortrait(browser, url) {
   near(state.inspector.height, initial.inspector.height, 'Home: the default height');
   assert.equal(state.stored.height, null);
 
+  // The selected timeline tab scrolls into view inside its strip, never the page: a tap on
+  // a tab half hidden at the strip's end shows all of it.
+  const cut = await page.evaluate(() => {
+    const list = document.getElementById('mv-timeline-tabs'), tabs = [...list.querySelectorAll('[role=tab]')];
+    const tab = tabs[tabs.length - 1];
+    list.scrollLeft = 0;
+    const box = list.getBoundingClientRect();
+    list.scrollLeft = Math.max(0, tab.getBoundingClientRect().left - (box.right - 14));
+    const rect = tab.getBoundingClientRect();
+    return { overflow: list.scrollWidth > list.clientWidth, id: tab.id, selected: tab.getAttribute('aria-selected'),
+      x: (Math.max(rect.left, box.left) + box.right) / 2, y: rect.top + rect.height / 2, hidden: rect.right - box.right };
+  });
+  assert(cut.overflow, 'the tab strip scrolls on a phone');
+  assert.equal(cut.selected, 'false');
+  assert(cut.hidden > 8, `the last tab is cut by the strip's end (${cut.hidden})`);
+  await page.touchscreen.tap(cut.x, cut.y);
+  await settle(page);
+  const shown = await page.evaluate((id) => {
+    const list = document.getElementById('mv-timeline-tabs'), tab = document.getElementById(id);
+    const box = list.getBoundingClientRect(), rect = tab.getBoundingClientRect();
+    return { selected: tab.getAttribute('aria-selected'), inside: rect.left >= box.left - .5 && rect.right <= box.right + .5,
+      page: [scrollX, scrollY, document.scrollingElement.scrollTop] };
+  }, cut.id);
+  assert.equal(shown.selected, 'true', 'the tapped tab is selected');
+  assert(shown.inside, 'the selected tab is all in view');
+  assert.deepEqual(shown.page, [0, 0, 0], 'the page itself does not scroll');
+  await page.screenshot({ path: path.join(evidence, 'layout-phone-portrait-tab-ko.png') });
   assert.deepEqual(errors, []);
   await context.close();
 }
@@ -633,7 +681,8 @@ async function phoneShort(browser, url) {
 }
 
 // A touch tablet held upright (820x1180, side by side): 32 px splitter targets that leave the
-// stage's overlay controls and the panel's fields whole, and the folded rail.
+// stage's overlay controls and the panel's fields whole, End stopping at the stage's 320 px
+// minimum (narrower than 60 % of the row here), and the folded rail.
 async function tablet(browser, url) {
   const context = await browser.newContext({ locale: 'ko', viewport: { width: 820, height: 1180 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
   await context.addInitScript(probe);
@@ -656,6 +705,17 @@ async function tablet(browser, url) {
   await page.screenshot({ path: path.join(evidence, 'layout-tablet-ko.png') });
 
   const grip = page.getByRole('separator', { name: '패널 너비' });
+  await grip.press('End');
+  state = await read(page);
+  const room = state.workspace.width;
+  assert(Math.floor(room - band - 320) < Math.round(room * .6), 'the stage minimum is the tighter limit');
+  assert.equal(state.grip.max, Math.floor(room - band - 320));
+  assert.equal(state.inspector.width, state.grip.max, 'End: the widest panel');
+  near(state.stage.width, 320, 'End leaves the stage its 320 px');
+  assertRenderer(state, 'tablet, End');
+  taps = await page.evaluate(targets);
+  assert.deepEqual(taps.overlay, { 'top: 8px; right: 8px': [], 'bottom: 8px; right: 8px': [] }, 'overlay controls of the narrowest stage');
+
   await grip.press('Enter');
   state = await read(page);
   assert.equal(state.folded, true);
@@ -668,6 +728,52 @@ async function tablet(browser, url) {
   await grip.press('Enter');
   await grip.press('Home');
   assert.equal((await read(page)).inspector.width, 240);
+  assert.deepEqual(errors, []);
+  await context.close();
+}
+
+// Panels the user opens or closes stay so across a reload (MV assets, folded away after an
+// import, stays open once the user opened it); with every panel hidden in the panel menu the
+// splitter and the side panel toggle go away and the stage spans the row.
+async function panels(browser, url) {
+  const context = await browser.newContext({ locale: 'ko', viewport: { width: 1366, height: 768 } });
+  await context.addInitScript(probe);
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await openProject(page, url);
+  const open = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#mv-inspector > details[data-mv-panel]')]
+    .map((node) => [node.dataset.mvPanel, node.open])));
+  const before = await open();
+  assert.deepEqual([before.assets, before.performers, before.tracks], [false, false, true], 'the panels after an import');
+  for (const id of ['mv-assets', 'mv-performers', 'mv-tracks']) await page.locator(`#${id} > summary`).click();
+  // The choice is stored on the toggle event that follows each click.
+  await page.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('elichika.mv.panelOpen.v1')) || {}).length === 3, null, { timeout: 3000 })
+    .catch(() => {});
+  assert.deepEqual(JSON.parse(await page.evaluate(() => localStorage.getItem('elichika.mv.panelOpen.v1'))),
+    { assets: true, performers: true, tracks: false }, 'the panels the user opened and closed are stored');
+  await openProject(page, url);
+  const after = await open();
+  assert.deepEqual([after.assets, after.performers, after.tracks], [true, true, false], 'kept across a reload and an import');
+  assert.equal(after.events, before.events, 'a panel left alone keeps its default');
+
+  await page.locator('#mv-panel-menu > summary').click();
+  const boxes = page.locator('#mv-panel-options input[type=checkbox]');
+  const count = await boxes.count();
+  assert(count > 1);
+  for (let index = 0; index < count; index++) await boxes.nth(index).uncheck();
+  let state = await read(page);
+  assert.equal(state.inspector, null, 'every panel hidden');
+  assert.equal(state.grip.hidden, true, 'no splitter');
+  assert.equal(await page.locator('#mv-inspector-toggle').isVisible(), false, 'no side panel toggle');
+  near(state.stage.width, state.workspace.width, 'the stage spans the row');
+  assertRenderer(state, 'every panel hidden');
+  await boxes.nth(0).check();
+  state = await read(page);
+  assert(state.inspector && !state.grip.hidden, 'one panel back: the splitter is back');
+  assert.equal(await page.locator('#mv-inspector-toggle').isVisible(), true, 'and the toggle');
+  for (let index = 1; index < count; index++) await boxes.nth(index).check();
+  await page.locator('#mv-panel-menu > summary').click();
   assert.deepEqual(errors, []);
   await context.close();
 }
@@ -708,6 +814,7 @@ async function run() {
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     await desktop(browser, server.url);
+    await panels(browser, server.url);
     await tablet(browser, server.url);
     await phonePortrait(browser, server.url);
     await phoneShort(browser, server.url);
