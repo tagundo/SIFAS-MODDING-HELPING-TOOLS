@@ -67,6 +67,27 @@ class BlendMaterialTests(unittest.TestCase):
         material, scene, _ = _blend_material(envs={"_MainTexA": {"m_Scale": {"x": float("inf"), "y": 1.}}})
         self.assertIsNone(stage.read_material(scene, material, {}, {}))
 
+    def test_blend_maps_embed_each_set_map_and_leave_an_unset_one_white(self):
+        # so1044's dome leaves _MainTexB unset (m_PathID 0): Unity binds its "white" default.
+        texture = SimpleNamespace(type=SimpleNamespace(name="Texture2D"))
+        material, scene, tree = _blend_material(envs={"_MainTexA": {"m_Texture": {"m_FileID": 0, "m_PathID": 41}}})
+        materials = SimpleNamespace(scene=scene, texture=lambda value: 5 if value is texture else None)
+        with patch.object(stage, "_ref", return_value=texture) as ref, \
+                patch.object(stage, "collect_texture_sampler") as sampler:
+            descriptor = {}
+            self.assertTrue(stage.export_blend_maps(materials, material, descriptor))
+            self.assertEqual(descriptor, {"mainTexture": 5, "blendTexture": None})
+            ref.assert_called_once_with(material, {"m_FileID": 0, "m_PathID": 41})
+            self.assertEqual([call.args[3] for call in sampler.call_args_list], ["mainSampler"])
+            tree["m_SavedProperties"]["m_TexEnvs"] = [("_MainTexA", {"m_Texture": {"m_FileID": 0, "m_PathID": 0}})]
+            descriptor = {}
+            self.assertTrue(stage.export_blend_maps(materials, material, descriptor), "both maps unset")
+            self.assertEqual(descriptor, {"mainTexture": None, "blendTexture": None})
+            # A set reference that is not a Texture2D is not drawn.
+            tree["m_SavedProperties"]["m_TexEnvs"] = [("_MainTexB", {"m_Texture": {"m_FileID": 0, "m_PathID": 9}})]
+            ref.return_value = SimpleNamespace(type=SimpleNamespace(name="Cubemap"))
+            self.assertFalse(stage.export_blend_maps(materials, material, {}))
+
     @patch.object(model_viewer, "_ref", return_value=None)  # The stage preview loads no shader bundle.
     def test_shader_identity_tint_default_and_camera_depth(self, _):
         material, scene, tree = _blend_material()

@@ -63,6 +63,14 @@ class ActualSkySortTests(unittest.TestCase):
         stage_center = np.array(sky["extras"]["mvStageMaterial"]["opaqueSort"]["center"])
         self.assertEqual(sky["extras"]["mvStageMaterial"]["opaqueSort"]["queue"], 2000)
         self.assertGreater(dome_center[1], stage_center[1])
+        # The AlphaTest queue (2450) is opaque too: the ground's balloon cut-outs sort in it, at the
+        # ground renderer's bounds centre, after every Geometry queue renderer.
+        cutouts = {doc_material: _primitives(stage_doc, doc_material)
+                   for doc_material in ("bg0018_02_balloon_cut_mt", "bg0018_02_balloontree_cut_mt")}
+        for name, primitives in cutouts.items():
+            self.assertEqual(len(primitives), 1, name)
+            self.assertEqual(primitives[0]["extras"]["mvStageMaterial"]["opaqueSort"],
+                             {"queue": 2450, "center": stage_center.tolist()}, name)
         # The 10120 runtime dump's 201 main-camera samples lie in Unity x -8.35..10.60, y 0.003..1.97,
         # z -3.24..25.67 (preview x mirrored). From every corner of that box the stage bounds are
         # nearer: the stage draws first and the dome wins the depth tie, as the screencaps show.

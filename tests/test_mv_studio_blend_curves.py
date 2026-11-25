@@ -1,7 +1,10 @@
 """World MeshRenderer material curves of AS/Blend/Opaque renderers (10120's sky_01 _BlendRate)."""
 import os
 from pathlib import Path
+import time
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from zlib import crc32
 
 from webtools.core import model_animation as animation
@@ -34,6 +37,48 @@ class BlendCurveTests(unittest.TestCase):
                          "the layer-20 overlay pass has no AS/Blend/Opaque holder")
         self.assertEqual(overlay.material_channels(rows[:4] + rows[5:8], curves[:4] + curves[5:8], lambda _: 1, world=True),
                          ([], 0), "a partial color is not a channel")
+
+    def test_world_clip_needs_every_renderer_channel_on_the_blend_rate_renderer(self):
+        from webtools.core import mv_studio_stage_motion as stage
+        from webtools.core import mv_studio_timeline as studio
+
+        clip = {"m_ClipBindingConstant": {"genericBindings": []}, "m_MuscleClip": {
+            "m_StartTime": 0, "m_StopTime": 2, "m_Clip": {"m_ConstantClip": {"data": []}}}}
+        reader = SimpleNamespace(type=SimpleNamespace(name="AnimationClip"), read_typetree=lambda: clip)
+        native = object()
+        mono = {("cab", 1): (native, {"m_Clips": [{}]}, "AnimationTrack"),
+                ("cab", 3): (native, {"m_Clip": {"m_PathID": 4}}, "AnimationPlayableAsset")}
+        track = {"id": "cab:1", "label": "StageEffect/Expert/Animation/Track", "binding": _SKY,
+                 "nativeClass": "AnimationTrack", "events": [{"id": "cab:1:0", "values": {
+                     "animation": "cab:4", "asset": "cab:3", "playableClass": "AnimationPlayableAsset"}}]}
+        sky, other = animation.path_hash("sky_01"), animation.path_hash("sky_02")
+
+        def read(*rows):
+            bindings = [row for group in rows for row in group]
+            clip["m_ClipBindingConstant"]["genericBindings"] = bindings
+            clip["m_MuscleClip"]["m_Clip"]["m_ConstantClip"]["data"] = [1.] * len(bindings)
+            with patch.object(stage, "_declared", return_value=True), \
+                    patch.object(studio, "_pointer", side_effect=lambda _, ptr: ("cab", ptr["m_PathID"]) if ptr else None):
+                return stage.read({("cab", 4): reader}, mono, [track], time.monotonic() + 3)
+
+        def color(name, path=sky, first=0):
+            return [self._binding(name, lane, path) for lane in range(first, first + 4)]
+
+        rate = [self._binding("_BlendRate", 8)]
+        parsed = read(rate, color("_TintColor"), color("_AmbientColor", first=4))
+        self.assertEqual(parsed["mix"], {"cab:1:0": {"materialScope": "world"}})
+        self.assertEqual({(row["kind"], row["path"]) for row in parsed["clips"]["cab:4"]["channels"]},
+                         {("overlayScalar", sky), ("overlayTint", sky), ("overlayAmbient", sky)})
+        # MVStudioStageMaterial holds these for the _BlendRate renderer only: a _TintColor on another
+        # renderer, or a _MainTex_ST (not an AS/Blend/Opaque property), has no holder, and the
+        # runtime skips the whole event, so the clip stays unbound.
+        self.assertIsNone(read(rate, color("_TintColor", other)))
+        self.assertIsNone(read(rate, color("_MainTex_ST")))
+        self.assertIsNone(read(color("_TintColor")), "without _BlendRate a world _TintColor has no holder")
+        # Every other world scalar is an AS/SoftParticleBillboard or AS/Smoke input, which takes the
+        # soft-billboard rule whatever else the clip carries.
+        density = [self._binding("_Density", 8, other)]
+        self.assertEqual(read(rate, density)["mix"], {"cab:1:0": {"materialScope": "world"}})
 
 
 class ActualSkyCurveTests(unittest.TestCase):
