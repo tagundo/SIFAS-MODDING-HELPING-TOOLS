@@ -234,6 +234,10 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
 .mv-seek-label { flex: 1 1 12em; max-width: 45rem; }
 .mv-seek-label input { flex: 1 1 0; min-width: 0; }
 .mv-timeline-toolbar output { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The timeline resizer writes these on the scroll box itself; not inherited, a drag does
+   not restyle the thousand clips inside it on every frame. */
+@property --mv-timeline-height { syntax: "*"; inherits: false; }
+@property --mv-timeline-limit { syntax: "*"; inherits: false; }
 .mv-timeline-scroll {
   overflow: auto;
   scrollbar-gutter: stable;
