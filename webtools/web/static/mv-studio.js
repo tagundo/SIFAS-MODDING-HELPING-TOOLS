@@ -818,12 +818,15 @@
     edit({ label: "Revert clip", changes });
   }
 
-  // Non-native projects only: the exporter refuses new or removed native clips.
+  // Non-native projects only: the exporter refuses new or removed native clips. The copy gets an
+  // id the project never held: a deleted clip keeps its id in editor.originals (an added one as
+  // null), and editor state kept under that id for undo (a camera record) must not pass to it.
   function duplicateEvent(track, event) {
     if (project.nativeTimeline === true) return;
     const ids = new Set(project.tracks.flatMap((item) => item.events.map((clip) => clip.id)));
+    const used = (id) => ids.has(id) || history.originals.get(id) !== undefined;
     let number = 1;
-    while (ids.has(`${track.id}:u${number}`)) number++;
+    while (used(`${track.id}:u${number}`)) number++;
     const clone = copy(event);
     clone.id = `${track.id}:u${number}`;
     clone.start = clamp(event.start + event.duration, 0, Math.max(0, project.duration - event.duration));

@@ -2495,6 +2495,109 @@ for _source, _translated in _VIEWER_MODEL_SAVE_TRANSLATIONS.items():
     _TABLES["ja"][_source] = _translated[1]
 
 
+# MV Studio editor lane C: the camera editor (keys, curves, key diamonds). "Keyframes",
+# "Result" and "Automatic" are already translated above and are not redefined here.
+_MV_EDITOR_C_TRANSLATIONS = {
+    "Camera editor": ("카메라 편집기", "カメラエディター"),
+    "{count} samples · {rate} Hz": ("샘플 {count}개 · {rate} Hz", "サンプル{count}個 · {rate} Hz"),
+    "Open camera editor": ("카메라 편집기 열기", "カメラエディターを開く"),
+    "Key {time}": ("키 {time}", "キー {time}"),
+    "Original motion": ("원본 움직임", "元の動き"),
+    "Offset keys": ("오프셋 키", "オフセットキー"),
+    "Keyframes (replace)": ("키프레임 (교체)", "キーフレーム（置き換え）"),
+    "Camera mode": ("카메라 모드", "カメラモード"),
+    "Offset space": ("오프셋 기준", "オフセットの基準"),
+    "View-relative": ("시점 기준", "視点基準"),
+    "World": ("월드", "ワールド"),
+    "Camera keys": ("카메라 키", "カメラキー"),
+    "Key current view": ("현재 시점 키 추가", "現在の視点をキー"),
+    "Add key": ("키 추가", "キーを追加"),
+    "Duplicate key": ("키 복제", "キーを複製"),
+    "Delete key": ("키 삭제", "キーを削除"),
+    "Previous key": ("이전 키", "前のキー"),
+    "Next key": ("다음 키", "次のキー"),
+    "Align view to game camera": ("시점을 게임 카메라에 맞추기", "視点をゲームカメラに合わせる"),
+    "Revert shot": ("샷 되돌리기", "ショットを元に戻す"),
+    "Convert to keyframes": ("키프레임으로 변환", "キーフレームに変換"),
+    "Auto key": ("자동 키", "自動キー"),
+    "Keys the free camera view every time you finish moving it.": (
+        "자유 카메라를 움직일 때마다 그 시점을 키로 저장합니다.", "自由カメラを動かすたびに、その視点をキーにします。"),
+    "At the playhead": ("재생 위치 값", "再生位置の値"),
+    "Value": ("값", "値"),
+    "Offset": ("오프셋", "オフセット"),
+    "X": ("X", "X"),
+    "Y": ("Y", "Y"),
+    "Z": ("Z", "Z"),
+    "Pan": ("팬", "パン"),
+    "Tilt": ("틸트", "チルト"),
+    "Roll": ("롤", "ロール"),
+    "FOV": ("화각", "画角"),
+    "Truck": ("트럭 (좌우)", "トラック（左右）"),
+    "Pedestal": ("페데스탈 (상하)", "ペデスタル（上下）"),
+    "Dolly": ("돌리 (앞뒤)", "ドリー（前後）"),
+    "Selected key": ("선택한 키", "選択したキー"),
+    "Frame": ("프레임", "フレーム"),
+    "Interpolation": ("보간", "補間"),
+    "Handles": ("핸들", "ハンドル"),
+    "Constant": ("상수", "一定"),
+    "Linear": ("선형", "リニア"),
+    "Bezier": ("베지어", "ベジェ"),
+    "Auto clamped": ("자동 클램프", "自動クランプ"),
+    "Flat": ("평탄", "フラット"),
+    "Free": ("자유", "フリー"),
+    "Ease presets": ("이징 프리셋", "イージングプリセット"),
+    "Ease in-out": ("이즈 인아웃", "イーズインアウト"),
+    "Ease in": ("이즈 인", "イーズイン"),
+    "Ease out": ("이즈 아웃", "イーズアウト"),
+    "Curve channels": ("커브 채널", "カーブのチャンネル"),
+    "Camera curves": ("카메라 커브", "カメラカーブ"),
+    "Shot {index} / {count}": ("샷 {index} / {count}", "ショット {index} / {count}"),
+    "Frame {frame} / {last}": ("프레임 {frame} / {last}", "フレーム {frame} / {last}"),
+    "No camera shot at the playhead.": ("재생 위치에 카메라 샷이 없습니다.", "再生位置にカメラショットがありません。"),
+    "New camera shot at playhead": ("재생 위치에 새 카메라 샷", "再生位置に新しいカメラショット"),
+    "Camera shot": ("카메라 샷", "カメラショット"),
+    "Camera (editor)": ("카메라 (편집기)", "カメラ（エディター）"),
+    "This camera shot cannot be edited.": ("이 카메라 샷은 편집할 수 없습니다.", "このカメラショットは編集できません。"),
+    "The camera samples of this shot cannot be exported.": (
+        "이 샷의 카메라 샘플은 내보낼 수 없습니다.", "このショットのカメラサンプルは書き出せません。"),
+    "Restore this shot's original length to edit its camera.": (
+        "카메라를 편집하려면 이 샷의 길이를 원래대로 되돌리세요.", "カメラを編集するには、このショットの長さを元に戻してください。"),
+    "Switch the preview camera to Free camera to key the view.": (
+        "시점을 키로 저장하려면 미리보기 카메라를 자유 카메라로 바꾸세요.",
+        "視点をキーにするには、プレビューカメラを自由カメラに切り替えてください。"),
+    "Duration is locked while this shot has camera edits.": (
+        "카메라를 편집한 샷은 길이를 바꿀 수 없습니다.", "カメラを編集したショットは長さを変えられません。"),
+    "A camera rig also moves this shot.": ("카메라 리그도 이 샷을 움직입니다.", "カメラリグもこのショットを動かしています。"),
+    "Restore the original length of camera shots with camera edits before exporting.": (
+        "내보내기 전에 카메라를 편집한 샷의 길이를 원래대로 되돌리세요.",
+        "書き出す前に、カメラを編集したショットの長さを元に戻してください。"),
+    "The camera could not be baked.": ("카메라를 굽지 못했습니다.", "カメラを焼き込めませんでした。"),
+    "Edit camera key": ("카메라 키 편집", "カメラキーを編集"),
+    "Add camera key": ("카메라 키 추가", "カメラキーを追加"),
+    "Move camera key": ("카메라 키 이동", "カメラキーを移動"),
+    "Delete camera key": ("카메라 키 삭제", "カメラキーを削除"),
+    "Duplicate camera key": ("카메라 키 복제", "カメラキーを複製"),
+    "Edit camera handle": ("카메라 핸들 편집", "カメラハンドルを編集"),
+    "Change interpolation": ("보간 변경", "補間を変更"),
+    "Change handle type": ("핸들 종류 변경", "ハンドルの種類を変更"),
+    "Apply ease preset": ("이징 프리셋 적용", "イージングプリセットを適用"),
+    "Change camera mode": ("카메라 모드 변경", "カメラモードを変更"),
+    "Change offset space": ("오프셋 기준 변경", "オフセットの基準を変更"),
+    "New camera shot": ("새 카메라 샷", "新しいカメラショット"),
+    "Remove the camera keys of this shot and play its original motion?": (
+        "이 샷의 카메라 키를 지우고 원래 움직임으로 재생할까요?", "このショットのカメラキーを消して、元の動きで再生しますか？"),
+    "Replace this shot's motion with keys at its first and last frame and at every key?": (
+        "이 샷의 움직임을 첫 프레임, 마지막 프레임과 각 키 위치의 키로 바꿀까요?",
+        "このショットの動きを、最初と最後のフレームと各キーの位置のキーに置き換えますか？"),
+    "Turn the keys into offsets over the original motion at the same frames?": (
+        "같은 프레임에서 키를 원래 움직임에 대한 오프셋으로 바꿀까요?",
+        "同じフレームで、キーを元の動きに対するオフセットに変えますか？"),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_C_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+
 _COSTUME_CONVERSION_TRANSLATIONS = {
     "Costume platform conversion": ["코스튬 플랫폼 변환", "衣装のプラットフォーム変換"],
     "Convert a modified costume body for Android (APK) or iOS using the same costume from the output platform.": [
