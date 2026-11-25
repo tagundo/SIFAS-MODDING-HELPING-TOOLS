@@ -19,6 +19,8 @@ _SHADERS = {
     # unconditionally, and fixes Blend One Zero, ZWrite On, ZTest LEqual.
     ("cab-f8a6d724e5bbefa191ed2e1f27102738", -3111404110691668338): "blend",
 }
+# Every shader above declares Tags { "Queue" = "Geometry" } on its subshader.
+_DEFAULT_QUEUE = 2000
 # AS/Blend/Opaque m_PropInfo defaults: _TintColor (1, 1, 1, 1), _AmbientColor
 # (1, 1, 1, 0), _BlendRate Range(0, 1) = 0, and "white" for both 2D maps.
 _BLEND_DEFAULTS = {"_TintColor": [1., 1., 1., 1.], "_AmbientColor": [1., 1., 1., 0.]}
@@ -197,6 +199,10 @@ def read_material(scene, material, ambient, single_ambient):
     if mode == "blend" and cull not in (0, 1, 2):
         return None
     meta = {"shader": mode, "colors": colors, "ambientDefaults": ambient.get(identity), "cull": cull}
+    queue = tree.get("m_CustomRenderQueue", -1)
+    if type(queue) is int and (queue == -1 or 0 <= queue <= 5000):
+        # Unity draws the opaque queues (2500 and below) front to back.
+        meta["queue"] = _DEFAULT_QUEUE if queue == -1 else queue
     if single := single_ambient.get(identity):
         meta["singleAmbientBinding"] = single
     if "_ALPHATEST_ON" in keywords:
@@ -284,6 +290,27 @@ def export_blend_maps(materials, material, descriptor):
         descriptor[field] = materials.texture(texture)
         collect_texture_sampler(materials, texture, descriptor, sampler, priority=MAIN_SAMPLERS)
     return True
+
+
+def opaque_sort_center(renderer_tree, mesh, position_matrix, *, builtin_mesh=False):
+    """The renderer bounds centre Unity sorts opaque queues by, in the primitive's vertex frame.
+
+    A MeshRenderer's world bounds are its mesh's local AABB under the
+    renderer transform, so the box centre maps through the same matrix as the
+    exported vertices (``position_matrix``, which also mirrors X).
+    """
+    if renderer_tree is None or any(renderer_tree.get(field, 0) for field in
+                                    ("m_RendererPriority", "m_SortingLayerID", "m_SortingLayer", "m_SortingOrder")):
+        return None
+    if builtin_mesh:
+        local = [0., 0., 0.]  # Unity's built-in Plane and Quad are centred on their origin.
+    else:
+        center = getattr(getattr(mesh, "m_LocalAABB", None), "m_Center", None)
+        local = [getattr(center, axis, None) for axis in "xyz"]
+    if any(type(value) not in (float, int) or not math.isfinite(value) for value in local):
+        return None
+    point = np.asarray(position_matrix, dtype=float) @ np.array([*local, 1.])
+    return [float(value) for value in point[:3]] if np.isfinite(point).all() else None
 
 
 def collect_main_sampler(scene, materials, material, descriptor, *, static_opaque=False):

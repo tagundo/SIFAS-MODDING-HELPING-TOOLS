@@ -1829,6 +1829,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             penlight_transform = {"bindingSuffix": penlight[1],
                                   "localToPreview": position_matrix.T.reshape(-1).tolist()}
         stage_color = stage_lightmap = stage_lightmap_source = stage_uv = stage_emissive_uv = coloring_uv = None
+        opaque_center = False  # Computed once per renderer: every submesh shares its bounds.
         primitives, refs, first_face = [], tree.get("m_Materials", []), 0
         for index, triangles in enumerate(submeshes):
             if not len(triangles):
@@ -1980,6 +1981,16 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             descriptor = None
                     except ValueError:
                         descriptor = None
+                if descriptor and "queue" in descriptor:
+                    descriptor.pop("queue")
+                    queue = stage_metadata[_key(material_obj)]["queue"]
+                    if renderer_type == "MeshRenderer" and queue <= 2500:
+                        if opaque_center is False:
+                            opaque_center = mv_studio_stage_materials.opaque_sort_center(
+                                tree, None if builtin_mesh else (raw or {}).get("mesh") or mesh_obj.read(),
+                                position_matrix, builtin_mesh=bool(builtin_mesh))
+                        if opaque_center is not None:
+                            descriptor["opaqueSort"] = {"queue": queue, "center": opaque_center}
                 if descriptor:
                     custom = {}
                     if descriptor.get("vertexColor") and not descriptor.get("vertexColorAbsent"):

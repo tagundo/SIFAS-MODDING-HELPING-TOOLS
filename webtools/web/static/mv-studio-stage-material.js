@@ -181,6 +181,11 @@
       textureIndex(meta.mainTexture) && textureIndex(meta.blendTexture);
   }
 
+  function opaqueSortSource(value) {
+    return Number.isInteger(value?.queue) && value.queue >= 0 && value.queue <= 2500 &&
+      Array.isArray(value.center) && value.center.length === 3 && value.center.every(Number.isFinite);
+  }
+
   function reflectionSource(value) {
     return Number.isSafeInteger(value?.bufferView) && value.bufferView >= 0 &&
       Number.isSafeInteger(value.size) && value.size >= 8 && value.size <= 256 &&
@@ -527,6 +532,14 @@
       blendOwners.set(owner, entry);
       blendEntries.push(entry);
     }
+    // Unity sorts each opaque queue front to back by the renderer bounds centre
+    // (MVStudioOpaqueSort); every submesh of a renderer shares its bounds.
+    const opaqueEntries = [];
+    for (const record of records) {
+      const source = record.meta.opaqueSort;
+      if (opaqueSortSource(source)) opaqueEntries.push({ node: record.node, material: record.material,
+        center: new T.Vector3().fromArray(source.center), queue: source.queue });
+    }
 
     const singleBindings = new Set(records.map(({meta}) => meta.singleAmbientBinding).filter(Boolean));
     const hasEmissiveBinding = records.some(({meta}) => meta.emissive?.binding === stageModel);
@@ -677,6 +690,8 @@
           }
         }
       },
+      // The opaque renderers the native front-to-back rule orders (MVStudioOpaqueSort).
+      opaqueSortEntries: () => opaqueEntries.filter(entry => entry.node.material === entry.material),
       dispose() {
         for (const entry of uvRecords) if (uvOwners.get(entry.owner) === entry) uvOwners.delete(entry.owner);
         for (const entry of blendEntries) if (blendOwners.get(entry.owner) === entry) blendOwners.delete(entry.owner);
@@ -684,6 +699,7 @@
           node.material = original;
           material.dispose();
         }
+        opaqueEntries.length = 0;
         sampler.dispose();
         white?.dispose();
         for (const cube of cubes.values()) cube?.dispose();

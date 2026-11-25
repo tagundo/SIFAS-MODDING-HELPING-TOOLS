@@ -337,6 +337,7 @@
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
     const transparentSort = global.MVStudioTransparentSort?.create(T, renderer);
+    const opaqueSort = global.MVStudioOpaqueSort?.create(T, renderer);
     // The Live* mixers' input walk over the frame clock (LiveMixerBase`2.ProcessWithoutSeek):
     // MVStudioLighting.nativeWeight leaves out the inputs it skipped.
     const mixers = global.MVStudioMixer?.controller((event, time) => global.MVStudioLighting.clipWeight(event, time)) ?? null;
@@ -500,8 +501,14 @@
 
     function drawWorld(source, camera, sceneRecords, qualityMode) {
       prepareSoftDepth(source, camera, sceneRecords, qualityMode);
-      if (transparentSort) transparentSort.draw(source, camera, sceneRecords);
-      else renderer.render(source, camera);
+      // The native front-to-back order of the opaque stage renderers (coplanar surfaces).
+      const opaque = opaqueSort?.begin(source, camera, sceneRecords) === true;
+      try {
+        if (transparentSort) transparentSort.draw(source, camera, sceneRecords);
+        else renderer.render(source, camera);
+      } finally {
+        if (opaque) opaqueSort.end();
+      }
     }
 
     // A focus part is an exported node, or a fixed world point (BodyPartManager.face
