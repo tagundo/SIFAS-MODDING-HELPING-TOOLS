@@ -513,6 +513,103 @@
       return readOnly ? target.setFromMatrixPosition(point.matrixWorld) : point.getWorldPosition(target);
     }
 
+    // ---- Follow camera (mv-studio-camera-follow.js): the member target sampler ----
+    // Only the follow camera calls these; nothing here runs for a project without a rig.
+    // memberTargets: every loaded member, the BodyPartType targets it has, and whether its
+    // hips are a node (a fixed world point has no facing).
+    function memberTargets() {
+      return records.filter((record) => record.group === actors && Number.isInteger(record.position) && record.focusParts)
+        .map((record) => ({ slot: record.position, id: record.id ?? null,
+          parts: Object.keys(record.focusParts).map(Number).filter(Number.isInteger).sort((a, b) => a - b),
+          facing: !!record.focusParts[3] && !record.focusParts[3].isVector3 }))
+        .sort((a, b) => a.slot - b.slot);
+    }
+
+    // The hips' rest rotation below the member root, from the pose captured at actor load
+    // before any motion (record.initialPose); identity where that pose is not known.
+    const followRest = new WeakMap();
+    function followHipsRest(record, hips) {
+      const cached = followRest.get(record);
+      if (cached && cached.node === hips) return cached.inverse;
+      const saved = new Map((record.initialPose || []).map((item) => [item.node, item.rotation]));
+      const chain = [];
+      for (let node = hips; node && node !== record.root; node = node.parent) chain.push(node);
+      const rest = new T.Quaternion(), local = new T.Quaternion();
+      if (chain.length && chain[chain.length - 1].parent === record.root) {
+        for (let index = chain.length - 1; index >= 0; index--) {
+          const rotation = saved.get(chain[index]);
+          if (rotation) rest.multiply(local.fromArray(rotation));
+        }
+      }
+      const inverse = rest.normalize().invert();
+      followRest.set(record, { node: hips, inverse });
+      return inverse;
+    }
+
+    // One member's pose at `time` as playbackFrame poses it (pose restore, transform, the
+    // dance as a pure function of time, member scaling); nothing else in the scene moves.
+    function poseFollowedMember(record, time) {
+      record.physics?.restorePose();
+      record.constraints?.restorePose();
+      record.nodeScaling?.resetHeight();
+      const performer = performers.get(record.id);
+      if (performer) actorPose(record, performer);
+      if (record.motion) record.motion.evaluatePose(time, { split: false });
+      else if (record.mixer) record.mixer.setTime(time);
+      record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), time);
+    }
+
+    // The path of one member's body part at `times` (director seconds): Unity positions and the
+    // member's facing yaw (deg, Unity; null without hips). Time-sliced (budgetMs per slice);
+    // after each slice the playhead's own frame is evaluated again, so the visible frame and
+    // the physics state stay the playhead's. Physics is never reset.
+    async function sampleMemberPath({ slot, part, times, signal, onProgress, budgetMs = 8 } = {}) {
+      const list = times instanceof Float64Array ? times : Float64Array.from(times || []);
+      const count = list.length;
+      const find = () => records.find((record) => record.group === actors && record.position === slot);
+      const record = find();
+      const target = record?.focusParts?.[part];
+      if (!record || !target) throw new Error("The member to follow is not loaded.");
+      const hips = record.focusParts[3] && !record.focusParts[3].isVector3 ? record.focusParts[3] : null;
+      const positions = new Float64Array(3 * count), yaw = hips ? new Float64Array(count) : null;
+      const inverse = hips ? followHipsRest(record, hips) : null;
+      const point = new T.Vector3(), turn = new T.Quaternion(), forward = new T.Vector3();
+      const ticket = generation, budget = Number.isFinite(budgetMs) && budgetMs > 0 ? budgetMs : 8;
+      const clock = () => global.performance?.now?.() ?? Date.now();
+      const idle = () => new Promise((resolve) => {
+        if (typeof global.requestIdleCallback === "function") global.requestIdleCallback(() => resolve(), { timeout: 50 });
+        else setTimeout(resolve, 0);
+      });
+      const cancelled = () => new DOMException("The member path sampling was cancelled.", "AbortError");
+      let index = 0, heading = 0;
+      while (index < count) {
+        if (signal?.aborted || disposed || ticket !== generation) throw cancelled();
+        if (find() !== record) throw new Error("The member to follow is not loaded.");
+        const started = clock();
+        try {
+          do {
+            poseFollowedMember(record, list[index]);
+            focusPoint(record, part, point);
+            positions[3 * index] = -point.x;
+            positions[3 * index + 1] = point.y;
+            positions[3 * index + 2] = point.z;
+            if (yaw) {
+              hips.getWorldQuaternion(turn).multiply(inverse);
+              forward.set(0, 0, 1).applyQuaternion(turn);
+              if (forward.x * forward.x + forward.z * forward.z > 1e-12) heading = Math.atan2(-forward.x, forward.z) * 180 / Math.PI;
+              yaw[index] = heading;
+            }
+            index++;
+          } while (index < count && clock() - started < budget);
+        } finally {
+          if (!disposed) playbackFrame(currentTime, undefined, true);
+        }
+        onProgress?.(index, count);
+        if (index < count) await idle();
+      }
+      return { positions, yaw };
+    }
+
     function captureFocusLag(valid) {
       focusLag.valid = valid;
       focusLag.points.clear();
@@ -2719,6 +2816,8 @@
         };
       },
       assetDump,
+      // Follow camera (mv-studio-camera-follow.js): member targets and their time-sliced path.
+      memberTargets, sampleMemberPath,
       setVisible(value) {
         const changed = visible !== Boolean(value);
         visible = Boolean(value);
