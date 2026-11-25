@@ -204,12 +204,14 @@ def _source_recipe():
     code = {}
     _package_code("webtools", package, code)
     root = os.path.dirname(list(package.submodule_search_locations)[0])
-    for info in pkgutil.iter_modules([root]):
-        if not info.ispkg:
-            try:
-                code[info.name] = _module_bytes(info.module_finder.find_spec(info.name))
-            except (ImportError, OSError, ValueError, TypeError, AttributeError):
-                code[info.name] = None
+    # The scripts beside webtools and in its live_timeline folder (no package of its own).
+    for path, prefix in ((root, ""), (os.path.join(root, "live_timeline"), "live_timeline.")):
+        for info in pkgutil.iter_modules([path], prefix):
+            if not info.ispkg:
+                try:
+                    code[info.name] = _module_bytes(info.module_finder.find_spec(info.name))
+                except (ImportError, OSError, ValueError, TypeError, AttributeError):
+                    code[info.name] = None
     if any(code.get(name) is None for name in _REQUIRED):
         return None
     digest = sha256(f"receipt format {RECEIPT_FORMAT}".encode())

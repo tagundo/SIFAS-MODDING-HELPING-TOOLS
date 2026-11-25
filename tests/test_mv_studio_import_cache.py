@@ -213,6 +213,12 @@ class ReceiptTests(unittest.TestCase):
         cache._source_recipe.cache_clear()
         with patch.object(cache, "_library", side_effect=lambda name: [name, "0.0", None, None]):
             self.assertNotEqual(cache._source_recipe(), first)
+        # The live_timeline scripts beside webtools count too.
+        readable = cache._module_bytes
+        cache._source_recipe.cache_clear()
+        with patch.object(cache, "_module_bytes", side_effect=lambda spec: b"edited" if spec is not None and
+                          spec.name == "live_timeline.sifas_timeline_inject" else readable(spec)):
+            self.assertNotEqual(cache._source_recipe(), first)
         cache._source_recipe.cache_clear()
         with patch.object(cache, "_compression", return_value=["1.3", "zlib-ng 2.2", None]):
             self.assertNotEqual(cache._source_recipe(), first)
