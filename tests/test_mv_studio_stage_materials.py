@@ -552,6 +552,68 @@ class StageCubemapTests(unittest.TestCase):
         self.assertIsNone(self.stage_material(off + "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA _ALPHA_TRANSPARENCY_MULTIPLY", {}))
         self.assertIsNone(self.stage_material(off, {}))
 
+    @staticmethod
+    def cutout_material(keywords, floats, queue=-1, colors=None):
+        material = SimpleNamespace(
+            path_id=14, type=SimpleNamespace(name="Material"),
+            assets_file=SimpleNamespace(externals=[SimpleNamespace(path="CAB-ac0988328357841c205babac78d7cf4e")]))
+        white = dict.fromkeys("rgba", 1)
+        tree = {
+            "m_Shader": {"m_FileID": 1, "m_PathID": -6136900368392166873}, "m_ShaderKeywords": keywords,
+            "m_CustomRenderQueue": queue,
+            "m_SavedProperties": {
+                "m_Floats": list(floats.items()),
+                "m_Colors": colors if colors is not None else [("_AmbientColor", {**white, "a": 0}), ("_TintColor", white),
+                                                               ("_Color", white)],
+                "m_TexEnvs": [("_MainTex", {"m_Scale": {"x": 1, "y": 1}, "m_Offset": {"x": 0, "y": 0}})],
+            },
+        }
+        scene = SimpleNamespace(tree=lambda _: tree)
+        return scene, material, stage.read_material(scene, material, {}, {})
+
+    def test_transparent_cutout_always_tests_its_cutoff(self):
+        floats = {"_CullMode": 0, "_Cutoff": .5, "_ZTestMode": 4, "_ZWriteParam": 1, "_StencilComp": 8,
+                  "_StencilPassOp": 0, "_VERTEX_COLOR": 0, "_SATURATE": 0}
+        # 12128/3 bg0038_01_skyA_cut_mt: only the stale _ZWRITEPARAM_ON is saved.
+        _, _, sky = self.cutout_material("_ZWRITEPARAM_ON", floats)
+        self.assertEqual({key: sky.get(key) for key in ("shader", "cull", "queue", "alphaCutoff", "vertexColor", "depthWrite")},
+                         {"shader": "cutout", "cull": 0, "queue": 2450, "alphaCutoff": .5, "vertexColor": False,
+                          "depthWrite": None})
+        self.assertNotIn("_Color", sky["colors"])
+        # 10022/3 bg0007_04_plantsA_cut_mt keeps AS/Stage keywords from a shader swap.
+        _, _, plants = self.cutout_material(
+            "_ALPHATEST_ON _ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA _CUBEMAP_MODE_OFF _VERTEX_COLOR_ON _ZWRITEPARAM_ON", floats)
+        self.assertEqual((plants["shader"], plants["vertexColor"]), ("cutout", True))
+        # 12026/3 mat_stg_so2026_oth_02 (the moon chair): Cull Back in queue 3000.
+        _, _, chair = self.cutout_material("_VERTEX_COLOR_ON", {**floats, "_CullMode": 2}, queue=3000)
+        self.assertEqual((chair["cull"], chair["queue"]), (2, 3000))
+        # 12030/3 mat_stg_so2030_alb_oth_01: saturate with a stale _VERTEX_COLOR_OFF.
+        _, _, torch = self.cutout_material("_SATURATE_ON _VERTEX_COLOR_OFF _VERTEX_COLOR_ON _ZWRITEPARAM_ON", floats)
+        self.assertEqual((torch["saturate"], torch["vertexColor"]), (True, True))
+        # 10008/3 bg0014_01_grassA_cut_mt: ZWrite Off and _Cutoff 0.4.
+        _, _, grass = self.cutout_material("", {**floats, "_ZWriteParam": 0, "_Cutoff": .4, "_ZTestMode": 2})
+        self.assertEqual((grass["depthWrite"], grass["depthTest"], grass["alphaCutoff"]), (False, 2, .4))
+        # Unset floats read the shader defaults: Cull Off, ZWrite On, ZTest LEqual, _Cutoff 0.5.
+        _, _, defaults = self.cutout_material("", {})
+        self.assertEqual({key: defaults.get(key) for key in ("cull", "alphaCutoff", "depthWrite", "depthTest", "stencil")},
+                         {"cull": 0, "alphaCutoff": .5, "depthWrite": None, "depthTest": None, "stencil": None})
+        _, _, stencil = self.cutout_material("", {"_StencilComp": 3, "_StencilRef": 2})
+        self.assertEqual(stencil["stencil"], {"ref": 2, "comp": 3, "pass": 0, "zfail": 0})
+        # Its particle variants are not stage surfaces.
+        for keywords in ("PROCEDURAL_INSTANCING_ON", "SOFTPARTICLES_ON _VERTEX_COLOR_ON"):
+            self.assertIsNone(self.cutout_material(keywords, floats)[2], keywords)
+        for bad in ({"_Cutoff": 1.5}, {"_CullMode": 3}, {"_ZTestMode": 9}, {"_ZWriteParam": .5}, {"_StencilPassOp": 9}):
+            self.assertIsNone(self.cutout_material("", {**floats, **bad})[2], bad)
+        self.assertIsNone(self.cutout_material("", floats, colors=[("_TintColor", {"r": 1, "g": 1, "b": 1, "a": 1})])[2])
+
+    def test_transparent_cutout_depth_pass_alpha_tests_without_a_keyword(self):
+        scene, material, _ = self.cutout_material("", {})
+        renderer = {"m_CastShadows": 1}
+        self.assertEqual(stage.camera_depth(scene, material, renderer, supports_cutout=True), {"kind": "cutout"})
+        self.assertIsNone(stage.camera_depth(scene, material, renderer, supports_cutout=False))
+        scene, material, _ = self.cutout_material("", {}, queue=3000)
+        self.assertIsNone(stage.camera_depth(scene, material, renderer, supports_cutout=True))
+
     def test_quality_ownership_uses_only_typed_primary_model_ambient(self):
         def node(kind, path):
             return SimpleNamespace(type=SimpleNamespace(name=kind), assets_file=object(), path_id=path)

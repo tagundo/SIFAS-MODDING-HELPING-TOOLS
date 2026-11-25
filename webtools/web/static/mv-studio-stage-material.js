@@ -179,6 +179,22 @@
           color = mix(color, emission, texture2D(emissiveMap, vStageEmissiveUV).r);
         #endif
         gl_FragColor = vec4(color, alpha * tint.a);
+      #elif defined(TINT_THEN_COLOR)
+        // AS/General/TransparentCutout: ambient, then tint, then COLOR, then
+        // _SATURATE_ON adds _MainTex.rgb to the fourth power.
+        vec4 surface = texture2D(mainMap, vStageUV);
+        #ifdef CUTOUT
+          if (surface.a < alphaCutoff) discard;
+        #endif
+        vec4 color = vec4(mix(surface.rgb, ambient.rgb, ambient.a) * tint.rgb, surface.a * tint.a);
+        #ifdef VERTEX_COLOR
+          color *= vStageColor;
+        #endif
+        #ifdef SATURATE
+          vec3 square = surface.rgb * surface.rgb;
+          color.rgb += square * square;
+        #endif
+        gl_FragColor = color;
       #elif defined(TEXTURED)
         vec4 surface = texture2D(mainMap, vStageUV);
         #ifdef VERTEX_COLOR
@@ -231,6 +247,8 @@
         T.LessEqualStencilFunc, T.GreaterStencilFunc, T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc],
       stencilOps: [T.KeepStencilOp, T.ZeroStencilOp, T.ReplaceStencilOp, T.IncrementStencilOp, T.DecrementStencilOp,
         T.InvertStencilOp, T.IncrementWrapStencilOp, T.DecrementWrapStencilOp],
+      depthFunctions: [T.AlwaysDepth, T.NeverDepth, T.LessDepth, T.EqualDepth, T.LessEqualDepth, T.GreaterDepth,
+        T.NotEqualDepth, T.GreaterEqualDepth, T.AlwaysDepth],
     };
   }
 
@@ -241,6 +259,7 @@
       (meta.blend === undefined || Array.isArray(meta.blend) && meta.blend.length === 2 &&
         enumIn(meta.blend[0], 11) && enumIn(meta.blend[1], 11) && meta.blend[1] !== 9) &&
       (meta.depthWrite === undefined || meta.depthWrite === false) &&
+      (meta.depthTest === undefined || enumIn(meta.depthTest, 9) && meta.depthTest !== 4) &&
       (meta.stencil === undefined || enumIn(meta.stencil.ref, 256) && enumIn(meta.stencil.comp, 9) &&
         enumIn(meta.stencil.pass, 8) && enumIn(meta.stencil.zfail, 8));
   }
@@ -254,8 +273,12 @@
       material.blendEquation = material.blendEquationAlpha = T.AddEquation;
     }
     if (meta.depthWrite === false) material.depthWrite = false;
+    if (meta.depthTest === 0) material.depthTest = false;  // ZTest Disabled
+    else if (meta.depthTest !== undefined) material.depthFunc = state.depthFunctions[meta.depthTest];
     // Unity sorts the queues above 2500 back to front after every opaque queue.
     material.transparent = meta.queue > 2500;
+    // Blend One Zero stays unblended there too.
+    if (material.transparent && !meta.blend) material.blending = T.NoBlending;
     if (meta.stencil) {
       material.stencilWrite = true;
       material.stencilRef = meta.stencil.ref;
@@ -468,15 +491,16 @@
     root.traverse((node) => {
       sampler.retainOriginalMaterial(node.material);
       const meta = node.geometry?.userData?.mvStageMaterial;
-      if (!node.isMesh || !["stage", "general", "solid"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
+      if (!node.isMesh || !["stage", "general", "solid", "cutout"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
       if (meta.shader !== "solid" && (!node.material?.map || !isColor(meta.uvTransform) ||
           !isColor(meta.colors._AmbientColor))) return;
       if (meta.vertexColor && !node.geometry.getAttribute("_stage_color") && meta.vertexColorAbsent !== true) return;
       if (meta.shader === "stage" && (!parser || !Number.isSafeInteger(meta.lightmap) ||
           meta.lightmap < 0 || !node.geometry.getAttribute("_stage_light_uv") ||
           !isColor(meta.colors._BlendColor) || !Number.isFinite(meta.mipBias))) return;
-      if (meta.alphaCutoff !== undefined && (meta.shader !== "stage" || !Number.isFinite(meta.alphaCutoff) ||
-          meta.alphaCutoff < 0 || meta.alphaCutoff > 1)) return;
+      if ((meta.alphaCutoff !== undefined || meta.shader === "cutout") && (!["stage", "cutout"].includes(meta.shader) ||
+          !Number.isFinite(meta.alphaCutoff) || meta.alphaCutoff < 0 || meta.alphaCutoff > 1)) return;
+      if (meta.saturate !== undefined && (meta.shader !== "cutout" || meta.saturate !== true)) return;
       if (!passStateReady(meta) || meta.alphaSource !== undefined &&
           (meta.shader !== "stage" || !Object.hasOwn(reflectivities, meta.alphaSource))) return;
       if (meta.emissive && (meta.shader !== "stage" ||
@@ -509,6 +533,11 @@
         uniforms.ambient = {value: new T.Vector4().fromArray(meta.colors._AmbientColor)};
       }
       if (meta.vertexColor) defines.VERTEX_COLOR = 1;
+      if (meta.shader === "cutout") {
+        defines.TINT_THEN_COLOR = defines.CUTOUT = 1;
+        if (meta.saturate) defines.SATURATE = 1;
+        uniforms.alphaCutoff = {value: meta.alphaCutoff};
+      }
       if (meta.shader === "stage") {
         const lightMap = await sampledNativeTexture(meta.lightmap, meta.lightmapSampler);
         if (!active()) break;

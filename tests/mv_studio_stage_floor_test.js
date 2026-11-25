@@ -75,9 +75,56 @@ async function passStateTest() {
   assert.equal(plants.material.isMeshBasicMaterial, true);
 }
 
+function cutoutMeta(overrides = {}) {
+  return {shader: "cutout", colors: {_AmbientColor: [1, 1, 1, 0], _TintColor: [1, 1, 1, 1]}, cull: 0,
+    uvTransform: [1, 1, 0, 0], vertexColor: false, alphaCutoff: .5, queue: 2450, ...overrides};
+}
+
+function plain(root, meta, color = false) {
+  const geometry = new T.PlaneGeometry();
+  if (color) geometry.setAttribute("_stage_color", new T.Float32BufferAttribute(new Array(16).fill(1), 4));
+  geometry.userData.mvStageMaterial = meta;
+  const node = new T.Mesh(geometry, new T.MeshBasicMaterial({map: new T.Texture()}));
+  root.add(node);
+  return node;
+}
+
+async function cutoutTest() {
+  const root = new T.Group();
+  // 12128/3 bg0038_01_skyA_cut_mt: Cull Off, ZWrite On, the AlphaTest queue.
+  const sky = plain(root, cutoutMeta());
+  // 12026/3 mat_stg_so2026_oth_02: COLOR, Cull Back, queue 3000 without blending.
+  const chair = plain(root, cutoutMeta({cull: 2, queue: 3000, vertexColor: true}), true);
+  // 10008/3 bg0014_01_grassA_cut_mt: ZWrite Off; 12030/3 torches: saturate; a Greater ZTest.
+  const grass = plain(root, cutoutMeta({depthWrite: false, alphaCutoff: .4, depthTest: 5}));
+  const torch = plain(root, cutoutMeta({saturate: true, vertexColor: true}), true);
+  const rejected = [cutoutMeta({alphaCutoff: undefined}), cutoutMeta({alphaCutoff: 2}), cutoutMeta({saturate: false}),
+    cutoutMeta({depthTest: 9}), cutoutMeta({depthTest: 4}), {...cutoutMeta(), shader: "general", saturate: true},
+    cutoutMeta({vertexColor: true})].map(meta => plain(root, meta));
+  const originals = rejected.map(node => node.material);
+  const controller = await MVStudioStageMaterial.apply(T, root, {getDependency: async () => new T.Texture()});
+  assert.ok(controller);
+  const material = sky.material;
+  assert.deepEqual([material.defines.TINT_THEN_COLOR, material.defines.CUTOUT, material.defines.SATURATE,
+    material.defines.VERTEX_COLOR, material.defines.LIGHTMAPPED], [1, 1, undefined, undefined, undefined]);
+  assert.deepEqual([material.side, material.transparent, material.depthWrite, material.depthFunc, material.uniforms.alphaCutoff.value],
+    [T.DoubleSide, false, true, T.LessEqualDepth, .5]);
+  assert.ok(material.uniforms.mainMap.value.isTexture && material.uniforms.mainUVTransform.value.isVector4,
+    "the camera depth pass reads the cutout's map, transform and _Cutoff");
+  assert.deepEqual([chair.material.side, chair.material.transparent, chair.material.blending, chair.renderOrder,
+    chair.material.defines.VERTEX_COLOR], [T.FrontSide, true, T.NoBlending, 3000, 1], "Blend One Zero in queue 3000");
+  assert.deepEqual([grass.material.depthWrite, grass.material.depthFunc, grass.material.uniforms.alphaCutoff.value],
+    [false, T.GreaterDepth, .4]);
+  assert.equal(torch.material.defines.SATURATE, 1);
+  rejected.forEach((node, index) => assert.equal(node.material, originals[index], `rejected cutout ${index}`));
+  controller.dispose();
+  assert.equal(chair.renderOrder, 0);
+}
+
 (async () => {
   await passStateTest();
-  console.log("Stage pass state: blend factors, ZWrite, queue and stencil follow the material floats.");
+  await cutoutTest();
+  console.log("Stage pass state and TransparentCutout: blend, ZWrite, ZTest, cull, queue and stencil follow the material floats.");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

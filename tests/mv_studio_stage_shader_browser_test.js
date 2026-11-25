@@ -40,6 +40,13 @@ const CASES = [
   ['Blend SrcAlpha One, vertex cube by COLOR.a (11009/3 bg0010_01_stageA_add_ref_mt)',
     { blend: [5, 1], depthWrite: false, queue: 3000, alphaSource: 'vertex' },
     { mode: 'vertex', parallax: false, op: 'add', reflectivity: 'vertex', fresnel: false }],
+  // AS/General/TransparentCutout: no lightmap; _Cutoff discards by _MainTex.a alone.
+  ['cutout (10022/3 bg0007_04_plantsA_cut_mt keeps a fragment)', { shader: 'cutout', cutoff: 0.5 }, null],
+  ['cutout, COLOR (12026/3 mat_stg_so2026_oth_02)', { shader: 'cutout', cutoff: 0.5, vertexColor: true, queue: 3000 }, null],
+  ['cutout, COLOR, saturate (12030/3 mat_stg_so2030_alb_oth_01)',
+    { shader: 'cutout', cutoff: 0.5, vertexColor: true, saturate: true }, null],
+  ['cutout, saturate', { shader: 'cutout', cutoff: 0.2, saturate: true }, null],
+  ['cutout discarding (_Cutoff above _MainTex.a)', { shader: 'cutout', cutoff: 0.7, vertexColor: true }, null],
 ];
 
 const SAMPLE = {
@@ -79,6 +86,15 @@ function reference(fields, variant, point) {
   const v = (c) => c / 255;
   const tex = SAMPLE.main.map(v), light = SAMPLE.light.slice(0, 3).map(v), color = SAMPLE.color;
   const mix = (a, b, t) => a.map((x, i) => x + (b[i] - x) * t);
+  if (fields.shader === 'cutout') {
+    // The compiled AS/General/TransparentCutout fragment programs.
+    if (tex[3] < fields.cutoff) return [0, 0, 0, 0];
+    let out = [...mix(tex.slice(0, 3), SAMPLE.ambient.slice(0, 3), SAMPLE.ambient[3]).map((x, i) => x * SAMPLE.tint[i]),
+      tex[3] * SAMPLE.tint[3]];
+    if (fields.vertexColor) out = out.map((x, i) => x * color[i]);
+    if (fields.saturate) out = out.map((x, i) => i < 3 ? x + tex[i] ** 4 : x);
+    return out.map(x => Math.round(Math.min(Math.max(x, 0), 1) * 255));
+  }
   const ambientSurface = mix(tex.slice(0, 3), SAMPLE.ambient.slice(0, 3), SAMPLE.ambient[3]);
   let lit = ambientSurface.map((x, i) => 2 * light[i] * x * color[i]);
   if (variant) {
@@ -145,7 +161,11 @@ function reference(fields, variant, point) {
         floor.setAttribute('_stage_light_uv', floor.getAttribute('uv').clone());
         floor.setAttribute('_stage_emissive_uv', floor.getAttribute('uv').clone());
         floor.setAttribute('_stage_color', new T.Float32BufferAttribute(Array(count).fill(sample.color).flat(), 4));
-        const meta = {
+        const meta = fields.shader === 'cutout' ? {
+          shader: 'cutout', colors: { _TintColor: sample.tint, _AmbientColor: sample.ambient }, cull: 0,
+          uvTransform: [1, 1, 0, 0], vertexColor: Boolean(fields.vertexColor), alphaCutoff: fields.cutoff,
+          queue: fields.queue ?? 2450, ...(fields.saturate ? { saturate: true } : {}),
+        } : {
           shader: 'stage', colors: { _TintColor: sample.tint, _AmbientColor: sample.ambient, _BlendColor: sample.blend },
           cull: 2, uvTransform: [1, 1, 0, 0], vertexColor: true, mipBias: 0, lightmap: 0, reflectionToggle: Boolean(variant),
           queue: fields.queue ?? 2000,
@@ -193,6 +213,7 @@ function reference(fields, variant, point) {
       const [label, fields, variant] = CASES[index];
       assert.equal(result.native, true, `${label}: native stage material`);
       assert.equal(Boolean(result.defines.CUBEMAP), Boolean(variant), `${label}: cube define`);
+      assert.equal(result.defines.CUTOUT === 1, fields.shader === 'cutout', `${label}: cutout define`);
       assert.deepEqual(result.state, { transparent: (fields.queue ?? 2000) > 2500, custom: Boolean(fields.blend),
         depthWrite: fields.depthWrite !== false, renderOrder: (fields.queue ?? 0) > 2500 ? fields.queue : 0 }, `${label}: pass state`);
       let checked = 0;

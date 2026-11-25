@@ -14,6 +14,10 @@ _SHADERS = {
     ("cab-fc0511ca63f2d94bbfe211260d08ddd1", -6509019661097744245): "stage",
     ("cab-31fad648db7286e0012ae8cc07024bff", -1043432931367049882): "solid",
     ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367): "general",
+    # AS/General/TransparentCutout: its colour pass and its DEPTH pass discard
+    # below _Cutoff without a keyword; Cull, ZWrite, ZTest and the stencil are
+    # material floats.
+    ("cab-ac0988328357841c205babac78d7cf4e", -6136900368392166873): "cutout",
 }
 # Each shader's keyword space. Unity ignores a material keyword its shader
 # does not declare, so only these select a compiled variant.
@@ -24,9 +28,10 @@ _KEYWORDS = {
         "_CUBEMAP_MODE_FRAGMENT", "_CUBEMAP_MODE_OFF", "_CUBEMAP_MODE_VERTEX", "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA",
         "_CUBEMAP_REFLECTIVITY_MULTIPLY", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA", "_FRESNEL_ON",
         "_PARALLAX_CORRECTED_CUBEMAP_ON", "_THIRD_TEX_MODE_DECAL", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_OFF"}),
+    "cutout": frozenset({"PROCEDURAL_INSTANCING_ON", "SOFTPARTICLES_ON", "_SATURATE_ON", "_VERTEX_COLOR_ON"}),
 }
 # Tags { "Queue" } of each shader's subshader.
-_SHADER_QUEUES = {"stage": 2000}
+_SHADER_QUEUES = {"stage": 2000, "cutout": 2450}
 # _ALPHA_TRANSPARENCY: the alpha the variant tests against _Cutoff and multiplies by _TintColor.a.
 _ALPHA_SOURCES = {"_ALPHA_TRANSPARENCY_VERTEX_ALPHA": "vertex", "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA": "texture",
                   "_ALPHA_TRANSPARENCY_MULTIPLY": "multiply"}
@@ -171,7 +176,9 @@ def camera_depth(scene, material, renderer_tree, *, supports_cutout):
     if ((key not in _SHADERS and key != _RIMLIGHT_DEPTH) or type(queue) is not int or not -1 <= queue <= 2500
             or tree.get("disabledShaderPasses")):
         return None
-    if _SHADERS.get(key) == "stage" and "_ALPHATEST_ON" in tree.get("m_ShaderKeywords", "").split():
+    # AS/Stage's DEPTH pass alpha-tests with _ALPHATEST_ON; TransparentCutout's always does.
+    if (_SHADERS.get(key) == "stage" and "_ALPHATEST_ON" in tree.get("m_ShaderKeywords", "").split()
+            or _SHADERS.get(key) == "cutout"):
         return {"kind": "cutout"} if supports_cutout else None
     return {"kind": "opaque"}
 
@@ -217,6 +224,25 @@ def _stage_state(tree, floats):
     return state
 
 
+def _cutout_state(tree, floats):
+    """AS/General/TransparentCutout: Cull [_CullMode], ZWrite [_ZWriteParam], ZTest [_ZTestMode] and the stencil.
+
+    Blend is fixed (One Zero). The float defaults are the shader's m_PropInfo
+    values: Cull Off, ZWrite On, ZTest LEqual.
+    """
+    cull, write, test = _enum(floats, "_CullMode", 0, 3), _enum(floats, "_ZWriteParam", 1, 2), _enum(floats, "_ZTestMode", 4, 9)
+    queue, stencil, cutoff = tree.get("m_CustomRenderQueue", -1), _stencil(floats), floats.get("_Cutoff", .5)
+    if (None in (cull, write, test, stencil) or type(queue) is not int or not -1 <= queue <= 5000
+            or type(cutoff) not in (int, float) or not math.isfinite(cutoff)):
+        return None
+    state = {"cull": cull, "queue": _SHADER_QUEUES["cutout"] if queue == -1 else queue, "alphaCutoff": cutoff, **stencil}
+    if not write:
+        state["depthWrite"] = False
+    if test != 4:
+        state["depthTest"] = test
+    return state
+
+
 def read_material(scene, material, ambient, single_ambient):
     if material is None or material.type.name != "Material":
         return None
@@ -226,17 +252,19 @@ def read_material(scene, material, ambient, single_ambient):
         return None
     floats = _properties(tree, "m_Floats")
     keywords = set(tree.get("m_ShaderKeywords", "").split())
+    if mode in _KEYWORDS:
+        keywords &= _KEYWORDS[mode]
     state = {}
-    if mode == "stage":
-        state = _stage_state(tree, floats)
+    if mode in ("stage", "cutout"):
+        state = (_stage_state if mode == "stage" else _cutout_state)(tree, floats)
         if state is None:
             return None
     # AS/General/Opaque fixes blend and depth in its compiled passes.
     # Serialized values for those properties can survive a material shader swap.
     elif mode != "general" and (floats.get("_SrcBlend", 1), floats.get("_DstBlend", 0), floats.get("_ZWrite", 1)) != (1, 0, 1):
         return None
-    if mode != "stage" and (floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
-                            or floats.get("_StencilZFailOp", 0) != 0):
+    if mode in ("general", "solid") and (floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
+                                         or floats.get("_StencilZFailOp", 0) != 0):
         return None
     colors = _colors(tree)
     if "_TintColor" not in colors or mode != "solid" and "_AmbientColor" not in colors:
@@ -260,6 +288,14 @@ def read_material(scene, material, ambient, single_ambient):
     meta["uvTransform"] = [*scale, offset[0], 1 - scale[1] - offset[1]]
     if mode == "general":
         meta["vertexColor"] = "_VERTEX_COLOR_ON" in keywords
+        return meta
+    if mode == "cutout":
+        # PROCEDURAL_INSTANCING_ON and SOFTPARTICLES_ON belong to its particle users.
+        if keywords - {"_VERTEX_COLOR_ON", "_SATURATE_ON"} or not 0 <= state["alphaCutoff"] <= 1:
+            return None
+        meta.update(state, vertexColor="_VERTEX_COLOR_ON" in keywords)
+        if "_SATURATE_ON" in keywords:
+            meta["saturate"] = True
         return meta
     third_modes = keywords & {"_THIRD_TEX_MODE_OFF", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_DECAL"}
     alpha = [source for name, source in _ALPHA_SOURCES.items() if name in keywords]
