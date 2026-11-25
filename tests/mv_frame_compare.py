@@ -5,9 +5,10 @@
         [--baseline OLD/report.json] [--fail-on-regression]
     python tests/mv_frame_compare.py --capture CAPTURE/capture.json --game-frame 14.85=shot.png --out REPORT
     python tests/mv_frame_compare.py --capture CAPTURE/capture.json --game-shots mv-runtime-shots.json --out REPORT
-        [--game-dump mv-runtime-dump.json.gz [--shot-frames 3]] [--shot-lead 1.6] [--shot-trail 0]
+        [--game-dump mv-runtime-dump.json.gz [--shot-frames 3] [--shot-placement auto|clock|grid]]
+        [--shot-lead 1.6] [--shot-trail 0]
     python tests/mv_frame_compare.py --game-shots mv-runtime-shots.json --game-dump mv-runtime-dump.json.gz
-        --write-shot-times times.json [--shot-frames 3]
+        --write-shot-times times.json [--shot-frames 3] [--shot-placement auto|clock|grid]
 
 Screencaps from the runtime dump (mv-runtime-shots.json) carry the director times of the
 frame records before and after the capture, not the time of the frame on screen. On a
@@ -16,7 +17,11 @@ software-GPU device the presented frame lags those records by up to a few game f
 --game-dump the candidates are the game frames themselves: the 'before' record's frame and
 --shot-frames frames before it, rebuilt from the dump's frameCount/directorTime/deltaTime
 (--write-shot-times lists them for mv_frame_capture.js); without it every editor frame in
-[before - lead, after + trail] is scored. The best match is compared and reported with its
+[before - lead, after + trail] is scored. A dump with the sampler's frame clocks (dump5 onwards: every
+rendered frame's director time and realtimeSinceStartup, the records' host round trips) places each
+screencap on the device clock instead (--shot-placement auto, the default): the capture start mapped
+to device time, and the SHOT_PRESENTED_DEPTH newest frames whose next frame had ticked by then, at
+their exact director times. The best match is compared and reported with its
 lag behind `before` (and its game frame offset).
 
 The game MP4 export is fixed-step: video frame N is the game state at N/fps of its
@@ -387,6 +392,14 @@ def _scope(capture, game_info, alignment):
 
 
 MAX_DELTA_TIME = 1 / 3      # Unity Time.maximumDeltaTime: a clamped deltaTime is not the frame spacing
+# qa-mvdump sampler 3 (sifas-mv-frame-clock/1): one row per rendered frame (mv_runtime_capture.js FRAME_CLOCK_FIELDS).
+FRAME_CLOCK_FIELDS = ["frameCount", "directorTime", "musicTime", "unityTime", "deltaTime", "realtimeSinceStartup", "source"]
+# Rendered frames a dump5 screencap shows: the newest frames whose successor had started (ticked) before the capture
+# began. Unity presents frame N while frame N+1 runs (the render thread draws the frame the main thread just ended),
+# so the frame whose tick the 'before' record read is never on screen yet; and the composition can still hold the
+# frame before (render work outlasting the grab). 12035 dump5: frame before-1 in 31 shots, before-2 in 16, none
+# other in the 47 shots with distinct frames (12023 dump5: see the lane report).
+SHOT_PRESENTED_DEPTH = 2
 
 
 def load_game_dump(path):
@@ -397,9 +410,67 @@ def load_game_dump(path):
     return json.loads(data.decode("utf-8"))
 
 
+def _main_duration(dump):
+    for record in dump.get("records") or []:
+        main = next((item for item in record.get("directors") or [] if isinstance(item, dict) and item.get("main")), None)
+        if main and isinstance(main.get("duration"), (int, float)) and main["duration"] > 0:
+            return float(main["duration"])
+    return None
+
+
+def frame_clocks(dump):
+    """frameCount -> {frameCount, directorTime, musicTime, unityTime, deltaTime, realtimeSinceStartup, source}: the
+    trailer's frame clock rows (qa-mvdump sampler 3) plus the clock.prevFrame / nextFrame the records carry; empty for
+    dumps without them. A row whose director was not reached keeps the time LiveTimeSynchronizer.SyncMusicPlayingTime
+    sets from the music time (max(0, min(ms * .001, duration)), 9 significant digits). The same map as
+    mv_runtime_capture.js frameClocks."""
+    out, duration = {}, _main_duration(dump)
+
+    def add(clock):
+        if not isinstance(clock, dict) or not isinstance(clock.get("frameCount"), int) or clock["frameCount"] in out:
+            return
+        value = dict(clock)
+        t, music = value.get("directorTime"), value.get("musicTime")
+        if not isinstance(t, (int, float)) and isinstance(music, (int, float)):
+            seconds = max(0.0, min(music * 0.001, duration) if duration else music * 0.001)
+            value["directorTime"] = float(f"{seconds:.9g}")
+            value["directorFrom"] = "musicTime"
+        out[value["frameCount"]] = value
+
+    table = (dump.get("trailer") or {}).get("frameClocks") or {}
+    if isinstance(table.get("rows"), list) and table.get("fields") == FRAME_CLOCK_FIELDS:
+        for row in table["rows"]:
+            if isinstance(row, list):
+                add({name: (row[index] if index < len(row) else None) for index, name in enumerate(FRAME_CLOCK_FIELDS)})
+    for record in dump.get("records") or []:
+        for key in ("prevFrame", "nextFrame"):
+            add((record.get("clock") or {}).get(key))
+    return dict(sorted(out.items()))
+
+
+def device_clock_offset(dump):
+    """(offset, window): host monotonic seconds minus the device's Time.realtimeSinceStartup, bounded by every
+    record's round trip. A record's clock is read on the device after the host sent the request (host.sentMono) and
+    its clockEnd before the host received the reply (host.recvMono), so the offset lies in
+    [max(sentMono - realtimeSinceStartup), min(recvMono - clockEnd.realtimeSinceStartup)]; None without round trips
+    or when the bounds cross (two clocks that drift)."""
+    low, high = -math.inf, math.inf
+    for record in dump.get("records") or []:
+        host, clock = record.get("host") or {}, record.get("clock") or {}
+        end = (record.get("clockEnd") or {}).get("realtimeSinceStartup", clock.get("realtimeSinceStartup"))
+        sent, received, start = host.get("sentMono"), host.get("recvMono"), clock.get("realtimeSinceStartup")
+        if not all(isinstance(value, (int, float)) for value in (sent, received, start, end)):
+            continue
+        low, high = max(low, sent - start), min(high, received - end)
+    if not (math.isfinite(low) and math.isfinite(high)) or high < low:
+        return None
+    return (low + high) / 2, high - low
+
+
 def game_frame_times(dump):
     """Rendered game frames (frameCount -> director seconds) rebuilt from every record that carries
-    clock.frameCount: every record is a frame it showed; the frame before it is at directorTime -
+    clock.frameCount and every frame the sampler's frame clock read (frame_clocks, exact): every record is a
+    frame it showed; between them, the frame before a record is at directorTime -
     deltaTime unless deltaTime was clamped to maximumDeltaTime; the other frames between two records
     are spread evenly. While the director does not advance between two records (pinned at the song
     end), every frame between them shows that time. A director that goes back leaves the frames
@@ -413,6 +484,11 @@ def game_frame_times(dump):
         frame, t = clock.get("frameCount"), clock.get("directorTime")
         if isinstance(frame, int) and isinstance(t, (int, float)) and t > 0:
             anchors.setdefault(frame, (float(t), clock.get("deltaTime")))
+    # Frames the frame clock read (dump5 onwards) are anchors too: with every frame read, nothing is estimated.
+    for frame, clock in frame_clocks(dump).items():
+        t = clock.get("directorTime")
+        if frame not in anchors and isinstance(t, (int, float)) and t > 0:
+            anchors[frame] = (float(t), clock.get("deltaTime"))
     ordered = sorted(anchors.items())
     frames = {frame: t for frame, (t, _) in ordered}      # every record is a frame it showed
     for (f0, (t0, _)), (f1, (t1, dt1)) in zip(ordered, ordered[1:]):
@@ -434,16 +510,61 @@ def game_frame_times(dump):
     return frames
 
 
-def shot_candidates(shots, dump, frames_back=3):
+def presented_candidates(shot, dump, clocks, offset, depth=SHOT_PRESENTED_DEPTH):
+    """The rendered frames a screencap can show, placed by the device clock (dumps with frame clocks): the capture
+    start (shot.capture.startMono, host monotonic) in device realtimeSinceStartup, and the `depth` newest frames
+    whose next frame had ticked by then (SHOT_PRESENTED_DEPTH). Each item names its frameCount, its exact director
+    time and how long before the capture its successor ticked; None when the shot or the frame clock cannot place it."""
+    start = (shot.get("capture") or {}).get("startMono")
+    before = (shot.get("before") or {}).get("frameCount")
+    if offset is None or not isinstance(start, (int, float)) or not isinstance(before, int):
+        return None
+    grab = start - offset[0]
+    ticks = {frame: clock.get("realtimeSinceStartup") for frame, clock in clocks.items()}
+    found, frame = [], before
+    while len(found) < depth and frame in clocks:
+        successor = ticks.get(frame + 1)
+        if not isinstance(successor, (int, float)):
+            return None                 # an unread frame: the placement is unknown
+        if successor <= grab:
+            t = clocks[frame].get("directorTime")
+            if not isinstance(t, (int, float)):
+                return None
+            found.append({"frame": before - frame, "frameCount": frame, "time": round(float(t), 4),
+                          "successorTickBeforeCapture": round(grab - successor, 6)})
+        frame -= 1
+    return found if len(found) == depth else None
+
+
+def shot_candidates(shots, dump, frames_back=3, placement="auto"):
     """Editor times to render per screencap: the game frames the screen can still show when the
     capture starts. The screencap lags the 'before' record by up to a few game frames on a
     software-GPU device, so the candidates are that record's frame and the frames_back frames
-    before it on the game frame grid (frameCount -> director time)."""
+    before it on the game frame grid (frameCount -> director time). With the sampler's frame clocks
+    (placement "auto" or "clock"), each screencap is placed on the device clock instead
+    (presented_candidates: the SHOT_PRESENTED_DEPTH frames presented when the capture began, at their
+    exact director times); "auto" falls back to the grid rule per shot when the dump cannot place it,
+    "grid" always uses it."""
+    if placement not in ("auto", "clock", "grid"):
+        raise ValueError("placement is auto, clock or grid")
     records = {record.get("id"): record for record in dump.get("records") or []}
     grid = game_frame_times(dump)
     first = min(grid) if grid else None
+    clocks = frame_clocks(dump) if placement != "grid" else {}
+    offset = device_clock_offset(dump) if clocks else None
     result = []
     for shot in shots:
+        placed = presented_candidates(shot, dump, clocks, offset) if clocks else None
+        if placed is not None:
+            listed = set()
+            for item in placed:
+                if round(item["time"], 4) in listed:
+                    continue             # a pinned director shows one time on both frames
+                listed.add(round(item["time"], 4))
+                result.append({"shot": shot.get("n"), **item, "placement": "clock"})
+            continue
+        if placement == "clock":
+            raise ValueError(f"screencap {shot.get('n')} cannot be placed on the frame clock")
         clock = (records.get(shot["before"]["id"]) or {}).get("clock") or {}
         frame, tb, dt = clock.get("frameCount"), float(shot["before"]["directorTime"]), clock.get("deltaTime")
         listed = set()
@@ -468,7 +589,7 @@ def run_shots(arguments, capture, capture_path, out):
         raise SystemExit("--game-shots must be the mv-runtime-shots.json list")
     grid = {}
     if arguments.game_dump:
-        for item in shot_candidates(shots, load_game_dump(arguments.game_dump), arguments.shot_frames):
+        for item in shot_candidates(shots, load_game_dump(arguments.game_dump), arguments.shot_frames, arguments.shot_placement):
             grid.setdefault(item["shot"], []).append(item)
     frames = []
     for shot in shots:
@@ -507,7 +628,8 @@ def run_shots(arguments, capture, capture_path, out):
                           f"SSIM {result['metrics']['ssim']:.4f}  scale {result['geometry']['scale']:.3f}  "
                           f"shift {result['geometry']['dx']:+.1f},{result['geometry']['dy']:+.1f}px", out / name)
         record.update({"time": best["time"], "lagBehindBefore": before - best["time"], "gameFramesBack": frame.get("_gameFrame"),
-                       "atSearchEdge": (frame.get("_gameFrame") == arguments.shot_frames) if grid else
+                       "placement": wanted[0].get("placement", "grid") if grid else None,
+                       "atSearchEdge": (frame.get("_gameFrame") == max(item["frame"] for item in wanted)) if grid else
                        (abs(best["time"] - low) < 1e-6 or abs(best["time"] - high) < 1e-6),
                        "editorImage": str(capture_path.parent / frame["image"]), "editorCamera": state.get("camera"),
                        "cameraEvent": state.get("cameraEvent"), "cutDistance": frame.get("cutDistance"),
@@ -520,7 +642,10 @@ def run_shots(arguments, capture, capture_path, out):
     for frame in capture["frames"]:
         frame.pop("_gameFrame", None)
     back = [f["gameFramesBack"] for f in scored if f.get("gameFramesBack") is not None]
-    method = {"method": "screencap-game-frames", "framesBack": arguments.shot_frames, "dump": str(Path(arguments.game_dump).resolve())} \
+    placements = sorted({frame.get("placement") for frame in frames if frame.get("placement")})
+    method = {"method": "screencap-game-frames", "framesBack": arguments.shot_frames, "placement": placements,
+              "presentedDepth": SHOT_PRESENTED_DEPTH if "clock" in placements else None,
+              "dump": str(Path(arguments.game_dump).resolve())} \
         if grid else {"method": "screencap-window", "lead": arguments.shot_lead, "trail": arguments.shot_trail}
     return dict(method, shots=str(shots_path)), frames, {
         "gameFramesBack": {str(k): back.count(k) for k in sorted(set(back))} if back else None,
@@ -536,7 +661,7 @@ def run(arguments):
         if not (arguments.game_shots and arguments.game_dump):
             raise SystemExit("--write-shot-times needs --game-shots and --game-dump")
         shots = json.loads(Path(arguments.game_shots).read_text("utf-8"))
-        times = shot_candidates(shots, load_game_dump(arguments.game_dump), arguments.shot_frames)
+        times = shot_candidates(shots, load_game_dump(arguments.game_dump), arguments.shot_frames, arguments.shot_placement)
         Path(arguments.write_shot_times).write_text(json.dumps(times, indent=1) + "\n", "utf-8")
         print(json.dumps({"times": len(times), "out": str(Path(arguments.write_shot_times).resolve())}))
         return 0
@@ -662,6 +787,9 @@ def parser():
     result.add_argument("--game-dump", help="the runtime value dump the screencaps belong to: compare only the editor frames at "
                         "the game frames each screencap can show (its 'before' frame and --shot-frames frames before it)")
     result.add_argument("--shot-frames", type=int, default=3, help="game frames before the 'before' record searched per screencap")
+    result.add_argument("--shot-placement", choices=("auto", "clock", "grid"), default="auto",
+                        help="auto (default): place each screencap on the frame clock when the dump has one (the frames "
+                        "presented when the capture began), else the --shot-frames grid; clock: require it; grid: always the grid")
     result.add_argument("--write-shot-times", help="write the candidate times for --game-shots/--game-dump (frames for "
                         "mv_frame_capture.js) to this file and exit")
     result.add_argument("--game-info", help="JSON describing the game client, device, platform, FOV and quality")

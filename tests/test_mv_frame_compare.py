@@ -348,5 +348,95 @@ class ScreencapGameFrames(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
 
+def clocked_dump():
+    """A dump5-like run (qa-mvdump sampler 3): frame records with host round trips and a frame clock row for every
+    rendered frame 100-110 (director time, realtimeSinceStartup); host monotonic = device realtime + 350."""
+    ticks = [(100 + k, round(10.0 + 0.2 * k, 3), round(500.0 + 0.2 * k, 3)) for k in range(11)]
+    ticks[5] = (105, 11.05, 501.05)                  # a short frame: the grid rule would spread 104-106 evenly
+    rows = [[frame, t, int(t * 1000), t - 1.5, 0.2, rt, 0] for frame, t, rt in ticks]
+    rows[0][1] = None                                 # the director not reached yet: music time (SyncMusicPlayingTime)
+    records = []
+    for ident, frame in (("f1", 100), ("f2", 104), ("f3", 108)):
+        _, t, rt = ticks[frame - 100]
+        records.append({"id": ident, "kind": "frame", "clock": {"frameCount": frame, "directorTime": t, "deltaTime": 0.2,
+                                                               "realtimeSinceStartup": rt},
+                        "clockEnd": {"realtimeSinceStartup": rt + 0.01},
+                        "host": {"sentMono": rt + 350 - 0.1, "recvMono": rt + 350 + 0.03}})
+    return {"records": records, "trailer": {"frameClocks": {"schema": "sifas-mv-frame-clock/1",
+                                                            "fields": list(compare.FRAME_CLOCK_FIELDS), "rows": rows}}}
+
+
+class ScreencapFrameClockPlacement(unittest.TestCase):
+    """dump5 onwards: every rendered frame's clock, and screencaps placed on the device clock."""
+
+    def test_frame_clock_rows_are_exact_frames(self):
+        dump = clocked_dump()
+        frames = compare.game_frame_times(dump)
+        self.assertAlmostEqual(frames[105], 11.05, places=9, msg="the frame clock row, not the even spread of 104-106")
+        self.assertAlmostEqual(frames[101], 10.2, places=9)
+        self.assertEqual(compare.frame_clocks(dump)[100]["directorTime"], 10.0)
+        self.assertEqual(compare.frame_clocks(dump)[100]["directorFrom"], "musicTime")
+        without = {"records": dump["records"]}
+        self.assertNotAlmostEqual(compare.game_frame_times(without)[105], 11.05, places=3)
+
+    def test_device_clock_offset_is_bounded_by_the_round_trips(self):
+        offset, window = compare.device_clock_offset(clocked_dump())
+        self.assertAlmostEqual(offset, 350 - 0.04, places=9)       # [sent - read, recv - readEnd] = 350 + [-0.1, +0.02]
+        self.assertAlmostEqual(window, 0.12, places=9)
+        self.assertIsNone(compare.device_clock_offset(runtime_dump([("f1", 100, 10.0, 0.2)])))
+
+    def test_shot_shows_the_two_newest_frames_presented_when_the_capture_began(self):
+        dump = clocked_dump()
+        # 'before' read in frame 108 (device 501.6); the capture starts 30 ms later: frame 108's successor has not
+        # ticked, 107 and 106 are the newest frames presented, 105 and older are gone.
+        shots = [{"n": 1, "before": {"id": "f3", "directorTime": 11.6, "frameCount": 108},
+                  "capture": {"startMono": 501.6 + 0.03 + 349.96}}]
+        times = compare.shot_candidates(shots, dump)
+        self.assertEqual([(item["frame"], item["frameCount"], item["time"], item["placement"]) for item in times],
+                         [(1, 107, 11.4, "clock"), (2, 106, 11.2, "clock")])
+        # 150 ms into frame 109: 108 has been presented.
+        late = [{**shots[0], "before": {"id": "f3", "directorTime": 11.6, "frameCount": 108}, "capture": {"startMono": 501.95 + 349.96}}]
+        self.assertEqual([item["frameCount"] for item in compare.shot_candidates(late, dump)], [108, 107])
+        # Without a capture time (dump4 shots) the grid rule applies; 'clock' insists, 'grid' never places.
+        old = [{"n": 2, "before": {"id": "f3", "directorTime": 11.6}}]
+        self.assertEqual([item["time"] for item in compare.shot_candidates(old, dump, frames_back=2)], [11.6, 11.4, 11.2])
+        with self.assertRaises(ValueError):
+            compare.shot_candidates(old, dump, placement="clock")
+        self.assertEqual([item["time"] for item in compare.shot_candidates(shots, dump, frames_back=1, placement="grid")], [11.6, 11.4])
+
+    def test_pinned_director_lists_its_time_once(self):
+        dump = clocked_dump()
+        for row in dump["trailer"]["frameClocks"]["rows"]:
+            if row[0] >= 106:
+                row[1] = 11.2
+        shots = [{"n": 1, "before": {"id": "f3", "directorTime": 11.2, "frameCount": 108}, "capture": {"startMono": 501.6 + 350}}]
+        self.assertEqual([(item["frameCount"], item["time"]) for item in compare.shot_candidates(shots, dump)], [(107, 11.2)])
+
+    def test_runtime_capture_reads_the_same_frame_clocks(self):
+        node = shutil.which("node") or ("/opt/node22/bin/node" if Path("/opt/node22/bin/node").exists() else None)
+        if not node:
+            self.skipTest("node is not installed")
+        dump = clocked_dump()
+        capture_js = Path(__file__).resolve().with_name("mv_runtime_capture.js")
+        env = dict(os.environ)
+        env.setdefault("NODE_PATH", "/usr/local/lib/node_modules_global")
+        script = (f"let m; try {{ m = require({json.dumps(str(capture_js))}); }} catch (error) {{ console.error(error.message); process.exit(3); }}"
+                  "const doc = JSON.parse(process.argv[1]);"
+                  "console.log(JSON.stringify({ frames: [...m.gameFrames(doc)], clocks: [...m.frameClocks(doc)] }));")
+        result = subprocess.run([node, "-e", script, json.dumps(dump)], capture_output=True, text=True, env=env)
+        if result.returncode == 3:
+            self.skipTest(f"the capture runner cannot be loaded here: {result.stderr.strip()[:200]}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        js = json.loads(result.stdout)
+        frames = compare.game_frame_times(dump)
+        self.assertEqual([frame for frame, _ in js["frames"]], sorted(frames))
+        for frame, time in js["frames"]:
+            self.assertAlmostEqual(time, frames[frame], places=9, msg=f"frame {frame}")
+        clocks = compare.frame_clocks(dump)
+        self.assertEqual([frame for frame, _ in js["clocks"]], list(clocks))
+        for frame, clock in js["clocks"]:
+            self.assertAlmostEqual(clock["directorTime"], clocks[frame]["directorTime"], places=9)
+
+
 if __name__ == "__main__":
     unittest.main()
