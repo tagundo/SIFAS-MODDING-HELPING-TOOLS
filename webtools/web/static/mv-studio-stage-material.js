@@ -226,6 +226,18 @@
 
   // The AS/Stage reflection variant (mv_studio_stage_materials.reflection_variant).
   const reflectivities = {vertex: 0, texture: 1, multiply: 2};
+  // Stage GLBs converted before the variant fields named one of three
+  // parallax-corrected fragment variants in `blend`.
+  const legacyReflections = {
+    "vertex-alpha": {op: "alpha-blend", reflectivity: "vertex"},
+    "add-texture-alpha": {op: "add", reflectivity: "texture"},
+    "add-vertex-alpha": {op: "add", reflectivity: "vertex"},
+  };
+
+  function reflectionVariant(value) {
+    const legacy = value?.mode === undefined && legacyReflections[value?.blend];
+    return legacy ? {...value, mode: "fragment", parallax: true, fresnel: false, ...legacy} : value;
+  }
 
   function reflectionSource(value) {
     return Number.isSafeInteger(value?.bufferView) && value.bufferView >= 0 &&
@@ -565,7 +577,7 @@
           uniforms.emissiveColor = {value: new T.Vector4().fromArray(meta.emissive.color)};
           uniforms.emissiveIntensity = {value: meta.emissive.intensity};
         }
-        const source = meta.reflection;
+        const source = reflectionVariant(meta.reflection);
         if (meta.reflectionToggle && reflectionSource(source)) {
           if (!cubes.has(source.bufferView)) cubes.set(source.bufferView, await loadCube(T, parser, source));
           if (!active()) break;

@@ -570,7 +570,8 @@ async function testStageCubemapQuality() {
       shader: "stage", lightmap: 0, mipBias: 0, uvTransform: [1, 1, 0, 0], vertexColor: true,
       reflectionToggle: true, reflectionQualityControlled: controlled,
       reflection: {bufferView, size: 8, boxMin: [-2, -1, -4], boxMax: [2, 5, 4], origin: [0, 2, 0],
-        mode: "fragment", parallax: true, fresnel: false, ...variants[blend]},
+        // "legacy" keeps the field a stage GLB converted before the variant fields carried.
+        ...(controlled === undefined ? {blend} : {mode: "fragment", parallax: true, fresnel: false, ...variants[blend]})},
       colors: {_TintColor: [1, 1, 1, 1], _AmbientColor: [0, 0, 0, 0], _BlendColor: [0, 0, 0, 0]},
     };
     const node = new T.Mesh(geometry, new T.MeshBasicMaterial({map: base}));
