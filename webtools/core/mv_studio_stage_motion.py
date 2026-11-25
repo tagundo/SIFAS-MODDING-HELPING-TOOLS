@@ -22,8 +22,6 @@ _STAGE_QUALITY = {"post": "posteffect", "ambient": "stage_ambient", "animation":
                   "coloring": "stage_coloring", "control": "stage_control", "flashlight": "stage_flash_light",
                   "display": "stage_display", "audience": "stage_audience", "emissive": "stage_emissive",
                   "overlayeffect": "stage_overlay_effect"}
-_AION_OVERLAY = _BINDING_ROOT + "fx_ove_so2028_01/Effect_root"
-_AION_OVERLAY_CLIP = 3160271792038109442
 _LASER_BINDING = _BINDING_ROOT + "fx_par_so2056_05/root"
 _LASER_TRACK = "StageEffect/Expert/Control/fx_par_so2056_05_root"
 _LASER_CLIP = -7002476404608242900
@@ -355,8 +353,6 @@ def read(objects, mono, tracks, deadline):
                     rejected.add(profile)
                     continue
                 declaration, cost = clip
-                if binding == _AION_OVERLAY and key[1] == _AION_OVERLAY_CLIP:
-                    declaration["sampleTimeF32"] = True
             if setting == "stage_display" and all(channel["kind"] == "visibility" for channel in declaration["channels"]):
                 # Unity samples the activation clock in float32 before a
                 # newly enabled ParticleSystem advances this display frame.
@@ -392,6 +388,9 @@ def read(objects, mono, tracks, deadline):
                 continue
             if requires_material:
                 declaration["requiresOverlayMaterial"] = True
+            if requires_material or material_scope == "overlay":
+                # The native AnimationClipPlayable samples every overlay clip at
+                # its normalized float time (MVStudioStageMotion sampleTime).
                 declaration["sampleTimeF32"] = True
             remaining -= cost + timing_cost
             clips[identity] = declaration

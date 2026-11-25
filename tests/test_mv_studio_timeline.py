@@ -398,7 +398,9 @@ class TimelineContractTests(unittest.TestCase):
                 }])
             existing = stage.read(objects, mono, [legacy], time.monotonic() + 3)["clips"]["cab:4"]
             self.assertNotIn("requiresOverlayMaterial", existing)
-            self.assertNotIn("sampleTimeF32", existing)
+            # Every overlay clip samples at the native normalized float time,
+            # a MeshRenderer-only legacy fx_ove_*/Effect_root clip included.
+            self.assertTrue(existing["sampleTimeF32"])
             for row in bindings:
                 row.update(typeID=137, script={"m_FileID": 0, "m_PathID": 0})
             skinned = stage.read(objects, mono, [legacy], time.monotonic() + 3)["clips"]["cab:4"]

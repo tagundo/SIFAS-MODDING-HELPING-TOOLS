@@ -671,6 +671,25 @@ class AionFanAgainstTheGameTests(unittest.TestCase):
                 checked.append(seconds)
         self.assertEqual(checked, [5.55, 27.885])
 
+    def test_overlay_flares_sample_at_the_native_float_time_by_the_common_rule(self):
+        # Every overlay-scope clip, fx_ove_so2028_01/Effect_root's MeshRenderer
+        # clip included, samples at the normalized float time; world clips keep
+        # their own sampling.
+        native = (self.data / "timeline.bundle").read_bytes()
+        parsed = mv_studio_timeline.parse_timeline(native, "timeline.bundle", preview_stage_motion=True)
+        motion = parsed["stageMotion"]
+        scopes = {}
+        for track in parsed["tracks"]:
+            setting = motion["quality"].get(track["id"])
+            for event in track["events"]:
+                if setting and event["id"] in motion["mix"]:
+                    scopes.setdefault(event["values"]["animation"], set()).add(setting)
+        overlay = [identity for identity, settings in scopes.items() if "stage_overlay_effect" in settings]
+        self.assertEqual(len(overlay), 1)
+        for identity, clip in motion["clips"].items():
+            self.assertEqual(clip.get("sampleTimeF32", False), identity in overlay, identity)
+        self.assertNotIn("requiresOverlayMaterial", motion["clips"][overlay[0]])
+
     def test_fan_opening_matches_the_game_material(self):
         native = (self.data / "timeline.bundle").read_bytes()
         tracks = mv_studio_timeline.parse_timeline(native, "timeline.bundle")["tracks"]
