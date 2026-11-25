@@ -10,7 +10,7 @@
 #tab-mv .mv-cam-tool.mv-cam-primary::before { content: "\25C6"; margin-inline-end: 4px; color: #ffd166; }
 .mv-cam-autokey { display: inline-flex; align-items: center; gap: 4px; font-size: .74rem; white-space: nowrap; }
 
-.mv-cam-values, .mv-cam-key-fields {
+.mv-cam-values, .mv-cam-key-fields, .mv-cam-selection {
   display: grid;
   gap: 6px;
   min-width: 0;
@@ -19,7 +19,7 @@
   border: 1px solid var(--line);
   border-radius: 8px;
 }
-.mv-cam-values legend, .mv-cam-key-fields legend { padding: 0 4px; font-size: .74rem; color: var(--muted); }
+.mv-cam-values legend, .mv-cam-key-fields legend, .mv-cam-selection legend { padding: 0 4px; font-size: .74rem; color: var(--muted); }
 .mv-cam-key-fields[hidden] { display: none; }
 .mv-cam-row { display: grid; gap: 4px; min-width: 0; }
 .mv-cam-row + .mv-cam-row { padding-top: 6px; border-top: 1px dashed var(--line); }
@@ -32,6 +32,25 @@
 #tab-mv .mv-cam-editor .mv-cam-number input.mv-cam-keyed { border-color: #e0b341; background: color-mix(in srgb, #ffd166 18%, var(--panel2)); }
 .mv-cam-key-time { color: var(--muted); font-size: .74rem; font-variant-numeric: tabular-nums; align-self: center; flex: 0 0 auto; }
 .mv-cam-eases { display: flex; flex-wrap: wrap; gap: 4px; }
+/* Key selection: count, commands, time scale and the offset added to every selected key. */
+.mv-cam-selection-count { margin: 0; font-size: .76rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.mv-cam-batch-row { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: end; }
+.mv-cam-batch-row > .mv-cam-number { flex: 0 1 8.5em; }
+#tab-mv .mv-cam-editor .mv-cam-selection input[type=number] { width: 100%; min-width: 0; min-height: var(--mv-control-h-sm); padding: 1px 5px; font-size: .76rem; font-variant-numeric: tabular-nums; }
+.mv-cam-deltas > .mv-cam-tool { justify-self: start; }
+.mv-cam-batch { display: grid; gap: 6px; min-width: 0; }
+#tab-mv .mv-cam-selection :is(button, div)[hidden] { display: none; }
+/* "Select several" while on: filled, like a pressed key; the camera lane gets the same edge. */
+#tab-mv .mv-cam-multi-toggle[aria-pressed=true] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 28%, var(--panel2)); font-weight: 600; }
+#tab-mv .mv-cam-multi-toggle::before { content: "\2610"; margin-inline-end: 4px; }
+#tab-mv .mv-cam-multi-toggle[aria-pressed=true]::before { content: "\2611"; }
+.mv-cam-selection-hint { font-size: .7rem; }
+/* The hint for the pointer in hand. */
+.mv-cam-hint-touch { display: none; }
+@media (pointer: coarse) {
+  .mv-cam-hint-touch { display: block; }
+  .mv-cam-hint-mouse { display: none; }
+}
 #tab-mv .mv-cam-eases button { min-height: var(--mv-control-h-sm); padding: 1px 8px; font-size: .72rem; }
 
 .mv-cam-chips { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -59,6 +78,11 @@
 .mv-cam-curve { stroke-width: 1.6; pointer-events: none; }
 .mv-cam-curve-key { stroke: #000a; stroke-width: 1; cursor: grab; }
 .mv-cam-curve-key.mv-selected { stroke: #fff; stroke-width: 2; }
+.mv-cam-curve-key.mv-cam-curve-active { stroke-width: 3; }
+/* A finger-sized target under each point on touch screens (drawn only with a coarse pointer). */
+.mv-cam-curve-hit { fill: transparent; stroke: none; cursor: grab; }
+/* The selection box (curve view and camera lane). */
+.mv-cam-graph .mv-cam-box { fill: color-mix(in srgb, var(--accent) 18%, transparent); stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 2; pointer-events: none; }
 .mv-cam-curve-key:focus-visible { outline: none; stroke: var(--accent); stroke-width: 3; }
 .mv-cam-handle { stroke: #fff; stroke-width: 1; cursor: grab; }
 .mv-cam-handle-line { stroke-width: 1; opacity: .8; pointer-events: none; }
@@ -74,7 +98,26 @@
    Control heights come from the shared density tokens (--mv-control-h-sm: 24 px with a
    fine pointer, 32 px on touch). */
 #tab-mv .mv-key.mv-cam-key { z-index: 3; touch-action: none; }
+/* Selected keys: orange with a white ring (shared .mv-key rule); the active one (its fields and
+   handles in the panel) also gets an outer orange ring. Not colour alone: the ring shape differs. */
+#tab-mv .mv-key.mv-cam-key[aria-selected=true] { outline: 2px solid #fff; outline-offset: 1px; background: #ff9f43; }
+#tab-mv .mv-key.mv-cam-key.mv-cam-key-active { box-shadow: 0 0 0 4px #ff9f43; }
+#tab-mv .mv-lane > .mv-cam-box {
+  position: absolute;
+  z-index: 4;
+  box-sizing: border-box;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  pointer-events: none;
+}
 #tab-mv .mv-key.mv-cam-key.mv-dragging { cursor: grabbing; outline: 2px dashed #facc73; }
+/* "Select several": a sideways touch or pen drag on the camera lane (shots included) draws a
+   selection box, so only vertical panning and pinch zoom are left to the browser there. The
+   other lanes and the ruler still scroll the timeline sideways. */
+#tab-mv .mv-lane.mv-cam-multi, #tab-mv .mv-lane.mv-cam-multi .mv-clip { touch-action: pan-y pinch-zoom; }
+#tab-mv .mv-lane.mv-cam-multi { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent); }
 @media (pointer: coarse) {
   #tab-mv button.mv-key.mv-cam-key { min-height: 0; }
+  /* The 18 px diamond takes taps over a 32 px square (the slim UI touch target). */
+  #tab-mv .mv-key.mv-cam-key::before { content: ""; position: absolute; inset: -7px; }
 }

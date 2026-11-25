@@ -825,6 +825,208 @@ function claimDuplicatedClip() {
   }
 }
 
+// Several keys at once: the selection (one shot at a time), group moves (clamped, never onto or
+// past an unselected key), a value change on every selected key, time stretch, delete, copy and
+// paste (clipped to the shot, across modes) and the numeric offset; each one undo step, and undo
+// and redo give back the records and the selection exactly.
+function multiKeys() {
+  // Pure planning: bounds and stretch.
+  const keyList = (frames) => frames.map((frame) => ({ frame }));
+  assert.deepEqual(K.moveBounds(keyList([0, 10, 20, 30]), [10, 20], 41), { low: -9, high: 9 }, 'between the unselected neighbours');
+  assert.deepEqual(K.moveBounds(keyList([5, 10]), [5, 10], 41), { low: -5, high: 30 }, 'inside the shot');
+  let plan = K.planScale(keyList([0, 10, 20, 30]), [10, 20], 40, 41);
+  assert.equal(plan.end, 29, 'a stretch stops before the next unselected key');
+  assert.deepEqual([...plan.mapping], [[10, 10], [20, 29]]);
+  plan = K.planScale(keyList([10, 20, 30]), [10, 20, 30], 10, 41);
+  assert.deepEqual([...plan.mapping.values()], [10, 11, 12], 'a full compression keeps one frame between keys');
+  assert.equal(K.planScale(keyList([10, 11]), [10, 11], 5, 41), null, 'nothing left to compress');
+
+  const project = nativeProject();
+  const { ctx, history, log, at } = harness(project);
+  const shot = event(project, 'cam:1'), start = shot.start;
+  const frameAt = (frame) => start + frame / 60;
+  for (const [frame, y] of [[0, 0], [20, .2], [40, .4], [60, .6], [100, 1]]) assert(K.setChannels(ctx, 'offset', { y }, { time: frameAt(frame) }));
+  const record = () => project.editor.camera.shots['cam:1'];
+  const frames = () => record().keys.map((key) => key.frame);
+  const ys = () => record().keys.map((key) => key.values.y);
+  const selection = () => K.selected(ctx) && K.selected(ctx).frames;
+
+  // Selection: a box (replace), toggles, one shot at a time.
+  K.selectKeys(ctx, 'cam:1', [20, 40, 60]);
+  assert.deepEqual(selection(), [20, 40, 60]);
+  K.toggleKey(ctx, 'cam:1', 100);
+  assert.deepEqual(selection(), [20, 40, 60, 100], 'a toggle adds');
+  K.toggleKey(ctx, 'cam:1', 40);
+  assert.deepEqual(selection(), [20, 60, 100], 'and removes');
+  at(.5);
+  K.setChannels(ctx, 'offset', { x: .1 });
+  assert.deepEqual(K.selected(ctx), { event: 'cam:0', frames: [30], frame: 30 }, 'an edit selects its key');
+  K.selectKeys(ctx, 'cam:1', [20, 40]);
+  log.reports.length = 0;
+  K.toggleKey(ctx, 'cam:0', 30);
+  assert.deepEqual(K.selected(ctx).frames, [30], 'a key of another shot starts a new selection');
+  assert.deepEqual(log.reports, [['Keys can be selected in one camera shot at a time.', false]]);
+  assert(K.selectAllKeys(ctx, K.findShot(ctx, 'cam:1')));
+  assert.deepEqual(selection(), [0, 20, 40, 60, 100], 'select all keys of a shot');
+  assert(K.clearSelection(ctx));
+  assert.equal(K.selected(ctx), null);
+
+  // Group move: same delta for all, stopped by the next unselected key, then by the shot's ends.
+  K.selectKeys(ctx, 'cam:1', [20, 40]);
+  let undo = history.size().undo;
+  const before = copy(record());
+  assert.equal(K.moveKeys(ctx, 'cam:1', [20, 40], 30), 19, 'stops one frame before the key at 60');
+  assert.deepEqual(frames(), [0, 39, 59, 60, 100]);
+  assert.deepEqual(ys(), [0, .2, .4, .6, 1], 'values and order move with the keys');
+  assert.equal(history.size().undo, undo + 1, 'one undo step');
+  assert.equal(history.peekUndo().label, 'Move camera keys');
+  assert.deepEqual(selection(), [39, 59], 'the selection follows');
+  assert.equal(K.moveKeys(ctx, 'cam:1', [39, 59], -100), -38, 'and one frame after the key at 0');
+  assert.deepEqual(frames(), [0, 1, 21, 60, 100]);
+  assert.equal(K.moveKeys(ctx, 'cam:1', [1, 21], -1), 0, 'a collision is refused, not merged');
+  assert.equal(history.size().undo, undo + 2);
+  K.selectKeys(ctx, 'cam:1', [60, 100]);
+  assert.equal(K.moveKeys(ctx, 'cam:1', [60, 100], 500), 80, 'the last key stops at the shot end');
+  assert.deepEqual(frames(), [0, 1, 21, 140, 180]);
+  // Undo and redo: the records and the selection made with them.
+  const moved = copy(record());
+  history.undo();
+  assert.deepEqual(selection(), [60, 100], 'undo selects the keys as they were');
+  history.undo();
+  assert.deepEqual(selection(), [39, 59]);
+  history.undo();
+  assert.deepEqual(record(), before, 'undo restores the record exactly');
+  assert.deepEqual(selection(), [20, 40]);
+  history.redo(); history.redo(); history.redo();
+  assert.deepEqual(record(), moved, 'redo too');
+  assert.deepEqual(selection(), [140, 180]);
+
+  // Value change on every selected key (the curve view's drag): free handles stay relative.
+  K.selectKey(ctx, 'cam:1', 21);
+  K.setKeyProperty(ctx, 'handle', 'free');
+  const handles = copy(record().keys[2].handles), freed = copy(record());
+  K.selectKeys(ctx, 'cam:1', [1, 21, 140]);
+  undo = history.size().undo;
+  const token = history.begin('Move camera keys');
+  const base = copy(record());
+  K.moveKeys(ctx, 'cam:1', [1, 21, 140], 5, { channel: 'y', change: .5, base });
+  K.moveKeys(ctx, 'cam:1', [1, 21, 140], 2, { channel: 'y', change: .25, base });
+  history.end(token);
+  assert.equal(history.size().undo, undo + 1, 'a curve drag is one undo step');
+  assert.deepEqual(frames(), [0, 3, 23, 142, 180], 'each move starts from the record the drag began with');
+  ys().forEach((value, index) => near(value, [0, .45, .65, .85, 1][index], 1e-12, `y of key ${index}`));
+  assert.deepEqual(record().keys[2].handles, handles, 'handles are relative to their key');
+  history.undo();
+  assert.deepEqual(record(), freed, 'undo of the drag');
+  assert.deepEqual(selection(), [1, 21, 140], 'and its selection');
+
+  // Time stretch around the first selected key, stopped before an unselected key.
+  K.selectKeys(ctx, 'cam:1', [1, 21]);
+  K.moveKeys(ctx, 'cam:1', [1, 21], 9);
+  assert.deepEqual(frames(), [0, 10, 30, 140, 180]);
+  K.selectKeys(ctx, 'cam:1', [10, 30, 140]);
+  undo = history.size().undo;
+  log.reports.length = 0;
+  plan = K.scaleKeys(ctx, 1.5);
+  assert.deepEqual(frames(), [0, 10, 36, 179, 180], 'pulled back to the frame before the key at 180');
+  assert.equal(plan.end, 179);
+  assert.deepEqual(log.reports, [['The timing stops at a neighbouring key or the end of the shot.', false]]);
+  assert.equal(history.peekUndo().label, 'Scale camera key timing');
+  near(record().keys[2].handles.y.out[0], handles.y.out[0] * 169 / 130, 1e-12, 'free handles scale their time with the keys');
+  K.scaleKeys(ctx, .5);
+  assert.deepEqual(frames(), [0, 10, 23, 95, 180], 'compress: half the spacing');
+  assert.deepEqual(selection(), [10, 23, 95]);
+  assert.equal(history.size().undo, undo + 2);
+  assert.equal(K.scaleKeys(ctx, .001) && frames().slice(1, 4).join(), '10,11,12', 'a full compression snaps to consecutive frames');
+  history.undo();
+  assert.deepEqual(frames(), [0, 10, 23, 95, 180]);
+  K.selectKeys(ctx, 'cam:1', [10]);
+  assert.equal(K.scaleKeys(ctx, 2), false, 'one key has no timing to scale');
+
+  // Numeric offset added to every selected key; FOV stays within what the bake accepts.
+  K.selectKeys(ctx, 'cam:1', [10, 23]);
+  const keyBefore = copy(record().keys);
+  assert(K.offsetKeys(ctx, { x: .5, pan: -10, fov: 500, y: 0 }));
+  assert.equal(history.peekUndo().label, 'Offset camera keys');
+  const sample = original('cam:1');
+  record().keys.forEach((key, index) => {
+    const was = keyBefore[index].values;
+    if (key.frame === 10 || key.frame === 23) {
+      near(key.values.x, was.x + .5, 1e-12, 'x + 0.5');
+      near(key.values.pan, was.pan - 10, 1e-12, 'pan - 10');
+      near(key.values.y, was.y, 0, 'y unchanged');
+      near(key.values.fov, 170 - sample[key.frame].fov, 1e-12, 'FOV offset cut where the result reaches 170');
+    } else assert.deepEqual(key.values, was, 'other keys unchanged');
+  });
+
+  // Copy, then paste at the playhead of another shot: relative timing, clipped to the shot.
+  K.selectKeys(ctx, 'cam:1', [10, 23, 95]);
+  assert(K.copyKeys(ctx));
+  const copied = record().keys.filter((key) => [10, 23, 95].includes(key.frame)).map((key) => key.values);
+  at(100 / 60);
+  log.reports.length = 0;
+  undo = history.size().undo;
+  assert.equal(K.pasteKeys(ctx), 2, 'two of three copied keys fit in cam:0 (frames 100, 113; 185 is past 120)');
+  assert.equal(history.size().undo, undo + 1);
+  assert.equal(history.peekUndo().label, 'Paste camera keys');
+  assert.deepEqual(log.reports, [['Keys outside this shot were left out: 1.', false]]);
+  const pasted = project.editor.camera.shots['cam:0'].keys;
+  assert.deepEqual(pasted.map((key) => key.frame), [30, 100, 113]);
+  // The same offsets (same mode and space); a FOV offset is cut where this shot's FOV reaches 170.
+  const withoutFov = (values) => ({ ...values, fov: undefined });
+  assert.deepEqual(pasted.slice(1).map((key) => withoutFov(key.values)), copied.slice(0, 2).map(withoutFov), 'the same offsets');
+  pasted.slice(1).forEach((key, index) => near(key.values.fov, Math.min(copied[index].fov, 170 - original('cam:0')[key.frame].fov), 1e-12, 'FOV within range'));
+  assert.deepEqual(K.selected(ctx), { event: 'cam:0', frames: [100, 113], frame: 100 }, 'the pasted keys are selected');
+  // Paste over existing keys replaces them (never two keys on a frame).
+  at(30 / 60);
+  K.pasteKeys(ctx);
+  assert.deepEqual(project.editor.camera.shots['cam:0'].keys.map((key) => key.frame), [30, 43, 100, 113, 115]);
+  assert.deepEqual(withoutFov(project.editor.camera.shots['cam:0'].keys[0].values), withoutFov(copied[0]), 'the key at 30 is replaced');
+  // Into a keyframe shot: the copied camera pose is kept.
+  const sourcePose = copy(shot.values.keyframes[10]);
+  at(event(project, 'cam:2').start + 5 / 60);
+  assert(K.setMode(ctx, 'keys', { confirm: false }));
+  K.pasteKeys(ctx);
+  const target = event(project, 'cam:2').values.keyframes[5];
+  nearVector(target.position, sourcePose.position, 1e-9, 'pasted pose position');
+  assert(angle(target.rotation, sourcePose.rotation) < 1e-6, 'pasted pose rotation');
+  near(target.fov, sourcePose.fov, 1e-9, 'pasted pose FOV');
+  assert.deepEqual(project.editor.camera.shots['cam:2'].keys.map((key) => key.frame), [0, 5, 18, 60]);
+  history.undo();
+  assert.deepEqual(project.editor.camera.shots['cam:2'].keys.map((key) => key.frame), [0, 60], 'undo removes the pasted keys');
+
+  // Delete the selection (one step); undo brings back keys and selection.
+  K.selectKeys(ctx, 'cam:1', [10, 23]);
+  const kept = copy(record());
+  assert(K.deleteKeys(ctx));
+  assert.deepEqual(frames(), [0, 95, 180]);
+  assert.equal(history.peekUndo().label, 'Delete camera keys');
+  assert.equal(K.selected(ctx), null);
+  history.undo();
+  assert.deepEqual(record(), kept);
+  assert.deepEqual(selection(), [10, 23]);
+
+  // Shortcuts (Camera tab): Escape, Ctrl+C, Ctrl+V, Delete; Ctrl+C with page text selected is the browser's.
+  const press = (key, extra = {}) => plugin.keydown(ctx, { key, code: '', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...extra });
+  assert.equal(press('Escape'), true);
+  assert.equal(K.selected(ctx), null);
+  assert.equal(press('Escape'), false, 'nothing to clear');
+  K.selectKeys(ctx, 'cam:1', [95, 180]);
+  assert.equal(press('c', { ctrlKey: true }), true);
+  at(event(project, 'cam:1').start);
+  undo = history.size().undo;
+  assert.equal(press('ㅍ', { code: 'KeyV', metaKey: true }), true, 'Cmd+V by physical key with Hangul input');
+  assert.deepEqual(frames(), [0, 10, 23, 85, 95, 180], 'pasted at frames 0 (replacing that key) and 85');
+  assert.equal(history.size().undo, undo + 1);
+  K.selectKeys(ctx, 'cam:1', [10, 23]);
+  assert.equal(press('Delete'), true);
+  assert.deepEqual(frames(), [0, 85, 95, 180], 'Delete removes every selected key');
+  globalThis.getSelection = () => 'some text';
+  K.selectKeys(ctx, 'cam:1', [0]);
+  assert.equal(press('c', { ctrlKey: true }), false, 'page text selected: the browser copies it');
+  delete globalThis.getSelection;
+}
+
 (async () => {
   unedited();
   offsetKey();
@@ -846,5 +1048,6 @@ function claimDuplicatedClip() {
   orphanRecords();
   duplicatedClips();
   claimDuplicatedClip();
+  multiKeys();
   console.log('mv studio camera keys tests passed');
 })().catch((error) => { console.error(error); process.exit(1); });
