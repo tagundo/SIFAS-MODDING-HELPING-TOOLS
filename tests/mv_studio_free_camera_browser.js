@@ -199,8 +199,9 @@ async function openSynthetic(page, url) {
 const frames = (page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
 // Where the preview, the view, the preview controls and the bar are, and whether a tap at the
-// centre of each control reaches it (the bar's controls after a sideways scroll, a swipe).
-function layoutProbe() {
+// centre of each control reaches it. The target list and the view buttons are hit where they
+// are (or, with `swipe`, after a sideways scroll); the rest of the bar may need that scroll.
+function layoutProbe(swipe = false) {
   const box = (element) => {
     const rect = element.getBoundingClientRect();
     return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
@@ -217,7 +218,7 @@ function layoutProbe() {
   const result = { preview: box(document.querySelector('.mv-preview')), scene: box(document.getElementById('mv-scene')),
     controls: box(document.getElementById('mv-preview-controls')), bar: box(bar), classes: [...bar.classList],
     rows: [...bar.children].filter((child) => child.getClientRects().length).map(box),
-    hits: Object.fromEntries([...controls, ...views].map(([name, element]) => [name, hit(element, bar.contains(element))])) };
+    hits: Object.fromEntries([...controls, ...views].map(([name, element]) => [name, hit(element, swipe && bar.contains(element))])) };
   result.scrolled = Object.fromEntries(['mv-freecam-distance', 'mv-freecam-fov', 'mv-freecam-follow'].map((id) => [id, hit(document.getElementById(id), true)]));
   bar.scrollLeft = 0;
   return result;
@@ -230,12 +231,12 @@ const inside = (a, b) => a.left >= b.left - .5 && a.right <= b.right + .5 && a.t
 // workspace (a shorter preview, as after an export). The bar never covers the preview controls:
 // it is one row at the bottom of the view, or, in a preview too short for both, beside the
 // controls. The view keeps the whole preview (the game camera's canvas). The preview controls,
-// the target list and every view button are where a tap lands (the bar's controls after a
+// the target list and every view button are where a tap lands (beside the controls, after a
 // sideways swipe), and a tap on a view button turns the free camera to that side.
 const LAYOUTS = [
   { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, place: 'bottom' },
   { name: 'tablet', viewport: { width: 768, height: 1024 }, touch: true, place: 'bottom' },
-  { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true, place: 'beside' },
+  { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true, place: 'beside', swipe: true },
   { name: 'laptop', viewport: { width: 1280, height: 720 }, touch: false, place: 'bottom' },
 ];
 
@@ -257,7 +258,7 @@ async function layouts(browser, url) {
     await setMode(page, 'orbit');
     await page.locator('#mv-free-camera').waitFor({ state: 'visible' });
     await frames(page);
-    const shown = await page.evaluate(layoutProbe);
+    const shown = await page.evaluate(layoutProbe, !!layout.swipe);
     assert(apart(shown.bar, shown.controls), `${label}: the bar does not cover the preview controls (${JSON.stringify([shown.bar, shown.controls])})`);
     assert(inside(shown.bar, shown.preview), `${label}: the bar stays inside the preview`);
     if (layout.place === 'bottom') {
@@ -284,7 +285,7 @@ async function layouts(browser, url) {
     assert.equal(await page.evaluate(() => document.elementFromPoint(...(({ left, top, width, height }) => [left + width / 2, top + height / 2])(
       document.getElementById('mv-camera-mode').getBoundingClientRect())) === document.getElementById('mv-camera-mode')), true, `${label}: back to the game camera`);
     assert.deepEqual(errors, []);
-    results[layout.name] = { place: shown.classes.includes('mv-freecam-beside') ? 'beside' : 'bottom',
+    results[layout.name] = { place: shown.classes.includes('mv-freecam-beside') ? 'beside' : 'bottom', compact: shown.classes.filter((name) => /compact|tight/.test(name)),
       preview: [shown.preview.width, shown.preview.height], bar: [shown.bar.left - shown.preview.left, shown.bar.top - shown.preview.top, shown.bar.width, shown.bar.height] };
     await page.context().close();
   }

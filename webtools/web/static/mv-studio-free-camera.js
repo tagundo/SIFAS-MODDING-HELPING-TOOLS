@@ -43,6 +43,8 @@
 
   // Gap (px) between the bar and the preview controls, and the narrowest bar placed beside them.
   const GAP = 6, MIN_BESIDE = 160;
+  // A bar that does not fit drops its sliders (the number boxes stay), then its captions.
+  const COMPACT = Object.freeze(["mv-freecam-compact", "mv-freecam-tight"]);
 
   let ctx = null, refs = null, scene = null, unsubscribe = null, queued = 0, targetsKey = "", placed = 0, wasHidden = true;
 
@@ -213,12 +215,22 @@
     const bar = refs.bar, preview = bar.parentElement, controls = global.document.getElementById("mv-preview-controls");
     bar.classList.remove("mv-freecam-beside");
     if (bar.offsetParent === null || !preview || !controls || controls.offsetParent !== preview) return;
+    compact(bar);
     const below = controls.offsetTop + controls.offsetHeight + GAP;
     const start = controls.offsetLeft + controls.offsetWidth + GAP;
     if (bar.offsetTop < below && preview.clientWidth - start - GAP >= MIN_BESIDE) {
       bar.style.setProperty("--mv-freecam-top", `${controls.offsetTop}px`);
       bar.style.setProperty("--mv-freecam-start", `${start}px`);
       bar.classList.add("mv-freecam-beside");
+      compact(bar);
+    }
+  }
+
+  function compact(bar) {
+    bar.classList.remove(...COMPACT);
+    for (const level of COMPACT) {
+      if (bar.scrollWidth <= bar.clientWidth) return;
+      bar.classList.add(level);
     }
   }
 
@@ -254,7 +266,8 @@
       global.document.getElementById("mv-scene")?.addEventListener("wheel", wheel, { capture: true, passive: false });
       if (global.ResizeObserver) {
         const observer = new global.ResizeObserver(queuePlace);
-        for (const element of [refs.bar.parentElement, global.document.getElementById("mv-preview-controls"), refs.bar]) {
+        // The fields too: a language switch or a longer member name changes what fits.
+        for (const element of [refs.bar.parentElement, global.document.getElementById("mv-preview-controls"), refs.bar, ...refs.bar.children]) {
           if (element) observer.observe(element);
         }
       }

@@ -1,8 +1,9 @@
 /* MV Studio free camera views (mv-studio-free-camera.js): a compact bar over the bottom of
    the preview, shown while the preview draws the free camera. It never covers the preview
    controls: in a preview too short for both it sits beside them (.mv-freecam-beside, placed
-   by the script). One row: a bar that does not fit scrolls sideways. The view buttons are a
-   segmented group like the 3D model tab's camera buttons. */
+   by the script). One row: a bar that does not fit gets more compact (.mv-freecam-compact,
+   .mv-freecam-tight), then scrolls sideways. The view buttons are a segmented group like the
+   3D model tab's camera buttons. */
 
 .mv-freecam {
   position: absolute;
@@ -41,6 +42,11 @@
 #mv-free-camera .mv-freecam-range input[type=number] { width: 4.6em; padding-inline: 5px; font-variant-numeric: tabular-nums; }
 .mv-freecam-unit { color: var(--muted); }
 .mv-freecam .mv-freecam-follow { min-height: 0; white-space: nowrap; }
+/* Too narrow: no sliders (the number boxes and the wheel stay), then no visible captions
+   (they still name the controls) and a narrower target list. */
+.mv-freecam-compact .mv-freecam-range input[type=range] { display: none; }
+.mv-freecam-tight .mv-freecam-field > span:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+#mv-free-camera.mv-freecam-tight select { max-width: 8em; }
 @media (pointer: fine) {
-  #mv-free-camera :is(button, select, input[type=number]) { min-height: 30px; padding-block: 3px; font-size: .76rem; }
+  #tab-mv #mv-free-camera :is(button, select, input[type=number]) { min-height: 30px; padding-block: 3px; font-size: .76rem; }
 }
