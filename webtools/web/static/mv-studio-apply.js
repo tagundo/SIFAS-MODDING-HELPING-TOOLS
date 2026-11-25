@@ -135,7 +135,8 @@
     const part = mode === "all" ? plan.all : plan.edits;
     if (!part || part.blocked.length) return true;
     if (mode === "all") return !!part.unchanged || (part.missing || []).length === catalogued(plan).length;
-    return !(part.apply || []).length;
+    // A platform whose served timeline needs a download is merged by the job once the download is allowed.
+    return !((part.apply || []).length || (part.download || []).length && part.counts && part.counts.clips);
   }
 
   function confirmText(plan, mode) {

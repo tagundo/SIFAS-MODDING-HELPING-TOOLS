@@ -290,6 +290,24 @@ class ApplyEditsTests(ApplyCase):
             self.run_apply(project, "edits", plan=plan)
         self.assertEqual(len(self.server_sessions), sessions)
 
+    def test_a_platform_whose_original_needs_a_download_keeps_its_mv_with_consent(self):
+        ios = self.local.pop("tl2101i")
+        project = self.imported()
+        self.bloom(project["tracks"])["intensity"] = 2.5
+        plan = self.plan(project)
+        self.assertEqual((plan["edits"]["apply"], plan["edits"]["download"]), (["android"], ["ios"]))
+        self.assertEqual(plan["platforms"]["ios"]["served"]["status"], "download")
+        with self.assertRaisesRegex(ValueError, "iOS timeline the game plays now is not available"):
+            self.run_apply(project, "edits", plan=plan)
+        job, _ = self.run_apply(project, "edits", plan=plan, platforms=("android",))
+        self.assertEqual(self.result(job)["parts"], ["android"])
+        self.assertEqual(self.timeline()["platforms"], {"android": "custom", "ios": "stock"})
+        # With the download allowed, the job fetches the iOS original and applies the same edit there.
+        self.remote["tl2101i"] = ios
+        job, _ = self.run_apply(project, "edits", download=True)
+        self.assertEqual(self.result(job)["parts"], ["ios"])
+        self.assertEqual(self.bloom(tracks_of(self.served("ios")))["intensity"], 2.5)
+
     def test_an_unmanaged_server_asks_for_a_restart(self):
         project = self.edited(self.imported())
         job, _ = self.run_apply(project, "edits", managed=False)
