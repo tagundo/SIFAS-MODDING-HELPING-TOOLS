@@ -23,7 +23,9 @@
     ["left", "Left side", "Look from the members' left."],
     ["right", "Right side", "Look from the members' right."],
   ]);
-  // The slider ranges; the number boxes take the same values. Distance slides on a log scale.
+  // The slider ranges; the number boxes take the same values at any precision (they show the
+  // distance to 0.01 m, 0.1 m from 10 m, and the FOV to 0.1°; the arrow keys step by 1). Distance
+  // slides on a log scale.
   const DISTANCE = Object.freeze({ min: .3, max: 300, steps: 1000 });
   const FOV = Object.freeze({ min: 5, max: 120 });
   const LOG_SPAN = Math.log(DISTANCE.max / DISTANCE.min);
@@ -87,10 +89,10 @@
     }
 
     box.distance = range("distance", "Distance", "Distance from the target (m). The mouse wheel also moves the camera forward and back.",
-      { min: 0, max: DISTANCE.steps, step: 1 }, { min: DISTANCE.min, max: DISTANCE.max, step: .05 }, "m",
+      { min: 0, max: DISTANCE.steps, step: 1 }, { min: DISTANCE.min, max: DISTANCE.max, step: "any" }, "m",
       (value) => metresOf(value), (metres) => freeView()?.setDistance(metres));
     box.fov = range("fov", "FOV", "Vertical field of view (°). Shift+mouse wheel also changes it.",
-      { min: FOV.min, max: FOV.max, step: 1 }, { min: FOV.min, max: FOV.max, step: .5 }, "°",
+      { min: FOV.min, max: FOV.max, step: 1 }, { min: FOV.min, max: FOV.max, step: "any" }, "°",
       (value) => value, (degrees) => freeView()?.setFov(degrees));
 
     const follow = make("label", { class: "mv-check mv-freecam-follow",

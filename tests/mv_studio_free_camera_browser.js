@@ -454,6 +454,8 @@ async function synthetic(browser, url) {
   near(after.distance, await page.evaluate((value) => MVStudioFreeCamera.metresOf(value), step + 1), 1e-9, 'the slider dollies on its log scale');
   assert(angleBetween(after.quaternion, before.quaternion) < 1e-6 && after.fov === before.fov);
   await page.waitForFunction((value) => document.getElementById('mv-freecam-distance').value === value, String(Number(after.distance.toFixed(2))));
+  const valid = (box) => box.evaluate((node) => node.validity.valid);
+  assert.equal(await valid(distanceBox), true, `the distance box holds a valid value (${await distanceBox.inputValue()})`);
 
   // FOV: number box and Shift+wheel change only the FOV; the plain wheel dollies.
   const lens = await measure(page);
@@ -477,6 +479,7 @@ async function synthetic(browser, url) {
   assert.deepEqual(after.position, lens.position, 'Shift+wheel does not dolly');
   near(after.distance, lens.distance, 1e-9, 'Shift+wheel keeps the distance');
   await page.waitForFunction((fov) => document.getElementById('mv-freecam-fov').value === String(Number(fov.toFixed(1))), after.fov);
+  assert.equal(await valid(fovBox), true, `the FOV box holds a valid value (${await fovBox.inputValue()})`);
   let widened = after.fov;
   await page.mouse.wheel(0, -200);
   await page.waitForFunction((value) => window.probeCtx.scene().freeView.state().distance < value - 1e-6, after.distance);
@@ -510,17 +513,26 @@ async function synthetic(browser, url) {
   await setMode(page, 'orbit');
 
   // Out-of-range entries are clamped to the bar's ranges, and after Enter the box shows the
-  // value applied while it keeps focus; an empty entry gets the current value back; a box
-  // that was focused while the wheel moved the camera shows the new value once left.
+  // value applied (rounded, and a valid entry) while it keeps focus; an empty entry gets the
+  // current value back; a box that was focused while the wheel moved the camera shows the new
+  // value once left. The arrow keys step by 1.
   for (const [box, typed, key, applied, shown] of [[distanceBox, '0.1', 'distance', .3, '0.3'], [distanceBox, '1000', 'distance', 300, '300'],
+    [distanceBox, '4.123', 'distance', 4.123, '4.12'], [fovBox, '35.33', 'fov', 35.33, '35.3'],
     [fovBox, '1', 'fov', 5, '5'], [fovBox, '200', 'fov', 120, '120'], [fovBox, '', 'fov', 120, '120']]) {
     await box.fill(typed);
     await box.press('Enter');
     near((await freeState(page))[key], applied, 1e-9, `${key} ${JSON.stringify(typed)} applies ${applied}`);
     assert.equal(await box.inputValue(), shown, `${key} ${JSON.stringify(typed)}: the box shows ${shown}`);
+    assert.equal(await valid(box), true, `${key} ${JSON.stringify(typed)}: ${shown} is a valid entry`);
     assert.equal(await box.evaluate((node) => node === document.activeElement), true, 'the box keeps focus after Enter');
     await page.locator('#mv-timeline-label').click();
     assert.equal(await box.inputValue(), shown, `${key} ${JSON.stringify(typed)}: still ${shown} once left`);
+  }
+  for (const [box, value, stepped] of [[distanceBox, '4.12', '5.12'], [fovBox, '35.3', '36.3']]) {
+    await box.fill(value);
+    await box.press('ArrowUp');
+    assert.equal(await box.inputValue(), stepped, `ArrowUp steps ${value} by 1`);
+    assert.equal(await valid(box), true);
   }
   for (const [box, value] of [[distanceBox, '4'], [fovBox, '40']]) {
     await box.fill(value);
