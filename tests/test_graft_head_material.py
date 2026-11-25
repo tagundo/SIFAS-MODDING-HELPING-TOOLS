@@ -40,7 +40,11 @@ def pointer(path_id):
 
 
 def head_costume(masked=False):
-    """Hips/Head/Head_All with mesh_hair/Hair and mesh_face/Face, plus Body."""
+    """Hips/Head/Head_All with mesh_hair/Hair, mesh_face/Face and Head_Face, plus Body.
+
+    Head_Face always has Head_Face_End and Head_Hair, as on every surveyed game
+    costume; ``masked`` only adds Head_Face/mesh_facedots.
+    """
     sf = SimpleNamespace(externals=[])
     objects, ids = {}, iter(range(1, 1000))
 
@@ -64,8 +68,11 @@ def head_costume(masked=False):
     hair_node = node("Hair", node("mesh_hair", head_all))
     face_node = node("Face", node("mesh_face", head_all))
     body_node = node("Body", node("mesh_body", root))
+    head_face = node("Head_Face", head_all)
+    node("Head_Face_End", head_face)
+    node("Head_Hair", head_face)
     if masked:
-        node("mesh_facedots", node("Head_Face", head_all))
+        node("mesh_facedots", head_face)
     head_material = add("Material", {"m_Name": "ch0212_co0001_head"})
     body_material = add("Material", {"m_Name": "ch0212_co0001_body"})
     renderers = {}
@@ -86,6 +93,7 @@ class HeadRendererRuleTests(unittest.TestCase):
     def test_renderers_below_head_all_are_drawn_with_head_material(self):
         objects, renderers, head_material = head_costume()
         binding = head_material_binding(objects, renderers["Hair"])
+        self.assertIsNotNone(binding, "Head_Face without mesh_facedots is a merged face")
         self.assertIs(binding["material"], head_material)
         self.assertEqual({obj.tree["m_GameObject"]["m_PathID"] for obj in binding["renderers"]},
                          {renderers[name].tree["m_GameObject"]["m_PathID"] for name in ("Hair", "Face")})

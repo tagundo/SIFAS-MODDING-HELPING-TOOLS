@@ -92,8 +92,10 @@ def skinless(tree):
 def head_costume(*, hair=HAIR, hair_copy=False, masked=False):
     """Return a reopened game-like costume and the path IDs of its parts.
 
-    ``masked`` adds Head_All/Head_Face/mesh_facedots: the client does not merge
-    such a face, so its head meshes keep their own materials.
+    Like every surveyed game costume, Head_All always has Head_Face with
+    Head_Face_End and Head_Hair children. ``masked`` only adds
+    Head_Face/mesh_facedots: the client does not merge such a face, so its head
+    meshes keep their own materials.
     """
     environment, renderer, mesh, material = fixture(BLUE, size=SIZE)
     sf = renderer.assets_file
@@ -122,8 +124,11 @@ def head_costume(*, hair=HAIR, hair_copy=False, masked=False):
     head_all, head_all_transform = node("Head_All", head_transform)
     _, hair_holder = node("mesh_hair", head_all_transform)
     _, face_holder = node("mesh_face", head_all_transform)
+    _, head_face = node("Head_Face", head_all_transform)
+    node("Head_Face_End", head_face)
+    node("Head_Hair", head_face)
     if masked:
-        node("mesh_facedots", node("Head_Face", head_all_transform)[1])
+        node("mesh_facedots", head_face)
     # Move the costume's renderer to Head_All/mesh_hair/Hair.
     hair_go = renderer.read_typetree()["m_GameObject"]["m_PathID"]
     hair_transform = trees[hair_go]["m_Component"][0]["component"]["m_PathID"]
@@ -192,6 +197,7 @@ class RealHeadBakeTests(unittest.TestCase):
         target, ids = head_costume()
         objects = {obj.path_id: obj for obj in target.objects}
         binding = compat.head_material_binding(objects, objects[ids["hair"]])
+        self.assertIsNotNone(binding, "Head_Face without mesh_facedots is a merged face, as on every real costume")
         self.assertEqual(binding["material"].path_id, ids["material"])
         self.assertEqual({obj.path_id for obj in binding["renderers"]}, {ids["hair"], ids["face"]})
         self.assertTrue(compat.face_combined_renderer(objects, objects[ids["face"]]))
@@ -199,6 +205,22 @@ class RealHeadBakeTests(unittest.TestCase):
                                                                objects[ids["mesh"]], objects[ids["material"]])
         self.assertFalse(shared_mesh)
         self.assertTrue(shared_material, "Face and BodyPartManager also use the head material")
+
+    def test_only_mesh_facedots_marks_a_head_as_masked(self):
+        """Merged and masked heads differ only by Head_Face/mesh_facedots, as in game."""
+        for masked in (False, True):
+            with self.subTest(masked=masked):
+                target, ids = head_costume(masked=masked)
+                objects = {obj.path_id: obj for obj in target.objects}
+                names = {obj.read_typetree()["m_Name"] for obj in objects.values() if obj.type.name == "GameObject"}
+                self.assertLessEqual({"Head_All", "Head_Face", "Head_Face_End", "Head_Hair"}, names)
+                self.assertEqual("mesh_facedots" in names, masked)
+                binding = compat.head_material_binding(objects, objects[ids["hair"]])
+                if masked:
+                    self.assertIsNone(binding, "the client does not merge a masked face")
+                else:
+                    self.assertIsNotNone(binding)
+                    self.assertEqual(binding["material"].path_id, ids["material"])
 
     def test_donor_texels_go_into_the_shared_head_material_not_a_copy(self):
         target, ids = head_costume()
