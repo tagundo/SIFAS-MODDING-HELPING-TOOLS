@@ -494,6 +494,57 @@ class ConsentAndKeepTests(ApplyCase):
         self.assertEqual(self.result(job)["parts"], ["ios"])
         self.assertEqual(tracks_of(self.served("ios")), expected)
 
+    def test_apply_all_keeps_a_platform_that_already_plays_the_result(self):
+        """A project loaded from an applied timeline: its own platform bakes to the served bytes, and the
+        other platform's bake differs only in bytes (another writer), not in what it plays."""
+        first = self.imported()
+        self.bloom(first["tracks"])["intensity"] = 2.5
+        self.run_apply(first, "edits")
+        reopened = self.imported()
+        files, sessions, key = self.static_files(), len(self.server_sessions), self.timeline()["timelineKey"]
+        job, summary = self.run_apply(reopened, "all")
+        self.assertEqual((summary, self.result(job)["changed"]), (register.NO_CHANGES, False))
+        self.assertEqual((self.static_files(), len(self.server_sessions), self.timeline()["timelineKey"]),
+                         (files, sessions, key))
+        self.assertEqual(sorted(self.result(job)["applied"]["platforms"]), ["android", "ios"])
+
+    def test_a_page_that_leaves_out_a_platform_needing_no_download_is_out_of_date(self):
+        project = self.imported()
+        self.bloom(project["tracks"])["intensity"] = 2.5
+        with self.assertRaisesRegex(ValueError, re.escape(apply.PROJECT_STALE)):
+            self.run_apply(project, "edits", platforms=("android",))
+        self.assertEqual((self.server_sessions, self.static_files(), self.timeline()["override"]), ([], [], False))
+
+    def test_a_rewrite_equal_to_the_served_bytes_writes_nothing(self):
+        project = self.imported()
+        self.bloom(project["tracks"])["intensity"] = 2.5
+        with mock.patch.object(mv_studio_timeline, "_rewrite_timeline", side_effect=lambda raw, original, revised: raw):
+            job, summary = self.run_apply(project, "edits")
+        self.assertEqual((summary, self.result(job)["changed"], self.server_sessions, self.static_files()),
+                         (register.NO_CHANGES, False, [], []))
+        self.assertEqual(sorted(self.result(job)["applied"]["platforms"]), ["android", "ios"])
+
+    def test_a_record_made_against_another_snapshot_is_ignored(self):
+        first = self.imported()
+        self.bloom(first["tracks"])["intensity"] = 2.5
+        job, _ = self.run_apply(first, "edits")
+        record = first["source"]["applied"] = self.result(job)["applied"]
+        self.assertEqual(apply._synced(first, mv_studio._native(first)).keys(), {"android", "ios"})
+        # Loaded again from the applied timeline: the first project's record does not belong to it.
+        reopened = self.imported()
+        reopened["source"]["applied"] = copy.deepcopy(record)
+        self.assertEqual(apply._synced(reopened, mv_studio._native(reopened)), {})
+        plan = self.plan(reopened)
+        self.assertEqual((plan["edits"]["unchanged"], plan["edits"]["since"]), (True, "load"))
+        # A malformed record counts as none.
+        for broken in ({"source": record["source"], "fields": record["platforms"]["android"]},
+                       {"source": record["source"], "platforms": {"windows": {}}},
+                       {"source": record["source"], "platforms": {"android": {"cab-1:20:0": {"intensity": "zz"}}}},
+                       {"source": record["source"], "platforms": {"android": {"cab-1:20:0": {"intensity": ["0" * 16, "x" * 65]}}}}):
+            first["source"]["applied"] = broken
+            with self.subTest(broken=broken):
+                self.assertEqual(apply._synced(first, mv_studio._native(first)), {})
+
 
 @NEEDS_STORE
 class SongTargetTests(ApplyCase):
