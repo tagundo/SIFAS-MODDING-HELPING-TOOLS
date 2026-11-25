@@ -221,6 +221,28 @@ def head_placement_refusal(reasons):
     return HEAD_NO_SPACE + " " + HEAD_DETAIL_ISLAND.format(**details)
 
 
+def head_texels_note(reserved_changes):
+    """The log line for a head-mesh graft, from the texel changes the bake measured.
+
+    Level 0 always avoids the face, eyes, mouth, blush window and other head
+    meshes. A coarse mip covers more of the texture per texel, so the part's
+    coarse texels can land on theirs; the line says from which level on.
+    """
+    from graft_uv_reuse import mip_level_range, reserved_clean_levels
+    line = ("Head mesh: the game draws every head mesh with BodyPartManager.headMaterial, so the donor texels were "
+            "written into that material's own texture at free texels. The face, eyes, mouth, blush area and other "
+            "head meshes keep their UVs")
+    if reserved_changes is None:
+        return line + "."
+    total = sum(sum(counts) for counts in reserved_changes.values())
+    if not total:
+        return line + " and every texel at every mip level."
+    spans = " and ".join(f"{slot} {mip_level_range(levels)}"
+                         for slot, levels in reserved_clean_levels(reserved_changes).items())
+    return (line + f", and their texels at {spans}; coarser mips share {total} of their texels with the part "
+            "(measured).")
+
+
 def _script_identity(objects, owner, tree):
     pointer = tree.get("m_Script", {})
     script = objects.get(pointer.get("m_PathID")) if isinstance(pointer, dict) else None
@@ -715,9 +737,7 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
         renderer_tree.clear(); renderer_tree.update(renderer)
     diagnostics = list(dict.fromkeys(fallback_diagnostics + list(baked.diagnostics)))
     if head is not None and prepared:
-        diagnostics.append("Head mesh: the game draws every head mesh with BodyPartManager.headMaterial, so the donor "
-                           "texels were written into that material's own texture at free texels; the face, eyes, mouth, "
-                           "blush area and other head meshes keep their texels and UVs.")
+        diagnostics.append(head_texels_note(baked.reserved_changes))
     if shared_mesh or detach_material:
         diagnostics.append("Detached shared Body " + " and ".join(
             name for name, detached in (("mesh", shared_mesh), ("material", detach_material)) if detached)

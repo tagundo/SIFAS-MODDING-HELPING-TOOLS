@@ -55,6 +55,9 @@ class AtlasBake:
     diagnostics: tuple
     identity: bool
     unique_sources: int
+    # {slot: changed reserved texels per mip level} when the bake was given
+    # reserved surfaces (other surfaces of the receiver texture), else None.
+    reserved_changes: dict = None
 
 
 _MEMBER_EXTERNAL = ("cab-9382ea964987eceddd567506a3b21312", 8291131735116688333)

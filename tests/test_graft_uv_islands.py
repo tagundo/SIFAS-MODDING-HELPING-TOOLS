@@ -6,12 +6,15 @@ reserved areas only decide placement.
 """
 import copy
 import unittest
+import unittest.mock
 
 import numpy as np
 from PIL import Image
 
 import costume_part_transplant as part
-from graft_uv_reuse import _triangle_texels, prepare_uv_reuse, split_uv_islands
+import graft_uv_reuse
+from graft_uv_reuse import (_CoarseScorer, _reserved_texels, _triangle_texels, prepare_uv_reuse,
+                           split_uv_islands)
 from test_graft_texture_atlas import image, levels, source
 
 
@@ -241,14 +244,154 @@ class CoarseMipPlacementTests(unittest.TestCase):
         level1 = levels(result.textures["_MainTex"])[1]
         np.testing.assert_array_equal(level1[:, 0:3], np.full((16, 3, 4), (9, 9, 9, 255), np.uint8),
                                       "the reserved block keeps its level-1 texels")
-        self.assertTrue(any("coarse levels 1–1 keep clear of used texels" in message
+        self.assertTrue(any("keeps off other surfaces' texels at mip levels 0–1" in message
                             for message in result.diagnostics), result.diagnostics)
+        changes = result.reserved_changes["_MainTex"]
+        self.assertEqual(changes[:2], (0, 0))
+        self.assertTrue(any(f"keep their texels at _MainTex mip levels 0–1; coarser mips change {sum(changes)} of "
+                            "their texels (measured)." in message for message in result.diagnostics), result.diagnostics)
 
     def test_without_a_clean_position_the_first_free_one_is_still_used(self):
         result = self.place((5, 8))
         self.assertIsNotNone(result, "coarse texels only steer placement; they never refuse it")
         self.assertEqual(21 + round(result.transforms[1].offset[0] * 32), 5)
         self.assertTrue(any("share" in message and "other surfaces" in message for message in result.diagnostics))
+
+
+class ReservedCoarsePlacementTests(unittest.TestCase):
+    """Coarse footprints are scored against reserved texels first, folded through the wrap mode.
+
+    A 64-pixel bilinear texture with a full mip chain. The top band (v >= 60/64)
+    is reserved, like the face block of a head texture. Receiver cells cover
+    most of the rest, leaving two free slots for the 10x10-texel island
+    footprint: B in the bottom-left corner and A at (24, 24). B keeps off the
+    receiver's coarse texels for more levels than A. At B, the island's level-2
+    footprint reaches one texel below row 0, which Repeat folds onto the top
+    row: the reserved band. Clamp folds it onto row 0 instead.
+    """
+    SIZE = 64
+
+    def receiver_cells(self):
+        cells = []
+        for x0 in range(0, 52, 4):
+            for y0 in range(0, 56, 4):
+                if (x0 < 16 and y0 < 16) or (20 <= x0 <= 32 and 20 <= y0 <= 32):
+                    continue
+                cells += inset(x0, y0, 4, self.SIZE)
+        return cells
+
+    def place(self, wrap):
+        size = self.SIZE
+        receiver = [image((size >> level, size >> level), (9, 9, 9, 255)) for level in range(7)]
+        donor = [image((size >> level, size >> level), (200, 10 + level, 10, 255)) for level in range(7)]
+        target, part_source = source("receiver", receiver, wrap=wrap), source("donor", donor, wrap=wrap)
+        geometry = grouped_mesh([self.receiver_cells(), inset(33, 33, 8, size)])
+        result = prepare_uv_reuse([target, part_source], geometry, 1, uv_placement="move_to_empty",
+                                  reserved={"rects": [(0., 60 / size, 1., 1.)]})
+        self.assertIsNotNone(result)
+        position = tuple(33 + round(offset * size) for offset in result.transforms[1].offset)
+        return result, position
+
+    def test_repeat_wrap_onto_reserved_texels_moves_the_island_off_the_edge(self):
+        result, position = self.place(wrap=0)
+        self.assertEqual(position, (25, 25), "slot B's wrapped level-2 footprint reaches the reserved band")
+        payload = levels(result.textures["_MainTex"])
+        for level in range(5):
+            np.testing.assert_array_equal(payload[level][0], np.full((self.SIZE >> level, 4), (9, 9, 9, 255), np.uint8),
+                                          f"level {level}: the reserved top row keeps its texels")
+        self.assertEqual(result.reserved_changes["_MainTex"][:5], (0, 0, 0, 0, 0))
+        self.assertTrue(any("keeps off other surfaces' texels at mip levels 0–4 and off the receiver's at mip "
+                            "levels 0–1" in message for message in result.diagnostics), result.diagnostics)
+
+    def test_clamp_keeps_the_first_free_corner(self):
+        result, position = self.place(wrap=1)
+        self.assertEqual(position, (1, 1), "nothing folds onto the reserved band, so bottom-left order decides")
+        self.assertEqual(result.reserved_changes["_MainTex"][:6], (0,) * 6)
+
+    def test_reserved_changes_are_measured_from_the_written_texels(self):
+        result, _ = self.place(wrap=0)
+        payload = levels(result.textures["_MainTex"])
+        self.assertEqual(len(result.reserved_changes["_MainTex"]), 7)
+        for level, count in enumerate(result.reserved_changes["_MainTex"]):
+            size = self.SIZE >> level
+            # Bilinear support widens the closed band v >= 60/64 by 1.5 texels downwards.
+            rows = size - max(0, int(np.ceil(60 / 64 * size - 1.5)))
+            changed = np.any(payload[level][:rows] != (9, 9, 9, 255), axis=2)
+            self.assertEqual(count, int(changed.sum()), f"level {level}")
+        self.assertGreater(sum(result.reserved_changes["_MainTex"]), 0, "the 2x2 and 1x1 levels cannot avoid the band")
+
+
+
+class CoarseScorerTests(unittest.TestCase):
+    """The coarse scores equal what the moved footprints really touch, wrap included.
+
+    Brute force: move the island's UVs by every level-0 offset, rasterize them
+    at each coarse level with the sampler's wrap, and count consecutive levels
+    that keep off each mask. The scorer must give the same numbers (and, with
+    its whole-texel bound, never more).
+    """
+    SIZE = 32
+    LEVELS = (1, 2, 3, 4)
+    ISLAND = np.array([[.4113, .4227], [.5521, .4519], [.4702, .5788], [.5317, .5602]])
+    FACES = np.array([[0, 1, 2], [1, 3, 2]])
+
+    def masks(self, wraps):
+        reserved, receiver = {}, {}
+        for level in self.LEVELS:
+            size = self.SIZE >> level
+            reserved[level] = _reserved_texels({"rects": [(0., .875, .5, 1.)],
+                                                "surfaces": [(np.array([[.8, .05], [.97, .05], [.9, .3]]), [[0, 1, 2]])]},
+                                               size, size, True, wraps, [10 ** 9])
+            receiver[level] = _triangle_texels(np.array([[.05, .1], [.3, .12], [.1, .35]]), [[0, 1, 2]],
+                                               size, size, True, wraps, [10 ** 9])
+        return reserved, receiver
+
+    def brute(self, masks, wraps, dx, dy):
+        scores = []
+        for mask in masks:
+            score = 0
+            for level in self.LEVELS:
+                size = self.SIZE >> level
+                moved = self.ISLAND + (dx / self.SIZE, dy / self.SIZE)
+                if np.any(_triangle_texels(moved, self.FACES, size, size, True, wraps, [10 ** 9]) & mask[level]):
+                    break
+                score += 1
+            scores.append(score)
+        return tuple(scores)
+
+    def shifts(self):
+        low, high = self.ISLAND.min(axis=0) * self.SIZE, self.ISLAND.max(axis=0) * self.SIZE
+        return [(dx, dy) for dx in range(int(np.ceil(-low[0])), int(np.floor(self.SIZE - high[0])) + 1)
+                for dy in range(int(np.ceil(-low[1])), int(np.floor(self.SIZE - high[1])) + 1)]
+
+    def scorer(self, masks, wraps):
+        return _CoarseScorer(self.ISLAND, self.FACES, (self.SIZE, self.SIZE), self.LEVELS, True, wraps,
+                             masks[0], masks[1], [10 ** 9])
+
+    def test_scores_equal_the_moved_footprints_at_every_offset_and_wrap(self):
+        for wraps in ((0, 0), (1, 1), (2, 2)):
+            with self.subTest(wraps=wraps):
+                masks = self.masks(wraps)
+                shifts = self.shifts()
+                # Every offset here is its own level-4 phase: score them all exactly.
+                with unittest.mock.patch.object(graft_uv_reuse, "_MAX_COARSE_PHASES", 256):
+                    reserved, receiver = self.scorer(masks, wraps).scores([dx for dx, _ in shifts],
+                                                                          [dy for _, dy in shifts])
+                expected = [self.brute(masks, wraps, dx, dy) for dx, dy in shifts]
+                self.assertEqual(list(zip(reserved.tolist(), receiver.tolist())), expected)
+                self.assertGreater(len({value for value, _ in expected}), 2, "the masks separate the offsets")
+
+    def test_the_whole_texel_bound_never_overcounts(self):
+        wraps = (0, 0)
+        masks = self.masks(wraps)
+        shifts = self.shifts()
+        with unittest.mock.patch.object(graft_uv_reuse, "_MAX_COARSE_PHASES", 0):
+            reserved, receiver = self.scorer(masks, wraps).scores([dx for dx, _ in shifts], [dy for _, dy in shifts])
+        expected = [self.brute(masks, wraps, dx, dy) for dx, dy in shifts]
+        for (dx, dy), bound, exact in zip(shifts, zip(reserved.tolist(), receiver.tolist()), expected):
+            self.assertLessEqual(bound[0], exact[0], (dx, dy))
+            self.assertLessEqual(bound[1], exact[1], (dx, dy))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -115,6 +115,14 @@ class HeadRendererRuleTests(unittest.TestCase):
         self.assertTrue(face_combined_renderer(objects, renderers["Hair"]),
                         "a bone-less piece is only placed rigidly, wherever it sits")
 
+    def test_head_log_line_states_the_measured_levels(self):
+        note = compat.head_texels_note({"_MainTex": (0, 0, 0, 0, 7, 5, 3), "_RimlightTex": (0, 3, 2)})
+        self.assertIn("keep their UVs, and their texels at _MainTex mip levels 0–3 and _RimlightTex mip level 0; "
+                      "coarser mips share 20 of their texels with the part (measured).", note)
+        self.assertTrue(compat.head_texels_note({"_MainTex": (0, 0, 0)}).endswith(
+            "keep their UVs and every texel at every mip level."))
+        self.assertNotIn("texel", compat.head_texels_note(None).split("free texels.")[1])
+
     def test_cheek_window_is_the_uv0_area_the_cheek_formula_maps_into_the_array(self):
         u0, v0, u1, v1 = CHEEK_WINDOW
         for u, v in ((u0, v0), (u1, v1)):

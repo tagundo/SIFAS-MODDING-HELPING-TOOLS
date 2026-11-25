@@ -231,6 +231,8 @@ class RealHeadBakeTests(unittest.TestCase):
         self.assertTrue(stats["head_material"])
         self.assertFalse(stats["detached_material"])
         self.assertEqual(renderer_tree["m_Materials"], [pointer(ids["material"])])
+        self.assertIn(compat.head_texels_note({"_MainTex": (0,)}), stats["diagnostics"])
+        self.assertTrue(stats["diagnostics"][-1].endswith("keep their UVs and every texel at every mip level."))
         saved = UnityPy.load(target.file.save(packer="original"))
         objects = {obj.path_id: obj for obj in saved.objects}
         self.assertEqual(sorted(pid for pid, obj in objects.items() if obj.type.name == "Material"), materials)

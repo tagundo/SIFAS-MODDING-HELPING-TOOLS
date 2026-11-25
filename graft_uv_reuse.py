@@ -24,15 +24,15 @@ class _CoverageLimit(ValueError):
     pass
 
 
-def _triangle_texels(uv, faces, width, height, linear, wraps, budget):
-    """Closed triangle/AABB intersection, tiled to bound temporary arrays.
+def _covered_texels(uv, faces, width, height, linear, budget):
+    """Yield unfolded (y up, x right) texel indices whose sampler support meets a triangle.
 
-    A native texel contributes to a nearest sample within its unit square.
-    Linear sampling extends that support by half a texel on each side. This
-    copies existing contributing source texels; it does not create padding.
+    Closed triangle/AABB intersection, tiled to bound temporary arrays. A
+    native texel contributes to a nearest sample within its unit square.
+    Linear sampling extends that support by half a texel on each side. Indices
+    may lie one texel outside the texture; callers fold them by wrap mode.
     """
     import numpy as np
-    mask = np.zeros((height, width), dtype=bool)
     radius = .5 if linear else 0.
     half = .5 + radius
     for face in faces:
@@ -40,9 +40,6 @@ def _triangle_texels(uv, faces, width, height, linear, wraps, budget):
         low, high = triangle.min(axis=0), triangle.max(axis=0)
         x0, y0 = np.floor(low - radius).astype(int) - 1
         x1, y1 = np.floor(high + radius).astype(int)
-        # Keep the native sampler's small virtual border, then fold covered
-        # contributors through Repeat/Clamp/Mirror. Clipping first would miss
-        # opposite-edge texels sampled by a triangle near UV 0 or 1.
         if x1 < x0 or y1 < y0:
             continue
         budget[0] -= (x1 - x0 + 1) * (y1 - y0 + 1)
@@ -55,7 +52,6 @@ def _triangle_texels(uv, faces, width, height, linear, wraps, budget):
             projection = triangle @ axis
             axes.append((axis, projection.min(), projection.max()))
         xs = np.arange(x0, x1 + 1, dtype=float)[None, :] + .5
-        mapped_x = _indices(np.arange(x0, x1 + 1), width, wraps[0])
         for start in range(y0, y1 + 1, 64):
             stop = min(y1 + 1, start + 64)
             ys = np.arange(start, stop, dtype=float)[:, None] + .5
@@ -66,10 +62,99 @@ def _triangle_texels(uv, faces, width, height, linear, wraps, budget):
                 extent = half * (abs(axis[0]) + abs(axis[1]))
                 covered &= (center + extent >= minimum - 1e-9) & (center - extent <= maximum + 1e-9)
             rows, columns = np.nonzero(covered)
-            mapped_y = _indices(np.arange(start, stop), height, wraps[1])
-            # Source images use top-left rows; Unity mesh UVs use bottom-left.
-            mask[height - 1 - mapped_y[rows], mapped_x[columns]] = True
+            yield start + rows, x0 + columns
+
+
+def _triangle_texels(uv, faces, width, height, linear, wraps, budget):
+    """Texels (top-left rows) that a sampler reads for these UV triangles.
+
+    This copies existing contributing source texels; it does not create padding.
+    """
+    import numpy as np
+    mask = np.zeros((height, width), dtype=bool)
+    # Keep the native sampler's small virtual border, then fold covered
+    # contributors through Repeat/Clamp/Mirror. Clipping first would miss
+    # opposite-edge texels sampled by a triangle near UV 0 or 1.
+    for ys, xs in _covered_texels(uv, faces, width, height, linear, budget):
+        # Source images use top-left rows; Unity mesh UVs use bottom-left.
+        mask[height - 1 - _indices(ys, height, wraps[1]), _indices(xs, width, wraps[0])] = True
     return mask
+
+
+# Unfolded footprints of UVs inside 0-1 reach one texel past each edge; the
+# conservative bound for fractional coarse shifts reaches one more.
+_FOOTPRINT_MARGIN = 2
+
+
+def _unfolded_texels(uv, faces, width, height, linear, budget):
+    """Unfolded sampler footprint, y up, offset by _FOOTPRINT_MARGIN on each side."""
+    import numpy as np
+    margin = _FOOTPRINT_MARGIN
+    mask = np.zeros((height + 2 * margin, width + 2 * margin), dtype=bool)
+    for ys, xs in _covered_texels(uv, faces, width, height, linear, budget):
+        inside = (ys >= -margin) & (ys < height + margin) & (xs >= -margin) & (xs < width + margin)
+        mask[ys[inside] + margin, xs[inside] + margin] = True
+    return mask
+
+
+def _wrapped_canvas(mask, wraps):
+    """A top-left-row texel mask as y-up rows, extended by _FOOTPRINT_MARGIN through its wrap modes.
+
+    An unfolded footprint texel at (x, y) then lands on canvas texel (x, y) + margin,
+    which is the texel the sampler really reads there (Repeat reaches the
+    opposite edge).
+    """
+    import numpy as np
+    height, width = mask.shape
+    margin = _FOOTPRINT_MARGIN
+    ys = _indices(np.arange(-margin, height + margin), height, wraps[1])
+    xs = _indices(np.arange(-margin, width + margin), width, wraps[0])
+    return mask[::-1][np.ix_(ys, xs)]
+
+
+def _fast_length(value):
+    """The next length with only factors 2, 3 and 5 (fast FFT sizes)."""
+    while True:
+        rest = value
+        for factor in (2, 3, 5):
+            while rest % factor == 0:
+                rest //= factor
+        if rest == 1:
+            return value
+        value += 1
+
+
+def _shift_overlaps(canvas, kernel):
+    """Whether ``kernel`` moved by an integer shift meets ``canvas``, for every shift.
+
+    Both are y-up masks with the same margin, so a kernel texel at index p
+    lands on canvas index p + (sx, sy). Returns ``lookup(sx, sy)`` over integer
+    arrays; a shift that leaves the canvas counts as meeting it.
+    """
+    import numpy as np
+    rows, columns = np.nonzero(kernel)
+    if not len(rows):
+        return lambda sx, sy: np.zeros(np.shape(sx), dtype=bool)
+    top, left = int(rows.min()), int(columns.min())
+    crop = kernel[top:int(rows.max()) + 1, left:int(columns.max()) + 1]
+    kh, kw = crop.shape
+    ch, cw = canvas.shape
+    if kh > ch or kw > cw:
+        return lambda sx, sy: np.ones(np.shape(sx), dtype=bool)
+    # Only shifts that keep the kernel inside the canvas are read, so circular
+    # correlation over the canvas size equals the linear one there.
+    size = (_fast_length(ch), _fast_length(cw))
+    spectrum = np.fft.rfft2(canvas.astype(np.float64), s=size) * np.conj(np.fft.rfft2(crop.astype(np.float64), s=size))
+    table = np.fft.irfft2(spectrum, s=size) > .5
+
+    def lookup(sx, sy):
+        sx = np.asarray(sx, dtype=np.int64) + left
+        sy = np.asarray(sy, dtype=np.int64) + top
+        inside = (sx >= 0) & (sx <= cw - kw) & (sy >= 0) & (sy <= ch - kh)
+        hit = np.ones(sx.shape, dtype=bool)
+        hit[inside] = table[sy[inside], sx[inside]]
+        return hit
+    return lookup
 
 
 def _reserved_texels(reserved, width, height, linear, wraps, budget):
@@ -112,6 +197,30 @@ class PlacementDecline(str):
 
 def _fallback_note(atlas_fallback):
     return "; using the texture atlas." if atlas_fallback else "."
+
+
+def reserved_clean_levels(reserved_changes):
+    """{slot: number of mip levels, from level 0, in which no reserved texel changed}."""
+    return {slot: next((level for level, count in enumerate(counts) if count), len(counts))
+            for slot, counts in (reserved_changes or {}).items()}
+
+
+def reserved_changes_note(reserved_changes):
+    """What the bake measured for texels that other surfaces of the texture sample."""
+    clean = reserved_clean_levels(reserved_changes)
+    total = sum(sum(counts) for counts in reserved_changes.values())
+    if not total:
+        return "Other surfaces of this texture keep every texel at every mip level."
+    spans = " and ".join(f"{slot} {mip_level_range(levels)}" for slot, levels in clean.items())
+    return (f"Other surfaces of this texture keep their texels at {spans}; coarser mips change {total} of their "
+            "texels (measured).")
+
+
+def mip_level_range(levels):
+    """'mip levels 0–N' for the first ``levels`` levels."""
+    if levels <= 0:
+        return "no mip level"
+    return "mip level 0" if levels == 1 else f"mip levels 0–{levels - 1}"
 
 
 def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=None,
@@ -200,6 +309,15 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
         masks = {}
         budget = [max_raster_tests]
         mask_bytes = [0]
+        def reserved_mask(width, height, sampler):
+            linear, wraps = sampler[0] != 0, sampler[-2:]
+            key = "reserved", width, height, linear, wraps
+            if key not in masks:
+                if output_bytes + decoded_bytes + mask_bytes[0] + width * height > max_total_bytes:
+                    raise _CoverageLimit("UV occupancy masks and decoded images exceed the memory budget")
+                masks[key] = _reserved_texels(reserved, width, height, linear, wraps, budget)
+                mask_bytes[0] += width * height
+            return masks[key]
         def coverage(group_index, width, height, sampler):
             linear, wraps = sampler[0] != 0, sampler[-2:]
             key = group_index, width, height, linear, wraps
@@ -208,7 +326,7 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
                     raise _CoverageLimit("UV occupancy masks and decoded images exceed the memory budget")
                 masks[key] = _triangle_texels(uv, groups[group_index], width, height, linear, wraps, budget)
                 if group_index == 0 and reserved:
-                    masks[key] |= _reserved_texels(reserved, width, height, linear, wraps, budget)
+                    masks[key] = masks[key] | reserved_mask(width, height, sampler)
                 mask_bytes[0] += width * height
             return masks[key]
         # Check every active texture's native sampling footprint before decode.
@@ -218,7 +336,7 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
                 if np.any(receiver & coverage(group_index, width, height, sampler)):
                     return decline(slot + " donor UVs touch texture texels already used by retained receiver triangles"
                                    + (" or by other surfaces of this texture" if reserved else ""), "occupied", slot=slot)
-        textures = {}
+        textures, reserved_changes = {}, {}
         decoder = image_decoder or _decode_default
         coarse_receiver = coarse_donors = 0
         for slot, (objects, width, height, mip_count, sampler) in slot_objects.items():
@@ -230,10 +348,12 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
                     if np.any(overlap) and np.any(np.asarray(chains[first][0])[overlap] != np.asarray(chains[second][0])[overlap]):
                         return decline(slot + " selected donor groups overlap with different source pixels")
             payload = bytearray()
+            changes = []
             for level in range(mip_count):
                 w, h = max(1, width >> level), max(1, height >> level)
                 receiver = coverage(0, w, h, sampler)
-                result = np.asarray(chains[0][level]).copy()
+                original = np.asarray(chains[0][level])
+                result = original.copy()
                 prior_donors = np.zeros((h, w), dtype=bool)
                 for group_index in range(1, len(groups)):
                     mask = coverage(group_index, w, h, sampler)
@@ -242,7 +362,12 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
                         coarse_donors += int(np.count_nonzero(prior_donors & mask))
                     result[mask] = np.asarray(chains[group_index][level])[mask]
                     prior_donors |= mask
+                if reserved:
+                    # Measured, not predicted: reserved texels whose colour changed.
+                    changes.append(int(np.count_nonzero(np.any(result != original, axis=-1) & reserved_mask(w, h, sampler))))
                 payload.extend(Image.fromarray(result, "RGBA").transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes())
+            if reserved:
+                reserved_changes[slot] = tuple(changes)
             template = objects[0]
             tree = copy.deepcopy(template.read_typetree())
             tree.update(m_TextureFormat=4, m_CompleteImageSize=len(payload), m_MipCount=mip_count)
@@ -256,7 +381,10 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
         local_diagnostics.append("Reused empty receiver UV areas at the original texture resolution; donor UVs unchanged, selected source pixels copied directly with no padding.")
         if coarse_receiver or coarse_donors:
             local_diagnostics.append(f"Authored coarse mip footprints share {coarse_receiver} receiver and {coarse_donors} donor texels; selected donor mip pixels are applied in material order.")
-        return AtlasBake(tuple(UVTransform() for _ in sources), textures, tuple(local_diagnostics), False, len(sources))
+        if reserved:
+            local_diagnostics.append(reserved_changes_note(reserved_changes))
+        return AtlasBake(tuple(UVTransform() for _ in sources), textures, tuple(local_diagnostics), False, len(sources),
+                         reserved_changes if reserved else None)
     except (AtlasCompatibilityError, _CoverageLimit, NotImplementedError) as error:
         return decline(error)
 
@@ -283,16 +411,103 @@ def _overlap_counts(used, shape):
 # so small textures keep the ordinary bottom-left first-fit search.
 _PREFERRED_GRIDS = (64, 32, 16, 8, 4, 2, 1)
 _MIN_GRID_POSITIONS = 16
-# Coarse authored Main levels whose footprints are checked when choosing among
-# free positions: an island is first placed where its level-L footprint (an
-# exact shift for offsets on a 2**L grid) also misses used texels, so the
-# donor's coarse mips do not cover a neighbour's. This only picks a position.
-_COARSE_LEVELS = 6
+# Among free level-0 positions on a grid, an island is first placed where its
+# coarse authored Main footprints keep off ``reserved`` texels (other surfaces
+# of the texture) at the most consecutive levels, then where they keep off the
+# receiving mesh's texels at the most levels. Footprints are folded through
+# the sampler's wrap modes, so a footprint at one edge that reaches the
+# opposite edge counts there. This only picks a position; no pixel changes.
 
 
 def _grid_level(grid):
     """Mip levels shifted exactly by any offset on this grid (2**L divides it)."""
     return min((value & -value).bit_length() - 1 for value in grid)
+
+
+# Phase pairs scored exactly per coarse level; above this many, whole-texel
+# neighbours give a safe bound instead (only reached at tiny coarse levels).
+_MAX_COARSE_PHASES = 64
+
+
+class _CoarseScorer:
+    """Clean coarse levels of one island for level-0 integer shifts (placement preference only).
+
+    ``uv``/``faces`` are the island's source UVs and triangles on a ``size``
+    (width, height) Main texture with the given sampler. ``reserved`` and
+    ``receiver`` map each level to a top-left-row texel mask of the receiver
+    texture at that level (reserved may be None). Footprints are unfolded and
+    the masks extended through the wrap modes, so a footprint that crosses an
+    edge counts on the texels the sampler really reads.
+    """
+
+    def __init__(self, uv, faces, size, levels, linear, wraps, reserved, receiver, budget):
+        import numpy as np
+        self.uv, self.faces, self.size = np.asarray(uv, dtype=np.float64)[:, :2], faces, size
+        self.levels, self.linear, self.wraps, self.budget = list(levels), linear, wraps, budget
+        self.masks = (reserved, receiver)
+        self.canvases, self.tables = {}, {}
+        self.vertices = np.unique(np.asarray(faces))
+
+    def _canvas(self, kind, level):
+        if (kind, level) not in self.canvases:
+            masks = self.masks[kind]
+            self.canvases[kind, level] = None if masks is None else _wrapped_canvas(masks[level], self.wraps)
+        return self.canvases[kind, level]
+
+    def table(self, level, phase_x, phase_y):
+        """(reserved, receiver) lookups for whole level-L shifts, footprint moved by a sub-texel phase.
+
+        The phase is given in level-0 texels (0 <= phase < 2**level).
+        """
+        key = level, phase_x, phase_y
+        if key not in self.tables:
+            width, height = self.size
+            shifted = self.uv.copy()
+            shifted[self.vertices] += (phase_x / width, phase_y / height)
+            kernel = _unfolded_texels(shifted, self.faces, width >> level, height >> level, self.linear, self.budget)
+            self.tables[key] = tuple(None if self._canvas(kind, level) is None
+                                     else _shift_overlaps(self._canvas(kind, level), kernel) for kind in (0, 1))
+        return self.tables[key]
+
+    def scores(self, dx, dy):
+        """(reserved, receiver): consecutive levels from level 1 whose footprint, after a
+        level-0 shift (dx, dy), keeps off reserved / receiver texels.
+
+        A level-0 shift d moves level L by d / 2**L texels: a whole part, looked
+        up by FFT, plus a phase d mod 2**L whose footprint is rasterized at that
+        sub-texel offset. With more than _MAX_COARSE_PHASES phases at a level,
+        the footprints at the two neighbouring whole shifts on each axis must
+        all keep off (they contain the fractional one), so a score can be low
+        but never too high. Reserved scores are 0 without reserved masks.
+        """
+        import numpy as np
+        dx, dy = np.asarray(dx, dtype=np.int64), np.asarray(dy, dtype=np.int64)
+        running = [np.full(dx.shape, self.masks[0] is not None), np.ones(dx.shape, dtype=bool)]
+        scores = [np.zeros(dx.shape, dtype=np.int64), np.zeros(dx.shape, dtype=np.int64)]
+        for level in self.levels:
+            if not (running[0].any() or running[1].any()):
+                break
+            step = 1 << level
+            phase_x, phase_y = np.mod(dx, step), np.mod(dy, step)
+            whole_x, whole_y = (dx - phase_x) >> level, (dy - phase_y) >> level
+            hits = [np.zeros(dx.shape, dtype=bool), np.zeros(dx.shape, dtype=bool)]
+            phases = np.unique(np.stack([phase_x.ravel(), phase_y.ravel()], axis=1), axis=0)
+            if len(phases) <= _MAX_COARSE_PHASES:
+                for px, py in phases.tolist():
+                    selected = (phase_x == px) & (phase_y == py)
+                    for kind, lookup in enumerate(self.table(level, px, py)):
+                        if lookup is not None:
+                            hits[kind][selected] = lookup(whole_x[selected], whole_y[selected])
+            else:
+                next_x, next_y = whole_x + (phase_x > 0), whole_y + (phase_y > 0)
+                for kind, lookup in enumerate(self.table(level, 0, 0)):
+                    if lookup is not None:
+                        hits[kind] = (lookup(whole_x, whole_y) | lookup(next_x, whole_y)
+                                      | lookup(whole_x, next_y) | lookup(next_x, next_y))
+            for kind in (0, 1):
+                running[kind] &= ~hits[kind]
+                scores[kind] += running[kind]
+        return scores[0], scores[1]
 
 
 def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_decoder,
@@ -306,8 +521,9 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
     Level 0 copies are exact native texels; coarse authored mips use their own
     images at the nearest texel, which is exact when the offset is a multiple
     of 2**level. Free space is the receiver's group 0 plus ``reserved``.
-    Among free positions, those whose exactly shifted coarse Main footprints
-    (up to _COARSE_LEVELS) also miss used texels are tried first.
+    Among free positions on a grid, those whose coarse Main footprints keep
+    off reserved texels at more levels are tried first, then those that keep
+    off the receiver's texels at more levels (see _CoarseScorer).
     """
     import numpy as np
     from PIL import Image
@@ -402,26 +618,40 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
             if working + mask_bytes[0] + required > max_total_bytes:
                 raise _CoverageLimit("relocation occupancy masks exceed the memory budget")
             return _triangle_texels(coordinates, groups[index], width, height, sampler[0] != 0, sampler[-2:], budget)
+        reserved_masks = {}
+        def reserved_mask(width, height, sampler):
+            """Reserved texels at one size and sampler, rasterized once."""
+            key = width, height, sampler[0] != 0, tuple(sampler[-2:])
+            if key not in reserved_masks:
+                if working + mask_bytes[0] + width * height > max_total_bytes:
+                    raise _CoverageLimit("relocation occupancy masks exceed the memory budget")
+                reserved_masks[key] = _reserved_texels(reserved, width, height, key[2], key[3], budget)
+                mask_bytes[0] += width * height
+            return reserved_masks[key]
         used = {}
         for slot, row in keys.items():
             tw, th = row[0][:2]
             sampler = row[0][5]
             used[slot] = coverage(uv, 0, tw, th, sampler)
             if reserved:
-                used[slot] |= _reserved_texels(reserved, tw, th, sampler[0] != 0, sampler[-2:], budget)
+                used[slot] |= reserved_mask(tw, th, sampler)
             mask_bytes[0] += tw * th
-        # Used texels of the coarse authored Main levels, kept up to date as
-        # islands are placed (placement preference only).
+        # Coarse authored Main levels: the receiving mesh's texels (kept up to
+        # date as islands are placed) and, separately, reserved texels. They
+        # only order free positions (_CoarseScorer); they never refuse one.
         main_sampler = keys[main][0][5]
-        coarse_used = {}
-        for level in range(1, min(_COARSE_LEVELS, keys[main][0][3] - 1) + 1):
+        coarse_levels = []
+        for level in range(1, keys[main][0][3]):
             if target_width % (1 << level) or target_height % (1 << level):
                 break
+            coarse_levels.append(level)
+        coarse_receiver = {}
+        for level in coarse_levels:
             w, h = target_width >> level, target_height >> level
-            coarse_used[level] = coverage(uv, 0, w, h, main_sampler)
-            if reserved:
-                coarse_used[level] |= _reserved_texels(reserved, w, h, main_sampler[0] != 0, main_sampler[-2:], budget)
+            coarse_receiver[level] = coverage(uv, 0, w, h, main_sampler)
             mask_bytes[0] += w * h
+        coarse_reserved_masks = {level: reserved_mask(target_width >> level, target_height >> level, main_sampler)
+                                 for level in coarse_levels} if reserved else {}
         transforms = [UVTransform()] + [None] * (len(sources) - 1)
         placements = [None] * len(sources)
         footprints = {}
@@ -464,55 +694,29 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                 raise _CoverageLimit("the free-area search exceeds the memory budget")
             occupied = _overlap_counts(used[main], shape)
             vertices = np.unique(groups[index])
-            # The island's own coarse Main footprints, for the same overlap
-            # test at each level where an aligned offset shifts them exactly.
-            coarse = []
-            for level, used_level in coarse_used.items():
+            # The island's own coarse Main footprints, scored against reserved
+            # and receiving-mesh texels at every level (see _CoarseScorer).
+            island_levels = []
+            for level in coarse_levels:
                 if dw % (1 << level) or dh % (1 << level):
                     break
-                level_rows, level_columns = np.nonzero(
-                    coverage(uv, index, dw >> level, dh >> level, keys[main][index][5]))
-                if not len(level_rows):
-                    break
-                level_left, level_top_row = int(level_columns.min()), int(level_rows.min())
-                level_shape = np.zeros((int(level_rows.max()) - level_top_row + 1,
-                                        int(level_columns.max()) - level_left + 1), dtype=bool)
-                level_shape[level_rows - level_top_row, level_columns - level_left] = True
-                if level_shape.shape[0] > used_level.shape[0] or level_shape.shape[1] > used_level.shape[1]:
-                    break
-                level_bottom = (dh >> level) - int(level_rows.max()) - 1
-                coarse.append((level, _overlap_counts(used_level, level_shape), level_left, level_bottom,
-                               level_shape.shape[0]))
-
-            def clean_levels(xs, ys):
-                """Consecutive coarse levels whose shifted footprint misses used texels."""
-                xs, ys = np.asarray(xs, dtype=np.int64), np.asarray(ys, dtype=np.int64)
-                dx, dy = xs - left, ys - bottom
-                running = np.ones(xs.shape, dtype=bool)
-                score = np.zeros(xs.shape, dtype=np.int64)
-                for level, level_occupied, level_left, level_bottom, level_height in coarse:
-                    running &= (dx % (1 << level) == 0) & (dy % (1 << level) == 0)
-                    column = level_left + (dx >> level)
-                    row = level_occupied.shape[0] - 1 - (level_bottom + (dy >> level))
-                    inside = ((row >= 0) & (row < level_occupied.shape[0])
-                              & (column >= 0) & (column < level_occupied.shape[1]))
-                    free = np.zeros(xs.shape, dtype=bool)
-                    free[inside] = ~level_occupied[row[inside], column[inside]]
-                    running &= free
-                    score += running
-                return score
+                island_levels.append(level)
+            scorer = _CoarseScorer(uv, groups[index], (dw, dh), island_levels, keys[main][index][5][0] != 0,
+                                   main_sampler[-2:], coarse_reserved_masks if reserved else None,
+                                   coarse_receiver, budget)
 
             chosen, tested, exhausted, rejected = None, set(), False, {}
             # Coarser grids first (more exact authored mips). On each grid the
-            # free positions are tried in order of how many of their exactly
-            # shifted coarse levels also miss used texels, then bottom-left
-            # first; exactness is never traded for that preference.
+            # free positions are tried in order of how many coarse levels keep
+            # off reserved texels, then how many keep off the receiving mesh's
+            # texels, then bottom-left first; exactness is never traded for it.
             for grid in grids:
                 if chosen is not None or exhausted:
                     break
-                if coarse and _grid_level(grid):
+                if island_levels and _grid_level(grid):
                     xs, ys = _candidate_arrays(occupied, shape.shape, (left, bottom), grid)
-                    order = np.argsort(-clean_levels(xs, ys), kind="stable")
+                    reserved_score, receiver_score = scorer.scores(xs - left, ys - bottom)
+                    order = np.lexsort((np.arange(len(xs)), -receiver_score, -reserved_score))
                     positions = zip(xs[order].tolist(), ys[order].tolist())
                 else:
                     positions = _candidate_positions(occupied, shape.shape, (left, bottom), grid)
@@ -573,33 +777,37 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                 mask_bytes[0] += ys.nbytes + xs.nbytes
             dx = round(transform.offset[0] * target_width)
             dy = round(transform.offset[1] * target_height)
-            clean = int(clean_levels([left + dx], [bottom + dy])[0]) if coarse else 0
-            if coarse_used:
+            reserved_clean, receiver_clean = (int(score[0]) for score in scorer.scores([dx], [dy]))
+            if coarse_levels:
                 moved = uv.copy()
                 moved[vertices] = transform.remap_uv(moved[vertices])
-                for level, used_level in coarse_used.items():
+                for level, used_level in coarse_receiver.items():
                     used_level |= coverage(moved, index, used_level.shape[1], used_level.shape[0], main_sampler)
             exact = max(level for level in range(13) if dx % (1 << level) == 0 and dy % (1 << level) == 0)
+            footprint = (f"its {main} footprint keeps off other surfaces' texels at {mip_level_range(reserved_clean + 1)} "
+                         f"and off the receiver's at {mip_level_range(receiver_clean + 1)}" if reserved else
+                         f"its {main} footprint keeps off the receiver's texels at {mip_level_range(receiver_clean + 1)}")
             messages.append(f"{sources[index].name}: {label} moved by pixel offset ({dx}, {dy}) at native pixel detail; "
-                            f"authored mip levels 0–{exact} are exact copies"
-                            + (f"; coarse levels 1–{clean} keep clear of used texels." if clean else "."))
+                            f"authored mip levels 0–{exact} are exact copies; {footprint}.")
         decoder = image_decoder or _decode_default
         chain_cache = {}
         def chain(obj):
             if id(obj) not in chain_cache:
                 chain_cache[id(obj)] = (obj, _mip_images(obj, decoder))
             return chain_cache[id(obj)][1]
-        textures, shared_coarse = {}, 0
+        textures, shared_coarse, reserved_changes = {}, 0, {}
         for slot, row in keys.items():
             chains = [chain(obj) for obj in objects[slot]]
             tw, th, _, count, _, sampler, _ = row[0]
             payload = bytearray()
+            changes = []
             for level in range(count):
                 w, h = max(1, tw >> level), max(1, th >> level)
-                result = np.asarray(chains[0][level]).copy()
+                original = np.asarray(chains[0][level])
+                result = original.copy()
                 receiver_mask = coverage(uv, 0, w, h, sampler)
                 if reserved and level:
-                    receiver_mask |= _reserved_texels(reserved, w, h, sampler[0] != 0, sampler[-2:], budget)
+                    receiver_mask |= reserved_mask(w, h, sampler)
                 for index, transform in enumerate(transforms[1:], 1):
                     source_image = chains[index][min(level, len(chains[index]) - 1)]
                     sw, sh = source_image.size
@@ -618,7 +826,12 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                     sx = _indices(np.floor(xs - dx + .5).astype("int64"), sw, sampler[-2])
                     sy = _indices(np.floor((h - 1 - ys) - dy + .5).astype("int64"), sh, sampler[-1])
                     result[ys, xs] = np.asarray(source_image)[sh - 1 - sy, sx]
+                if reserved:
+                    # Measured, not predicted: reserved texels whose colour changed.
+                    changes.append(int(np.count_nonzero(np.any(result != original, axis=-1) & reserved_mask(w, h, sampler))))
                 payload.extend(Image.fromarray(result, "RGBA").transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes())
+            if reserved:
+                reserved_changes[slot] = tuple(changes)
             template = objects[slot][0]
             tree = copy.deepcopy(template.read_typetree())
             tree.update(m_TextureFormat=4, m_CompleteImageSize=len(payload), m_MipCount=count)
@@ -633,7 +846,10 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
         if shared_coarse:
             messages.append(f"Relocated authored coarse mip footprints share {shared_coarse} texels used by the receiver or "
                             "other surfaces; selected donor mip pixels are applied in material order.")
-        return AtlasBake(tuple(transforms), textures, tuple(messages), False, len(sources))
+        if reserved:
+            messages.append(reserved_changes_note(reserved_changes))
+        return AtlasBake(tuple(transforms), textures, tuple(messages), False, len(sources),
+                         reserved_changes if reserved else None)
     except (AtlasCompatibilityError, _CoverageLimit, NotImplementedError) as error:
         return decline(error)
 
