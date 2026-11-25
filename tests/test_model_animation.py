@@ -56,6 +56,36 @@ def values(glb, index):
     return list(struct.iter_unpack("<" + "f" * size, glb.data[start:start + accessor["count"] * size * 4]))
 
 
+def hermite(stamps, rows, time):
+    """glTF CUBICSPLINE evaluation (spec appendix C) of [in, value, out] rows."""
+    if time <= stamps[0]:
+        return rows[1]
+    if time >= stamps[-1]:
+        return rows[3 * len(stamps) - 2]
+    index = max(index for index, stamp in enumerate(stamps) if stamp <= time)
+    span = stamps[index + 1] - stamps[index]
+    s = (time - stamps[index]) / span
+    p0, m0, m1, p1 = rows[3 * index + 1], rows[3 * index + 2], rows[3 * index + 3], rows[3 * index + 4]
+    return [(2*s**3 - 3*s**2 + 1) * a + (s**3 - 2*s**2 + s) * span * b + (-2*s**3 + 3*s**2) * d + (s**3 - s**2) * span * c
+            for a, b, c, d in zip(p0, m0, m1, p1)]
+
+
+def unity_streamed(frames, curve, time):
+    """Independent model of libunity's streamed clip: the curve's last key at or before `time`, then
+    t*(t*(t*c0 + c1) + c2) + c3 with t = time - key time (SampleClip 0x591078 / seek 0x591304)."""
+    owner = None
+    for stamp, keys in frames:
+        if stamp <= time:
+            owner = next(((stamp, c) for index, c in keys if index == curve), owner)
+    stamp, (c0, c1, c2, c3) = owner
+    t = 0. if stamp < -1e20 else time - stamp
+    return t * (t * (t * c0 + c1) + c2) + c3
+
+
+def f32(value):
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
 class AnimationTests(unittest.TestCase):
     def test_animation_rebuild_remaps_detached_shadow_geometry(self):
         glb = builder()
@@ -190,7 +220,10 @@ class AnimationTests(unittest.TestCase):
         exported = glb.doc["animations"][0]
         self.assertEqual(exported["channels"][0]["target"], {"node": 2, "path": "translation"})
         self.assertEqual(values(glb, exported["samplers"][0]["output"]), [(0., 0., 0.), (-1., 2., 3.), (-2., 4., 6.)])
-        self.assertEqual(values(glb, exported["samplers"][1]["output"]), [(1., 2., 3.)] * 3)
+        # A constant channel keeps only its two end samples.
+        self.assertEqual(values(glb, exported["samplers"][1]["output"]), [(1., 2., 3.)] * 2)
+        self.assertEqual(values(glb, exported["samplers"][1]["input"]), [(0.,), (1.,)])
+        self.assertEqual([sampler["interpolation"] for sampler in exported["samplers"]], ["LINEAR", "LINEAR"])
         accessor = glb.doc["accessors"][exported["samplers"][0]["input"]]
         self.assertEqual(accessor["min"], [0.])
         self.assertEqual(accessor["max"], [1.])
@@ -340,7 +373,7 @@ class AnimationTests(unittest.TestCase):
     def test_budget_failure_does_not_append_partial_buffer_data(self):
         tree = clip([binding(1, 1)], constant=[0, 0, 0])
         glb = builder()
-        with patch.object(animation, "MAX_VALUES", 10):
+        with patch.object(animation, "MAX_VALUES", 5):
             result = animation.append_animations(scene([tree]), glb, {1: 1})
         self.assertEqual(result["clips"], [])
         self.assertEqual(len(glb.data), 0)
@@ -401,9 +434,145 @@ class AnimationTests(unittest.TestCase):
         glb = builder()
         animation.append_animations(scene([tree]), glb, {"Root/Bone": 1})
         self.assertEqual(tree, before)
-        rows = values(glb, glb.doc["animations"][0]["samplers"][0]["output"])
-        self.assertAlmostEqual(rows[1][0], -.15625)
-        self.assertAlmostEqual(rows[-1][0], -1.)
+        sampler = glb.doc["animations"][0]["samplers"][0]
+        self.assertEqual(sampler["interpolation"], "CUBICSPLINE")
+        stamps = [row[0] for row in values(glb, sampler["input"])]
+        rows = values(glb, sampler["output"])
+        self.assertEqual(stamps, [0., 1.])
+        self.assertAlmostEqual(hermite(stamps, rows, .25)[0], -.15625)
+        self.assertAlmostEqual(hermite(stamps, rows, 1.)[0], -1.)
+
+    @staticmethod
+    def hermite_frames(curves, sentinel=True):
+        """Unity-style streamed frames from Hermite keys {curve: [(time, value, inSlope, outSlope)]}."""
+        stamps = {}
+        for index, keys in curves.items():
+            for position, (stamp, value, _, outgoing) in enumerate(keys):
+                coefficients = (0., 0., 0., value)
+                if position + 1 < len(keys):
+                    other, next_value, incoming, _ = keys[position + 1]
+                    span = other - stamp
+                    coefficients = ((2*value - 2*next_value + span*(outgoing + incoming)) / span**3,
+                                    (-3*value + 3*next_value - span*(2*outgoing + incoming)) / span**2, outgoing, value)
+                stamps.setdefault(f32(stamp), []).append((index, tuple(f32(c) for c in coefficients)))
+        frames = [(-3.4028234663852886e+38, [(index, (0., 0., 0., f32(keys[0][1]))) for index, keys in curves.items()])] if sentinel else []
+        frames += sorted(stamps.items())
+        return frames + [(math.inf, [])]
+
+    def test_streamed_trs_is_exported_as_exact_cubic_hermite(self):
+        # Each component keeps its own key stamps, as in a Unity streamed clip.
+        curves = {0: [(0, .10, 0, .3), (.3, .19, .2, -.1), (.7, .12, .4, .4), (1, .3, 0, 0)],
+                  1: [(0, -.2, 0, .5), (.45, .05, .1, .1), (1, .1, 0, 0)],
+                  2: [(0, .05, 0, 0), (.2, .02, -.3, -.3), (.55, -.1, 0, .6), (.8, .04, .2, .2), (1, 0, 0, 0)],
+                  3: [(0, .97, 0, -.1), (1, .94, .05, 0)],
+                  4: [(0, 0, 0, 1), (.25, .3, 1.5, 1.5), (1, .9, 0, 0)],
+                  5: [(0, 1.2, 0, 0), (.6, 1.0, -.8, -.8), (1, 1.1, 0, 0)],
+                  6: [(0, -.4, 0, 0), (1, .4, 0, 0)]}
+        frames = self.hermite_frames(curves)
+        tree = clip([binding(1, 2), binding(1, 1)], stream={"curveCount": 7, "data": words(frames)}, duration=1.)
+        glb = builder()
+        result = animation.append_animations(scene([tree]), glb, {1: 1})
+        self.assertEqual(result["warnings"], [])
+        exported = glb.doc["animations"][0]
+        rotation, translation = (exported["samplers"][channel["sampler"]] for channel in exported["channels"])
+        self.assertEqual([channel["target"]["path"] for channel in exported["channels"]], ["rotation", "translation"])
+        for sampler, indices, mirror in ((rotation, range(4), (1, -1, -1, 1)), (translation, range(4, 7), (-1, 1, 1))):
+            self.assertEqual(sampler["interpolation"], "CUBICSPLINE")
+            stamps = [row[0] for row in values(glb, sampler["input"])]
+            expected = sorted({f32(key[0]) for index in indices for key in curves[index]})
+            self.assertEqual(stamps, expected, "the per-channel union of the components' key stamps")
+            rows = values(glb, sampler["output"])
+            self.assertEqual(len(rows), 3 * len(stamps))
+            for step in range(1, 400):
+                time = step / 400 + 1 / 7919  # off the key stamps and off the 60 Hz grid
+                if time >= 1:
+                    continue
+                unity = [sign * unity_streamed(frames, index, time) for index, sign in zip(indices, mirror)]
+                for actual, wanted in zip(hermite(stamps, rows, time), unity):
+                    self.assertAlmostEqual(actual, wanted, delta=2e-6, msg=f"t={time}")
+        # Raw components: the client evaluates each one separately, so the
+        # exported key values are neither normalized nor sign-flipped.
+        rows = values(glb, rotation["output"])
+        self.assertAlmostEqual(rows[1][3], .97, places=6)
+        self.assertGreater(abs(math.sqrt(sum(value * value for value in rows[1])) - 1), 1e-3)
+
+    def test_cubic_tangents_split_a_component_without_its_own_key(self):
+        frames = self.hermite_frames({0: [(0, 0, 0, 2), (1, 1, 0, 0)], 1: [(0, 0, 0, 0), (.5, 1, 0, 0), (1, 0, 0, 0)],
+                                      2: [(0, 3, 0, 0), (1, 3, 0, 0)]})
+        tree = clip([binding(1, 1)], stream={"curveCount": 3, "data": words(frames)}, duration=1.)
+        glb = builder()
+        animation.append_animations(scene([tree]), glb, {1: 1})
+        sampler = glb.doc["animations"][0]["samplers"][0]
+        self.assertEqual([row[0] for row in values(glb, sampler["input"])], [0., .5, 1.])
+        incoming, value, outgoing = values(glb, sampler["output"])[3:6]
+        # x has no key at .5: its cubic is split with one derivative on both sides.
+        self.assertAlmostEqual(value[0], -unity_streamed(frames, 0, .5), places=6)
+        self.assertAlmostEqual(incoming[0], outgoing[0], places=6)
+        self.assertAlmostEqual(incoming[0], -(3 * frames[1][1][0][1][0] * .25 + 2 * frames[1][1][0][1][1] * .5 + 2), places=5)
+
+    def test_stepped_keys_infinite_tangents_and_float32_collisions_keep_the_linear_grid(self):
+        stepped = words([(-3.4e38, [(0, (0, 0, 0, 0)), (1, (0, 0, 0, 0)), (2, (0, 0, 0, 0))]),
+                         (0, [(0, (0, 0, 0, 0)), (1, (0, 0, 0, 0)), (2, (0, 0, 0, 0))]),
+                         (f32(.5), [(0, (0, 0, 0, 1))]), (math.inf, [])])
+        infinite = [{"time": 0, "value": {"x": 0, "y": 0, "z": 0}, "outSlope": {"x": math.inf, "y": 0, "z": 0}},
+                    {"time": .5, "value": {"x": 1, "y": 0, "z": 0}}, {"time": 1, "value": {"x": 1, "y": 0, "z": 0}}]
+        collision = [{"time": 0, "value": {"x": 0, "y": 0, "z": 0}}, {"time": .5, "value": {"x": 1, "y": 0, "z": 0}},
+                     {"time": .5 + 1e-9, "value": {"x": 1, "y": 0, "z": 0}}, {"time": 1, "value": {"x": 0, "y": 0, "z": 0}}]
+        trees = [clip([binding(1, 1)], stream={"curveCount": 3, "data": stepped}, duration=1., name="Stepped"),
+                 {"m_Name": "Infinite tangent", "m_SampleRate": 60, "m_PositionCurves": [{"path": "Root/Bone", "curve": {"m_Curve": infinite}}]},
+                 {"m_Name": "Collision", "m_SampleRate": 60, "m_PositionCurves": [{"path": "Root/Bone", "curve": {"m_Curve": collision}}]}]
+        for tree in trees:
+            with self.subTest(clip=tree["m_Name"]):
+                glb = builder()
+                result = animation.append_animations(scene([tree]), glb, {1: 1, "Root/Bone": 1})
+                self.assertEqual(result["warnings"], [])
+                sampler = glb.doc["animations"][0]["samplers"][0]
+                self.assertEqual(sampler["interpolation"], "LINEAR")
+                stamps = [row[0] for row in values(glb, sampler["input"])]
+                self.assertGreater(len(stamps), 60, "the LINEAR fallback keeps the 60 Hz grid")
+                rows = values(glb, sampler["output"])
+                self.assertEqual(len(rows), len(stamps))
+                if tree["m_Name"] != "Collision":
+                    self.assertEqual(rows[stamps.index(f32(.5)) - 1][0], 0., "held until the stepped key")
+                    self.assertEqual(rows[stamps.index(f32(.5))][0], -1.)
+
+    def test_euler_rotation_keeps_the_linear_quaternion_and_carries_its_exact_cubic(self):
+        curves = {0: [(0, 10, 0, 90), (.4, 40, 60, 60), (1, -20, 0, 0)], 1: [(0, -30, 0, 0), (.55, 25, 120, 120), (1, 5, 0, 0)],
+                  2: [(0, 5, 0, -40), (.3, -15, 30, 30), (.8, 35, 80, 80), (1, 0, 0, 0)]}
+        frames = self.hermite_frames(curves)
+        stepped = words([(-3.4e38, [(index, (0, 0, 0, 0)) for index in range(3)]), (0, [(index, (0, 0, 0, 0)) for index in range(3)]),
+                         (f32(.5), [(1, (0, 0, 0, 30))]), (math.inf, [])])
+        for data, exact in ((frames, True), (stepped, False)):
+            tree = clip([binding(1, 4, custom=0)], stream={"curveCount": 3, "data": words(data) if exact else data}, duration=1.)
+            glb = builder()
+            animation.append_animations(scene([tree]), glb, {1: 1})
+            exported = glb.doc["animations"][0]
+            self.assertEqual(exported["channels"][0]["target"]["path"], "rotation")
+            self.assertEqual(exported["samplers"][0]["interpolation"], "LINEAR")
+            with self.subTest(exact=exact):
+                if not exact:
+                    self.assertNotIn("unityEuler", exported["extras"], "a stepped Euler key keeps only the grid")
+                    continue
+                row, = exported["extras"]["unityEuler"]
+                self.assertEqual((row["channel"], row["rotationOrder"]), (0, 0))
+                stamps = [item[0] for item in values(glb, row["input"])]
+                self.assertEqual(stamps, sorted({f32(key[0]) for keys in curves.values() for key in keys}))
+                rows = values(glb, row["output"])
+                for step in range(1, 200):
+                    time = step / 200 + 1 / 7919
+                    if time < 1:
+                        for actual, axis in zip(hermite(stamps, rows, time), range(3)):
+                            self.assertAlmostEqual(actual, unity_streamed(frames, axis, time), delta=2e-4, msg="raw Unity degrees")
+
+    def test_single_stamp_pose_clip_exports_one_cubic_key(self):
+        frames = self.hermite_frames({0: [(0, .1, 0, 0)], 1: [(0, .2, 0, 0)], 2: [(0, .3, 0, 0)], 3: [(0, .9, 0, 0)]})
+        tree = clip([binding(1, 2)], stream={"curveCount": 4, "data": words(frames)}, duration=0., name="Pose")
+        glb = builder()
+        animation.append_animations(scene([tree]), glb, {1: 1})
+        sampler = glb.doc["animations"][0]["samplers"][0]
+        self.assertEqual(sampler["interpolation"], "CUBICSPLINE")
+        self.assertEqual(values(glb, sampler["input"]), [(0.,)])
+        self.assertEqual([round(value, 6) for value in values(glb, sampler["output"])[1]], [.1, -.2, -.3, .9])
 
     def test_local_companion_discovery_uses_internal_owner_and_jail(self):
         with tempfile.TemporaryDirectory() as directory:

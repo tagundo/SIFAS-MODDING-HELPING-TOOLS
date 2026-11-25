@@ -1152,6 +1152,7 @@
 
     async function buildRecord(entry, bytes, active) {
       const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
+      await global.ViewerMotionTimeline?.loadUnityEuler?.(gltf);
       const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
         identity: entry.identity, visibility: [], rig: entry.spec.rig, role: entry.role };
       if (entry.group === effects) {
@@ -1296,6 +1297,7 @@
             if (typeof cheekMaterial === "string" && cheekMaterial) record.cheekMaterial = cheekMaterial;
             updateMotion(record);
           } else if (gltf.animations.length) {
+            global.ViewerMotionTimeline?.prepareAnimations?.(gltf.animations);
             record.mixer = new T.AnimationMixer(gltf.scene);
             record.mixer.clipAction(gltf.animations[0]).play();
           }

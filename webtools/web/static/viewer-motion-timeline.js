@@ -17,6 +17,98 @@
     }
     return keys[keys.length - 1].value;
   }
+  // Exact Unity streamed TRS curves arrive as glTF CUBICSPLINE tracks (model_animation.py). The r128
+  // glTF loader marks their interpolant factory; such a track's values hold an in-tangent, a value and
+  // an out-tangent per key, so its sample is a third of getValueSize().
+  function cubicTrack(track) { return !!(track && track.createInterpolant && track.createInterpolant.isInterpolantFactoryMethodGLTFCubicSpline); }
+  function trackValueSize(track) { return track && track.unityEuler ? 4 : cubicTrack(track) ? track.getValueSize() / 3 : track.getValueSize(); }
+  // Unity evaluates the four rotation components as separate cubics and the client's transforms hold
+  // the normalized result (the GL 3.12.0 runtime dump's localRotation is unit length to 1e-7 where the
+  // raw component cubic is 7e-4 off). r128 does not normalize a CUBICSPLINE quaternion, so every
+  // interpolant of such a track normalizes what it evaluates, including the clamped end keys. Shared
+  // tracks are wrapped once; AnimationMixer, the timeline, gaze poses and rig replay all use the wrap.
+  function prepareAnimations(animations) {
+    (animations || []).forEach(function (clip) {
+      (clip && clip.tracks || []).forEach(function (track) {
+        var factory = track.createInterpolant;
+        if (!cubicTrack(track) || track.ValueTypeName !== "quaternion" || factory.normalizesQuaternion) return;
+        var normalized = function (result) {
+          var interpolant = factory.call(this, result), evaluate = interpolant.evaluate;
+          interpolant.evaluate = function (time) {
+            var value = evaluate.call(this, time), length = Math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3]);
+            if (length > 0 && isFinite(length)) for (var i = 0; i < 4; i += 1) value[i] /= length;
+            return value;
+          };
+          return interpolant;
+        };
+        normalized.isInterpolantFactoryMethodGLTFCubicSpline = true;
+        normalized.normalizesQuaternion = true;
+        track.createInterpolant = normalized;
+      });
+    });
+    return animations;
+  }
+  // An animated Euler rotation (Transform attribute 4) is three cubics the client converts to a
+  // quaternion every frame: unity_euler_quaternion in model_animation.py (q = qc * qb * qa for the
+  // rotation order's axes a, b, c), then the glTF mirror (x, -y, -z, w). The GLB's quaternion channel is
+  // a 60 Hz LINEAR approximation; the clip extras carry the exact Euler cubic, which replaces that track.
+  var EULER_ORDERS = ["xyz", "xzy", "yzx", "yxz", "zxy", "zyx"];
+  function eulerQuaternion(degrees, order, out) {
+    var axes = EULER_ORDERS[order] || EULER_ORDERS[4], x = 0, y = 0, z = 0, w = 1;
+    for (var step = 0; step < 3; step += 1) {
+      var axis = "xyz".indexOf(axes[step]), half = degrees[axis] * Math.PI / 360, s = Math.sin(half), c = Math.cos(half);
+      var ax = axis === 0 ? s : 0, ay = axis === 1 ? s : 0, az = axis === 2 ? s : 0;
+      // A later axis applies on the left: q = axis * q.
+      var nx = c * x + ax * w + ay * z - az * y, ny = c * y - ax * z + ay * w + az * x, nz = c * z + ax * y - ay * x + az * w, nw = c * w - ax * x - ay * y - az * z;
+      x = nx; y = ny; z = nz; w = nw;
+    }
+    var length = Math.sqrt(x * x + y * y + z * z + w * w) || 1;
+    out[0] = x / length; out[1] = -y / length; out[2] = -z / length; out[3] = w / length;
+    return out;
+  }
+  function eulerInterpolant(times, values, order, result) {
+    var degrees = [0, 0, 0], last = times.length - 1;
+    var interpolant = { parameterPositions: times, sampleValues: values, valueSize: 4, settings: null,
+      resultBuffer: result || new Float64Array(4) };
+    interpolant.evaluate = function (time) {
+      var index = 0, high = last;
+      if (!(time > times[0])) index = -1;
+      else if (time >= times[last]) index = -2;
+      else {
+        while (index < high - 1) { var middle = (index + high) >> 1; if (times[middle] <= time) index = middle; else high = middle; }
+      }
+      for (var axis = 0; axis < 3; axis += 1) {
+        if (index < 0) { degrees[axis] = values[9 * (index === -1 ? 0 : last) + 3 + axis]; continue; }
+        var span = times[index + 1] - times[index], s = (time - times[index]) / span, s2 = s * s, s3 = s2 * s;
+        degrees[axis] = (2 * s3 - 3 * s2 + 1) * values[9 * index + 3 + axis] + (s3 - 2 * s2 + s) * span * values[9 * index + 6 + axis] +
+          (-2 * s3 + 3 * s2) * values[9 * index + 12 + axis] + (s3 - s2) * span * values[9 * index + 9 + axis];
+      }
+      return eulerQuaternion(degrees, order, this.resultBuffer);
+    };
+    return interpolant;
+  }
+  function loadUnityEuler(gltf) {
+    var parser = gltf && gltf.parser, definitions = parser && parser.json && parser.json.animations, THREE = global.THREE;
+    if (!Array.isArray(definitions) || !Array.isArray(gltf.animations)) return Promise.resolve(gltf);
+    return Promise.all(definitions.map(function (definition, index) {
+      var rows = definition && definition.extras && definition.extras.unityEuler, clip = gltf.animations[index];
+      if (!Array.isArray(rows) || !clip) return null;
+      return Promise.all(rows.map(function (row) {
+        var channel = definition.channels && definition.channels[row.channel];
+        if (!channel || !channel.target || channel.target.path !== "rotation" || !Number.isInteger(row.input) || !Number.isInteger(row.output)) return null;
+        return Promise.all([parser.getDependency("node", channel.target.node), parser.getDependency("accessor", row.input),
+          parser.getDependency("accessor", row.output)]).then(function (loaded) {
+          var name = (loaded[0].name ? loaded[0].name : loaded[0].uuid) + ".quaternion", times = loaded[1].array, values = loaded[2].array;
+          var position = clip.tracks.findIndex(function (track) { return track.name === name; });
+          if (position < 0 || values.length !== 9 * times.length || !times.length) return;
+          var track = new THREE.QuaternionKeyframeTrack(name, times, values), order = row.rotationOrder;
+          track.unityEuler = true;
+          track.createInterpolant = function (result) { return eulerInterpolant(this.times, this.values, order, result); };
+          clip.tracks[position] = track;
+        });
+      }));
+    })).then(function () { return gltf; });
+  }
   function timing(source) {
     source = source || {};
     function read(short, original, fallback) { return number(source[short], number(source[original], fallback)); }
@@ -105,6 +197,7 @@
     options = options || {};
     var T = global.THREE, info = metadata || {}, byName = {}, groups = {}, poses = {}, warnings = [], lastWeights = {}, missingTargets = [];
     var gazeWrites = options.restorePose ? [] : null;
+    prepareAnimations(animations);
     var face = null, eyeCandidates = [], faceCandidates = [], headCandidates = [];
     function name(node) { return node.userData && node.userData.originalName || node.name.replace(/__\d+$/, ""); }
     root.traverse(function (node) {
@@ -136,7 +229,7 @@
       id = owner && owner.userData.elichika_node;
       var bound = entry.morphTargets.filter(function (row) { return row && row.node === id && Array.isArray(row.indices); })[0];
       var size = mesh.morphTargetInfluences.length;
-      if (!bound || track.getValueSize() !== size) return [];
+      if (!bound || trackValueSize(track) !== size) return [];
       var value = track.createInterpolant().evaluate(clip.duration), result = [];
       bound.indices.forEach(function (index) {
         if (!Number.isInteger(index) || index < 0 || index >= size || typeof value[index] !== "number" || !isFinite(value[index]) ||
@@ -269,6 +362,7 @@
   function create(root, animations, metadata, descriptor, options) {
     options = options || {};
     var THREE = global.THREE, warnings = [], compatibilityDetails = [], groups = {}, facialGroups = {}, gazeGroups = {}, visibility = [], nativeEvents = new Set(), used = 0;
+    prepareAnimations(animations);
     var info = metadata || {}, clips = info.clips || [], expressions = info.expressionCatalog || {};
     var animationByName = {}, nodeByIndex = {}, faceChannels = {}, facePresets = {}, morphGroups = {}, sampleFrame = 0;
     var clipIdentities = new Map(), bindingsByName = new Map(), staticSamples = new WeakMap(), facialMatches = new Map();
@@ -437,7 +531,7 @@
         var key = track.name, group = collection[key], binding = group && group.binding || bindingsByName.get(key);
         if (!binding) { binding = THREE.PropertyBinding.create(root, key); binding.bind(); bindingsByName.set(key, binding); }
         if (gazeOnly && (!binding.node || !binding.node.isBone || !/^(?:Left|Right)Eye(?:[12]|_Root)$/.test(binding.node.userData.originalName || binding.node.name.replace(/__\d+$/, "")))) return;
-        var base = new Array(track.getValueSize()); binding.getValue(base, 0);
+        var base = new Array(trackValueSize(track)); binding.getValue(base, 0);
         if (!denseFinite(base)) return;
         var node = binding.targetObject || binding.node;
         var morph = collection === facialGroups && binding.parsedPath && binding.parsedPath.propertyName === "morphTargetInfluences";
@@ -964,5 +1058,6 @@
     eyes: Object.freeze(idRange(1, 5).concat(idRange(12, 25), [101, 102, 900, 999]))
   });
   global.ViewerGaze = { create: createGaze, axes: gazeAxes };
-  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve, LIVE_FACIAL_IDS: LIVE_FACIAL_IDS };
+  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve, LIVE_FACIAL_IDS: LIVE_FACIAL_IDS,
+    prepareAnimations: prepareAnimations, trackValueSize: trackValueSize, loadUnityEuler: loadUnityEuler };
 }(window));
