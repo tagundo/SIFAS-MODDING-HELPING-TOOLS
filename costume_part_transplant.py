@@ -1973,9 +1973,13 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
                     dry_run=False, verbose=True, triangle_indices=None,
                     donor_renderer=None, target_renderer=None, physics_provenance=None,
                     log_callback=None, reuse_empty_uv=True, relocate_empty_uv=False,
-                    upscale_textures_for_uv_reuse=True, uv_placement=None):
+                    upscale_textures_for_uv_reuse=True, uv_placement=None,
+                    face_companions=None):
     """Move one costume part (the bones under `part_root`, or an explicit
-    `part_bones` list, or the biggest auto-detected group) from donor to target."""
+    `part_bones` list, or the biggest auto-detected group) from donor to target.
+
+    `face_companions` lists the wearer's separate facial bundles. They are only
+    read: a head-mesh target needs their eye/mouth UVs to keep those texels."""
     def log(*a):
         if log_callback is not None:
             log_callback(" ".join(map(str, a)))
@@ -2234,15 +2238,19 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
 
     # add the part material to the SMR if a new sub-mesh was created
     if game_atlas:
-        from graft_game_compat import bake_renderer_for_game
+        from graft_game_compat import bake_renderer_for_game, companion_footprints
         if any(index >= len(d_mats) for index, _ in selected_groups):
             raise ValueError("The selected donor submesh has no material for its game atlas.")
+        face_surfaces = None
+        if face_companions:
+            # Read only when the receiving mesh turns out to be a head mesh.
+            face_surfaces = lambda: companion_footprints([UP.load(str(path)) for path in face_companions])  # noqa: E731
         bake_renderer_for_game(target, t_smr, t_mesh,
             mesh_tree=t_mesh_tt, renderer_tree=t_smr_tt,
             additional_sources=[(donor, d_mats[index]) for index, _ in selected_groups],
             reuse_empty_uv=reuse_empty_uv, relocate_empty_uv=relocate_empty_uv,
             upscale_textures_for_uv_reuse=upscale_textures_for_uv_reuse,
-            uv_placement=uv_placement, log=log)
+            uv_placement=uv_placement, face_surfaces=face_surfaces, log=log)
         # The helper updates these detached trees too. Re-reading ObjectReader
         # here can return the pre-save reader bytes until the bundle reopens.
     elif use_new_submesh:
@@ -2666,6 +2674,13 @@ def build_parser():
     pt.add_argument("--no-upscale-textures-for-uv-reuse", action="store_false",
                     dest="upscale_textures_for_uv_reuse",
                     help="keep original texture dimensions when trying UV reuse")
+    pt.add_argument("--target-renderer", type=int,
+                    help="path ID of the wearer SkinnedMeshRenderer that receives the part (default: Body). "
+                         "Body keeps the blush untouched and allows an atlas; a head mesh such as Hair is drawn "
+                         "by the game with the shared head material, so it needs --face and free head-texture space")
+    pt.add_argument("--face", action="append", default=[], metavar="BUNDLE",
+                    help="the wearer's separate facial bundle (repeatable); its eye and mouth UVs are protected "
+                         "when the part goes onto a head mesh")
     pt.add_argument("--no-worldspace", action="store_true")
     pt.add_argument("--no-nodescaling", action="store_true")
     pt.add_argument("--mask-handling", choices=("auto", "on", "off"), default="auto",
@@ -2701,6 +2716,7 @@ def run_cli(args):
             relocate_empty_uv=args.relocate_empty_uv,
             upscale_textures_for_uv_reuse=args.upscale_textures_for_uv_reuse,
             uv_placement=args.uv_placement,
+            target_renderer=args.target_renderer, face_companions=args.face or None,
             worldspace=not args.no_worldspace, fix_nodescaling=not args.no_nodescaling,
             mask_handling=args.mask_handling, scale_swing_physics=not args.no_swing_scale,
             dry_run=args.dry_run)

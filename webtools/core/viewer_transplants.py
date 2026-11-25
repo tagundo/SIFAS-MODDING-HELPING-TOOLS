@@ -531,6 +531,8 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                     "triangle_indices": request["triangleIndices"] if request["partSelectionMode"] == "triangles" else None,
                     "donor_renderer": request["donorRenderer"],
                     "target_renderer": request["targetRenderer"] or None, "new_submesh": "atlas",
+                    # Read-only: a head-mesh target protects the face's eye/mouth texels.
+                    "face_companions": [str(item["path"]) for item in face_companions],
                     "reuse_empty_uv": request["reuseEmptyUV"], "relocate_empty_uv": request["relocateEmptyUV"],
                     "upscale_textures_for_uv_reuse": request["upscaleTexturesForUVReuse"],
                     **({"uv_placement": request["uvPlacement"]} if request["uvPlacement"] is not None else {})})

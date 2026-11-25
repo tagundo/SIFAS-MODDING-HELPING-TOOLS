@@ -209,6 +209,7 @@ def run_costume_part_transplant(job, params):
         triangle_indices=triangle_indices,
         donor_renderer=params.get("donor_renderer") or None,
         target_renderer=params.get("target_renderer") or None,
+        face_companions=[str(path) for path in params.get("face_companions") or ()] or None,
         preserve_physics=bool(params.get("preserve_physics", True)),
         restore_collision=bool(params.get("restore_collision", True)),
         new_submesh=new_submesh,

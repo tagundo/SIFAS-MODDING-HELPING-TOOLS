@@ -4,6 +4,17 @@ The game combines only submesh zero and reads the singular sharedMaterial.
 Donor geometry may temporarily have separate triangle groups, but saved bundles
 must carry one group using the target material settings and a baked atlas.
 Shared assets are detached for the Body so other surfaces retain their look.
+
+Head meshes are different. At member load the client's
+MergeAndCombineFaceMesh.MergeFace (GL 3.12.0 0x2c94ff4) calls
+headAll.GetComponentsInChildren<Renderer>(true) and sets every one of them to
+BodyPartManager.headMaterial (set_sharedMaterial loop at 0x2c95478). A copied
+material on a head renderer is therefore never drawn. CommonCoreMember.MergeFace
+skips this only for faces that need no merging (masked heads with
+Head_All/Head_Face/mesh_facedots). Donor texels for a head mesh must go into the
+head material's own texture, at free texels, with that texture's layout kept:
+the face, the facial-bundle eyes and mouth, and the cheek blush (sampled at
+uv0 * 2.22 + (0, -1.221)) all read it at fixed UVs.
 """
 from __future__ import annotations
 
@@ -141,9 +152,34 @@ def canonical_body_smr(objects):
     return candidates[0][0]
 
 
+# Where the runtime cheek can tint the head texture: the compiled AS/Member
+# cheek variant samples cheek_array at uv0 * 2.22 + (0, -1.221) (clamped), so
+# blush texels lie in u <= 1/2.22 and v >= 1.221/2.22.
+CHEEK_WINDOW = (0.0, 1.221 / 2.22, 1 / 2.22, 1.0)
+
+HEAD_ATLAS_REFUSED = (
+    "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head "
+    "material, so an atlas would never be shown and would move the blush. Choose Body as the wearer mesh, "
+    "or use original or empty UV positions.")
+HEAD_FACE_REQUIRED = (
+    "Load the costume together with its face before transplanting onto a head mesh. The game draws the "
+    "face's eyes and mouth from the same head texture, and their areas must be protected.")
+HEAD_NO_SPACE = (
+    "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and "
+    "existing head meshes. Choose Body as the wearer mesh, or select a smaller part.")
 FACE_TARGET_REFUSED = (
     "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original "
     "head material and fixed blush positions. Choose Body or Hair as the wearer mesh.")
+
+
+def _script_identity(objects, owner, tree):
+    pointer = tree.get("m_Script", {})
+    script = objects.get(pointer.get("m_PathID")) if isinstance(pointer, dict) else None
+    if script is None or script.type.name != "MonoScript" or not _refers_to(owner, pointer, script):
+        return None
+    metadata = script.read_typetree()
+    return (metadata.get("m_Namespace"), metadata.get("m_ClassName"),
+            str(metadata.get("m_AssemblyName", "")).removesuffix(".dll"))
 
 
 def _hierarchy(objects, owner):
@@ -189,6 +225,124 @@ def face_combined_renderer(objects, renderer):
         return True
     nodes = _hierarchy(objects, renderer)
     return any(nodes[node][0] == "mesh_face" for node in _ancestors(nodes, _renderer_game_object(renderer)))
+
+
+def head_material_binding(objects, renderer):
+    """Return the client's head-material binding for a head renderer, or None.
+
+    The result is ``{"material": headMaterial, "head_all": GameObject id,
+    "renderers": [every Renderer under headAll]}`` when the renderer sits below
+    BodyPartManager.headAll of a head whose face is merged (no
+    Head_Face/mesh_facedots). Bundles without a BodyPartManager return None.
+    """
+    nodes = None
+    for manager in objects.values():
+        if manager.type.name != "MonoBehaviour" or manager.assets_file is not renderer.assets_file:
+            continue
+        tree = manager.read_typetree()
+        if "headAll" not in tree or "headMaterial" not in tree:
+            continue
+        if _script_identity(objects, manager, tree) != ("LLAS.Components.Members", "BodyPartManager", "Assembly-CSharp"):
+            continue
+        if nodes is None:
+            nodes = _hierarchy(objects, renderer)
+        head_all = tree.get("headAll", {})
+        if head_all.get("m_FileID", 0) != 0 or head_all.get("m_PathID") not in nodes:
+            continue
+        head_all = head_all["m_PathID"]
+        if head_all not in _ancestors(nodes, _renderer_game_object(renderer)):
+            continue
+        faces = [child for child in nodes[head_all][2] if nodes.get(child, ("",))[0] == "Head_Face"]
+        if any(nodes.get(grandchild, ("",))[0] == "mesh_facedots" for child in faces for grandchild in nodes[child][2]):
+            return None  # Masked head: the client does not merge its face.
+        pointer = tree.get("headMaterial", {})
+        material = objects.get(pointer.get("m_PathID")) if pointer.get("m_FileID", 0) == 0 else None
+        if material is None or material.type.name != "Material" or material.assets_file is not renderer.assets_file:
+            raise ValueError("The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.")
+        below = set()
+        stack = [head_all]
+        while stack:
+            node = stack.pop()
+            if node in below:
+                continue
+            below.add(node)
+            stack.extend(nodes[node][2])
+        renderers = [obj for obj in objects.values()
+                     if obj.assets_file is renderer.assets_file and obj.type.name in ("SkinnedMeshRenderer", "MeshRenderer")
+                     and _renderer_game_object(obj) in below]
+        return {"material": material, "head_all": head_all, "renderers": renderers}
+    return None
+
+
+def mesh_footprint(mesh_tree):
+    """UV0 and every triangle of a mesh, for texture occupancy only."""
+    import numpy as np
+    from costume_part_transplant import stream_layout, read_attr, submesh_triangles, ATTR_UV0
+    if mesh_tree.get("m_StreamData", {}).get("size", 0):
+        raise ValueError("A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.")
+    compressed = mesh_tree.get("m_CompressedMesh", {})
+    if any(isinstance(value, dict) and value.get("m_NumItems", 0) for value in compressed.values()):
+        raise ValueError("A head-texture mesh is compressed; its texture area cannot be protected.")
+    count, channels, strides, starts, _ = stream_layout(mesh_tree)
+    channel = channels[ATTR_UV0] if ATTR_UV0 < len(channels) else {}
+    faces = np.concatenate(submesh_triangles(mesh_tree) or [np.empty((0, 3), np.int64)])
+    if not channel.get("dimension", 0):
+        if len(faces):
+            raise ValueError("A head-texture mesh has triangles without UV0 coordinates.")
+        return np.zeros((count, 2)), faces
+    raw = np.frombuffer(bytes(mesh_tree["m_VertexData"]["m_DataSize"]), np.uint8)
+    if channel.get("format") == 1:
+        stream, offset, dimension = channel["stream"], channel["offset"], channel["dimension"]
+        block = raw[starts[stream]:starts[stream] + count * strides[stream]].reshape(count, strides[stream])
+        uv = block[:, offset:offset + dimension * 2].copy().view("<f2").reshape(count, dimension).astype(np.float64)
+    else:
+        uv = read_attr(raw, ATTR_UV0, channels, strides, starts, count)
+    if uv is None or uv.shape[1] < 2 or not np.isfinite(uv[:, :2]).all():
+        raise ValueError("A head-texture mesh has invalid UV0 coordinates.")
+    if len(faces) and (faces.min() < 0 or faces.max() >= count):
+        raise ValueError("A head-texture mesh references an invalid vertex.")
+    return uv[:, :2], faces
+
+
+def renderer_footprints(objects, renderers):
+    """UV0 footprints of SkinnedMeshRenderers and MeshRenderers (via MeshFilter)."""
+    filters = {}
+    for obj in objects.values():
+        if obj.type.name == "MeshFilter":
+            tree = obj.read_typetree()
+            filters[(id(obj.assets_file), tree.get("m_GameObject", {}).get("m_PathID"))] = tree.get("m_Mesh", {})
+    result = []
+    for renderer in renderers:
+        tree = renderer.read_typetree()
+        if renderer.type.name == "SkinnedMeshRenderer":
+            pointer = tree.get("m_Mesh", {})
+        else:
+            pointer = filters.get((id(renderer.assets_file), tree.get("m_GameObject", {}).get("m_PathID")), {})
+        mesh = objects.get(pointer.get("m_PathID")) if pointer.get("m_FileID", 0) == 0 else None
+        if mesh is None or mesh.type.name != "Mesh":
+            if pointer.get("m_PathID"):
+                raise ValueError("A head-texture surface references a mesh outside its bundle; its texture area cannot be protected.")
+            continue
+        result.append(mesh_footprint(mesh.read_typetree()))
+    return result
+
+
+def companion_footprints(environments):
+    """Every rendered mesh of separate facial bundles.
+
+    MergeFace moves the facial prefab under headAll and assigns headMaterial to
+    each renderer, so all of their UVs sample the costume's head texture. Path
+    IDs are only unique inside one serialized file, so each file is indexed alone.
+    """
+    result = []
+    for environment in environments:
+        files = {}
+        for obj in environment.objects:
+            files.setdefault(id(obj.assets_file), {})[obj.path_id] = obj
+        for objects in files.values():
+            renderers = [obj for obj in objects.values() if obj.type.name in ("SkinnedMeshRenderer", "MeshRenderer")]
+            result.extend(renderer_footprints(objects, renderers))
+    return result
 
 
 def _reference_trees(objects):
@@ -284,7 +438,7 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
                            renderer_tree=None, additional_sources=(), log=lambda message: None,
                            max_vertices=65535, max_dimension=4096, reuse_empty_uv=True,
                            relocate_empty_uv=False, upscale_textures_for_uv_reuse=True,
-                           uv_placement=None):
+                           uv_placement=None, face_surfaces=None):
     """Bake every Body material group into its original single material slot.
 
     ``additional_sources`` contains ``(donor_environment, material_pointer_or_id)``
@@ -303,6 +457,13 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     An explicit ``uv_placement`` selects same-position reuse, relocation with
     original main dimensions, or an ordinary atlas; it overrides legacy flags.
     Relocation places every connected UV island of the selection separately.
+
+    A head renderer that the client rebinds to BodyPartManager.headMaterial
+    (see the module notes) never gets an atlas or a copied material: donor
+    texels go into the head material's own texture at free texels, avoiding
+    every head surface, the ``face_surfaces`` of the separate facial bundle
+    (UV0 footprints, or a function returning them, required) and the cheek
+    window. Face bundles are only read for such a head renderer.
     """
     from graft_texture_atlas import MaterialSource, bake_game_atlas
     from graft_atlas_geometry import flatten_material_groups
@@ -341,6 +502,22 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
         raise ValueError("The Body needs exactly one material source for each triangle group; reopen an intact costume and retry the graft.")
     if face_combined_renderer(objects, smr_object):
         raise ValueError(FACE_TARGET_REFUSED)
+    head = head_material_binding(objects, smr_object)
+    reserved = None
+    if head is not None:
+        # The client draws this renderer with headMaterial whatever it stores.
+        if uv_placement == "atlas" or (uv_placement is None and not reuse_empty_uv):
+            raise ValueError(HEAD_ATLAS_REFUSED)
+        if callable(face_surfaces):
+            face_surfaces = face_surfaces()
+        if face_surfaces is None:
+            raise ValueError(HEAD_FACE_REQUIRED)
+        if len(materials) != 1:
+            raise ValueError(HEAD_NO_SPACE)
+        materials[0] = {"m_FileID": 0, "m_PathID": head["material"].path_id}
+        others = [obj for obj in head["renderers"] if obj is not smr_object]
+        reserved = {"surfaces": renderer_footprints(objects, others) + list(face_surfaces),
+                    "rects": [CHEEK_WINDOW]}
     first_material = _resolve(objects, materials[0], "Material", "The Body's original material")
     if first_material.assets_file is not smr_object.assets_file:
         raise ValueError("The Body material must be stored beside its mesh before grafting.")
@@ -376,7 +553,8 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
         from graft_uv_reuse import prepare_uv_reuse
         reuse_options = {"diagnostics": fallback_diagnostics,
                          "upscale_textures_for_uv_reuse": upscale_textures_for_uv_reuse,
-                         "uv_placement": uv_placement}
+                         "uv_placement": uv_placement, "reserved": reserved,
+                         "atlas_fallback": head is None}
         if relocate_empty_uv:
             reuse_options["relocate_empty_uv"] = True
         baked = prepare_uv_reuse(sources, working_mesh, original_group_count=len(materials),
@@ -387,6 +565,9 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     elif baked is not None and any(tuple(transform.scale) != (1.0, 1.0) or tuple(transform.offset) != (0.0, 0.0)
                                  for transform in baked.transforms):
         texture_mode = "relocate_empty_uv"
+    if baked is None and head is not None:
+        reasons = " ".join(dict.fromkeys(str(reason) for reason in fallback_diagnostics))
+        raise ValueError(HEAD_NO_SPACE + (" " + reasons if reasons else ""))
     if baked is None:
         baked = bake_game_atlas(sources[0], sources[1:], max_dimension=max_dimension, gutter=0)
         if baked.identity:
@@ -397,7 +578,8 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     sf = first_material.assets_file
     # Allocate all new IDs together, including detached Body assets. Original
     # meshes/materials and every unrelated consumer retain their identities.
-    detach_material = shared_material and bool(baked.textures)
+    # A head renderer is drawn with headMaterial itself: write into it.
+    detach_material = shared_material and bool(baked.textures) and head is None
     pids = iter(_rand_pids(len(baked.textures) + int(shared_mesh) + int(detach_material), set(sf.objects)))
     mesh_pid = next(pids) if shared_mesh else mesh_object.path_id
     material_pid = next(pids) if detach_material else first_material.path_id
@@ -461,6 +643,10 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     if renderer_tree is not None:
         renderer_tree.clear(); renderer_tree.update(renderer)
     diagnostics = list(dict.fromkeys(fallback_diagnostics + list(baked.diagnostics)))
+    if head is not None and prepared:
+        diagnostics.append("Head mesh: the game draws every head mesh with BodyPartManager.headMaterial, so the donor "
+                           "texels were written into that material's own texture at free texels; the face, eyes, mouth, "
+                           "blush area and other head meshes keep their texels and UVs.")
     if shared_mesh or detach_material:
         diagnostics.append("Detached shared Body " + " and ".join(
             name for name, detached in (("mesh", shared_mesh), ("material", detach_material)) if detached)
@@ -471,6 +657,7 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
                   "atlas": "texture atlas", "identity": "original textures"}[texture_mode]
     log(f"Body textures: {mode_label}; {group_count} groups combined into one Body material.")
     return {**geometry, "source_materials": source_count, "materials": 1, "placed_groups": len(sources),
+            "head_material": head is not None,
             "atlas_textures": len(prepared), "atlas_identity": baked.identity,
             "atlas_sources": baked.unique_sources, "texture_mode": texture_mode,
             "requested_uv_placement": uv_placement, "diagnostics": diagnostics,
