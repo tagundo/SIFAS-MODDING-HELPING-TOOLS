@@ -391,7 +391,8 @@
     const wrap = make("div", null, { class: "mv-register-confirm mv-apply-conflicts", id: "mv-apply-conflicts", role: "alert" });
     const rows = new Map();
     for (const item of conflicts) {
-      const key = item.eventId + "\u0000" + item.field;
+      // The same field on both platforms is one row when both compared against the same value.
+      const key = [item.eventId, item.field, item.basis, item.loaded, item.game].join("\u0000");
       if (!rows.has(key)) rows.set(key, { ...item, platforms: [] });
       rows.get(key).platforms.push(item.platform);
     }
@@ -399,8 +400,11 @@
     const list = make("ul", null, { class: "mv-apply-conflict-list" });
     for (const row of rows.values()) {
       const where = `${row.track} · ${row.clip} (${Number(row.start).toFixed(2)}s) · ${CLIP_FIELDS[row.field] ? t(CLIP_FIELDS[row.field]) : row.field}`;
-      list.append(make("li", format("{where}: loaded {loaded} → project {project}, game {game}", { where, loaded: row.loaded,
-        project: row.project, game: row.game }) + (row.platforms.length === 1 ? " · " + platformName(row.platforms[0]) : "")));
+      // "loaded" is the value the project agreed on with the game: as loaded, or as this project last applied it.
+      const label = row.basis === "applied" ? "{where}: last applied {loaded} → project {project}, game {game}" :
+        "{where}: loaded {loaded} → project {project}, game {game}";
+      list.append(make("li", format(label, { where, loaded: row.loaded, project: row.project, game: row.game }) +
+        (row.platforms.length === 1 ? " · " + platformName(row.platforms[0]) : "")));
     }
     wrap.append(list, make("p", t("Nothing was overwritten. Use Apply all to replace the game's version with this project, or load the MV from the game again."), { class: "mv-field-note" }));
     return wrap;
@@ -567,6 +571,7 @@
     "These edits are not in {platform} yet.", "Apply all: the game already plays this project.", "Apply all: the game plays the original MV again.",
     "Apply all: {clips} clips differ from the original MV", "Download (about {size} MB)", "No {platform} original",
     "Not in the game:", "Changed differently in the game ({count})", "{where}: loaded {loaded} → project {project}, game {game}",
+    "{where}: last applied {loaded} → project {project}, game {game}",
     "Nothing was overwritten. Use Apply all to replace the game's version with this project, or load the MV from the game again.",
     "The game server stops for a moment while the game catalog is written.", "Restart the game server after applying.",
     "Restore the original MV? The MV Studio version {revision} stays in a backup.",

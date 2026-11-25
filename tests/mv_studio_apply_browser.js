@@ -169,7 +169,8 @@ async function run() {
     assert.equal(timelines[0].revision, 2);
 
     // Another project changes that clip in the game (Apply all from the stock): this project's next
-    // edit of it is a conflict. It is listed, nothing is written, and the server keeps running.
+    // edit of it is a conflict against the value it last applied (0.5). It is listed, nothing is
+    // written, and the server keeps running.
     const other = await page.evaluate(async ({ project, key }) => {
       project.tracks[0].events[0].start = 0.75;
       const response = await fetch('/api/mv-studio/apply-job', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -184,7 +185,7 @@ async function run() {
     await moveFirstClip(page, 1);
     await checked(page, '게임에서 다르게 바뀐 항목 (1)');
     const conflicts = await page.locator('#mv-apply-conflicts').textContent();
-    assert.match(conflicts, /CameraMotion\/Camera1 · cut1 \(0\.00s\) · 시작 시간 \(초\): 불러온 값 0 → 프로젝트 1, 게임 0\.75/);
+    assert.match(conflicts, /CameraMotion\/Camera1 · cut1 \(0\.00s\) · 시작 시간 \(초\): 마지막 적용 값 0\.5 → 프로젝트 1, 게임 0\.75/);
     assert.match(conflicts, /아무것도 덮어쓰지 않았습니다\./);
     assert.match(await page.locator('#mv-apply-plan').textContent(), /이 프로젝트를 불러온 뒤 게임의 MV가 바뀌었습니다/);
     assert(await page.locator('#mv-apply-edits').isDisabled(), 'A conflict blocks Apply only the edits');

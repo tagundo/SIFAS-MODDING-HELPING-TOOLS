@@ -206,7 +206,7 @@ class ApplyEditsTests(ApplyCase):
         second["tracks"][2]["events"][0]["start"] = 0.5
         plan = self.plan(second)
         conflict = {"track": "StageEffect/Bloom", "trackId": "cab-1:20", "clip": "LiveBloomClip", "eventId": "cab-1:20:0",
-                    "start": 1.0, "field": "intensity", "loaded": "1", "project": "3", "game": "2.5"}
+                    "start": 1.0, "field": "intensity", "basis": "load", "loaded": "1", "project": "3", "game": "2.5"}
         self.assertEqual(plan["edits"]["conflicts"], [{"platform": "android", **conflict}, {"platform": "ios", **conflict}])
         self.assertIn({"message": apply.CONFLICTS}, plan["edits"]["blocked"])
         files, sessions, key = self.static_files(), len(self.server_sessions), self.timeline()["timelineKey"]
@@ -255,9 +255,24 @@ class ApplyEditsTests(ApplyCase):
         self.bloom(older_page["tracks"])["intensity"] = 4.0
         self.assertEqual(self.plan(older_page)["edits"]["conflicts"], [])
         self.run_apply(older_page, "edits")
-        # ... and the first project's next change of that field is now a conflict with the game's 4.0.
+        # ... and the first project's next change of that field is now a conflict with the game's 4.0,
+        # against the value this project last applied (1.0, the loaded one again: no record left).
         self.bloom(project["tracks"])["intensity"] = 5.0
-        self.assertEqual([item["game"] for item in self.plan(project)["edits"]["conflicts"]], ["4", "4"])
+        self.assertEqual([(item["game"], item["basis"], item["loaded"]) for item in self.plan(project)["edits"]["conflicts"]],
+                         [("4", "load", "1"), ("4", "load", "1")])
+
+    def test_a_conflict_after_an_apply_names_the_value_last_applied(self):
+        project = self.imported()
+        self.bloom(project["tracks"])["intensity"] = 0.5
+        job, _ = self.run_apply(project, "edits")
+        project["source"]["applied"] = self.result(job)["applied"]
+        other = self.imported()  # Loaded from the applied timeline: the game changes it again from there.
+        self.bloom(other["tracks"])["intensity"] = 0.75
+        self.run_apply(other, "edits")
+        self.bloom(project["tracks"])["intensity"] = 1.0
+        conflicts = self.plan(project)["edits"]["conflicts"]
+        self.assertEqual([(item["platform"], item["basis"], item["loaded"], item["project"], item["game"]) for item in conflicts],
+                         [("android", "applied", "0.5", "1", "0.75"), ("ios", "applied", "0.5", "1", "0.75")])
 
     def test_unedited_apply_edits_is_a_no_op_that_never_stops_the_server(self):
         job, summary = self.run_apply(self.imported(), "edits")

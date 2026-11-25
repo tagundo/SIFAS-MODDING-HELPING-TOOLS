@@ -1246,10 +1246,12 @@ def merge_changes(base, ours, theirs, synced=None):
     - changed in ours, and theirs still has the agreed value or already ours: ours is taken;
     - changed differently in both: a conflict, and nothing is taken silently.
 
-    Values compare as stored (``field_digest``). Returns ``(merged tracks, conflicts, taken,
-    theirs_only)``: merged is theirs with the taken fields; ``theirs_only`` counts the fields the
-    game changed that the project does not hold. Raises ValueError(MERGE_LAYOUT) when theirs has
-    other tracks, clips or value keys."""
+    Values compare as stored (``field_digest``). A conflict names its ``basis``: "load" (the
+    agreed value is the loaded one, shown as ``loaded``) or "applied" (the value this project
+    last applied, shown as ``loaded`` from the synced label). Returns ``(merged tracks,
+    conflicts, taken, theirs_only)``: merged is theirs with the taken fields; ``theirs_only``
+    counts the fields the game changed that the project does not hold. Raises
+    ValueError(MERGE_LAYOUT) when theirs has other tracks, clips or value keys."""
     import copy
 
     if (not isinstance(theirs, list) or len(theirs) != len(base) or len(ours) != len(base)
@@ -1266,7 +1268,8 @@ def merge_changes(base, ours, theirs, synced=None):
             agreed = synced.get(before["id"]) if isinstance(synced.get(before["id"]), dict) else {}
             for field in _merge_fields(before, mine):
                 old, new, now = _merge_value(before, field), _merge_value(mine, field), _merge_value(game, field)
-                old_digest, _ = synced_digest(agreed.get(field))
+                old_digest, applied_label = synced_digest(agreed.get(field))
+                basis = "applied" if old_digest is not None else "load"
                 if old_digest is None:
                     old_digest = field_digest(old)
                 new_digest, now_digest = field_digest(new), field_digest(now)
@@ -1285,7 +1288,8 @@ def merge_changes(base, ours, theirs, synced=None):
                     continue
                 conflicts.append({"track": str(base_track.get("label") or base_track["id"]), "trackId": base_track["id"],
                                   "clip": str(before.get("label") or before["id"]), "eventId": before["id"],
-                                  "start": before["start"], "field": field, "loaded": _merge_label(old),
+                                  "start": before["start"], "field": field, "basis": basis,
+                                  "loaded": _merge_label(old) if basis == "load" else (applied_label or "?"),
                                   "project": _merge_label(new), "game": _merge_label(now)})
     return merged, conflicts, taken, theirs_only
 
