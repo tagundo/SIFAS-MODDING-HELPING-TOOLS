@@ -2661,6 +2661,133 @@ for _source, _translated in _COSTUME_CONVERSION_TRANSLATIONS.items():
     _TABLES["ja"][_source] = _translated[1]
 
 
+_MV_EDITOR_D_TRANSLATIONS = {
+    "Follow camera": ("따라가기 카메라", "追従カメラ"),
+    "Camera rigs (editor)": ("카메라 리그 (편집기)", "カメラリグ（エディター）"),
+    "Follow cameras are editor rigs. They are baked into the camera shots they cover, which is what the game plays.": (
+        "따라가기 카메라는 편집기 리그입니다. 리그가 덮는 카메라 샷에 구워지며, 게임은 그 샷을 재생합니다.",
+        "追従カメラはエディターのリグです。重なるカメラショットに焼き込まれ、ゲームではそのショットが再生されます。"),
+    "Add follow camera": ("따라가기 카메라 추가", "追従カメラを追加"),
+    "Follow camera {index}": ("따라가기 카메라 {index}", "追従カメラ {index}"),
+    "{label} copy": ("{label} 사본", "{label} のコピー"),
+    "Makes a camera that follows a member, like a Cinemachine follow camera. It covers the shot at the playhead.": (
+        "멤버를 따라가는 카메라를 만듭니다(Cinemachine의 팔로우 카메라와 비슷합니다). 재생 위치의 샷 구간에 추가됩니다.",
+        "メンバーを追いかけるカメラを作ります（Cinemachine の追従カメラに近い動きです）。再生位置のショットの範囲に追加されます。"),
+    "No members to follow. Add a performer first.": (
+        "따라갈 멤버가 없습니다. 먼저 출연자를 추가하세요.", "追従するメンバーがいません。先に出演者を追加してください。"),
+    "Rig": ("리그", "リグ"),
+    "Rig name": ("리그 이름", "リグ名"),
+    "Time range": ("구간", "区間"),
+    "Start (s)": ("시작 (초)", "開始（秒）"),
+    "End (s)": ("끝 (초)", "終了（秒）"),
+    "Duplicate rig": ("리그 복제", "リグを複製"),
+    "Delete rig": ("리그 삭제", "リグを削除"),
+    "Target": ("대상", "対象"),
+    "Body part": ("부위", "部位"),
+    "Head (whole)": ("머리 전체", "頭全体"),
+    "Camera view": ("카메라 시점", "カメラの視点"),
+    "Front puts the camera on the audience side; Right is the member's right.": (
+        "정면은 관객석 쪽, 오른쪽은 멤버의 오른쪽에 카메라를 둡니다.",
+        "正面は客席側、右はメンバーの右側にカメラを置きます。"),
+    "Front view": ("정면", "正面"),
+    "Back view": ("후면", "背面"),
+    "Left view": ("왼쪽", "左"),
+    "Right view": ("오른쪽", "右"),
+    "Custom view": ("사용자", "カスタム"),
+    "Custom: the direction is this angle alone.": ("사용자: 이 각도만으로 방향을 정합니다.", "カスタム：この角度だけで向きを決めます。"),
+    "Added to the preset direction.": ("프리셋 방향에 더해집니다.", "プリセットの向きに加算されます。"),
+    "Reference": ("방향 기준", "向きの基準"),
+    "Stage front": ("무대 정면", "ステージ正面"),
+    "Member facing": ("멤버가 보는 방향", "メンバーの向き"),
+    "Placement": ("배치", "配置"),
+    "Framing": ("구도", "構図"),
+    "Close-up": ("클로즈업", "クローズアップ"),
+    "Medium shot": ("미디엄 샷", "ミディアムショット"),
+    "Full shot": ("풀 샷", "フルショット"),
+    "Camera height above the look-at point.": ("조준점보다 카메라가 높은 정도입니다.", "注視点から見たカメラの高さです。"),
+    "+ moves the camera toward the member's right in the front view (the camera's left).": (
+        "+ 값은 정면 시점에서 카메라를 멤버의 오른쪽(카메라 기준 왼쪽)으로 옮깁니다.",
+        "＋の値は、正面の視点でカメラをメンバーの右側（カメラから見て左）へ動かします。"),
+    "Moves the point the camera looks at, in the reference frame.": (
+        "카메라가 바라보는 점을 방향 기준에 맞춰 옮깁니다.", "カメラが見る点を、向きの基準に沿って動かします。"),
+    "Lens": ("렌즈", "レンズ"),
+    "Dead zone": ("데드존", "デッドゾーン"),
+    "Small moves inside the dead zone are ignored. Once the member leaves it, the camera follows until the member is back within radius × (1 − hysteresis).": (
+        "데드존 안의 작은 움직임은 무시합니다. 멤버가 데드존을 벗어나면 반경 × (1 − 히스테리시스) 안으로 돌아올 때까지 따라갑니다.",
+        "デッドゾーン内の小さな動きは無視します。メンバーが外に出ると、半径 ×（1 − ヒステリシス）の内側に戻るまで追いかけます。"),
+    "Height lock": ("높이 고정", "高さ固定"),
+    "Keeps the camera or the look-at point at one height, so jumps and crouches do not bob the camera.": (
+        "카메라나 조준점의 높이를 고정해 점프나 웅크림에 카메라가 위아래로 흔들리지 않게 합니다.",
+        "カメラまたは注視点の高さを固定し、ジャンプやしゃがみでカメラが上下しないようにします。"),
+    "Lock": ("고정", "固定"),
+    "Look-at point": ("조준점", "注視点"),
+    "Locked height": ("고정할 높이", "固定する高さ"),
+    "Height at the rig start": ("리그 시작 높이", "リグ開始時の高さ"),
+    "Fixed height": ("지정 높이", "指定の高さ"),
+    "Damping": ("댐핑", "ダンピング"),
+    "How long the camera takes to catch up, in seconds (about 63 % of the way). 0 follows at once; larger values are smoother.": (
+        "카메라가 따라잡는 데 걸리는 시간(초, 약 63% 지점)입니다. 0은 즉시 따라가고, 값이 클수록 부드럽습니다.",
+        "カメラが追いつくまでの時間（秒、約63%に達するまで）です。0はすぐに追従し、大きいほど滑らかになります。"),
+    "Blend": ("블렌드", "ブレンド"),
+    "Fades from the shot's own camera and back. 0 is a cut.": (
+        "원래 샷의 카메라에서 부드럽게 넘어왔다가 돌아갑니다. 0은 바로 전환합니다.",
+        "元のショットのカメラから滑らかに切り替わり、また戻ります。0はカットです。"),
+    "Yaw offset (°)": ("방향 회전 (°)", "向きの回転 (°)"),
+    "Turn damping (s)": ("회전 댐핑 (초)", "回転ダンピング（秒）"),
+    "Distance (m)": ("거리 (m)", "距離 (m)"),
+    "Height (m)": ("높이 (m)", "高さ (m)"),
+    "Side offset (m)": ("좌우 이동 (m)", "左右のずらし (m)"),
+    "Look-at height (m)": ("조준 높이 (m)", "注視点の高さ (m)"),
+    "Look-at side (m)": ("조준 좌우 (m)", "注視点の左右 (m)"),
+    "Look-at forward (m)": ("조준 앞뒤 (m)", "注視点の前後 (m)"),
+    "FOV (°)": ("화각 (°)", "画角 (°)"),
+    "Roll (°)": ("롤 (°)", "ロール (°)"),
+    "Radius (m)": ("반경 (m)", "半径 (m)"),
+    "Height band (m)": ("높이 범위 (m)", "高さの範囲 (m)"),
+    "Hysteresis": ("히스테리시스", "ヒステリシス"),
+    "Fixed height (m)": ("지정 높이 (m)", "指定の高さ (m)"),
+    "Look-at XZ (s)": ("조준 수평 (초)", "注視点 水平（秒）"),
+    "Look-at Y (s)": ("조준 수직 (초)", "注視点 垂直（秒）"),
+    "Camera XZ (s)": ("카메라 수평 (초)", "カメラ 水平（秒）"),
+    "Camera Y (s)": ("카메라 수직 (초)", "カメラ 垂直（秒）"),
+    "Blend in (s)": ("블렌드 인 (초)", "ブレンドイン（秒）"),
+    "Blend out (s)": ("블렌드 아웃 (초)", "ブレンドアウト（秒）"),
+    "The follow camera is baked for the current members and outfits. Other MV decks can frame differently. For registered MVs, Height lock: Camera is recommended.": (
+        "따라가기 카메라는 현재 멤버와 의상을 기준으로 구워집니다. 다른 MV 덱에서는 구도가 달라질 수 있습니다. 게임에 등록할 MV에는 '높이 고정: 카메라'를 권장합니다.",
+        "追従カメラは現在のメンバーと衣装を基準に焼き込まれます。別のMVデッキでは構図が変わることがあります。登録するMVには「高さ固定：カメラ」をおすすめします。"),
+    "Baking camera… {percent}%": ("카메라 굽는 중… {percent}%", "カメラを焼き込み中… {percent}%"),
+    "Bake again": ("다시 굽기", "もう一度焼き込む"),
+    "Baking was cancelled. The shots keep their previous camera.": (
+        "굽기를 취소했습니다. 샷은 이전 카메라를 유지합니다.", "焼き込みを取り消しました。ショットは前のカメラのままです。"),
+    "Waiting for the 3D preview…": ("3D 미리보기를 기다리는 중…", "3Dプレビューを待っています…"),
+    "The 3D preview is not available, so the follow camera cannot be baked.": (
+        "3D 미리보기를 사용할 수 없어 따라가기 카메라를 구울 수 없습니다.", "3Dプレビューが使えないため、追従カメラを焼き込めません。"),
+    "This member is not loaded in the 3D preview.": (
+        "이 멤버가 3D 미리보기에 불러와지지 않았습니다.", "このメンバーは3Dプレビューに読み込まれていません。"),
+    "This member has no target for the chosen body part.": (
+        "이 멤버에는 선택한 부위의 기준점이 없습니다.", "このメンバーには選んだ部位の基準点がありません。"),
+    "This member has no facing; the stage front is used.": (
+        "이 멤버는 방향 정보가 없어 무대 정면을 기준으로 합니다.", "このメンバーには向きの情報がないため、ステージ正面を基準にします。"),
+    "No camera shot is under this rig, so it moves nothing.": (
+        "이 리그 아래에 카메라 샷이 없어 아무것도 움직이지 않습니다.", "このリグの下にカメラショットがないため、何も動きません。"),
+    "{label} · {start}–{end} · Member {slot}": ("{label} · {start}–{end} · 멤버 {slot}", "{label} · {start}–{end} · メンバー{slot}"),
+    "Baking the follow camera was cancelled. Try again to bake it, or delete the rig.": (
+        "따라가기 카메라 굽기가 취소되었습니다. 다시 시도해 굽거나 리그를 삭제하세요.",
+        "追従カメラの焼き込みが取り消されました。もう一度焼き込むか、リグを削除してください。"),
+    "A follow camera has no member to follow. Choose a loaded member or delete the rig before exporting.": (
+        "따라갈 멤버가 없는 따라가기 카메라가 있습니다. 내보내기 전에 불러온 멤버를 고르거나 리그를 삭제하세요.",
+        "追従するメンバーがいない追従カメラがあります。書き出す前に、読み込まれたメンバーを選ぶかリグを削除してください。"),
+    "Edit follow camera": ("따라가기 카메라 편집", "追従カメラを編集"),
+    "Move follow camera": ("따라가기 카메라 이동", "追従カメラを移動"),
+    "Resize follow camera": ("따라가기 카메라 길이 변경", "追従カメラの長さを変更"),
+    "Duplicate follow camera": ("따라가기 카메라 복제", "追従カメラを複製"),
+    "Delete follow camera": ("따라가기 카메라 삭제", "追従カメラを削除"),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_D_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+
 _MV_STUDIO_TRANSLATIONS = {
     "Panel settings": ("패널 설정", "パネル設定"),
     "Load MV from game": ("게임에서 MV 불러오기", "ゲームからMVを読み込む"),
