@@ -1,6 +1,9 @@
 (function (global) {
   "use strict";
 
+  // The screen programs, one per display shader (GLES3 programs of the shader bundles):
+  //   GENERAL      AS/General/Opaque        main x COLOR (_VERTEX_COLOR_ON), lerp to _AmbientColor, x _TintColor
+  //   TRANSPARENT  AS/General/Transparent   main x _TintColor x COLOR, + main^4 (_SATURATE_ON), blended
   const vertex = [
     "attribute vec4 _stage_color;",
     "uniform vec4 uTextureST;",
@@ -20,10 +23,22 @@
     "varying vec2 vScreen;",
     "varying vec4 vColor;",
     "void main() {",
+    "#if defined(TRANSPARENT)",
+    "  vec4 texel = texture2D(uTexture, vScreen);",
+    "  vec4 color = texel * uTint * vColor;",
+    "#ifdef SATURATE",
+    "  vec3 square = texel.rgb * texel.rgb;",
+    "  color.rgb = square * square + color.rgb;",
+    "#endif",
+    "  gl_FragColor = color;",
+    "#else",
     "  vec4 texel = texture2D(uTexture, vScreen) * vColor;",
     "  gl_FragColor = vec4(mix(texel.rgb, uAmbient.rgb, uAmbient.a), texel.a) * uTint;",
+    "#endif",
     "}"
   ].join("\n");
+
+  const DEFINES = { general: null, transparent: "TRANSPARENT" };
 
   function sample(track, time) {
     const ambient = [0, 0, 0, 0], scroll = [0, 0];
@@ -43,6 +58,34 @@
     return { ambient, material, offset: scroll.map((speed) => speed * time) };
   }
 
+  // GLBs exported before the display kinds carry the AS/General/Opaque background
+  // (stencil pass Replace) and the AS/General/Transparent alpha-blended logo.
+  function normalize(fields, logo) {
+    if (!fields || fields.kind) return fields;
+    return logo ? { ...fields, kind: "transparent", blend: [5, 10], zTest: 4, zWrite: false, stencilPass: 0 }
+      : { ...fields, kind: "general", stencilPass: 2 };
+  }
+
+  // UnityEngine.Rendering enums -> three.js.
+  function blendFactor(T, value) {
+    return [T.ZeroFactor, T.OneFactor, T.DstColorFactor, T.SrcColorFactor, T.OneMinusDstColorFactor,
+      T.SrcAlphaFactor, T.OneMinusSrcColorFactor, T.DstAlphaFactor, T.OneMinusDstAlphaFactor,
+      T.SrcAlphaSaturateFactor, T.OneMinusSrcAlphaFactor][value] ?? T.OneFactor;
+  }
+  function depthFunction(T, value) {
+    return [T.AlwaysDepth, T.NeverDepth, T.LessDepth, T.EqualDepth, T.LessEqualDepth, T.GreaterDepth,
+      T.NotEqualDepth, T.GreaterEqualDepth, T.AlwaysDepth][value] ?? T.LessEqualDepth;
+  }
+  function stencilFunction(T, value) {
+    return [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc, T.EqualStencilFunc, T.LessEqualStencilFunc,
+      T.GreaterStencilFunc, T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc][value] ??
+      T.AlwaysStencilFunc;
+  }
+  function stencilOperation(T, value) {
+    return [T.KeepStencilOp, T.ZeroStencilOp, T.ReplaceStencilOp, T.IncrementStencilOp, T.DecrementStencilOp,
+      T.InvertStencilOp, T.IncrementWrapStencilOp, T.DecrementWrapStencilOp][value] ?? T.KeepStencilOp;
+  }
+
   async function apply(T, root, parser) {
     const screens = [];
     root.traverse((node) => {
@@ -53,10 +96,15 @@
     });
     if (!screens.length) return null;
     const textures = new Map(), owned = [];
-    const white = new T.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
-    white.needsUpdate = true;
+    function constant(rgba) {
+      const texture = new T.DataTexture(new Uint8Array(rgba), 1, 1);
+      texture.needsUpdate = true;
+      return texture;
+    }
+    // Unity's "white" property default.
+    const white = constant([255, 255, 255, 255]);
     function texture(index) {
-      if (index === null) return Promise.resolve(white);
+      if (index === null || index === undefined) return Promise.resolve(white);
       if (!textures.has(index)) textures.set(index, parser.getDependency("texture", index).then((source) => {
         const copy = source.clone();
         copy.encoding = T.LinearEncoding;
@@ -65,44 +113,75 @@
       }));
       return textures.get(index);
     }
-    function shader(logo) {
+    function shader(kind, saturate, logo) {
       const uniforms = {
         uTexture: { value: white }, uTextureST: { value: new T.Vector4(1, 1, 0, 0) },
         uVertexColor: { value: false },
         uTint: { value: new T.Vector4(1, 1, 1, 1) }, uAmbient: { value: new T.Vector4(0, 0, 0, 0) }
       };
+      const defines = {};
+      if (DEFINES[kind]) defines[DEFINES[kind]] = 1;
+      if (saturate) defines.SATURATE = 1;
       const material = new T.ShaderMaterial({
-        vertexShader: vertex, fragmentShader: fragment, uniforms, toneMapped: false,
-        transparent: logo, depthWrite: !logo, depthTest: true, depthFunc: T.LessEqualDepth,
-        blending: logo ? T.CustomBlending : T.NoBlending,
-        blendSrc: T.SrcAlphaFactor, blendDst: T.OneMinusSrcAlphaFactor,
-        blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneMinusSrcAlphaFactor,
-        stencilWrite: !logo, stencilFunc: T.AlwaysStencilFunc, stencilZPass: T.ReplaceStencilOp
+        vertexShader: vertex, fragmentShader: fragment, uniforms, defines, toneMapped: false,
+        depthTest: true, depthFunc: T.LessEqualDepth
       });
       material.name = logo ? "Native stage display logo" : "Native stage display background";
       material.defaultAttributeValues._stage_color = [1, 1, 1, 1];
       owned.push(material);
       return material;
     }
-    function setPass(node, material, fields, state, logo) {
+    // One material per screen pass and shader program (switching variants swaps them).
+    function program(screen, fields, logo) {
+      const key = `${logo ? "logo" : "background"}:${fields.kind}:${fields.saturate === true}`;
+      if (!screen.programs.has(key)) screen.programs.set(key, shader(fields.kind, fields.saturate === true, logo));
+      return screen.programs.get(key);
+    }
+    function setPass(node, material, fields, state) {
       const uniforms = material.uniforms;
       const [sx, sy, x, y] = fields.uv, [ox, oy] = state?.offset || [x, y];
       uniforms.uTexture.value = fields.image;
-      uniforms.uVertexColor.value = !logo && fields.vertexColor === true;
+      uniforms.uVertexColor.value = fields.vertexColor === true;
       uniforms.uTextureST.value.set(sx, sy, ox, 1 - sy - oy);
-      uniforms.uAmbient.value.fromArray(logo ? [0, 0, 0, 0] : state?.ambient || fields.ambient);
+      uniforms.uAmbient.value.fromArray(state?.ambient || fields.ambient || [0, 0, 0, 0]);
       uniforms.uTint.value.fromArray(fields.tint);
-      const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull];
-      if (material.side !== side) {
-        material.side = side;
-        material.needsUpdate = true;
+      const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull] ?? T.DoubleSide;
+      const transparent = fields.kind === "transparent";
+      const render = {
+        side, transparent, depthWrite: transparent ? fields.zWrite === true : true,
+        depthTest: !transparent || fields.zTest !== 0,
+        depthFunc: transparent ? depthFunction(T, fields.zTest) : T.LessEqualDepth,
+        blending: transparent ? T.CustomBlending : T.NoBlending
+      };
+      for (const [key, value] of Object.entries(render)) {
+        if (material[key] !== value) {
+          material[key] = value;
+          if (key === "side" || key === "transparent") material.needsUpdate = true;
+        }
       }
+      if (transparent) {
+        material.blendSrc = material.blendSrcAlpha = blendFactor(T, fields.blend[0]);
+        material.blendDst = material.blendDstAlpha = blendFactor(T, fields.blend[1]);
+      }
+      const comparison = fields.stencilComp ?? 8, pass = fields.stencilPass ?? 0, zFail = fields.stencilZFail ?? 0;
+      material.stencilWrite = !(comparison === 0 || comparison === 8) || pass !== 0 || zFail !== 0;
       material.stencilRef = fields.stencil;
+      material.stencilFunc = stencilFunction(T, comparison);
+      material.stencilFail = T.KeepStencilOp;
+      material.stencilZPass = stencilOperation(T, pass);
       // _StencilZFailOp 2 (Replace) also writes the reference where the depth test fails.
-      material.stencilZFail = fields.stencilZFail === 2 ? T.ReplaceStencilOp : T.KeepStencilOp;
+      material.stencilZFail = stencilOperation(T, zFail);
       node.renderOrder = fields.queue;
     }
-    const load = async (fields) => fields ? { ...fields, image: await texture(fields.texture) } : null;
+    async function load(fields, logo) {
+      fields = normalize(fields, logo);
+      if (!fields) return fields;
+      return { ...fields, image: await texture(fields.texture) };
+    }
+    async function loadVariant(variant) {
+      if (!variant) return null;
+      return { background: await load(variant.background, false), logo: await load(variant.logo, true) };
+    }
     function dispose() {
       for (const screen of screens) {
         if (screen.logo) screen.node.remove(screen.logo);
@@ -115,14 +194,12 @@
     }
     try {
       for (const screen of screens) {
-        screen.fallback = await load(screen.fields.fallback);
-        screen.variants = await Promise.all(screen.fields.variants.map(async ({ background, logo }) =>
-          ({ background: await load(background), logo: await load(logo) })));
-        screen.background = shader(false);
-        screen.node.material = screen.background;
-        setPass(screen.node, screen.background, screen.fallback, null, false);
+        screen.programs = new Map();
+        screen.fallback = await load(screen.fields.fallback, false);
+        screen.initial = await loadVariant(screen.fields.initial);
+        screen.variants = await Promise.all(screen.fields.variants.map(loadVariant));
         // Unity submits the extra logo material over the same final submesh.
-        screen.logo = new T.Mesh(screen.node.geometry, shader(true));
+        screen.logo = new T.Mesh(screen.node.geometry, shader("transparent", false, true));
         screen.logo.name = "Native stage display logo";
         screen.logo.visible = false;
         screen.node.add(screen.logo);
@@ -131,7 +208,30 @@
       dispose();
       throw error;
     }
-    let source;
+    // `writes`: the mixer state last written into each material this frame (LiveDisplayMixer writes
+    // _AmbientColor and _MainTex_ST into the shared Material asset, so every screen drawing that
+    // material shows the last write; the mixers run in timeline track order).
+    function show(screen, pass, writes, own) {
+      if (!pass || !pass.background) {
+        // Nothing native to draw: the screen keeps its own (glTF) material.
+        screen.node.material = screen.original;
+        screen.node.renderOrder = screen.renderOrder;
+        screen.logo.visible = false;
+        return;
+      }
+      // GLBs exported before the material identity: a screen's own write lands on its bg only.
+      const written = (fields) => (fields.material !== undefined ? writes.get(fields.material)
+        : fields === pass.background ? own : null) || null;
+      const background = program(screen, pass.background, false);
+      screen.node.material = background;
+      setPass(screen.node, background, pass.background, written(pass.background));
+      screen.logo.visible = !!pass.logo;
+      if (pass.logo) {
+        screen.logo.material = program(screen, pass.logo, true);
+        setPass(screen.logo, screen.logo.material, pass.logo, written(pass.logo));
+      }
+    }
+    let source, ordered = screens;
     return {
       invalidate() { source = null; },
       update(time, project) {
@@ -141,16 +241,31 @@
             const matches = tracks.filter((track) => track.nativeClass === "LiveDisplayTrack" &&
               track.binding === screen.fields.target && !track.muted);
             screen.track = matches.length === 1 ? matches[0] : null;
+            screen.order = screen.track ? tracks.indexOf(screen.track) : -1;
           }
+          ordered = [...screens].sort((a, b) => a.order - b.order);
           source = project;
         }
+        const writes = new Map(), passes = new Map();
+        for (const screen of ordered) {
+          // A disabled stage display shows material2DReference; one without it is forced on.
+          const enabled = !screen.fallback || project?.quality?.values?.stage_display !== false;
+          if (!enabled) {
+            passes.set(screen, { background: screen.fallback, logo: null });
+          } else if (!screen.track) {
+            // Without a LiveDisplayTrack nothing switches the renderer's own materials.
+            passes.set(screen, screen.initial);
+          } else {
+            const state = sample(screen.track, time);
+            const selected = screen.variants[Math.max(0, Math.min(screen.variants.length - 1, state.material))];
+            passes.set(screen, selected);
+            screen.state = state;
+            if (selected.background.material !== undefined) writes.set(selected.background.material, state);
+          }
+        }
         for (const screen of screens) {
-          const state = project?.quality?.values?.stage_display !== false && screen.track
-            ? sample(screen.track, time) : null;
-          const selected = state ? screen.variants[Math.max(0, Math.min(screen.variants.length - 1, state.material))] : null;
-          setPass(screen.node, screen.background, selected?.background || screen.fallback, state, false);
-          screen.logo.visible = !!selected?.logo;
-          if (screen.logo.visible) setPass(screen.logo, screen.logo.material, selected.logo, null, true);
+          const pass = passes.get(screen);
+          show(screen, pass, writes, screen.variants.includes(pass) ? screen.state : null);
         }
       },
       dispose

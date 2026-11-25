@@ -14,44 +14,47 @@ from webtools.core import mv_studio_stage_overlay as overlay
 
 
 class StageDisplayMaterialTests(unittest.TestCase):
-    def test_only_exact_opaque_stencil_writers_add_authored_vertex_color(self):
+    def test_vertex_color_follows_the_compiled_keyword(self):
         original = SimpleNamespace(type=SimpleNamespace(name="Material"))
         floats = {"_StencilComp": 8, "_StencilRef": 2, "_StencilPassOp": 2,
-                  "_StencilZFailOp": 0, "_VERTEX_COLOR": 1}
-        tree = {"m_ShaderKeywords": "_VERTEX_COLOR_ON", "m_CustomRenderQueue": -1,
+                  "_StencilZFailOp": 0, "_VERTEX_COLOR": 0}
+        tree = {"m_ShaderKeywords": "_VERTEX_COLOR_ON _AUTO_PLAY_ON", "m_CustomRenderQueue": -1,
                 "m_SavedProperties": {"m_Floats": floats.items()}}
         scene = SimpleNamespace(tree=lambda _: tree)
-        with patch.object(displays, "_shader_matches", return_value=True):
-            variant = displays._material(scene, None, original, False)
+        with patch.object(displays, "shader_name", return_value="AS/General/Opaque"):
+            # The [Toggle] float and keywords outside the shader's keyword space do nothing in Unity.
+            variant = displays.read(scene, None, original)
             self.assertTrue(variant["vertexColor"])
-            self.assertEqual((variant["queue"], variant["stencil"]), (2000, 2))
-            self.assertIsNone(displays._material(scene, None, original, True))
-            floats["_StencilPassOp"] = 0
-            self.assertIsNone(displays._material(scene, None, original, False))
-            floats.update(_StencilPassOp=2, _VERTEX_COLOR=0)
+            self.assertEqual((variant["kind"], variant["queue"], variant["stencil"]), ("general", 2000, 2))
             tree["m_ShaderKeywords"] = ""
-            fallback = displays._material(scene, None, original, False)
+            floats["_VERTEX_COLOR"] = 1
+            fallback = displays.read(scene, None, original)
             self.assertNotIn("vertexColor", fallback)
             self.assertEqual({k: v for k, v in variant.items() if k != "vertexColor"}, fallback)
+            tree["m_ShaderKeywords"] = "SOFTPARTICLES_ON"
+            with self.assertRaises(displays.Unsupported):
+                displays.read(scene, None, original)
+        tree["m_ShaderKeywords"] = "_VERTEX_COLOR_ON"
+        with patch.object(displays, "shader_name", return_value="AS/General/Transparent"):
+            self.assertTrue(displays.read(scene, None, original)["vertexColor"])
 
-    def test_opaque_background_may_replace_the_reference_on_depth_failure(self):
+    def test_stencil_state_is_read_from_the_material(self):
         original = SimpleNamespace(type=SimpleNamespace(name="Material"))
         floats = {"_StencilComp": 8, "_StencilRef": 2, "_StencilPassOp": 2, "_StencilZFailOp": 2}
         tree = {"m_ShaderKeywords": "", "m_CustomRenderQueue": -1, "m_SavedProperties": {"m_Floats": floats.items()}}
         scene = SimpleNamespace(tree=lambda _: tree)
-        with patch.object(displays, "_shader_matches", return_value=True):
+        with patch.object(displays, "shader_name", return_value="AS/General/Opaque"):
             # mat_dis_bg_so2035_opa_0x / so2036_opa_0x: _StencilZFailOp 2 (Replace).
-            self.assertEqual(displays._material(scene, None, original, False)["stencilZFail"], 2)
-            floats["_StencilZFailOp"] = 0
-            self.assertEqual(displays._material(scene, None, original, False)["stencilZFail"], 0)
-            for value in (1, 3):
+            self.assertEqual(displays.read(scene, None, original)["stencilZFail"], 2)
+            # mat_dis_so0122_01 (10122/3): Always, Keep -- the screen writes no reference.
+            floats.update(_StencilPassOp=0, _StencilZFailOp=0)
+            self.assertEqual({key: displays.read(scene, None, original)[key] for key in
+                              ("stencil", "stencilComp", "stencilPass", "stencilZFail")},
+                             {"stencil": 2, "stencilComp": 8, "stencilPass": 0, "stencilZFail": 0})
+            for value in (8, 2.5, float("nan")):
                 floats["_StencilZFailOp"] = value
-                self.assertIsNone(displays._material(scene, None, original, False))
-            # Logo passes keep the exact transparent profile.
-            floats.update(_StencilPassOp=0, _StencilZFailOp=2, _BlendSrc=5, _BlendDst=10, _ZTestMode=4, _ZWriteParam=0)
-            self.assertIsNone(displays._material(scene, None, original, True))
-            floats["_StencilZFailOp"] = 0
-            self.assertEqual(displays._material(scene, None, original, True)["stencilZFail"], 0)
+                with self.assertRaises(displays.Unsupported):
+                    displays.read(scene, None, original)
 
 
 class ActualStageDisplayTests(unittest.TestCase):
