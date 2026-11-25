@@ -1238,6 +1238,7 @@
       gaze.members = {};
       frameAll();
       seek(currentTime, project);
+      notifyFreeView();
     }
 
     function cancelStagePreparation(redraw = true) {
@@ -1391,6 +1392,8 @@
           }
           if (!record.prop) entry.group.add(record.root);
           records.push(record);
+          // The free camera's targets follow the members as they load.
+          if (entry.group === actors) notifyFreeView();
           if (entry.group === stage) {
             grid.visible = false;
             frameAll();
@@ -2666,11 +2669,13 @@
         return point ? point.toArray() : null;
       },
       // A new target; recentre moves the orbit target onto it and carries the camera along
-      // (same offset, same direction), so the view turns around it from where it was.
+      // (same offset, same direction), so the view turns around it from where it was. The stage
+      // centre has nothing to follow: it turns Follow member off.
       setTarget(id, { recentre = true } = {}) {
         const point = freeTargetPoint(id, freePoint);
         if (!point) return false;
         freeView.target = id;
+        if (id === "stage") freeView.follow = false;
         freeView.last.copy(point);
         if (recentre) {
           freeOffset.copy(point).sub(controls.target);

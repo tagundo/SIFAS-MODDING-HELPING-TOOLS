@@ -48,6 +48,9 @@
   const COMPACT = Object.freeze(["mv-freecam-compact", "mv-freecam-tight"]);
 
   let ctx = null, refs = null, scene = null, unsubscribe = null, queued = 0, targetsKey = "", placed = 0, wasHidden = true;
+  // The member target a reload left out: it comes back when that member slot loads again, until
+  // another target is picked.
+  let missingTarget = null;
 
   const t = (label) => ctx && typeof ctx.t === "function" ? ctx.t(label) : label;
   const freeView = () => scene && scene.freeView ? scene.freeView : null;
@@ -75,9 +78,6 @@
     box.target.append(make("option", { text: "Stage centre", value: "stage" }));
     target.append(make("span", { text: "Target" }), box.target);
     box.target.addEventListener("change", () => chooseTarget(box.target.value));
-    // Members finish loading after the project opens: list them again before the list opens.
-    box.target.addEventListener("pointerdown", refreshTargets);
-    box.target.addEventListener("focus", refreshTargets);
 
     const views = make("div", { class: "mv-freecam-views", role: "group", aria: "View direction" });
     for (const [id, label, title] of VIEWS) {
@@ -138,8 +138,7 @@
   function orbit(view) {
     const api = freeView();
     if (!api) return;
-    // A member that is no longer loaded leaves the stage centre as the target.
-    if (!api.targetPoint()) api.setTarget("stage", { recentre: false });
+    refreshTargets();
     if (api.orbit(view)) commit();
     sync();
   }
@@ -147,6 +146,7 @@
   function chooseTarget(id) {
     const api = freeView();
     if (!api) return;
+    missingTarget = null;
     if (!api.setTarget(id)) api.setTarget("stage");
     commit();
     sync();
@@ -166,6 +166,9 @@
     if (!queued) queued = global.requestAnimationFrame(() => { queued = 0; sync(); });
   }
 
+  // The target list follows the loaded members (the scene reports each one as it loads). A target
+  // member that is not loaded leaves the stage centre as the target (which turns Follow member
+  // off) until that member slot is back.
   function refreshTargets() {
     const api = freeView();
     if (!refs || !api) return;
@@ -180,13 +183,20 @@
         return new Option(name ? `${item.slot} · ${name}` : String(item.slot), item.id);
       }));
     }
-    const state = api.state();
-    if (!targets.some((item) => item.id === state.target)) api.setTarget("stage", { recentre: false });
+    const state = api.state(), listed = (id) => targets.some((item) => item.id === id);
+    if (!listed(state.target)) {
+      if (state.target !== "stage") missingTarget = state.target;
+      api.setTarget("stage", { recentre: false });
+    } else if (missingTarget && state.target === "stage" && listed(missingTarget)) {
+      api.setTarget(missingTarget, { recentre: false });
+      missingTarget = null;
+    }
     refs.target.value = api.state().target;
   }
 
   // The bar shows only while the preview draws the free camera; its values follow the camera.
-  // A focused box or slider keeps what is being typed or dragged, except `forced`.
+  // A focused box or slider keeps what is being typed or dragged, except `forced`. The target
+  // is checked also while the bar is hidden, so a reload never leaves a missing member followed.
   function sync(forced = null) {
     if (!refs) return;
     hookScene();
@@ -198,8 +208,8 @@
       wasHidden = refs.bar.hidden;
       place();
     }
-    if (refs.bar.hidden) return;
     refreshTargets();
+    if (refs.bar.hidden) return;
     const state = api.state();
     const keep = (element) => element !== forced && element === global.document.activeElement;
     if (!keep(refs.distance.number)) refs.distance.number.value = String(round(state.distance, state.distance < 10 ? 2 : 1));

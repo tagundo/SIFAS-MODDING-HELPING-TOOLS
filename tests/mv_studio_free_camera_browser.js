@@ -567,15 +567,19 @@ async function synthetic(browser, url) {
   await page.locator('#mv-freecam-follow').uncheck();
   await seek(page, 0);
   assert.deepEqual((await measure(page)).position, followedHalf.position, 'off again: the view stays');
-  // The stage centre never moves the camera, and the follow box is disabled for it.
+  // The stage centre never moves the camera: it turns Follow member off and disables the box;
+  // picking the member again does not turn it back on.
   await page.locator('#mv-freecam-follow').check();
   await page.locator('#mv-freecam-target').selectOption('stage');
   assert.equal(await page.locator('#mv-freecam-follow').isDisabled(), true);
+  assert.equal(await page.locator('#mv-freecam-follow').isChecked(), false, 'the stage centre turns Follow member off');
+  assert.equal((await freeState(page)).follow, false);
   const stageHeld = await measure(page);
   await seek(page, .5);
   assert.deepEqual((await measure(page)).position, stageHeld.position, 'the stage centre does not follow anything');
   await page.locator('#mv-freecam-target').selectOption('member:1');
-  await page.locator('#mv-freecam-follow').uncheck();
+  assert.equal(await page.locator('#mv-freecam-follow').isChecked(), false, 'and picking a member keeps it off');
+  assert.equal((await freeState(page)).follow, false);
 
   // Nothing reached the project, its history or the game camera.
   let current = await state(page);
@@ -686,33 +690,56 @@ async function synthetic(browser, url) {
   await page.locator('#lang-select').selectOption('ko');
   await page.waitForFunction(() => document.querySelector('[data-mv-freecam-view="front"]')?.textContent === '정면');
 
-  // A re-import without member 2 while it is the target. The bar hides with the preview controls
-  // while the project loads; then the target is the stage centre again, a listed option.
-  await page.locator('#mv-freecam-target').selectOption('member:2');
+  // A re-import without member 2 while it is the target and Follow member is on. The bar hides
+  // with the preview controls while the project loads. Then the target is the stage centre, a
+  // listed option, and Follow member is off; the target list follows the members as they load.
+  const targetBox = page.locator('#mv-freecam-target'), followBox = page.locator('#mv-freecam-follow');
+  const listed = (texts) => page.waitForFunction((joined) => [...document.querySelectorAll('#mv-freecam-target option')].map((node) => node.textContent).join('|') === joined, texts.join('|'));
+  const oneMember = project.performers.slice(0, 1);
+  await targetBox.selectOption('member:2');
+  await followBox.check();
   let release;
   const reply = new Promise((resolve) => { release = resolve; });
-  const reimport = importGame(page, { ...project, name: 'Free camera MV (one member)', performers: project.performers.slice(0, 1) }, { held: reply });
+  const reimport = importGame(page, { ...project, name: 'Free camera MV (one member)', performers: oneMember }, { held: reply });
+  reimport.catch(() => {}); // Awaited below; a failed check before that closes the page under it.
   await page.waitForFunction(() => document.getElementById('mv-preview-controls').hidden && document.getElementById('mv-camera-mode').value === 'orbit');
   assert.equal(await bar.isVisible(), false, 'the bar hides while the preview controls are hidden');
   release();
   await reimport;
-  await page.waitForFunction(() => window.probeCtx.scene().freeView.targets().some((item) => item.id === 'member:1'));
+  await listed(['무대 중앙', '1 · Honoka Kousaka']);
   await bar.waitFor({ state: 'visible' });
-  const targetBox = page.locator('#mv-freecam-target');
-  await targetBox.focus();
   assert.equal(await targetBox.inputValue(), 'stage', 'the target falls back to the stage centre');
-  assert.deepEqual(await page.locator('#mv-freecam-target option').allTextContents(), ['무대 중앙', '1 · Honoka Kousaka']);
-  assert.equal((await freeState(page)).target, 'stage');
-  await page.locator('#mv-timeline-label').click();
+  assert.deepEqual(await freeState(page).then(({ target, follow }) => ({ target, follow })), { target: 'stage', follow: false });
+  assert.equal(await followBox.isChecked(), false, 'Follow member is off with the stage centre');
+  assert.equal(await followBox.isDisabled(), true);
+  // Member 2 back (the whole project again): it is the target again, still without Follow member.
+  await importGame(page, { ...project, name: 'Free camera MV (two members again)' });
+  await listed(['무대 중앙', '1 · Honoka Kousaka', '2 · Kotori Minami']);
+  await page.waitForFunction(() => document.getElementById('mv-freecam-target').value === 'member:2');
+  assert.deepEqual(await freeState(page).then(({ target, follow }) => ({ target, follow })), { target: 'member:2', follow: false }, 'member 2 is the target again');
+  assert.equal(await followBox.isChecked(), false);
+  assert.equal(await followBox.isDisabled(), false);
+  // The same on the game camera, with the bar hidden: a missing member is never followed.
+  await followBox.check();
+  await setMode(page, 'live');
+  await importGame(page, { ...project, name: 'Free camera MV (one member, game camera)', performers: oneMember });
+  await page.waitForFunction(() => window.probeCtx.scene().freeView.targets().some((item) => item.id === 'member:1'));
+  assert.deepEqual(await freeState(page).then(({ target, follow }) => ({ target, follow })), { target: 'stage', follow: false }, 'hidden bar: the stage centre, without Follow member');
+  await importGame(page, { ...project, name: 'Free camera MV (two members, game camera)' });
+  await page.waitForFunction(() => window.probeCtx.scene().freeView.state().target === 'member:2');
+  assert.equal((await freeState(page)).follow, false);
+  await setMode(page, 'orbit');
+  await bar.waitFor({ state: 'visible' });
+  assert.equal(await targetBox.inputValue(), 'member:2');
 
   // A member whose model does not load is not a target: the view buttons turn around the stage
-  // centre meanwhile.
+  // centre meanwhile. Once the stage centre is picked, it stays the target when the member loads.
   await targetBox.selectOption('member:1');
   const failing = (url) => url.searchParams.get('freecam') === 'missing';
   const missing = project.performers[0].glb + (project.performers[0].glb.includes('?') ? '&' : '?') + 'freecam=missing';
   await importGame(page, { ...project, name: 'Free camera MV (member 1 missing)', performers: [{ ...project.performers[0], glb: missing }, project.performers[1]] },
     { routes: (target) => target.route(failing, (route) => route.fulfill({ status: 404 })) });
-  await page.waitForFunction(() => window.probeCtx.scene().freeView.targets().some((item) => item.id === 'member:2'));
+  await listed(['무대 중앙', '2 · Kotori Minami']);
   await bar.waitFor({ state: 'visible' });
   assert.equal(await page.evaluate(() => window.probeCtx.scene().freeView.targetPoint('member:1')), null, 'member 1 is not loaded');
   await page.locator('[data-mv-freecam-view="front"]').click();
@@ -720,8 +747,12 @@ async function synthetic(browser, url) {
   assert.deepEqual(stageFront.target, [0, 1, 0], 'the view turns around the stage centre');
   assert(sideError(stageFront.unity, SIDES.front) < 1 && Math.abs(stageFront.ndc[0]) < 1e-4 && Math.abs(stageFront.ndc[1]) < 1e-4, 'the Front view of the stage centre');
   assert.equal(await targetBox.inputValue(), 'stage');
-  await targetBox.focus();
-  assert.deepEqual(await page.locator('#mv-freecam-target option').allTextContents(), ['무대 중앙', '2 · Kotori Minami']);
+  await targetBox.selectOption('stage');
+  await importGame(page, { ...project, name: 'Free camera MV (member 1 back)' });
+  await listed(['무대 중앙', '1 · Honoka Kousaka', '2 · Kotori Minami']);
+  await frames(page);
+  assert.equal(await targetBox.inputValue(), 'stage', 'a picked stage centre stays the target');
+  assert.equal((await freeState(page)).target, 'stage');
   assert.deepEqual(errors, []);
   await page.context().close();
   return { stageViews, memberViews, memberMoved: moved };
