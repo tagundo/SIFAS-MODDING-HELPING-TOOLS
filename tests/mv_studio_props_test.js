@@ -46,4 +46,43 @@ prop.bind({ root: actor.root, rig: { bones: [
 prop.evaluate(0);
 assert.equal(root.parent, null);
 assert.equal(root.visible, false);
-console.log("MV prop native coverage: exact hand, shader rotation limits, activation, and detach.");
+
+// LiveCoreMember.Initialize merges the ske_ prop skeleton into the member:
+// the renderer follows its own merged node (chp*/Attach_*/Decor), which the
+// member's dance clip animates, never the bare hand bone.
+const hand2 = "Reference/Move/RightHand";
+const decorPath = hand2 + "/chp0001/Attach_01/Attach_02/Attach_03/Decor";
+const merged = { root: new T.Group(), rig: { bones: [
+  { path: hand2, node: 5 }, { path: hand2 + "/chp0001", node: 6, propSkeleton: true },
+  { path: hand2 + "/chp0001/Attach_01", node: 7, propSkeleton: true },
+  { path: decorPath, node: 8, propSkeleton: true }
+] } };
+const handNode = new T.Bone(), attach = new T.Object3D(), decor = new T.Object3D();
+handNode.userData.elichika_node = 5; attach.userData.elichika_node = 7; decor.userData.elichika_node = 8;
+merged.root.add(handNode); handNode.add(attach); attach.add(decor);
+handNode.position.set(0, 1, 0);
+const fanRoot = new T.Group(), fanGeometry = new T.BufferGeometry();
+fanGeometry.setAttribute("position", new T.Float32BufferAttribute([0, 0, 0], 3));
+fanGeometry.setAttribute("_mv_fan_uv", new T.Float32BufferAttribute([0, 0], 2));
+fanRoot.add(new T.Mesh(fanGeometry));
+const fan = MVStudioProps.create(fanRoot, {
+  kind: "fan", bone: decorPath, track: "motion", activation: ["active"], limit: 135,
+  defaultVisible: true, defaultAngle: 0, curves: {}
+});
+fan.setTracks([{ id: "active", events: [{ start: 0, duration: 2 }] }]);
+fan.bind(merged);
+assert.equal(fanRoot.parent, decor);
+// The dance clip moves Attach_01 (here 7 cm out of the fist): the fan follows.
+attach.position.set(.0718, .0338, .0082);
+attach.quaternion.setFromEuler(new T.Euler(.5, -1.2, 1.1));
+merged.root.updateMatrixWorld(true);
+const world = new T.Vector3().setFromMatrixPosition(fanRoot.matrixWorld);
+assert.ok(world.distanceTo(new T.Vector3(.0718, 1.0338, .0082)) < 1e-6);
+assert.ok(new T.Quaternion().setFromRotationMatrix(fanRoot.matrixWorld).angleTo(attach.quaternion) < 1e-6);
+// An actor whose rig has no merged node shows no prop rather than one at the hand.
+fan.detach(merged);
+fan.bind({ root: merged.root, rig: { bones: [{ path: hand2, node: 5 }] } });
+fan.evaluate(0);
+assert.equal(fanRoot.parent, null);
+assert.equal(fanRoot.visible, false);
+console.log("MV prop native coverage: exact merged node, dance-driven attach, shader rotation limits, activation, and detach.");

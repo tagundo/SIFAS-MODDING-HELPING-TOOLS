@@ -14,8 +14,13 @@ from webtools.core import mv_studio_stage_particles, mv_studio_timeline
 
 
 _FIXTURE = os.environ.get("ELICHIKA_AION_PROP_FIXTURE")
+# A folder holding the 12028 originals (props.bundle = ske_so2028, choreo00.bundle
+# = ch0208_so2028, member_model_00 and member_companions_00-02 bundles,
+# timeline.bundle) and the GL client runtime dump (mv-runtime-dump.json.gz).
+_AION_DATA = os.environ.get("ELICHIKA_AION_PROP_DATA")
 _HAND = "Reference/Move/Hips_Position/Hips/Spine/Spine1/Spine2/RightShoulder/RightArm/RightForeArm/RightHand"
 _TARGET = "/EntryPoint/Live/Members/ske_so2028/Member1/Model/" + _HAND + "/chp0001"
+_DECOR = _HAND + "/chp0001/Attach_01/Attach_02/Attach_03/Decor"
 
 
 def _identity(path):
@@ -473,10 +478,10 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     texture = actor_doc["textures"][shadow["texture"]]["source"]
                     self.assertEqual(actor_doc["images"][texture]["name"], "dropshadow")
                     spec = prop["attachment"]
-                    self.assertEqual((spec["member"], spec["bone"], spec["limit"]), (1, _HAND, 135))
+                    self.assertEqual((spec["member"], spec["bone"], spec["limit"]), (1, _DECOR, 135))
                     self.assertEqual(spec["binding"], _TARGET)
                     nodes = [bone["node"] for bone in actor["rig"]["bones"]
-                             if bone["path"] == _HAND or bone["path"].endswith("/" + _HAND)]
+                             if bone["path"] == _DECOR or bone["path"].endswith("/" + _DECOR)]
                     self.assertEqual(len(nodes), 1)
                     raw, _ = mv_studio.media(prop["previewUrl"].rsplit("/", 1)[-1])
                     self._check_glb(raw.read_bytes())
@@ -525,7 +530,9 @@ class MVStudioPropBindingsTests(unittest.TestCase):
             images = [document["images"][document["textures"][index]["source"]]["name"]
                       for index in texture["mipmaps"]]
             self.assertEqual(images, [name, *[f"{name}_mip_{i}" for i in range(1, len(widths))]])
-        self.assertEqual(document["nodes"][0]["matrix"], [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+        # The renderer's own merged node places it: no extra local transform.
+        self.assertNotIn("matrix", document["nodes"][0])
+        self.assertEqual(document["nodes"][0]["extras"], {"mvGameObjectPath": _DECOR})
 
     def _check_angle(self, source):
         self.assertEqual(source["mode"], "cubic")
@@ -533,6 +540,164 @@ class MVStudioPropBindingsTests(unittest.TestCase):
         curve = source["mode"], source["keys"]
         self.assertEqual(model_animation._evaluate(curve, 1), 0)
         self.assertAlmostEqual(model_animation._evaluate(curve, 30), 135)
+
+
+def _quaternion_multiply(a, b):
+    x1, y1, z1, w1 = a
+    x2, y2, z2, w2 = b
+    return [w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2, w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2, w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2]
+
+
+def _rotate(q, v):
+    x, y, z, _ = _quaternion_multiply(_quaternion_multiply(q, [*v, 0.]), [-q[0], -q[1], -q[2], q[3]])
+    return [x, y, z]
+
+
+@unittest.skipUnless(_AION_DATA, "Set ELICHIKA_AION_PROP_DATA to the 12028 originals and GL runtime dump folder.")
+class AionFanAgainstTheGameTests(unittest.TestCase):
+    """The 12028 fan against the GL client (CI runtime dump of 1202803)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import gzip
+        cls.data = Path(_AION_DATA)
+        cls.dump = json.load(gzip.open(cls.data / "mv-runtime-dump.json.gz"))
+        cls.records = cls.dump["records"]
+
+    def test_member_merges_the_fan_skeleton_and_its_dance_clip_moves_the_fan(self):
+        nodes = mv_studio_props.skeleton(self.data / "props.bundle", time.monotonic() + 60)
+        self.assertEqual(set(nodes), {1})
+        chain = [_HAND + "/chp0001" + suffix for suffix in ("", "/Attach_01", "/Attach_01/Attach_02",
+                                                             "/Attach_01/Attach_02/Attach_03")] + [_DECOR]
+        by_path = {node["path"]: node for node in nodes[1]}
+        self.assertLessEqual(set(chain), set(by_path))
+        for path in chain:
+            self.assertEqual((by_path[path]["position"], by_path[path]["rotation"], by_path[path]["scale"]),
+                             ([0, 0, 0], [0, 0, 0, 1], [1, 1, 1]))
+        # The game merged chp0001 below Member1's own RightHand with its local identity.
+        passes = [record for record in self.records if record.get("part") == "members"]
+        self.assertEqual(len(passes), 5)
+        for record in passes:
+            bone, = [bone for bone in record["members"][0]["bones"] if bone["key"].endswith("/chp0001")]
+            self.assertEqual(bone["path"], "/EntryPoint/Live/Members/Member1/Model/" + _HAND + "/chp0001")
+            self.assertEqual((bone["localPosition"], bone["localRotation"]), ([0, 0, 0], [0, 0, 0, 1]))
+        with tempfile.TemporaryDirectory() as directory:
+            files = []
+            for name in ("member_model_00", "member_companions_00", "member_companions_01", "member_companions_02",
+                         "choreo00"):
+                target = Path(directory) / (name + ".unity")
+                target.write_bytes((self.data / (name + ".bundle")).read_bytes())
+                files.append(str(target))
+            prepared = model_viewer.prepare(files[:-1], rigged=True, motion_paths=files[-1:], face_context={
+                "enabled": False, "allow_download": False, "_mv_stage": False, "_mv_authored_motion": True,
+                "_mv_performer": True, "_mv_prop_skeleton": nodes[1]})
+            raw = model_viewer.get_model(prepared["id"])
+        rig = prepared["rig"]
+        bones = {bone["path"]: bone for bone in rig["bones"]}
+        self.assertEqual(bones[chain[0]]["parent"], bones[_HAND]["node"])
+        self.assertTrue(all(bones[path].get("propSkeleton") for path in chain))
+        dance, = [clip for clip in rig["clips"] if clip["sourceName"] == "ch0208_so2028"]
+        self.assertEqual(dance["unboundTracks"], 0)
+        length = int.from_bytes(raw[12:16], "little")
+        document, binary = json.loads(raw[20:20 + length]), raw[28 + length:]
+
+        def values(index):
+            accessor = document["accessors"][index]
+            view = document["bufferViews"][accessor["bufferView"]]
+            width = {"SCALAR": 1, "VEC3": 3, "VEC4": 4}[accessor["type"]]
+            offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+            flat = struct.unpack_from(f"<{accessor['count'] * width}f", binary, offset)
+            return [flat[i:i + width] for i in range(0, len(flat), width)]
+
+        animation = document["animations"][dance["index"]]
+        channels = {}
+        for channel in animation["channels"]:
+            sampler = animation["samplers"][channel["sampler"]]
+            channels[(channel["target"]["node"], channel["target"]["path"])] = (
+                [row[0] for row in values(sampler["input"])], values(sampler["output"]))
+        animated = {(path.rsplit("/", 1)[-1], kind) for path in chain for kind in ("translation", "rotation", "scale")
+                    if (bones[path]["node"], kind) in channels}
+        self.assertEqual(animated, {("Attach_01", "translation"), ("Attach_01", "rotation"), ("Attach_02", "translation"),
+                                    ("Attach_02", "rotation"), ("Attach_02", "scale")})
+
+        def sample(node, kind, seconds, rest):
+            if (node, kind) not in channels:
+                return list(rest)
+            times, rows = channels[(node, kind)]
+            index = max(0, min(len(times) - 2, next((i for i, t in enumerate(times) if t > seconds), len(times)) - 1))
+            fraction = min(1, max(0, (seconds - times[index]) / (times[index + 1] - times[index])))
+            first, second = list(rows[index]), list(rows[index + 1])
+            if kind == "rotation" and sum(a * b for a, b in zip(first, second)) < 0:
+                second = [-value for value in second]
+            mixed = [a + (b - a) * fraction for a, b in zip(first, second)]
+            if kind == "rotation":
+                norm = math.sqrt(sum(value * value for value in mixed))
+                mixed = [value / norm for value in mixed]
+            return mixed
+
+        def decor_offset(seconds):
+            """The Decor origin below the hand (metres), composed from the exported dance channels."""
+            position, rotation, scale = [0., 0., 0.], [0., 0., 0., 1.], [1., 1., 1.]
+            for path in chain:
+                node = bones[path]["node"]
+                rest = document["nodes"][node]
+                local = sample(node, "translation", seconds, rest.get("translation", (0, 0, 0)))
+                position = [a + b for a, b in zip(position, _rotate(rotation, [s * v for s, v in zip(scale, local)]))]
+                rotation = _quaternion_multiply(rotation, sample(node, "rotation", seconds, rest.get("rotation", (0, 0, 0, 1))))
+                scale = [a * b for a, b in zip(scale, sample(node, "scale", seconds, rest.get("scale", (1, 1, 1))))]
+            return math.sqrt(sum(value * value for value in position))
+
+        # The game frames record the RightHand origin (anchors) but not its
+        # rotation, so compare the rotation-free distance hand -> Decor where an
+        # anchor brackets the Decor record on both sides within 0.4 s.
+        anchors = sorted((record["clock"]["directorTime"], anchor["position"]) for record in self.records
+                         for anchor in record.get("anchors") or () if anchor["key"] == "anchor:member1:RightHand")
+        checked = []
+        for record in self.records:
+            for renderer in record.get("renderers", ()) if record.get("part") == "renderers" else ():
+                if renderer["path"] != "/EntryPoint/Live/Members/Member1/Model/" + _DECOR:
+                    continue
+                seconds = record["clock"]["directorTime"]
+                before = [row for row in anchors if seconds - .4 <= row[0] <= seconds]
+                after = [row for row in anchors if seconds <= row[0] <= seconds + .4]
+                if not before or not after:
+                    continue
+                game = [math.dist(renderer["transform"]["position"], row[1]) for row in (before[-1], after[0])]
+                offset = decor_offset(seconds)
+                self.assertGreater(offset, .03)
+                self.assertGreaterEqual(offset, min(game) - .003, seconds)
+                self.assertLessEqual(offset, max(game) + .003, seconds)
+                checked.append(seconds)
+        self.assertEqual(checked, [5.55, 27.885])
+
+    def test_fan_opening_matches_the_game_material(self):
+        native = (self.data / "timeline.bundle").read_bytes()
+        tracks = mv_studio_timeline.parse_timeline(native, "timeline.bundle")["tracks"]
+        binding, = mv_studio_props.bindings(tracks)
+        _, spec = mv_studio_props.preview(self.data / "props.bundle", native, "timeline.bundle", binding,
+                                          time.monotonic() + 60)
+        self.assertEqual(spec["bone"], _DECOR)
+        motion, = [track for track in tracks if track["id"] == spec["track"]]
+        recorded = []
+        for record in self.records:
+            for material in record.get("materials", ()) if record.get("part") == "materials" else ():
+                if material.get("name") != "mat_chp0001":
+                    continue
+                seconds = record["clock"]["directorTime"]
+                properties = material["properties"]
+                self.assertEqual((properties["_UV2Limit"]["v"], properties["_UV2Axis"]["v"][:3]), (spec["limit"], [0, 1, 0]))
+                # MVStudioProps.evaluate: the active clip's source time, clamped into the clip.
+                event, = [event for event in motion["events"]
+                          if event["start"] <= seconds < event["start"] + event["duration"]]
+                curve = spec["curves"][event["id"]]
+                timing = event["values"]
+                source = curve["first"] + (timing.get("clipIn") or 0) + (seconds - event["start"]) * timing.get("timeScale", 1)
+                angle = model_animation._evaluate((curve["mode"], curve["keys"]), min(curve["last"], max(curve["first"], source)))
+                recorded.append((seconds, properties["_UV2Angle"]["v"], round(max(angle, 0), 3)))
+        self.assertEqual([row[1] for row in recorded], [0, 135, 135, 135, 135])
+        for seconds, game, editor in recorded:
+            self.assertAlmostEqual(editor, game, places=2, msg=seconds)
 
 
 if __name__ == "__main__":

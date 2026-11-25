@@ -21,15 +21,19 @@
     return next && next[0] > start ? value + (next[1] - value) * Math.min(1, delta / (next[0] - start)) : value;
   }
 
-  function findHand(actor, path) {
+  // The prop renderer's own node in the member rig: LiveCoreMember.Initialize
+  // merges the ske_ prop skeleton into the member (MergeHierarchy keeps each
+  // moved node's authored local TRS), and the member's dance clips animate
+  // the merged chp*/Attach_* nodes. spec.bone is that node's path below Model.
+  function findNode(actor, path) {
     const bones = (actor.rig?.bones || []).filter((bone) => bone.path === path ||
       (typeof bone.path === "string" && bone.path.endsWith("/" + path)));
     if (bones.length !== 1) return null;
-    let hand = null;
+    let found = null;
     actor.root.traverse((node) => {
-      if (node.userData.elichika_node === bones[0].node) hand = node;
+      if (node.userData.elichika_node === bones[0].node) found = node;
     });
-    return hand;
+    return found;
   }
 
   function deformation(root, limit) {
@@ -87,10 +91,10 @@
       bind(actor) {
         if (owner === actor) return;
         detach();
-        const hand = actor && findHand(actor, spec.bone);
-        if (!hand) return;
+        const node = actor && findNode(actor, spec.bone);
+        if (!node) return;
         owner = actor;
-        hand.add(root);
+        node.add(root);
       },
       detach,
       setTracks(tracks) {

@@ -254,7 +254,21 @@ def _attach_fan_material(scene, materials, obj, tree, exported):
     return True
 
 
-def _mesh(scene, glb, renderer, hand):
+def _renderer_path(scene, renderer, prop, model):
+    """The renderer's GameObject path below Model, through the prop's own node."""
+    game_object = viewer._ref(renderer, scene.tree(renderer).get("m_GameObject"))
+    current = scene.transforms.get(viewer._key(game_object)) if game_object is not None else None
+    names, inside = [], False
+    while current is not None and len(names) < 256:
+        if viewer._key(current) == viewer._key(model):
+            return "/".join(reversed(names)) if inside else None
+        inside |= viewer._key(current) == viewer._key(prop)
+        names.append(_transform_name(scene, current))
+        current = viewer._ref(current, scene.tree(current).get("m_Father"))
+    return None
+
+
+def _mesh(scene, glb, renderer, node_path):
     import numpy as np
     from .model_mesh import PreviewMeshHandler
 
@@ -263,11 +277,8 @@ def _mesh(scene, glb, renderer, hand):
     mesh = scene.filters.get(viewer._key(game_object)) if game_object is not None else None
     if mesh is None or mesh.type.name != "Mesh":
         raise ValueError("The selected fan has no native geometry.")
-    transform = scene.transforms.get(viewer._key(game_object))
-    if transform is None:
-        raise ValueError("The selected fan has no native transform.")
-    # Keep vertex positions in mesh space so the authored UV2 rotation occurs
-    # before applying the fan's original local transform below the hand.
+    # Keep vertex positions in mesh space: the authored UV2 rotation happens
+    # there, and the renderer's own merged node below the hand places it.
     name, positions, normals, uv, parts = viewer._geometry(mesh, np.eye(4))
     handler = PreviewMeshHandler(mesh.read())
     handler.process()
@@ -316,31 +327,36 @@ def _mesh(scene, glb, renderer, hand):
     if not primitives or len(set(limits)) != 1:
         raise ValueError("The selected fan uses incompatible angle settings.")
     glb.doc["meshes"].append({"name": name, "primitives": primitives})
-    mirror = np.diag([-1., 1., 1., 1.])
-    local = mirror @ np.linalg.inv(scene.world(hand)) @ scene.world(transform) @ mirror
-    if not np.isfinite(local).all():
-        raise ValueError("The selected fan has an invalid hand attachment transform.")
-    glb.doc["nodes"].append({"name": name, "mesh": 0, "matrix": local.T.reshape(-1).tolist()})
+    # The runtime asset dump reports this renderer at its merged GameObject path.
+    glb.doc["nodes"].append({"name": name, "mesh": 0, "extras": {"mvGameObjectPath": node_path}})
     glb.doc["scenes"][0]["nodes"].append(0)
     return limits[0]
 
 
 def preview(path, native, source_name, binding, deadline):
-    """Read matching serialized objects and emit one hand-local prop GLB."""
+    """Read matching serialized objects and emit one prop GLB in its renderer's space.
+
+    The member merges the prop skeleton into its own hierarchy (skeleton()),
+    so the renderer follows its merged node (e.g. chp0001/Attach_01/Attach_02/
+    Attach_03/Decor below the hand), which the member's dance clips animate.
+    ``bone`` is that node's path below Model."""
     scene = viewer._Scene(viewer._environment([str(path)], deadline), deadline)
     prop = _find_transform(scene, binding["path"])
-    hand = _find_transform(scene, binding["path"][:-1])
-    if prop is None or hand is None:
+    model = _find_transform(scene, binding["path"][:3])
+    if prop is None or model is None:
         raise ValueError("The timeline's original fan attachment is missing from the prop bundle.")
     target = viewer._ref(prop, scene.tree(prop).get("m_GameObject"))
     renderer, default = _fan(scene, target)
+    node_path = _renderer_path(scene, renderer, prop, model)
+    if not node_path:
+        raise ValueError("The selected fan renderer is outside its prop skeleton.")
     curves = _angle_curves(native, source_name, binding["clips"], deadline)
     if not curves:
         raise ValueError("The selected fan has no playable native opening curve.")
     glb = viewer._Glb()
-    limit = _mesh(scene, glb, renderer, hand)
+    limit = _mesh(scene, glb, renderer, node_path)
     return glb.finish(), {
-        "kind": "fan", "member": binding["member"], "bone": binding["bone"],
+        "kind": "fan", "member": binding["member"], "bone": node_path,
         "binding": "/EntryPoint/Live/Members/" + "/".join(binding["path"]),
         "track": binding["track"], "activation": binding["activation"], "curves": curves,
         "defaultAngle": default, "defaultVisible": scene.active(target), "limit": limit,
