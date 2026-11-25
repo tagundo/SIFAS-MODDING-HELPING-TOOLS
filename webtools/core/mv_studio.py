@@ -44,6 +44,9 @@ _ACTOR_PREVIEWS = OrderedDict()
 _STAGE_PREVIEWS = OrderedDict()
 _ACTOR_PREVIEW_ENTRIES = 24
 _ACTOR_PREVIEW_METADATA_BYTES = 4 * 1024 * 1024
+# Conversion warnings that follow from the bundle's own content (never from a
+# decoder timeout or a busy worker), so a restart-safe receipt may repeat them.
+_STRUCTURAL_WARNINGS = {"linked_mesh_missing", "linked_texture_missing", "stage_hidden_transform"}
 
 
 def _root():
@@ -181,12 +184,14 @@ def _path(value):
 
 
 def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, stage_bindings=(),
-             native_stage_effect=False, attach="", warnings=None, reused=None):
+             native_stage_effect=False, attach="", warnings=None, reused=None, store=None):
     """Return (media URL, rig) of a model preview; ``warnings`` receives its conversion warnings.
 
     ``attach`` is the performer's m_suit_attach key. A stage preview is reused
-    from the cache only when it converted without warnings. ``reused`` (a
-    list) receives True when the result came from a cache.
+    from the in-memory cache only when it converted without warnings, and from
+    ``store`` (mv_studio_import_cache) only when its warnings are structural;
+    the receipt then repeats them. ``reused`` (a list) receives True when the
+    result came from a cache.
     """
     models = [path, *companions]
     key = None
@@ -208,6 +213,20 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
                     return _MEDIA_URL + name, rig
             except OSError:
                 pass
+    receipt = None
+    if key is not None and store is not None and not performer:
+        try:
+            receipt = store.key("preview", str(key[0]), [list(item) for item in key[1]], [list(item) for item in key[2]],
+                                list(key[3]), key[4])
+        except (TypeError, ValueError):
+            receipt = None
+        saved = store.get(receipt) if receipt is not None else None
+        if saved is not None:
+            if warnings is not None:
+                warnings.extend(saved["warnings"])
+            if reused is not None:
+                reused.append(True)
+            return _MEDIA_URL + saved["name"], saved["rig"]
     prepared = model_viewer.prepare(list(map(str, models)), rigged=performer,
         face_context={"enabled": performer and not companions, "allow_download": False,
                       "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions),
@@ -249,6 +268,10 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         elif not performer and not prepared.get("warnings"):
             model_viewer._conversion_put(cache, key, json.dumps([url.removeprefix(_MEDIA_URL), rig]).encode(),
                                          max_bytes=16 * 1024, max_entries=32)
+    if receipt is not None:
+        converted = list(prepared.get("warnings") or ())
+        if all(isinstance(item, dict) and item.get("code") in _STRUCTURAL_WARNINGS for item in converted):
+            store.put(receipt, {"name": url.removeprefix(_MEDIA_URL), "rig": rig, "warnings": converted})
     return url, rig
 
 
@@ -303,9 +326,17 @@ def import_asset(path, kind):
     return _asset(_path(path), kind)
 
 
-def _timeline(path):
-    from . import mv_studio_timeline
+def _timeline(path, store=None, reused=None):
+    """(raw bytes, parsed timeline); ``store`` keeps restart-safe receipts of the parse."""
+    from . import mv_studio_import_cache, mv_studio_timeline
     raw = path.read_bytes()
+    receipt = store.key("timeline", mv_studio_import_cache.digest(raw), path.name) if store is not None else None
+    parsed = store.get(receipt) if receipt is not None else None
+    hit = parsed is not None and bool(parsed.get("tracks"))
+    if reused is not None:
+        reused.append(hit)
+    if hit:
+        return raw, parsed
     parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True,
                                                preview_member_shafts=True, preview_stage_title=True,
                                                preview_stage_particles=True, preview_stage_ribbons=True,
@@ -320,6 +351,8 @@ def _timeline(path):
                                                preview_control_prefabs=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
+    if receipt is not None:
+        store.put(receipt, parsed)
     return raw, parsed
 
 
@@ -478,7 +511,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
     {"suit", "viewStatus"}}) dresses members in explicit suits instead, e.g. the suits a
     recorded game performance wore. `on_progress` receives the events that
     mv_studio_progress describes and may raise its ImportCancelled."""
-    from . import mv_studio_actor_cache, mv_studio_game, mv_studio_progress, mv_studio_quality, mv_studio_suits
+    from . import (mv_studio_actor_cache, mv_studio_game, mv_studio_import_cache, mv_studio_progress, mv_studio_quality,
+                   mv_studio_suits)
 
     if type(download) is not bool:
         raise ValueError("Choose whether to download missing game assets.")
@@ -510,6 +544,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                                                              quality_set=selected.get("qualitySet"))
         deadline = time.monotonic() + 210
         warnings = project["warnings"]
+        receipts = mv_studio_import_cache.open_cache(media)
         with tempfile.TemporaryDirectory(prefix="import-", dir=_root()) as name:
             directory = Path(name)
             local, rows = {}, {}
@@ -552,7 +587,9 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             timeline_row, timeline = load(selected.get("timeline"), "timeline", "Live timeline")
             if timeline is None:
                 raise ValueError("The original MV timeline pack is missing. Download its missing assets or choose a local mod file.")
-            native, parsed = _timeline(timeline)
+            timeline_reused = []
+            native, parsed = (_timeline(timeline) if receipts is None else
+                              _timeline(timeline, store=receipts, reused=timeline_reused))
             project.update({field: parsed[field] for field in
                             ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
                              "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
@@ -564,9 +601,10 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:_MEMBER_MAX]
             # Dance clips live in the timeline's choreography packs (exact CAB/PathID).
-            clip_names = mv_studio_external_clips.apply(project, native, selected.get("choreography", []), read_asset, deadline)
+            clip_names = mv_studio_external_clips.apply(project, native, selected.get("choreography", []), read_asset, deadline,
+                                                        cache=receipts, reused=timeline_reused)
             performers = _cast_in_timeline_order(original_cast, project["tracks"], clip_names)
-            progress.state("timeline", "done")
+            progress.state("timeline", "cached" if timeline_reused and all(timeline_reused) else "done")
             stage = selected.get("stage") or {}
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
             effect_row, effect_file = load(selected.get("stageEffect") or stage.get("effect"), "effect", "Stage effects")
@@ -582,7 +620,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     converted, reused = [], []
                     row["previewUrl"], _ = _preview(preview_path, reuse=True, stage_bindings=bindings,
                                                     native_stage_effect=row is effect_row, warnings=converted,
-                                                    reused=reused)
+                                                    reused=reused, store=receipts)
                     for item in converted:
                         if item.get("code") == "member_shadow_prefabs_unavailable":
                             warnings.append(f"{row['label']}: {item.get('message')}")
@@ -613,7 +651,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 if prop_file is not None:
                     try:
                         reused = []
-                        prop_row["previewUrl"], _ = _preview(prop_file, reuse=True, reused=reused)
+                        prop_row["previewUrl"], _ = _preview(prop_file, reuse=True, reused=reused, store=receipts)
                         prop_state = "cached" if reused else "done"
                     except (ValueError, OSError) as error:
                         warnings.append(f"{prop_row['label']}: {error}")
@@ -744,6 +782,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 describe((audio.get("chorus") or {}).get(role), "audio", f"Chorus {role.upper()}")
             if audio.get("cue") and audio.get("acb"):
                 progress.state("audio", "start")
+                audio_saved = None
                 try:
                     from . import cri_audio_decode
                     _, acb = load(audio["acb"], "audio", "Soundtrack cue bank")
@@ -760,14 +799,24 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             # prevent decoding the same cue's waveform.
                             pass
                     if acb and (awb or not audio.get("awb")):
-                        decoded = directory / "soundtrack.wav"
-                        cri_audio_decode.decode_cue(cue_bank, awb.read_bytes() if awb else None, audio["cue"], decoded)
-                        # The base song's own cue: registration keeps it unless the offset moves it.
-                        project["soundtrack"] = {**_song_audio(decoded), "origin": "game"}
+                        wave_bank = awb.read_bytes() if awb else None
+                        receipt = receipts.key("audio", mv_studio_import_cache.digest(cue_bank),
+                                               wave_bank and mv_studio_import_cache.digest(wave_bank),
+                                               audio["cue"]) if receipts is not None else None
+                        audio_saved = receipts.get(receipt) if receipt is not None else None
+                        if audio_saved is not None:
+                            project["soundtrack"] = audio_saved
+                        else:
+                            decoded = directory / "soundtrack.wav"
+                            cri_audio_decode.decode_cue(cue_bank, wave_bank, audio["cue"], decoded)
+                            # The base song's own cue: registration keeps it unless the offset moves it.
+                            project["soundtrack"] = {**_song_audio(decoded), "origin": "game"}
+                            if receipt is not None:
+                                receipts.put(receipt, project["soundtrack"])
                         project["duration"] = max(project["duration"], project["soundtrack"]["duration"])
                 except (ValueError, OSError) as error:
                     warnings.append(f"Soundtrack: {error}")
-                progress.state("audio", "done" if project["soundtrack"] is not None else "failed")
+                progress.state("audio", "failed" if project["soundtrack"] is None else "cached" if audio_saved is not None else "done")
             if audio.get("cue") and project["soundtrack"] is None:
                 warnings.append("The original soundtrack is unavailable for preview.")
             warnings.extend(f"{item['role']}: {item['reason']}" if isinstance(item, dict) else str(item)

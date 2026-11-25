@@ -97,10 +97,13 @@ class ActorCache:
         self.path = directory / "receipts.sqlite3"
         self.context = context
         self.media = media
+        from .mv_studio_import_cache import _source_recipe
         recipe = {
             "version": _PREVIEW_VERSION,
             "runtime": sys.implementation.cache_tag,
-            "dependencies": [getattr(sys.modules.get(name), "__version__", None) for name in ("UnityPy", "numpy", "PIL")],
+            # The bytes of this tool's code and the installed libraries (mv_studio_import_cache),
+            # the same in every process whatever was imported before the cache opened.
+            "source": _source_recipe(),
             "decoders": [_decoder(name) for name in ("ASTCENC_BIN", "ELICHIKA_TEXTURE65_BIN")],
         }
         self.recipe = sha256(_encode(recipe)).hexdigest()

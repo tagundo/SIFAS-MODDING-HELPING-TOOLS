@@ -174,28 +174,41 @@ def _label(descriptor):
     return str(descriptor.get("asset", descriptor.get("pack_name", "")) or "dependency")
 
 
-def apply(project, timeline_raw, descriptors, reads, deadline):
+def apply(project, timeline_raw, descriptors, reads, deadline, cache=None, reused=None):
     """Name external dance clips of a game import and replace the generic warning.
 
     Returns ``{event id: AnimationClip name}`` for the resolved clips. The
     project gains ``companionClips`` (event id -> identity) when any resolve.
     A pack that is genuinely missing keeps a warning naming the track, the
-    clip and its exact CAB:PathID.
+    clip and its exact CAB:PathID. ``cache`` (mv_studio_import_cache) keeps a
+    receipt of the resolution keyed by the timeline and every pack's bytes;
+    ``reused`` (a list) receives whether it was used.
     """
     if not references(project.get("tracks") or ()):
         return {}
     descriptors = [item for item in descriptors or () if isinstance(item, dict)]
     reads.prefetch(descriptors)
     dependencies = [(_label(item), reads.peek(item)) for item in descriptors]
-    try:
-        result = resolve(project["tracks"], timeline_raw, dependencies, deadline)
-    except Exception:
-        # Clip names are advisory. An import that does not otherwise parse
-        # these packs (an actor-cache hit) must not fail on them: keep the
-        # generic warning and cast as before.
-        return {}
+    receipt = result = None
+    if cache is not None:
+        from .mv_studio_import_cache import digest
+        receipt = cache.key("clips", digest(timeline_raw),
+                            [[label, None if raw is None else digest(raw)] for label, raw in dependencies])
+        result = cache.get(receipt)
+    if reused is not None:
+        reused.append(result is not None)
     if result is None:
-        return {}
+        try:
+            result = resolve(project["tracks"], timeline_raw, dependencies, deadline)
+        except Exception:
+            # Clip names are advisory. An import that does not otherwise parse
+            # these packs (an actor-cache hit) must not fail on them: keep the
+            # generic warning and cast as before.
+            return {}
+        if result is None:
+            return {}
+        if receipt is not None:
+            cache.put(receipt, result)
     warnings = project["warnings"]
     if EXTERNAL_CLIP_WARNING in warnings:
         index = warnings.index(EXTERNAL_CLIP_WARNING)
