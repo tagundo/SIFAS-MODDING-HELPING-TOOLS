@@ -19,10 +19,14 @@ assert(!/[A-Za-z]{4,}/.test(ko.replace(/_RimlightTex|Body/g, '')), 'no English w
 const ja = api.reasonText(refusal, 'ja');
 assert(ja.endsWith('UVアイランド22個中3番目（93×129 px）は_RimlightTexで空きテクセルを見つけられませんでした。'), ja);
 
-const map = "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh. _RimlightTex: the part uses 512×512 for a 1024×1024 main texture; the head uses 128×128 for 1024×1024.";
-assert(api.reasonText(map, 'ko').endsWith('_RimlightTex: 이식할 부분은 1024×1024 메인 텍스처에 512×512를 쓰고, 머리는 1024×1024에 128×128를 씁니다.'),
-  api.reasonText(map, 'ko'));
 const cull = "ch0203_co0015_head: _CullMode is 0, while ch0212_co0001_body uses 2. One game material holds one culling setting, so the donor's and the receiving mesh's materials must match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.";
+const map = "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh. _RimlightTex: the part uses 512×512 for a 1024×1024 main texture; the head uses 128×128 for 1024×1024.";
+assert(api.reasonText(map, 'ko').endsWith('_RimlightTex — 이식할 부분: 512×512 (메인 텍스처 1024×1024 기준), 머리 텍스처: 128×128 (메인 텍스처 1024×1024 기준).'),
+  api.reasonText(map, 'ko'));
+assert(api.reasonText(cull, 'ko').startsWith('ch0203_co0015_head의 _CullMode: 0, ch0212_co0001_body의 _CullMode: 2.'), api.reasonText(cull, 'ko'));
+const streamed = 'A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.';
+assert.strictEqual(api.reasonText(streamed, 'ko'), '머리 텍스처를 쓰는 메시의 정점 데이터가 번들 밖에 저장되어 있습니다. 원래 의상과 얼굴을 다시 여세요.');
+assert(!/[A-Za-z]{4,}/.test(api.reasonText(streamed, 'ja')), api.reasonText(streamed, 'ja'));
 assert(api.reasonText(cull, 'ja').startsWith('ch0203_co0015_head：_CullModeは0ですが、ch0212_co0001_bodyは2です。'), api.reasonText(cull, 'ja'));
 assert(!/receiving mesh|wearer/.test(api.reasonText(cull, 'ko')), api.reasonText(cull, 'ko'));
 

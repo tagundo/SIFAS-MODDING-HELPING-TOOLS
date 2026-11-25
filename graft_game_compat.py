@@ -184,6 +184,14 @@ HEAD_MAP_DETAIL = (
 # sizes are "width×height", so translated tables only reorder the words.
 HEAD_MAP_DETAIL_DENSITY = "{slot}: the part uses {part} for a {part_main} main texture; the head uses {head} for {head_main}."
 HEAD_MAP_DETAIL_SIZE = "{slot}: the part uses {part}; the head uses {head}."
+# Head-path errors about the costume's own data (fixed sentences, translated by the UIs).
+HEAD_MATERIAL_OUTSIDE = "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh."
+HEAD_MESH_STREAMED = "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face."
+HEAD_MESH_COMPRESSED = "A head-texture mesh is compressed; its texture area cannot be protected."
+HEAD_MESH_NO_UV = "A head-texture mesh has triangles without UV0 coordinates."
+HEAD_MESH_BAD_UV = "A head-texture mesh has invalid UV0 coordinates."
+HEAD_MESH_BAD_VERTEX = "A head-texture mesh references an invalid vertex."
+HEAD_SURFACE_OUTSIDE = "A head-texture surface references a mesh outside its bundle; its texture area cannot be protected."
 FACE_TARGET_REFUSED = (
     "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original "
     "head material and fixed blush positions. Choose Body or Hair as the receiving mesh.")
@@ -329,7 +337,7 @@ def head_material_binding(objects, renderer):
         pointer = tree.get("headMaterial", {})
         material = objects.get(pointer.get("m_PathID")) if pointer.get("m_FileID", 0) == 0 else None
         if material is None or material.type.name != "Material" or material.assets_file is not renderer.assets_file:
-            raise ValueError("The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.")
+            raise ValueError(HEAD_MATERIAL_OUTSIDE)
         below = set()
         stack = [head_all]
         while stack:
@@ -350,16 +358,16 @@ def mesh_footprint(mesh_tree):
     import numpy as np
     from costume_part_transplant import stream_layout, read_attr, submesh_triangles, ATTR_UV0
     if mesh_tree.get("m_StreamData", {}).get("size", 0):
-        raise ValueError("A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.")
+        raise ValueError(HEAD_MESH_STREAMED)
     compressed = mesh_tree.get("m_CompressedMesh", {})
     if any(isinstance(value, dict) and value.get("m_NumItems", 0) for value in compressed.values()):
-        raise ValueError("A head-texture mesh is compressed; its texture area cannot be protected.")
+        raise ValueError(HEAD_MESH_COMPRESSED)
     count, channels, strides, starts, _ = stream_layout(mesh_tree)
     channel = channels[ATTR_UV0] if ATTR_UV0 < len(channels) else {}
     faces = np.concatenate(submesh_triangles(mesh_tree) or [np.empty((0, 3), np.int64)])
     if not channel.get("dimension", 0):
         if len(faces):
-            raise ValueError("A head-texture mesh has triangles without UV0 coordinates.")
+            raise ValueError(HEAD_MESH_NO_UV)
         return np.zeros((count, 2)), faces
     raw = np.frombuffer(bytes(mesh_tree["m_VertexData"]["m_DataSize"]), np.uint8)
     if channel.get("format") == 1:
@@ -369,9 +377,9 @@ def mesh_footprint(mesh_tree):
     else:
         uv = read_attr(raw, ATTR_UV0, channels, strides, starts, count)
     if uv is None or uv.shape[1] < 2 or not np.isfinite(uv[:, :2]).all():
-        raise ValueError("A head-texture mesh has invalid UV0 coordinates.")
+        raise ValueError(HEAD_MESH_BAD_UV)
     if len(faces) and (faces.min() < 0 or faces.max() >= count):
-        raise ValueError("A head-texture mesh references an invalid vertex.")
+        raise ValueError(HEAD_MESH_BAD_VERTEX)
     return uv[:, :2], faces
 
 
@@ -392,7 +400,7 @@ def renderer_footprints(objects, renderers):
         mesh = objects.get(pointer.get("m_PathID")) if pointer.get("m_FileID", 0) == 0 else None
         if mesh is None or mesh.type.name != "Mesh":
             if pointer.get("m_PathID"):
-                raise ValueError("A head-texture surface references a mesh outside its bundle; its texture area cannot be protected.")
+                raise ValueError(HEAD_SURFACE_OUTSIDE)
             continue
         result.append(mesh_footprint(mesh.read_typetree()))
     return result

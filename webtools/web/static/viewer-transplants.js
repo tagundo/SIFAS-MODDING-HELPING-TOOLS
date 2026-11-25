@@ -124,7 +124,14 @@
     "One game material holds one culling setting, so the donor's and the receiving mesh's materials must match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.",
     "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.",
     "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.",
-    "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh."
+    "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh.",
+    "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.",
+    "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.",
+    "A head-texture mesh is compressed; its texture area cannot be protected.",
+    "A head-texture mesh has triangles without UV0 coordinates.",
+    "A head-texture mesh has invalid UV0 coordinates.",
+    "A head-texture mesh references an invalid vertex.",
+    "A head-texture surface references a mesh outside its bundle; its texture area cannot be protected."
   ];
   Object.assign(TEXT, {
     "Receiving mesh": ["이식받을 메시", "移植先のメッシュ"],
@@ -151,6 +158,20 @@
     "選択したパーツの元のUV位置は、頭テクスチャ上ですでに顔・目・口・チークまたは別の頭メッシュが使っています。「空きUV領域へ移動」を選ぶか、移植先のメッシュにBodyを選んでください。"];
   TEXT[REASONS[7]] = ["선택한 부분의 텍스처를 원래 픽셀 그대로 머리 텍스처에 넣을 수 없습니다. 이유는 로그에 있습니다. 이식받을 메시로 Body를 고르세요.",
     "選択したパーツのテクスチャを元のピクセルのまま頭テクスチャに書き込めません。理由はログに記録されています。移植先のメッシュにBodyを選んでください。"];
+  TEXT[REASONS[8]] = ["머리 메시에 이식하려면 머리의 BodyPartManager.headMaterial이 의상 파일 안에 저장되어 있어야 합니다.",
+    "頭のメッシュに移植するには、頭のBodyPartManager.headMaterialが衣装ファイル内に保存されている必要があります。"];
+  TEXT[REASONS[9]] = ["머리 텍스처를 쓰는 메시의 정점 데이터가 번들 밖에 저장되어 있습니다. 원래 의상과 얼굴을 다시 여세요.",
+    "頭テクスチャを使うメッシュの頂点データがバンドルの外に保存されています。元の衣装と顔を開き直してください。"];
+  TEXT[REASONS[10]] = ["머리 텍스처를 쓰는 메시가 압축되어 있어 그 텍스처 영역을 보호할 수 없습니다.",
+    "頭テクスチャを使うメッシュが圧縮されているため、そのテクスチャ領域を保護できません。"];
+  TEXT[REASONS[11]] = ["머리 텍스처를 쓰는 메시에 UV0 좌표가 없는 삼각형이 있습니다.",
+    "頭テクスチャを使うメッシュに、UV0座標のない三角形があります。"];
+  TEXT[REASONS[12]] = ["머리 텍스처를 쓰는 메시의 UV0 좌표가 올바르지 않습니다.",
+    "頭テクスチャを使うメッシュのUV0座標が不正です。"];
+  TEXT[REASONS[13]] = ["머리 텍스처를 쓰는 메시가 잘못된 정점을 참조합니다.",
+    "頭テクスチャを使うメッシュが無効な頂点を参照しています。"];
+  TEXT[REASONS[14]] = ["머리 텍스처를 쓰는 표면이 번들 밖의 메시를 참조하므로 그 텍스처 영역을 보호할 수 없습니다.",
+    "頭テクスチャを使う面がバンドル外のメッシュを参照しているため、そのテクスチャ領域を保護できません。"];
   // Detail sentences with values ({slot}, sizes, counts) kept in translation.
   var REASON_TEMPLATES = [
     "{slot}: the part uses {part} for a {part_main} main texture; the head uses {head} for {head_main}.",
@@ -160,9 +181,9 @@
     "The search stopped after {count} positions for island {island} of {islands}.",
     "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}."
   ];
-  TEXT[REASON_TEMPLATES[0]] = ["{slot}: 이식할 부분은 {part_main} 메인 텍스처에 {part}를 쓰고, 머리는 {head_main}에 {head}를 씁니다.",
+  TEXT[REASON_TEMPLATES[0]] = ["{slot} — 이식할 부분: {part} (메인 텍스처 {part_main} 기준), 머리 텍스처: {head} (메인 텍스처 {head_main} 기준).",
     "{slot}：パーツは{part_main}のメインテクスチャに対して{part}、頭は{head_main}に対して{head}を使います。"];
-  TEXT[REASON_TEMPLATES[1]] = ["{slot}: 이식할 부분은 {part}, 머리는 {head}를 씁니다.",
+  TEXT[REASON_TEMPLATES[1]] = ["{slot} — 이식할 부분: {part}, 머리 텍스처: {head}.",
     "{slot}：パーツは{part}、頭は{head}を使います。"];
   TEXT[REASON_TEMPLATES[2]] = ["{slot}에서 이 부분의 원래 UV 위치는 이미 사용 중입니다.",
     "{slot}では、このパーツの元のUV位置はすでに使われています。"];
@@ -170,7 +191,7 @@
     "UVアイランド{islands}個中{island}番目（{width}×{height} px）は{slot}で空きテクセルを見つけられませんでした。"];
   TEXT[REASON_TEMPLATES[4]] = ["UV 섬 {islands}개 중 {island}번째의 위치를 {count}곳까지 찾아보고 멈췄습니다.",
     "UVアイランド{islands}個中{island}番目の位置を{count}か所まで探して停止しました。"];
-  TEXT[REASON_TEMPLATES[5]] = ["{donor}: _CullMode가 {donor_value}이지만 {receiver}는 {receiver_value}입니다.",
+  TEXT[REASON_TEMPLATES[5]] = ["{donor}의 _CullMode: {donor_value}, {receiver}의 _CullMode: {receiver_value}.",
     "{donor}：_CullModeは{donor_value}ですが、{receiver}は{receiver_value}です。"];
   TEXT["Selected bones"] = ["선택 본", "選択ボーン"];
   TEXT["Selected faces"] = ["이식할 면", "移植する面"];

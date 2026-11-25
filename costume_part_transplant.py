@@ -153,9 +153,9 @@ _TRANSLATIONS = {
         "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh.":
             "선택한 부분의 텍스처를 원래 픽셀 그대로 머리 텍스처에 넣을 수 없습니다. 이유는 로그에 있습니다. 이식받을 메시로 Body를 고르세요.",
         "{slot}: the part uses {part} for a {part_main} main texture; the head uses {head} for {head_main}.":
-            "{slot}: 이식할 부분은 {part_main} 메인 텍스처에 {part}를 쓰고, 머리는 {head_main}에 {head}를 씁니다.",
+            "{slot} — 이식할 부분: {part} (메인 텍스처 {part_main} 기준), 머리 텍스처: {head} (메인 텍스처 {head_main} 기준).",
         "{slot}: the part uses {part}; the head uses {head}.":
-            "{slot}: 이식할 부분은 {part}, 머리는 {head}를 씁니다.",
+            "{slot} — 이식할 부분: {part}, 머리 텍스처: {head}.",
         "{slot} is already used at the part's original UV position.":
             "{slot}에서 이 부분의 원래 UV 위치는 이미 사용 중입니다.",
         "Island {island} of {islands} ({width}×{height} px) found no free texels in {slot}.":
@@ -163,7 +163,21 @@ _TRANSLATIONS = {
         "The search stopped after {count} positions for island {island} of {islands}.":
             "UV 섬 {islands}개 중 {island}번째의 위치를 {count}곳까지 찾아보고 멈췄습니다.",
         "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}.":
-            "{donor}: _CullMode가 {donor_value}이지만 {receiver}는 {receiver_value}입니다.",
+            "{donor}의 _CullMode: {donor_value}, {receiver}의 _CullMode: {receiver_value}.",
+        "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.":
+            "머리 메시에 이식하려면 머리의 BodyPartManager.headMaterial이 의상 파일 안에 저장되어 있어야 합니다.",
+        "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.":
+            "머리 텍스처를 쓰는 메시의 정점 데이터가 번들 밖에 저장되어 있습니다. 원래 의상과 얼굴을 다시 여세요.",
+        "A head-texture mesh is compressed; its texture area cannot be protected.":
+            "머리 텍스처를 쓰는 메시가 압축되어 있어 그 텍스처 영역을 보호할 수 없습니다.",
+        "A head-texture mesh has triangles without UV0 coordinates.":
+            "머리 텍스처를 쓰는 메시에 UV0 좌표가 없는 삼각형이 있습니다.",
+        "A head-texture mesh has invalid UV0 coordinates.":
+            "머리 텍스처를 쓰는 메시의 UV0 좌표가 올바르지 않습니다.",
+        "A head-texture mesh references an invalid vertex.":
+            "머리 텍스처를 쓰는 메시가 잘못된 정점을 참조합니다.",
+        "A head-texture surface references a mesh outside its bundle; its texture area cannot be protected.":
+            "머리 텍스처를 쓰는 표면이 번들 밖의 메시를 참조하므로 그 텍스처 영역을 보호할 수 없습니다.",
         "Receiving mesh":
             "이식받을 메시",
         "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":
@@ -243,6 +257,20 @@ _TRANSLATIONS = {
             "UVアイランド{islands}個中{island}番目の位置を{count}か所まで探して停止しました。",
         "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}.":
             "{donor}：_CullModeは{donor_value}ですが、{receiver}は{receiver_value}です。",
+        "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.":
+            "頭のメッシュに移植するには、頭のBodyPartManager.headMaterialが衣装ファイル内に保存されている必要があります。",
+        "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.":
+            "頭テクスチャを使うメッシュの頂点データがバンドルの外に保存されています。元の衣装と顔を開き直してください。",
+        "A head-texture mesh is compressed; its texture area cannot be protected.":
+            "頭テクスチャを使うメッシュが圧縮されているため、そのテクスチャ領域を保護できません。",
+        "A head-texture mesh has triangles without UV0 coordinates.":
+            "頭テクスチャを使うメッシュに、UV0座標のない三角形があります。",
+        "A head-texture mesh has invalid UV0 coordinates.":
+            "頭テクスチャを使うメッシュのUV0座標が不正です。",
+        "A head-texture mesh references an invalid vertex.":
+            "頭テクスチャを使うメッシュが無効な頂点を参照しています。",
+        "A head-texture surface references a mesh outside its bundle; its texture area cannot be protected.":
+            "頭テクスチャを使う面がバンドル外のメッシュを参照しているため、そのテクスチャ領域を保護できません。",
         "Receiving mesh":
             "移植先のメッシュ",
         "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":

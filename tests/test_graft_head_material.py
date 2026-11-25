@@ -379,7 +379,10 @@ class RefusalTranslationTests(unittest.TestCase):
         from webtools import i18n
         script = (ROOT / "webtools/web/static/viewer-transplants.js").read_text(encoding="utf-8")
         for sentence in (HEAD_ATLAS_REFUSED, HEAD_FACE_REQUIRED, HEAD_NO_SPACE, FACE_TARGET_REFUSED, CULL_MODE_HINT,
-                         compat.HEAD_MAP_DETAIL, compat.HEAD_POSITION_IN_USE, compat.HEAD_TEXTURES_INCOMPATIBLE):
+                         compat.HEAD_MAP_DETAIL, compat.HEAD_POSITION_IN_USE, compat.HEAD_TEXTURES_INCOMPATIBLE,
+                         compat.HEAD_MATERIAL_OUTSIDE, compat.HEAD_MESH_STREAMED, compat.HEAD_MESH_COMPRESSED,
+                         compat.HEAD_MESH_NO_UV, compat.HEAD_MESH_BAD_UV, compat.HEAD_MESH_BAD_VERTEX,
+                         compat.HEAD_SURFACE_OUTSIDE):
             with self.subTest(sentence=sentence[:40]):
                 self.assertIn('"' + sentence + '"', script)
                 for language in ("ko", "ja"):
@@ -402,6 +405,9 @@ class RefusalTranslationTests(unittest.TestCase):
                 for language in ("ko", "ja"):
                     translated = cpt._TRANSLATIONS[language][template]
                     self.assertEqual(set(re.findall(r"\{(\w+)\}", translated)), names)
+                # A Korean particle after a value depends on how the value is
+                # read (128을, 512를), so no value is followed by one.
+                self.assertNotRegex(cpt._TRANSLATIONS["ko"][template], r"\}(을|를|이|가|은|는|와|과|으로|로)")
         message = HEAD_NO_SPACE + " " + compat.HEAD_DETAIL_ISLAND.format(
             island=3, islands=22, width=93, height=129, slot="_RimlightTex")
         with patch.object(cpt, "_LANG", "ko"):
