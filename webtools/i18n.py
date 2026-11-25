@@ -2778,6 +2778,27 @@ _MV_STUDIO_TRANSLATIONS = {
     "Stage": ("무대", "ステージ"),
     "Crowd": ("관객", "観客"),
     "Split screen": ("화면 분할", "画面分割"),
+    # Game import progress (mv-studio-import-progress.js; the server's plan sends the same step labels).
+    "Reading game data…": ("게임 데이터를 읽는 중…", "ゲームデータを読み込み中…"),
+    "Reading the live timeline…": ("라이브 타임라인을 분석하는 중…", "ライブタイムラインを解析中…"),
+    "Converting the stage…": ("무대를 변환하는 중…", "ステージを変換中…"),
+    "Converting stage effects…": ("무대 이펙트를 변환하는 중…", "ステージエフェクトを変換中…"),
+    "Converting stage props…": ("무대 소품을 변환하는 중…", "ステージの小道具を変換中…"),
+    "Converting member {index}/{count}: {name}": ("멤버 변환 중 {index}/{count}: {name}", "メンバーを変換中 {index}/{count}: {name}"),
+    "Decoding the soundtrack…": ("음원을 디코딩하는 중…", "楽曲をデコード中…"),
+    "Finishing the MV project…": ("MV 프로젝트를 마무리하는 중…", "MVプロジェクトを仕上げ中…"),
+    "Reading choreography…": ("안무 데이터를 읽는 중…", "振り付けデータを読み込み中…"),
+    "Textures {done}": ("텍스처 {done}개", "テクスチャ {done}枚"),
+    "Building dance motion… {done}%": ("댄스 모션을 만드는 중… {done}%", "ダンスモーションを生成中… {done}%"),
+    "Loading 3D models {done}/{total}…": ("3D 모델을 불러오는 중 {done}/{total}…", "3Dモデルを読み込み中 {done}/{total}…"),
+    "Preparing effects…": ("이펙트를 준비하는 중…", "エフェクトを準備中…"),
+    "Reused from cache": ("캐시에서 재사용", "キャッシュから再利用"),
+    "Stage is ready. Members are still loading.": ("무대가 준비되었습니다. 멤버를 불러오는 중입니다.", "ステージの準備ができました。メンバーを読み込み中です。"),
+    "Members done {done}/{count}": ("멤버 {done}/{count} 완료", "メンバー {done}/{count} 完了"),
+    "Game data {read}/{total} MB": ("게임 데이터 {read}/{total} MB", "ゲームデータ {read}/{total} MB"),
+    "Cancel import": ("불러오기 취소", "読み込みをキャンセル"),
+    "Cancelling…": ("취소하는 중…", "キャンセル中…"),
+    "MV import cancelled.": ("MV 불러오기를 취소했습니다.", "MVの読み込みをキャンセルしました。"),
 }
 for _source, (_korean, _japanese) in _MV_STUDIO_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean

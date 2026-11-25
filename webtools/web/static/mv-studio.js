@@ -138,11 +138,13 @@
     return data;
   }
 
-  async function requestGameStream(payload, signal, onStage) {
+  // onProgress receives the server's "plan" and "progress" records. They are asked
+  // for with ?progress=1, which an older server ignores (it then sends none).
+  async function requestGameStream(payload, signal, onStage, onProgress) {
     if (typeof global.TextDecoder !== "function" || typeof global.ReadableStream !== "function" ||
         typeof global.ReadableStream.prototype.getReader !== "function" ||
         typeof global.Response !== "function" || !("body" in global.Response.prototype)) return null;
-    const response = await global.fetch(requestURL("game-stream"), {
+    const response = await global.fetch(requestURL("game-stream") + (onProgress ? "&progress=1" : ""), {
       method: "POST", credentials: "same-origin", signal,
       headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
       body: JSON.stringify(payload),
@@ -163,7 +165,7 @@
       throw invalid();
     }
     const reader = response.body.getReader(), decoder = new global.TextDecoder("utf-8", { fatal: true });
-    let buffer = "", received = 0, stageSeen = false, terminal = null, ended = false;
+    let buffer = "", scanned = 0, received = 0, stageSeen = false, terminal = null, ended = false;
     try {
       for (;;) {
         const { value, done } = await reader.read();
@@ -175,9 +177,11 @@
         received += value.byteLength;
         if (received > 64 * 1024 * 1024) throw invalid();
         buffer += decoder.decode(value, { stream: true });
-        for (let newline; (newline = buffer.indexOf("\n")) !== -1;) {
+        // Search only the new text: a multi-megabyte project arrives in many chunks.
+        for (let newline; (newline = buffer.indexOf("\n", scanned)) !== -1;) {
           const line = buffer.slice(0, newline).trim();
           buffer = buffer.slice(newline + 1);
+          scanned = 0;
           if (!line) continue;
           if (terminal) throw invalid();
           let event;
@@ -192,8 +196,11 @@
             terminal = { project: checkedProject(event.project) };
           } else if (event?.type === "error" && typeof event.error === "string" && event.error) {
             terminal = { error: event.error };
+          } else if (onProgress && (event?.type === "plan" || event?.type === "progress")) {
+            onProgress(event);
           } else throw invalid();
         }
+        scanned = buffer.length;
       }
       if (!terminal || buffer.trim()) throw invalid();
       if (terminal.error) throw new Error(terminal.error);
@@ -1285,7 +1292,8 @@
       (project.assets || []).some((asset) => ["effect", "props", "background"].includes(asset.kind) && asset.previewUrl)));
     const loading = previewLoading || !!gameImport;
     hint.textContent = t(loading ? "Loading 3D model…" : project ? "This MV has no visual assets available for preview." : "Open an MV to preview its stage and timeline.");
-    hint.hidden = !!gameImport?.stageReady || hasModels && !loading;
+    // A game import shows its progress card instead.
+    hint.hidden = !!gameImport || hasModels && !loading;
     byId("mv-preview-controls").hidden = !hasModels || loading;
   }
 
@@ -1625,7 +1633,8 @@
   }
 
   // carry: a costume re-import of the same MV keeps the timeline edits and history (§5.5).
-  async function commit(value, preserveTime = false, reuseOutfit = null, reuseStage = false, carry = false) {
+  // onLoadProgress follows the scene's model loading ({ done, total } or { phase }).
+  async function commit(value, preserveTime = false, reuseOutfit = null, reuseStage = false, carry = false, onLoadProgress = null) {
     const next = checkedProject(value);
     const playhead = preserveTime ? time : 0;
     const before = project;
@@ -1655,7 +1664,7 @@
     if (!preserveTime) performerId = "";
     previewLoading = !!scene;
     try {
-      const ready = scene && scene.load(next, { reuseOutfit, reuseStage });
+      const ready = scene && scene.load(next, { reuseOutfit, reuseStage, ...(onLoadProgress ? { onProgress: onLoadProgress } : {}) });
       if (scene) scene.setVisible(visible && !document.hidden);
       render();
       seek(playhead);
@@ -1857,9 +1866,65 @@
 
   function cancelGameImport() {
     if (!gameImport || gameImport.finishing) return;
+    gameImport.cancelRequested = true;
+    gameImport.progress?.cancel();
+    renderImportProgress(gameImport);
     gameImport.controller.abort();
     discardStage(gameImport);
     renderPreviewStatus();
+  }
+
+  // The import progress card over the preview: a centred card until the stage
+  // shows, then a strip along its bottom edge. #mv-status repeats the step for
+  // screen readers, and only when the step changes.
+  function renderImportProgress(load) {
+    const card = byId("mv-import-progress");
+    if (!card || !load || gameImport !== load) return;
+    const Progress = global.MVStudioImportProgress;
+    const view = load.progress ? load.progress.snapshot(performance.now()) : null;
+    const bar = byId("mv-import-bar"), percent = byId("mv-import-percent"), cancel = byId("mv-import-cancel");
+    let step = t("Preparing MV from game…");
+    if (view) {
+      step = format(view.step[0], view.step[1]) + (view.cached ? " · " + t("Reused from cache") : "");
+      const details = [];
+      if (view.phase) details.push(format(view.phase[0], view.phase[1]));
+      if (view.members) details.push(format("Members done {done}/{count}", { done: view.members[0], count: view.members[1] }));
+      if (view.bytes) details.push(format("Game data {read}/{total} MB",
+        { read: Progress.megabytes(Math.min(view.bytes[0], view.bytes[1])), total: Progress.megabytes(view.bytes[1]) }));
+      details.push(Progress.formatElapsed(view.elapsed));
+      byId("mv-import-detail").textContent = details.join(" · ");
+      if (view.determinate) {
+        bar.value = view.percent;
+        percent.textContent = format("{percent}%", { percent: view.percent });
+        bar.setAttribute("aria-valuetext", format("{percent}%", { percent: view.percent }) + " · " + step);
+      } else {
+        bar.removeAttribute("value");
+        percent.textContent = "";
+        bar.setAttribute("aria-valuetext", step);
+      }
+    }
+    if (load.cancelRequested) step = t("Cancelling…");
+    byId("mv-import-step").textContent = step;
+    cancel.textContent = t(load.cancelRequested ? "Cancelling…" : "Cancel import");
+    cancel.disabled = !!load.cancelRequested || load.finishing;
+    card.classList.toggle("mv-import-strip", !!load.stageReady);
+    card.hidden = false;
+    if (load.statusText !== step) {
+      load.statusText = step;
+      report(step);
+    }
+  }
+
+  function startImportProgress(load) {
+    load.progress = global.MVStudioImportProgress ? global.MVStudioImportProgress.create(performance.now()) : null;
+    load.timer = setInterval(() => renderImportProgress(load), 1000);
+    renderImportProgress(load);
+  }
+
+  function stopImportProgress(load) {
+    clearInterval(load.timer);
+    const card = byId("mv-import-progress");
+    if (card && gameImport === load) card.hidden = true;
   }
 
   async function showGameStage(load, preview) {
@@ -1871,6 +1936,8 @@
       const ready = await target.prepareStage(preview);
       if (isCurrentGameImport(load) && !load.finishing && ready) {
         load.stageReady = true;
+        load.progress?.stage();
+        renderImportProgress(load);
         renderPreviewStatus();
       }
     } catch (_) {
@@ -1901,25 +1968,38 @@
       gameImport = load;
       pause();
       lockGameEditing(true);
+      startImportProgress(load);
       renderPreviewStatus();
       let committed = false;
       const requireCurrent = () => {
         if (!isCurrentGameImport(load)) throw new DOMException("The MV import was cancelled.", "AbortError");
       };
+      const progressed = (update) => {
+        if (!isCurrentGameImport(load)) return;
+        if (update) load.progress?.record(update);
+        renderImportProgress(load);
+      };
       try {
         requireCurrent();
-        let imported = await requestGameStream(payload, signal, (preview) => showGameStage(load, preview));
+        let imported = await requestGameStream(payload, signal, (preview) => showGameStage(load, preview), progressed);
         requireCurrent();
         if (imported === null) imported = checkedProject(await request("game", payload, signal));
         requireCurrent();
         load.finishing = true;
-        const complete = await commit(imported, false, null, load.stageRequested, carry);
+        load.progress?.complete();
+        renderImportProgress(load);
+        const complete = await commit(imported, false, null, load.stageRequested, carry, (update) => {
+          load.progress?.page(update);
+          renderImportProgress(load);
+        });
         committed = true;
         report(complete ? "" : t("Some timeline edits could not be carried over."), !complete);
       } catch (error) {
+        if (load.cancelRequested && !load.finishing) report(t("MV import cancelled."));
         if (!load.finishing) requireCurrent();
         throw error;
       } finally {
+        stopImportProgress(load);
         if (!committed) discardStage(load);
         gameImport = null;
         lockGameEditing(false);
@@ -2148,6 +2228,7 @@
     byId("mv-game-player").addEventListener("change", (event) => { event.target.dataset.chosen = "1"; });
     byId("mv-game-search").addEventListener("input", filterCatalog);
     byId("mv-game-load").addEventListener("click", importGame);
+    byId("mv-import-cancel").addEventListener("click", cancelGameImport);
     byId("mv-game-picker").addEventListener("close", () => {
       if (catalogRequest) catalogRequest.abort();
       catalogRequest = null;
