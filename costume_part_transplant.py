@@ -2070,8 +2070,9 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     """Move one costume part (the bones under `part_root`, or an explicit
     `part_bones` list, or the biggest auto-detected group) from donor to target.
 
-    `face_companions` lists the wearer's separate facial bundles. They are only
-    read: a head-mesh target needs their eye/mouth UVs to keep those texels."""
+    `face_companions` lists the wearer's separate facial bundles, or is a
+    callable returning that list. They are only read, and only for a head-mesh
+    target, which needs their eye/mouth UVs to keep those texels."""
     def log(*a):
         if log_callback is not None:
             log_callback(" ".join(map(str, a)))
@@ -2335,8 +2336,11 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
             raise ValueError("The selected donor submesh has no material for its game atlas.")
         face_surfaces = None
         if face_companions:
-            # Read only when the receiving mesh turns out to be a head mesh.
-            face_surfaces = lambda: companion_footprints([UP.load(str(path)) for path in face_companions])  # noqa: E731
+            def face_surfaces():
+                # Read only when the receiving mesh turns out to be a head mesh;
+                # a callable also stages its files only then.
+                paths = face_companions() if callable(face_companions) else face_companions
+                return companion_footprints([UP.load(str(path)) for path in paths]) if paths else None
         bake_renderer_for_game(target, t_smr, t_mesh,
             mesh_tree=t_mesh_tt, renderer_tree=t_smr_tt,
             additional_sources=[(donor, d_mats[index]) for index, _ in selected_groups],

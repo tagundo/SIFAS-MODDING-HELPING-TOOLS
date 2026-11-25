@@ -26,6 +26,7 @@ COMPANION_HINT = "viewer-companions.json"
 OPERATIONS = {"costume", "part", "lower"}
 MAX_PART_BONES = 512
 MAX_PART_TRIANGLES = 200000
+FACE_PREVIEW_BYTES = 16 * 1024 * 1024
 PART_SELECTION_FIELDS = {"partSelectionMode", "partRoots", "includeDescendants", "triangleIndices", "donorSha256", "donorMesh", "donorSelectionFingerprint"}
 OPTIONAL_FIELDS = {"matchSkin", "skinOnly", "excludeAccessories", "selectionScope", "donorRenderer", "targetRenderer", "mesh_state", "reuseEmptyUV", "relocateEmptyUV", "upscaleTexturesForUVReuse", "uvPlacement"} | PART_SELECTION_FIELDS
 _OS_PATH_ALIASES = (("/var", "/private/var"), ("/tmp", "/private/tmp"),
@@ -213,10 +214,10 @@ def _face_export_raw(source, previews, containers):
     if member is not None:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             entry = archive.getinfo(member)
-            if not 0 < entry.file_size <= 16 * 1024 * 1024:
+            if not 0 < entry.file_size <= FACE_PREVIEW_BYTES:
                 raise ValueError("The edited facial companion exceeds the face preview limit.")
             raw = archive.read(entry)
-    if not 0 < len(raw) <= 16 * 1024 * 1024:
+    if not 0 < len(raw) <= FACE_PREVIEW_BYTES:
         raise ValueError("The edited facial companion exceeds the face preview limit.")
     return raw
 
@@ -296,7 +297,9 @@ def _archive_face_inputs(context, saved, body_index, directory):
 
     The result archive keeps these members unchanged, so they are never
     republished here. A part graft onto a head mesh only reads their eye and
-    mouth UVs, which sample the costume's head texture in game.
+    mouth UVs, which sample the costume's head texture in game; the graft asks
+    for them only then (see _head_face_inputs). Members above the face preview
+    limit are not faces and are skipped.
     """
     from . import face_platforms, model_faces, model_viewer
 
@@ -314,7 +317,11 @@ def _archive_face_inputs(context, saved, body_index, directory):
     deadline = time.monotonic() + model_faces.FACE_SECONDS
     directory.mkdir()
     paths = []
+    with zipfile.ZipFile(Path(previews[wearer["container"]])) as archive:
+        sizes = {info.filename: info.file_size for info in archive.infolist()}
     for index in members:
+        if not 0 < sizes.get(sources[index]["member"], 0) <= FACE_PREVIEW_BYTES:
+            continue  # A large model or motion in the archive is not a face.
         path = directory / f"archive-face-{index}.unity"
         path.write_bytes(_face_export_raw(sources[index], previews, containers))
         scene = model_viewer._Scene(model_viewer._environment([str(path)], deadline), deadline)
@@ -322,6 +329,23 @@ def _archive_face_inputs(context, saved, body_index, directory):
             path.unlink()  # A thumbnail or another model in the archive.
             continue
         paths.append(path)
+    return paths
+
+
+def _head_face_inputs(prepared, context, saved, body_index, directory):
+    """The part graft's facial inputs, read only if the receiving mesh is a head mesh.
+
+    ``prepared`` are the separately loaded faces, already staged for the
+    result. Faces packed in the wearer's archive are staged on the first call,
+    so a Body graft never extracts or parses them.
+    """
+    staged = [str(item["path"]) for item in prepared]
+    archived = []
+
+    def paths():
+        if not archived:
+            archived.append([str(path) for path in _archive_face_inputs(context, saved, body_index, directory)])
+        return staged + archived[0]
     return paths
 
 
@@ -546,9 +570,10 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
             face_companions = _prepare_face_companions(context, saved, wearer, request["sourceIndex"],
                                                        wearer_platform, inputs / "facial-companions")
             # A wearer archive keeps its face inside; a head-mesh part graft
-            # still has to read it to protect the eye and mouth texels.
-            archive_faces = (_archive_face_inputs(context, saved, request["sourceIndex"], inputs / "archive-faces")
-                             if operation == "part" else [])
+            # still has to read it to protect the eye and mouth texels. The
+            # graft asks for it only when the receiving mesh is a head mesh.
+            head_faces = _head_face_inputs(face_companions, context, saved, request["sourceIndex"],
+                                           inputs / "archive-faces")
             if job.should_stop():
                 return "Cancelled"
             job.progress(1, 3)
@@ -569,8 +594,9 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                     "triangle_indices": request["triangleIndices"] if request["partSelectionMode"] == "triangles" else None,
                     "donor_renderer": request["donorRenderer"],
                     "target_renderer": request["targetRenderer"] or None, "new_submesh": "atlas",
-                    # Read-only: a head-mesh target protects the face's eye/mouth texels.
-                    "face_companions": [str(item["path"]) for item in face_companions] + list(map(str, archive_faces)),
+                    # Read-only, and only for a head-mesh target: it protects the
+                    # face's eye/mouth texels.
+                    "face_companions": head_faces,
                     "reuse_empty_uv": request["reuseEmptyUV"], "relocate_empty_uv": request["relocateEmptyUV"],
                     "upscale_textures_for_uv_reuse": request["upscaleTexturesForUVReuse"],
                     **({"uv_placement": request["uvPlacement"]} if request["uvPlacement"] is not None else {})})
