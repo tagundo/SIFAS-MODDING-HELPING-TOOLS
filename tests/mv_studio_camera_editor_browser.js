@@ -120,6 +120,84 @@ const angleBetween = (a, b) => {
   return 2 * Math.atan2(Math.hypot(...cross), dot) * 180 / Math.PI;
 };
 const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+// The panel's curve view shows exactly what a new view draws from the model it was last given.
+const curvesAsDrawnFresh = (page) => page.evaluate(() => {
+  const { container, model } = window.curveProbe, svg = container.querySelector('svg');
+  return window.curvePicture(svg) === window.curveFresh(model, container.clientWidth);
+});
+// The baked (dense) and key curves of the panel's curve view, by channel.
+const curveLines = (page) => page.evaluate(() => {
+  const svg = document.querySelector('#mv-cam-curves svg');
+  const lines = (kind) => Object.fromEntries([...svg.querySelectorAll('polyline.' + kind)].map((line) => [line.dataset.channel, line.getAttribute('points')]));
+  return { dense: lines('mv-cam-dense'), curve: lines('mv-cam-curve') };
+});
+
+// The curve view on its own, against a new view of the same model (the full drawing): a
+// playhead-only change moves the line and keeps the drawing's nodes; a change of keys, of dense
+// values (equal copies included), of the selection or of the width redraws; a resize redraws
+// without a new model; without a ResizeObserver the width is read on every update.
+async function curveViewCache(page) {
+  const result = await page.evaluate(async () => {
+    const C = MVStudioCameraCurves, saved = window.curveProbe, picture = window.curvePicture, fresh = window.curveFresh;
+    const real = saved.model, last = real.count - 1, channel = real.channels[0];
+    const frames = (count) => new Promise((resolve) => { const step = () => (--count ? requestAnimationFrame(step) : resolve()); requestAnimationFrame(step); });
+    const box = (width) => {
+      const element = document.createElement('div');
+      element.style.cssText = `position: fixed; left: 0; top: 0; visibility: hidden; width: ${width}px`;
+      document.body.append(element);
+      return element;
+    };
+    const checks = {}, nodes = (view) => [...view.element.children];
+    const same = (a, b) => a.length === b.length && a.every((node, index) => node === b[index]);
+    try {
+      const container = box(400), view = C.create(container, saved.handlers);
+      const shows = (model, width = 400) => picture(view.element) === fresh(model, width);
+      const m0 = { ...real, playhead: last * .25 };
+      view.update(m0);
+      checks.first = shows(m0);
+      let before = nodes(view);
+      const m1 = { ...m0, playhead: last * .75 };
+      view.update(m1);
+      checks.playhead = shows(m1) && same(before, nodes(view));
+      const keys = m1.keys.map((key) => ({ ...key, values: { ...key.values } }));
+      keys[0].values[channel] += .5;
+      const m2 = { ...m1, keys };
+      view.update(m2);
+      checks.keys = shows(m2);
+      const dense = Object.fromEntries(Object.entries(m2.dense).map(([name, values]) => [name, Float64Array.from(values)]));
+      dense[channel][Math.floor(last / 2)] += 3;
+      const m3 = { ...m2, dense };
+      view.update(m3);
+      checks.dense = shows(m3);
+      const other = m3.keys.find((key) => key.frame !== m3.selected).frame;
+      const m4 = { ...m3, selected: other };
+      view.update(m4);
+      checks.selected = shows(m4) && view.element.querySelector(`.mv-cam-curve-key.mv-selected[data-frame="${other}"]`) !== null;
+      before = nodes(view);
+      const m5 = { ...m4, playhead: last * .5, dense: Object.fromEntries(Object.entries(m4.dense).map(([name, values]) => [name, Float64Array.from(values)])) };
+      view.update(m5);
+      checks.equalCopies = shows(m5) && same(before, nodes(view));
+      container.style.width = '300px';
+      await frames(3);
+      checks.resize = shows(m5, 300);
+      container.remove();
+      // No ResizeObserver (older WebViews): the width is read on every update.
+      const Observer = window.ResizeObserver;
+      window.ResizeObserver = undefined;
+      const plainBox = box(400);
+      let plain;
+      try { plain = C.create(plainBox, saved.handlers); } finally { window.ResizeObserver = Observer; }
+      plain.update(m5);
+      plainBox.style.width = '300px';
+      const m6 = { ...m5, playhead: last * .25 };
+      plain.update(m6);
+      checks.plainWidth = picture(plain.element) === fresh(m6, 300);
+      plainBox.remove();
+    } finally { window.curveProbe = saved; }
+    return checks;
+  });
+  assert.deepEqual(result, { first: true, playhead: true, keys: true, dense: true, selected: true, equalCopies: true, resize: true, plainWidth: true });
+}
 
 async function newPage(browser, errors) {
   const page = await browser.newPage({ locale: 'ko', viewport: { width: 1400, height: 1000 } });
@@ -128,6 +206,27 @@ async function newPage(browser, errors) {
   // A probe plugin hands the test the editor context (seek, scene) the camera editor gets.
   await page.addInitScript(() => {
     (window.MVStudioPlugins ||= []).push({ id: 'test-probe', order: 99, attach(ctx) { window.probeCtx = ctx; } });
+    // The curve view the panel creates, its handlers and the last model it was given.
+    let curves;
+    Object.defineProperty(window, 'MVStudioCameraCurves', { configurable: true, get: () => curves, set(value) {
+      curves = Object.freeze({ ...value, create(container, handlers) {
+        const view = value.create(container, handlers), probe = window.curveProbe = { container, handlers, model: null };
+        return { element: view.element, get dragging() { return view.dragging; },
+          update(next) { probe.model = next; return view.update(next); } };
+      } });
+    } });
+    // What a curve view shows, and the same model drawn by a new view at a given width (a full draw).
+    window.curvePicture = (svg) => [svg.getAttribute('width'), svg.getAttribute('viewBox'), svg.innerHTML].join('\n');
+    window.curveFresh = (model, width) => {
+      const saved = window.curveProbe, box = document.createElement('div');
+      box.style.cssText = `position: fixed; left: 0; top: 0; visibility: hidden; width: ${width}px`;
+      document.body.append(box);
+      try {
+        const view = curves.create(box, saved.handlers);
+        view.update(model);
+        return window.curvePicture(view.element);
+      } finally { box.remove(); window.curveProbe = saved; }
+    };
   });
   return page;
 }
@@ -186,11 +285,18 @@ async function synthetic(browser, url) {
   // Play the whole shot: the offset stays on every frame.
   await seek(page, 0);
   await page.locator('#mv-play').click();
-  const played = await page.evaluate(() => new Promise((resolve) => {
+  // The open curve view meanwhile only moves its playhead line: the drawing keeps its nodes.
+  const { list: played, curves: playedCurves } = await page.evaluate(() => new Promise((resolve) => {
     const M = window.MVStudioCameraMath, project = MVStudio.getState().project;
     const original = project.editor.originals['cam:0'].values.keyframes, list = [];
+    let drawn = null;
+    const curves = () => {
+      const svg = document.querySelector('#mv-cam-curves svg');
+      return { nodes: [...svg.children], x: svg.querySelector('.mv-cam-playhead').getAttribute('x1') };
+    };
     const step = () => {
       const view = window.probeCtx.scene().inspect();
+      if (view.time > .5 && !drawn) drawn = curves();
       if (view.time > .05 && view.time < 3.95) {
         const pose = M.sampleFrames(original, view.time);
         const position = M.unityToThreePosition(pose.position);
@@ -198,11 +304,17 @@ async function synthetic(browser, url) {
         const moved = new THREE.Vector3(...view.camera.position).sub(new THREE.Vector3(...position));
         list.push({ time: view.time, length: moved.length(), along: moved.dot(forward) });
       }
-      if (view.time >= 4 || list.length > 400) resolve(list); else requestAnimationFrame(step);
+      if (view.time >= 4 || list.length > 400) {
+        const now = curves();
+        resolve({ list, curves: { kept: !!drawn && now.nodes.length === drawn.nodes.length && now.nodes.every((node, index) => node === drawn.nodes[index]),
+          moved: !!drawn && now.x !== drawn.x } });
+      } else requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
   }));
   await page.locator('#mv-play').click();
+  assert.deepEqual(playedCurves, { kept: true, moved: true }, 'playback moves the curve playhead without redrawing the curves');
+  assert(await curvesAsDrawnFresh(page), 'the curve view after playback is the full drawing of its model');
   assert(played.length >= 20, `sampled the playing shot (${played.length} frames)`);
   for (const sample of played) {
     assert(Math.abs(sample.length - 1) < 2e-3 && sample.along > .998, `t=${sample.time.toFixed(3)}: still 1 m along the view (${sample.length}, ${sample.along})`);
@@ -366,6 +478,66 @@ async function synthetic(browser, url) {
   await page.mouse.click(grid.x + grid.width * .6, grid.y + grid.height / 2);
   near((await state(page)).time, shotStart + 180 / 60, 2 / 60, 'a click on the middle grid line seeks to frame 180');
   assert.equal((await state(page)).history.undo, undoBefore + 1, 'a seek is not an edit');
+  // The curve view follows a bake, undo and redo, the channel chips, the offset space, the record
+  // mode and the panel's width; each time it is the full drawing of its model.
+  await curveViewCache(page);
+  assert(await curvesAsDrawnFresh(page), 'the curve view is the full drawing of its model');
+  const chip = (channel) => page.locator(`[data-mv-cam-channel="${channel}"]`);
+  // The dense curves recomputed: a chip turned off and on again misses the panel's cache.
+  const recomputed = async () => { await chip('x').click(); await chip('x').click(); return curveLines(page); };
+  const redrawn = (before) => page.waitForFunction((points) =>
+    document.querySelector('#mv-cam-curves polyline.mv-cam-dense[data-channel="y"]')?.getAttribute('points') !== points, before.dense.y, { timeout: 5000 });
+  const unedited = await curveLines(page);
+  assert.deepEqual(await recomputed(), unedited);
+  const pedestal = page.locator('#mv-camera-fields [data-mv-cam="offset.y"]');
+  await pedestal.fill('.05');
+  await pedestal.press('Tab');
+  await redrawn(unedited);
+  const baked = await curveLines(page);
+  assert.notEqual(baked.curve.y, unedited.curve.y, 'the key curve follows the edit');
+  assert.deepEqual(await recomputed(), baked, 'the baked curves are the recomputed ones');
+  assert(await curvesAsDrawnFresh(page));
+  await page.locator('#mv-timeline-label').click();
+  await page.keyboard.press('Control+z');
+  await redrawn(baked);
+  assert.deepEqual(await curveLines(page), unedited, 'undo draws the curves before the edit');
+  await page.keyboard.press('Control+Shift+z');
+  await redrawn(unedited);
+  assert.deepEqual(await curveLines(page), baked, 'redo draws the edited curves');
+  await page.keyboard.press('Control+z');
+  await redrawn(baked);
+  assert.deepEqual(await curveLines(page), unedited);
+  const fovCurve = page.locator('#mv-cam-curves polyline.mv-cam-dense[data-channel="fov"]');
+  assert.equal(await fovCurve.count(), 0);
+  await chip('fov').click();
+  assert.equal(await fovCurve.count(), 1, 'a chip turned on draws its baked curve');
+  assert(await curvesAsDrawnFresh(page));
+  await chip('fov').click();
+  for (const [control, value] of [['#mv-cam-space', 'world'], ['#mv-cam-shot-mode', 'keys']]) {
+    const before = await curveLines(page);
+    await page.locator(control).selectOption(value);
+    await redrawn(before);
+    const shown = await curveLines(page);
+    assert.deepEqual(await recomputed(), shown, `${control} = ${value}: the recomputed curves`);
+    assert(await curvesAsDrawnFresh(page));
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    await redrawn(shown);
+    assert.deepEqual(await curveLines(page), before, `${control} = ${value}: undo`);
+  }
+  await page.locator('#mv-cam-space').selectOption('view');
+  const graphWidth = () => page.locator('#mv-cam-curves').evaluate((element) => ({
+    drawn: element.querySelector('svg').getAttribute('width'), box: String(Math.max(160, Math.round(element.clientWidth))) }));
+  const wide = await graphWidth();
+  assert.equal(wide.drawn, wide.box);
+  await page.locator('#mv-cam-curves').evaluate((element) => { element.style.width = '300px'; });
+  await page.waitForFunction((before) => {
+    const element = document.getElementById('mv-cam-curves'), drawn = element.querySelector('svg').getAttribute('width');
+    return drawn !== before && drawn === String(Math.max(160, Math.round(element.clientWidth)));
+  }, wide.drawn, { timeout: 5000 });
+  assert(await curvesAsDrawnFresh(page), 'a narrower panel redraws the curves at its width');
+  await page.locator('#mv-cam-curves').evaluate((element) => { element.style.width = ''; });
+  await page.waitForFunction((width) => document.querySelector('#mv-cam-curves svg').getAttribute('width') === width, wide.drawn, { timeout: 5000 });
   await page.screenshot({ path: path.join(evidence, 'camera-editor-ko.png') });
   // A tall window shows the whole panel at once.
   await page.setViewportSize({ width: 1400, height: 1900 });
@@ -384,6 +556,10 @@ async function synthetic(browser, url) {
   const header = () => page.locator('#mv-cam-shot').textContent();
   await seek(page, 1);
   await page.waitForFunction(() => document.getElementById('mv-cam-shot')?.textContent.startsWith('샷 1 / 2'));
+  // Within a shot the header follows the playhead in place.
+  await seek(page, 2);
+  await page.waitForFunction(() => /^샷 1 \/ 2 · .* · 프레임 120 \/ 240 \(0:02\.00\)$/.test(document.getElementById('mv-cam-shot')?.textContent || ''),
+    null, { timeout: 5000 });
   await page.locator('#mv-panel-camera > summary').click();
   assert.equal(await page.locator('#mv-panel-camera').evaluate((panel) => panel.open), false, 'closed');
   await seek(page, shotStart + 2);

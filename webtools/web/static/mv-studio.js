@@ -31,7 +31,7 @@
   const basename = (path) => text(path).split(/[\\/]/).pop();
   let settings, scene, project, selected, pending, gameImport, catalogRequest, catalogIndex = [], songs = [];
   let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
-  let previewLoading = false, playheadNode, seekInput, timeOutput, lastReadout = -Infinity;
+  let previewLoading = false, playheadNode, playheadTransform = "", seekInput, timeOutput, lastReadout = -Infinity;
   let hidden = [], assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
   let lastGamePayload = null;
   // Runtime notes from the 3D preview of the open project (for example a
@@ -74,6 +74,16 @@
       else store.setItem(key, String(value));
     } catch (_) {}
     return null;
+  }
+
+  // Text that changes while the MV plays: write the existing text node in place. Replacing
+  // the node (textContent) is a child-list change, which makes the page's :has() rules
+  // restyle every element of the timeline; a character-data change does not.
+  function setText(element, label) {
+    const node = element.firstChild;
+    if (node && node === element.lastChild && node.nodeType === 3) {
+      if (node.data !== label) node.data = label;
+    } else if (element.textContent !== label) element.textContent = label;
   }
 
   function make(tag, label, attrs = {}) {
@@ -219,12 +229,15 @@
   }
 
   function syncPosition(now) {
-    if (playheadNode) playheadNode.style.transform = `translateX(${time * pixelsPerSecond}px)`;
+    if (playheadNode) {
+      const transform = `translateX(${time * pixelsPerSecond}px)`;
+      if (transform !== playheadTransform) playheadNode.style.transform = playheadTransform = transform;
+    }
     if (now !== undefined && now - lastReadout < 100) return;
     lastReadout = now ?? performance.now();
     seekInput.value = time;
     const label = formatTime(time) + " / " + formatTime(project ? project.duration : 0);
-    if (timeOutput.textContent !== label) timeOutput.textContent = label;
+    setText(timeOutput, label);
   }
 
   function audioOffset() {
@@ -233,11 +246,47 @@
   }
 
   function seek(seconds, changeAudio = true, deferDraw = false) {
+    cancelScrub();
     time = clamp(finite(seconds) ? seconds : 0, 0, project ? project.duration : 0);
     if (changeAudio && audio.hasAttribute("src")) audio.currentTime = Math.max(0, time + audioOffset());
     if (scene && project) scene.seek(time, project, deferDraw);
     syncPosition();
     emitTime();
+  }
+
+  // Scrubbing (the seek slider, a ruler drag) can send more events than the display shows
+  // frames; touch and pen input often arrive at 120-240 Hz. The time, readout and plugins
+  // follow every event, while the scene and the soundtrack seek once per animation frame, to
+  // the latest time, and draw in that frame. Playback keeps the direct seek.
+  let scrubTime = null, scrubFrame = 0;
+  function scrubTo(seconds) {
+    if (playing || !global.requestAnimationFrame) return seek(seconds, true, true);
+    time = clamp(finite(seconds) ? seconds : 0, 0, project ? project.duration : 0);
+    scrubTime = time;
+    if (!scrubFrame) scrubFrame = global.requestAnimationFrame(applyScrub);
+    syncPosition();
+    emitTime();
+  }
+
+  function cancelScrub() {
+    if (scrubFrame) global.cancelAnimationFrame(scrubFrame);
+    scrubFrame = 0;
+    scrubTime = null;
+  }
+
+  // Seeks the scene and the soundtrack to the pending scrub time; false without one.
+  function settleScrub() {
+    scrubFrame = 0;
+    if (scrubTime === null) return false;
+    const target = scrubTime;
+    scrubTime = null;
+    if (audio.hasAttribute("src")) audio.currentTime = Math.max(0, target + audioOffset());
+    if (scene && project) scene.seek(target, project, false);
+    return true;
+  }
+
+  function applyScrub() {
+    settleScrub();
   }
 
   // timeChanged for plugins: after every seek, at most 10 Hz during playback.
@@ -252,7 +301,7 @@
 
   function updatePlayButton() {
     const control = byId("mv-play");
-    control.textContent = t(playing ? "Pause" : "Play");
+    setText(control, t(playing ? "Pause" : "Play"));
     control.setAttribute("aria-pressed", String(playing));
     const empty = !project || !project.duration;
     control.disabled = empty || previewLoading || !!gameImport;
@@ -289,6 +338,7 @@
   function togglePlayback() {
     if (playing) return pause();
     if (!project || !project.duration || !visible || previewLoading || gameImport) return;
+    flushScrub();
     if (time >= project.duration) seek(0);
     playing = true;
     lastFrame = performance.now();
@@ -940,11 +990,15 @@
   function scrub(event, deferDraw = false) {
     if (event.target.closest(".mv-clip, .mv-key, .mv-rig-clip")) return;
     const bar = event.currentTarget;
-    seek((event.clientX - bar.getBoundingClientRect().left) / pixelsPerSecond, true, deferDraw);
+    const seconds = (event.clientX - bar.getBoundingClientRect().left) / pixelsPerSecond;
+    if (deferDraw) scrubTo(seconds);
+    else seek(seconds, true, false);
   }
 
+  // The end of a scrub: the latest time is drawn now.
   function flushScrub() {
-    scene?.flushSeekDraw();
+    if (scrubFrame) global.cancelAnimationFrame(scrubFrame);
+    if (!settleScrub()) scene?.flushSeekDraw();
   }
 
   // The lane geometry handed to plugins (laneDecorate, extraLanes).
@@ -1277,7 +1331,9 @@
     }
     for (const [track, lane] of decorate) decorateLane(track, lane);
     renderMemberFilter(plan);
-    playheadNode = make("div", null, { class: "mv-playhead", "aria-hidden": "true" });
+    // Its own compositing layer: moving it every frame then repaints neither the clips nor the lanes.
+    playheadNode = make("div", null, { class: "mv-playhead", "aria-hidden": "true", style: "will-change: transform" });
+    playheadTransform = "";
     grid.append(playheadNode);
     scroll.setAttribute("role", "tabpanel");
     scroll.setAttribute("aria-labelledby", "mv-tab-" + activeTab);
@@ -1640,6 +1696,7 @@
     const next = checkedProject(value);
     const playhead = preserveTime ? time : 0;
     const before = project;
+    cancelScrub();
     pause();
     ensureScene();
     const source = resource(next.soundtrack && next.soundtrack.url);
@@ -2229,7 +2286,7 @@
       scene.setCamera("orbit");
       scene.frameAll();
     });
-    seekInput.addEventListener("input", (event) => seek(event.target.valueAsNumber, true, true));
+    seekInput.addEventListener("input", (event) => scrubTo(event.target.valueAsNumber));
     seekInput.addEventListener("change", flushScrub);
     byId("mv-zoom").addEventListener("change", renderTimeline);
     byId("mv-game-region").addEventListener("change", loadCatalog);

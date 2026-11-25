@@ -47,7 +47,7 @@
     if (!state) {
       state = { selected: null, channels: ["x"], autoKey: false, space: "view", pending: null, controller: null, events: undefined,
         scene: null, unsubscribe: null, panel: null, curves: null, differs: new WeakMap(), lastShot: null, helper: false,
-        toggle: null, echo: null, refreshed: null };
+        toggle: null, echo: null, refreshed: null, dense: null };
       states.set(ctx, state);
     }
     return state;
@@ -1471,6 +1471,28 @@
     return scene.alignViewToGame() !== false;
   }
 
+  // Text the panel rewrites while the MV plays: the existing text node is written in place.
+  // A replaced node is a child-list change, which restyles the whole page through its :has() rules.
+  function setText(node, value) {
+    const text = node.firstChild;
+    if (text && text === node.lastChild && text.nodeType === 3) {
+      if (text.data !== value) text.data = value;
+    } else if (node.textContent !== value) node.textContent = value;
+  }
+
+  // denseCurves of the last shot drawn, while its inputs are the same objects (the bake writes
+  // new keyframe arrays; nothing changes them in place).
+  function denseCurvesOf(ctx, shot, channels) {
+    const state = stateOf(ctx), record = shot.record, values = shot.event.values;
+    const key = [shot.event, values, values && values.keyframes, shot.source, shot.count, record ? record.mode : null,
+      record ? record.space : null, shot.fallbackFov, channels.join(",")];
+    const cached = state.dense;
+    if (cached && cached.key.length === key.length && cached.key.every((item, index) => Object.is(item, key[index]))) return cached.value;
+    const value = denseCurves(ctx, shot, channels);
+    state.dense = { key, value };
+    return value;
+  }
+
   // Dense curve of each channel in the record's space (deltas for offset, absolute otherwise).
   function denseCurves(ctx, shot, channels) {
     const frames = shot.event.values && Array.isArray(shot.event.values.keyframes) && shot.event.values.keyframes.length === shot.count
@@ -1499,9 +1521,9 @@
     if (!shot || !shot.source) return;
     const frame = shot.frame;
     if (refs.header) {
-      refs.header.textContent = [format(ctx, "Shot {index} / {count}", { index: shot.index + 1, count: shot.total }), shot.event.label || "",
+      setText(refs.header, [format(ctx, "Shot {index} / {count}", { index: shot.index + 1, count: shot.total }), shot.event.label || "",
         format(ctx, "Frame {frame} / {last}", { frame, last: shot.count - 1 }) + ` (${formatTime(frameTime(shot, frame) - shot.event.start)})`]
-        .filter(Boolean).join(" · ");
+        .filter(Boolean).join(" · "));
     }
     if (!shot.editable) return;
     const record = shot.record;
@@ -1524,7 +1546,7 @@
     if (key) {
       put("key.frame", key.frame, 0);
       // Shot-local, the clock of the header's "(0:00.50)".
-      if (refs.keyTime) refs.keyTime.textContent = formatTime(frameTime(shot, key.frame) - shot.event.start);
+      if (refs.keyTime) setText(refs.keyTime, formatTime(frameTime(shot, key.frame) - shot.event.start));
       if (refs.interp && refs.interp !== focused) refs.interp.value = key.interp;
       if (refs.handle && refs.handle !== focused) refs.handle.value = key.handle;
     }
@@ -1534,17 +1556,20 @@
     if (refs.previous) refs.previous.disabled = !keys.some((item) => item.frame < frame);
     if (refs.next) refs.next.disabled = !keys.some((item) => item.frame > frame);
     if (refs.revert) refs.revert.disabled = ctx.locked() || !(record || ctx.edited(shot.event.id));
-    if (refs.chips) for (const chip of refs.chips.children) chip.setAttribute("aria-pressed", String(state.channels.includes(chip.dataset.mvCamChannel)));
+    if (refs.chips) for (const chip of refs.chips.children) {
+      const pressed = String(state.channels.includes(chip.dataset.mvCamChannel));
+      if (chip.getAttribute("aria-pressed") !== pressed) chip.setAttribute("aria-pressed", pressed);
+    }
     if (refs.curves) {
       refs.curves.update({ count: shot.count, keys, mode: record ? record.mode : "original", channels: state.channels,
-        dense: denseCurves(ctx, shot, state.channels), playhead: (ctx.time() - shot.event.start) * FRAME_RATE,
+        dense: denseCurvesOf(ctx, shot, state.channels), playhead: (ctx.time() - shot.event.start) * FRAME_RATE,
         selected: key ? key.frame : null, labels: Object.fromEntries(CHANNELS.map((channel) => [channel, t(ctx, LABELS[channel])])) });
     }
     if (refs.note) {
       const notes = [];
       if (layers.length && affecting(ctx, shot).length) notes.push(t(ctx, "A camera rig also moves this shot."));
       if (durationLocked(ctx, shot.track, shot.event)) notes.push(t(ctx, "Duration is locked while this shot has camera edits."));
-      refs.note.textContent = notes.join(" ");
+      setText(refs.note, notes.join(" "));
     }
   }
 
