@@ -3116,7 +3116,7 @@ _MV_FREE_CAMERA_TRANSLATIONS = {
     "Show or hide the free camera views. A short preview keeps them folded so the view stays visible.": (
         "자유 카메라 시점 조절을 펼치거나 접습니다. 미리보기 높이가 낮으면 화면이 가려지지 않도록 접어 둡니다.",
         "自由カメラの視点操作を開閉します。プレビューが低いときは画面が隠れないよう畳んでおきます。"),
-    "Target": ("대상", "対象"),
+    # "Target" (대상/対象) comes from the follow camera table (_MV_EDITOR_D_TRANSLATIONS).
     "Stage centre": ("무대 중앙", "ステージ中央"),
     "The free camera looks at this point and turns around it.": (
         "자유 카메라가 이 지점을 바라보며 그 주위를 돕니다.", "自由カメラはこの点を見ながら、その周りを回ります。"),
