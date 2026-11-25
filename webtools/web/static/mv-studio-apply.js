@@ -8,8 +8,9 @@
  *    apply, written onto what the game plays now; conflicts are listed, never overwritten),
  *    "Apply all" (the whole project replaces the game's timeline) and, for a stock MV with an
  *    applied timeline, "Restore the original MV";
- *  - keeps the job's record of what the project and the game agree on (source.applied), so
- *    editing the same clip again after an apply is not a conflict;
+ *  - keeps the job's record of what the project and each platform's game timeline agree on
+ *    (source.applied, per platform), so editing the same clip again after an apply is not a
+ *    conflict, and a platform left out with consent still gets the edits later;
  *  - adds a compact toolbar shortcut after "Export native timeline".
  * A project that is not a game import points to the registration panel ("MV 전용 곡으로 등록").
  */
@@ -339,6 +340,12 @@
         item("ok", format(edits.since === "apply" ? "Edits since the last apply: {clips} clips (camera {camera} · values {values} · timing {timing})" :
           "Edits since loading: {clips} clips (camera {camera} · values {values} · timing {timing})",
         { clips: counts.clips, camera: counts.cameraShots || 0, values: counts.values || 0, timing: counts.timing || 0 }));
+        // A platform left out of an earlier apply (with consent) still waits for edits the other one has.
+        const pending = edits.pending || {};
+        const waiting = catalogued(plan).filter((platform) => pending[platform]);
+        if (waiting.length && waiting.length < catalogued(plan).length) {
+          item("warn", format("These edits are not in {platform} yet.", { platform: waiting.map(platformName).join(" · ") }));
+        }
       }
     }
     if (all) {
@@ -557,7 +564,7 @@
     "Edits: none since the last apply", "Edits: none since loading",
     "Edits since the last apply: {clips} clips (camera {camera} · values {values} · timing {timing})",
     "Edits since loading: {clips} clips (camera {camera} · values {values} · timing {timing})",
-    "Apply all: the game already plays this project.", "Apply all: the game plays the original MV again.",
+    "These edits are not in {platform} yet.", "Apply all: the game already plays this project.", "Apply all: the game plays the original MV again.",
     "Apply all: {clips} clips differ from the original MV", "Download (about {size} MB)", "No {platform} original",
     "Not in the game:", "Changed differently in the game ({count})", "{where}: loaded {loaded} → project {project}, game {game}",
     "Nothing was overwritten. Use Apply all to replace the game's version with this project, or load the MV from the game again.",

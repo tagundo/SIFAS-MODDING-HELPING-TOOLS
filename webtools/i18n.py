@@ -3447,6 +3447,8 @@ _MV_APPLY_TRANSLATIONS = {
     "Changed differently in the game ({count})": ("게임에서 다르게 바뀐 항목 ({count})", "ゲームで別の内容に変わった項目（{count}）"),
     "{where}: loaded {loaded} → project {project}, game {game}": (
         "{where}: 불러온 값 {loaded} → 프로젝트 {project}, 게임 {game}", "{where}: 読み込み時 {loaded} → プロジェクト {project}、ゲーム {game}"),
+    "These edits are not in {platform} yet.": (
+        "이 수정 사항은 아직 {platform}에 적용되지 않았습니다.", "この修正はまだ{platform}に適用されていません。"),
     "Nothing was overwritten. Use Apply all to replace the game's version with this project, or load the MV from the game again.": (
         "아무것도 덮어쓰지 않았습니다. 게임의 버전을 이 프로젝트로 바꾸려면 '전체 적용'을 쓰거나, 게임에서 MV를 다시 불러오세요.",
         "何も上書きしていません。ゲームの版をこのプロジェクトで置き換えるには「全体を適用」を使うか、ゲームからMVを読み込み直してください。"),

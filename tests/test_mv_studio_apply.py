@@ -230,7 +230,8 @@ class ApplyEditsTests(ApplyCase):
         self.bloom(project["tracks"])["intensity"] = 2.5
         job, _ = self.run_apply(project, "edits")
         applied = self.result(job)["applied"]
-        self.assertEqual(list(applied["fields"]), ["cab-1:20:0"])
+        self.assertEqual({platform: list(fields) for platform, fields in applied["platforms"].items()},
+                         {"android": ["cab-1:20:0"], "ios": ["cab-1:20:0"]})
         older_page = copy.deepcopy(project)  # A page that did not keep the record of this apply.
         # The page keeps what the project and the game now agree on.
         project["source"]["applied"] = applied
@@ -249,7 +250,7 @@ class ApplyEditsTests(ApplyCase):
         job, _ = self.run_apply(project, "edits")
         project["source"]["applied"] = self.result(job)["applied"]
         self.assertEqual((self.bloom(tracks_of(self.served("android")))["intensity"],
-                          project["source"]["applied"]["fields"]), (1.0, {}))
+                          project["source"]["applied"]["platforms"]), (1.0, {"android": {}, "ios": {}}))
         # Without the record, the loaded value is the agreed one: the game holds it again, so 4.0 applies ...
         self.bloom(older_page["tracks"])["intensity"] = 4.0
         self.assertEqual(self.plan(older_page)["edits"]["conflicts"], [])
@@ -302,11 +303,52 @@ class ApplyEditsTests(ApplyCase):
         job, _ = self.run_apply(project, "edits", plan=plan, platforms=("android",))
         self.assertEqual(self.result(job)["parts"], ["android"])
         self.assertEqual(self.timeline()["platforms"], {"android": "custom", "ios": "stock"})
+        # The page keeps the job's record (mv-studio-apply.js follow()): only Android agrees with the project.
+        project["source"]["applied"] = self.result(job)["applied"]
+        self.assertEqual(sorted(project["source"]["applied"]["platforms"]), ["android"])
+        plan = self.plan(project)
+        self.assertEqual((plan["edits"]["counts"]["clips"], plan["edits"]["pending"], plan["edits"]["since"],
+                          plan["edits"]["download"], plan["edits"]["blocked"]),
+                         (1, {"android": 0, "ios": 1}, "load", ["ios"], []))
         # With the download allowed, the job fetches the iOS original and applies the same edit there.
         self.remote["tl2101i"] = ios
         job, _ = self.run_apply(project, "edits", download=True)
         self.assertEqual(self.result(job)["parts"], ["ios"])
         self.assertEqual(self.bloom(tracks_of(self.served("ios")))["intensity"], 2.5)
+        project["source"]["applied"] = self.result(job)["applied"]
+        self.assertEqual(sorted(project["source"]["applied"]["platforms"]), ["android", "ios"])
+        plan = self.plan(project)
+        self.assertEqual((plan["edits"]["pending"], plan["edits"]["since"], plan["edits"]["blocked"]),
+                         ({"android": 0, "ios": 0}, "apply", [{"message": apply.NO_EDITS}]))
+        # Editing the same field again goes to both platforms without a conflict.
+        self.bloom(project["tracks"])["intensity"] = 3.0
+        plan = self.plan(project)
+        self.assertEqual((plan["edits"]["conflicts"], plan["edits"]["apply"]), ([], ["android", "ios"]))
+        job, _ = self.run_apply(project, "edits", download=True)
+        self.assertEqual(self.result(job)["parts"], ["android", "ios"])
+        for platform in ("android", "ios"):
+            self.assertEqual(self.bloom(tracks_of(self.served(platform)))["intensity"], 3.0)
+
+    def test_a_platform_left_out_keeps_its_record_until_it_takes_the_edits(self):
+        """A second edit while iOS still waits: Android takes only the new edit, iOS both, no conflict."""
+        ios = self.local.pop("tl2101i")
+        project = self.imported()
+        self.bloom(project["tracks"])["intensity"] = 2.5
+        job, _ = self.run_apply(project, "edits", platforms=("android",))
+        project["source"]["applied"] = self.result(job)["applied"]
+        project["tracks"][2]["events"][0]["start"] = 0.5
+        plan = self.plan(project)
+        self.assertEqual((plan["edits"]["pending"], plan["edits"]["conflicts"]), ({"android": 1, "ios": 2}, []))
+        job, _ = self.run_apply(project, "edits", platforms=("android",))
+        project["source"]["applied"] = self.result(job)["applied"]
+        self.assertEqual(self.timeline()["platforms"], {"android": "custom", "ios": "stock"})
+        self.remote["tl2101i"] = ios
+        job, _ = self.run_apply(project, "edits", download=True)
+        expected = copy.deepcopy(reg_tests.base_tracks())
+        self.bloom(expected)["intensity"] = 2.5
+        expected[2]["events"][0]["start"] = 0.5
+        for platform in ("android", "ios"):
+            self.assertEqual(tracks_of(self.served(platform)), expected)
 
     def test_an_unmanaged_server_asks_for_a_restart(self):
         project = self.edited(self.imported())

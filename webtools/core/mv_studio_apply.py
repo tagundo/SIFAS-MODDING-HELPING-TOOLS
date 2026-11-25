@@ -18,7 +18,9 @@ Modes:
   from (its source snapshot, ``mv_studio._native``) go onto the timeline the game plays now, field
   by field (``mv_studio_timeline.merge_changes``), with the native rewrite that keeps every other
   object's bytes. A field the game changed differently since loading is a conflict: nothing is
-  written, and the plan and the job list every conflict.
+  written, and the plan and the job list every conflict. After an apply, each platform's edits
+  count from what the project and that platform last agreed on (``source.applied``, per platform):
+  a platform left out with consent still gets the edits on a later apply.
 - restore (원래대로 되돌리기, stock MVs): the original timeline again.
 
 ``plan()`` writes nothing. The jobs check the game's timeline key against the plan's, validate
@@ -228,29 +230,43 @@ _MAX_SYNCED = 50000
 
 
 def _synced(project, snapshot):
-    """The fields this project and the game agreed on at its last successful apply (``source.applied``,
-    which the page stores from the job's result), or None. It belongs to the snapshot it was made
-    against: a project loaded again starts from its new snapshot."""
+    """{platform: fields} the project and each platform's game timeline agreed on at that
+    platform's last successful apply (``source.applied``, which the page stores from the job's
+    result; ``fields`` as ``mv_studio_timeline.synced_fields``). A platform without a record (never
+    applied, or left out with consent) merges against the loaded snapshot. The record belongs to
+    the snapshot it was made against: a project loaded again starts from its new snapshot, and a
+    malformed record counts as none."""
     applied = (project.get("source") or {}).get("applied")
     if (not isinstance(applied, dict) or applied.get("source") != _sha(snapshot)[:16]
-            or not isinstance(applied.get("fields"), dict)):
-        return None
-    fields, count = {}, 0
-    for event, values in applied["fields"].items():
-        if not isinstance(event, str) or len(event) > 200 or not isinstance(values, dict):
-            return None
-        for field, digest in values.items():
-            count += 1
-            if not isinstance(field, str) or len(field) > 120 or not isinstance(digest, str) \
-                    or not _DIGEST.fullmatch(digest) or count > _MAX_SYNCED:
-                return None
-        fields[event] = dict(values)
-    return fields
+            or not isinstance(applied.get("platforms"), dict) or set(applied["platforms"]) - set(PLATFORMS)):
+        return {}
+    result, count = {}, 0
+    for platform, entries in applied["platforms"].items():
+        if not isinstance(entries, dict):
+            return {}
+        fields = {}
+        for event, values in entries.items():
+            if not isinstance(event, str) or len(event) > 200 or not isinstance(values, dict):
+                return {}
+            for field, entry in values.items():
+                count += 1
+                digest, label = mv_studio_timeline.synced_digest(entry)
+                if (not isinstance(field, str) or len(field) > 120 or digest is None or not _DIGEST.fullmatch(digest)
+                        or label is not None and len(label) > 64 or count > _MAX_SYNCED):
+                    return {}
+            fields[event] = dict(values)
+        result[platform] = fields
+    return result
 
 
-def _applied(snapshot, base, ours):
-    """``source.applied`` after a successful apply: what the project and the game now agree on."""
-    return {"source": _sha(snapshot)[:16], "fields": mv_studio_timeline.synced_fields(base["tracks"], ours)}
+def _applied(snapshot, base, ours, synced, advanced):
+    """``source.applied`` after a successful job: the platforms in ``advanced`` (written, or found
+    to play the project already) now agree with the project; every other platform keeps its record
+    (or has none). None when no platform has one."""
+    agreed = mv_studio_timeline.synced_fields(base["tracks"], ours)
+    platforms = {platform: (agreed if platform in advanced else synced[platform]) for platform in PLATFORMS
+                 if platform in advanced or platform in synced}
+    return {"source": _sha(snapshot)[:16], "platforms": platforms} if platforms else None
 
 
 def _merge(base, ours, served_raw, synced=None):
@@ -262,16 +278,17 @@ def _merge(base, ours, served_raw, synced=None):
 
 
 def _pending(base, ours, synced):
-    """Edit counts (as register.count_edits) of what differs from the last agreed values: the edits
-    since loading, or since this project's last successful apply."""
+    """Edit counts (as register.count_edits) of what differs from one platform's last agreed values:
+    the edits since loading (``synced`` None), or since this project's last apply to it."""
     if synced is None:
         return register.count_edits(base["tracks"], ours)
     agreed = mv_studio_timeline.synced_fields(base["tracks"], ours)
     counts = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0}
+    digest = lambda entries, field: mv_studio_timeline.synced_digest(entries.get(field))[0]  # noqa: E731
     for track in base["tracks"]:
         for event in track["events"]:
             now, before = agreed.get(event["id"], {}), synced.get(event["id"], {})
-            fields = {field for field in now.keys() | before.keys() if now.get(field) != before.get(field)}
+            fields = {field for field in now.keys() | before.keys() if digest(now, field) != digest(before, field)}
             if not fields:
                 continue
             counts["clips"] += 1
@@ -328,9 +345,14 @@ def plan(repo_root, project, *, unbaked=(), language="en"):
     if unbaked:
         result["blocked"].append({"message": register.UNBAKED})
     blob = register._project_blob(project, target["base"], target["facts"])
-    # Edits since loading, or since this project's last successful apply.
-    edits = {"counts": _pending(base, ours, synced), "conflicts": [], "apply": [], "keep": [], "download": [],
-             "missing": [], "theirsOnly": 0, "blocked": [], "since": "apply" if synced is not None else "load"}
+    # Edits since loading, or since this project's last successful apply, per platform: a platform
+    # left out of an earlier apply still needs the edits the other one already has.
+    pending = {platform: _pending(base, ours, synced.get(platform)) for platform in _catalogued(target)}
+    shown = max(pending, key=lambda platform: pending[platform]["clips"], default=None)
+    edits = {"counts": pending[shown] if shown else register.count_edits(base["tracks"], ours), "conflicts": [],
+             "apply": [], "keep": [], "download": [], "missing": [], "theirsOnly": 0, "blocked": [],
+             "since": "apply" if shown in synced else "load",
+             "pending": {platform: counts["clips"] for platform, counts in pending.items()}}
     edits["unchanged"] = not edits["counts"]["clips"]
     every = {"counts": None, "unchanged": True, "download": [], "missing": [], "blocked": []}
     parsed, served_tracks = {}, {}
@@ -362,7 +384,7 @@ def plan(repo_root, project, *, unbaked=(), language="en"):
             edits["download" if served_status == "download" else "missing"].append(platform)
             continue
         try:
-            merged, conflicts, taken, theirs_only, _ = _merge(base, ours, served_raw, synced)
+            merged, conflicts, taken, theirs_only, _ = _merge(base, ours, served_raw, synced.get(platform))
         except ValueError as error:
             edits["blocked"].append({"message": str(error), "platform": platform})
             continue
@@ -472,36 +494,43 @@ def _bake_all(job, progress, repo_root, project, target, request):
 
 
 def _merge_edits(job, progress, repo_root, project, target, request):
-    """Edits only: (timelines, originals) with the project's edits rewritten onto what the game plays.
+    """Edits only: (timelines, originals, agreed) with the project's edits rewritten onto what the
+    game plays; ``agreed`` lists the platforms that play the project's values once the job is done.
 
     Every platform is merged before anything is rewritten, so one conflict anywhere refuses the
     whole apply (ConflictError, after an mv-conflicts event with the list). A platform whose
     served timeline or stock needs a download that was not allowed keeps what it plays, when the
-    page left it out with the user's consent."""
+    page left it out with the user's consent (and keeps its own record of the last apply)."""
     from mv_studio_live import KEEP
     snapshot = _snapshot(project)
     base, ours, _ = _ours(project, snapshot)
     synced = _synced(project, snapshot)
     timelines = {platform: KEEP for platform in _catalogued(target)}
-    if not _pending(base, ours, synced)["clips"]:
-        return timelines, {}
+    # Each platform against its own last agreed values: one left out of an earlier apply still
+    # takes the edits the other platform already has.
+    waiting = [platform for platform in _catalogued(target) if _pending(base, ours, synced.get(platform))["clips"]]
+    agreed = [platform for platform in _catalogued(target) if platform not in waiting]
+    if not waiting:
+        return timelines, {}, agreed
     blob = register._project_blob(project, target["base"], target["facts"])
 
     def consented(platform, status):
         return platform not in request["platforms"] and status == "download" and not request["download"]
 
     pending, conflicts = {}, []
-    for platform in _catalogued(target):
+    for platform in waiting:
         progress.check()
         served_raw, status = _served(repo_root, target, platform, blob, download=request["download"])
         if served_raw is None:
             if consented(platform, status):
                 continue
             raise ValueError(SERVED_MISSING_IOS if platform == "ios" else SERVED_MISSING_ANDROID)
-        merged, found, _, _, theirs = _merge(base, ours, served_raw, synced)
+        merged, found, _, _, theirs = _merge(base, ours, served_raw, synced.get(platform))
         conflicts.extend({"platform": platform, **item} for item in found)
         if merged is not None:
             pending[platform] = (served_raw, theirs, merged)
+        elif not found:
+            agreed.append(platform)  # The game already plays every edit.
     if conflicts:
         job.emit({"type": "mv-conflicts", "conflicts": conflicts})
         raise ConflictError(conflicts)
@@ -518,12 +547,13 @@ def _merge_edits(job, progress, repo_root, project, target, request):
         progress.check()
         progress.stage("merge-" + platform)
         output = mv_studio_timeline._rewrite_timeline(served_raw, theirs, {**theirs, "tracks": merged})
+        agreed.append(platform)
         if output == served_raw:
-            continue
+            continue  # The rewrite changes no byte: nothing to write for this platform.
         timelines[platform] = output
         if status in ("project", "download"):
             originals[platform] = stock_raw
-    return timelines, originals
+    return timelines, originals, agreed
 
 
 def _changed(target, timelines):
@@ -550,12 +580,15 @@ def _apply(job, repo_root, request, language):
         raise ValueError(STALE)
     snapshot = _snapshot(project)
     base, ours, _ = _ours(project, snapshot)
-    applied = _applied(snapshot, base, ours)
     fingerprints = {}
     if request["mode"] == "all":
         timelines, originals, fingerprints = _bake_all(job, progress, repo_root, project, target, request)
+        # Every platform asked for plays the whole project; one left out with consent keeps what it plays.
+        agreed = [platform for platform in _catalogued(target) if platform in request["platforms"]]
     else:
-        timelines, originals = _merge_edits(job, progress, repo_root, project, target, request)
+        timelines, originals, agreed = _merge_edits(job, progress, repo_root, project, target, request)
+    # What the project and each platform agree on after this job (the page keeps it as source.applied).
+    applied = _applied(snapshot, base, ours, _synced(project, snapshot), agreed)
     payloads = {platform: value for platform, value in timelines.items() if isinstance(value, bytes)}
     if not _changed(target, timelines):
         job.emit({"type": "mv-timeline", "mode": request["mode"], "target": _target_summary(target), "changed": False,

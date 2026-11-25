@@ -152,7 +152,8 @@ async function run() {
     await checked(page, '수정 사항: 마지막 적용 이후 없음');
     assert.match(await page.locator('#mv-apply-game').textContent(), /^게임: MV Studio 버전 1 \(\d{4}-\d{2}-\d{2}\) · 불러온 것: 원본 MV$/);
     const applied = await page.evaluate(() => MVStudio.getState().project.source.applied);
-    assert.deepEqual(Object.keys(applied.fields), ['cab-1:10:0']);
+    assert.deepEqual(Object.fromEntries(Object.entries(applied.platforms).map(([platform, fields]) => [platform, Object.keys(fields)])),
+      { android: ['cab-1:10:0'], ios: ['cab-1:10:0'] });
     await page.locator('#mv-apply-restore').waitFor();
     await shot(page, panel, 'apply-edits-done-ko.png');
 

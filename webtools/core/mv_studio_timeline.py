@@ -1214,16 +1214,33 @@ def _merge_fields(before, mine):
             yield field
 
 
+def _shown(value):
+    """The display form a synced entry keeps of an applied value (at most 64 characters)."""
+    label = _merge_label(value)
+    return label if len(label) <= 64 else label[:63] + "…"
+
+
+def synced_digest(entry):
+    """(digest, label) of one ``synced`` entry: ``[digest, label]`` as ``synced_fields`` makes it, or a
+    bare digest; (None, None) for anything else."""
+    if isinstance(entry, str):
+        return entry, None
+    if (isinstance(entry, (list, tuple)) and len(entry) == 2 and isinstance(entry[0], str)
+            and (entry[1] is None or isinstance(entry[1], str))):
+        return entry[0], entry[1]
+    return None, None
+
+
 def merge_changes(base, ours, theirs, synced=None):
     """Three-way merge of clip fields: put the edits ``ours`` made onto ``theirs``.
 
     ``base`` is the parse of the timeline a project was loaded from, ``ours`` the project's
     tracks normalized against it (mv_studio_register.normalize: same tracks, clips and value
     keys), ``theirs`` the parse of the timeline the game plays now. ``synced`` ({event id:
-    {field: field_digest}}, from ``synced_fields`` after an earlier apply of this project) holds
-    the values the project and the game last agreed on where they are not the base's. Every
-    clip's start, duration, label and each of its values (camera keyframes as one field) is
-    merged on its own, against its last agreed value:
+    {field: [field_digest, label]}}, from ``synced_fields`` after an earlier apply of this
+    project to this platform) holds the values the project and the game last agreed on where
+    they are not the base's. Every clip's start, duration, label and each of its values (camera
+    keyframes as one field) is merged on its own, against its last agreed value:
 
     - unchanged in ours: theirs stays (also a change the game made since);
     - changed in ours, and theirs still has the agreed value or already ours: ours is taken;
@@ -1249,7 +1266,9 @@ def merge_changes(base, ours, theirs, synced=None):
             agreed = synced.get(before["id"]) if isinstance(synced.get(before["id"]), dict) else {}
             for field in _merge_fields(before, mine):
                 old, new, now = _merge_value(before, field), _merge_value(mine, field), _merge_value(game, field)
-                old_digest = agreed.get(field) if isinstance(agreed.get(field), str) else field_digest(old)
+                old_digest, _ = synced_digest(agreed.get(field))
+                if old_digest is None:
+                    old_digest = field_digest(old)
                 new_digest, now_digest = field_digest(new), field_digest(now)
                 if new_digest == old_digest:
                     if now_digest != old_digest:
@@ -1272,15 +1291,16 @@ def merge_changes(base, ours, theirs, synced=None):
 
 
 def synced_fields(base, ours):
-    """What a project and the game agree on after a successful apply: {event id: {field: digest}} of
-    every field where ours is not the base (the base holds for every other field)."""
+    """What a project and the game agree on after a successful apply: {event id: {field: [digest,
+    label]}} of every field where ours is not the base (the base holds for every other field)."""
     result = {}
     for base_track, our_track in zip(base, ours):
         for before, mine in zip(base_track["events"], our_track["events"]):
             for field in _merge_fields(before, mine):
-                digest = field_digest(_merge_value(mine, field))
+                value = _merge_value(mine, field)
+                digest = field_digest(value)
                 if digest != field_digest(_merge_value(before, field)):
-                    result.setdefault(before["id"], {})[field] = digest
+                    result.setdefault(before["id"], {})[field] = [digest, _shown(value)]
     return result
 
 
