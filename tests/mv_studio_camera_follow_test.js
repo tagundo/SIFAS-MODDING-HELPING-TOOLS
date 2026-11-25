@@ -14,8 +14,10 @@
      samples; undo/redo rebakes identical arrays; the path cache key follows the slot's dance;
    - the no-regression rule: a project without rigs is never written to and gets no editor;
    - cancel, a member that is not loaded, a scene still loading, save and export guards;
-   - the scene sampler: positions and facing on a time grid, time-sliced, the playhead's frame
-     restored after every slice, cancellable. */
+   - blends through the bake: smoothstep mixes off the blend midpoints, a later rig over an
+     earlier one, the frames just outside a cut rig; the Y band's own hysteresis;
+   - the scene sampler: positions and facing on a time grid (the hips' rest turn removed),
+     time-sliced, the playhead's transforms restored after every slice, cancellable. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -237,6 +239,17 @@ function deadZone() {
   const band = (dy) => at(F.evaluateRig(rig, pathOf(count, (n) => ({ position: [0, 1.5 + (n ? dy : 0), 0] }))), count - 1, 3, 'aims')[1];
   near(band(.09), 1.5, 0, 'inside the height band');
   assert(band(.3) > 1.7, 'outside the height band');
+  // The hysteresis applies to the band on its own: a 1 m jump (no XZ move) is followed down to
+  // band × (1 − hysteresis), and only down to the band without it.
+  const bandResidual = (hysteresis) => {
+    const result = F.evaluateRig(F.normalizeRig({ ...rig, deadZone: { radius: .1, height: .1, hysteresis } }),
+      pathOf(count, (n) => ({ position: [0, n ? 2.5 : 1.5, 0] })));
+    for (let n = 0; n < count; n++) assert.equal(at(result, n, 3, 'aims')[0], 0, 'no XZ move');
+    return 2.5 - at(result, count - 1, 3, 'aims')[1];
+  };
+  const alphaY = F.alpha(.5), looseY = bandResidual(0), tightY = bandResidual(.5);
+  assert(looseY <= .1 && looseY > .1 * (1 - alphaY), `without hysteresis the band stops it at 0.1 m (${looseY})`);
+  assert(tightY <= .05 && tightY > .05 * (1 - alphaY), `with hysteresis the band stops it at 0.05 m (${tightY})`);
 }
 
 function stepResponse() {
@@ -292,9 +305,15 @@ function weights() {
   assert.equal(F.weight(rig, 2), 1, 'midpoint');
   near(F.weight(rig, 2.8), .5, 1e-12, 'halfway through the blend out');
   assert.equal(F.weight(rig, 3), 0, 'at the end');
+  // Off the midpoints smoothstep and a linear ramp differ: 0.1 s into the 0.5 s blend in is
+  // x = 0.2 → 0.104 (linear: 0.2); 0.1 s before the end of the 0.4 s blend out is x = 0.25 → 0.15625.
+  near(F.weight(rig, 1.1), .104, 1e-12, 'smoothstep blend in off its midpoint');
+  near(F.weight(rig, 2.9), .15625, 1e-12, 'smoothstep blend out off its midpoint');
   const cut = rigOf({ start: 1, end: 3, blendIn: 0, blendOut: 0 });
   assert.equal(F.weight(cut, 1), 1, 'a zero blend is a cut');
   assert.equal(F.weight(cut, 3), 1);
+  assert.equal(F.weight(cut, 1 - 1 / 60), 0, 'a frame before a cut rig: 0');
+  assert.equal(F.weight(cut, 3 + 1 / 60), 0, 'a frame after it: 0');
   const short = rigOf({ start: 1, end: 1.5, blendIn: 2, blendOut: 2 });
   assert.equal(F.weight(short, 1.25), 1, 'blends are at most half the rig');
 }
@@ -362,6 +381,72 @@ async function bake() {
   assert.deepEqual(shot1.values.keyframes, before, 'no rig: the original samples');
   assert.equal(project.editor.camera?.rigs, undefined);
   assert.equal(plugin.editedCount(ctx), 0);
+}
+
+// The rig pose expected for a stored rig: its evaluation on the stub member path (dancing).
+function expectedPoses(stored) {
+  const rig = F.normalizeRig(stored);
+  const { first, count } = F.frameRange(rig);
+  const path = { count, positions: new Float64Array(3 * count), yaw: new Float64Array(count) };
+  for (let n = 0; n < count; n++) {
+    const value = dancing((first + n) / 60, rig.target.slot);
+    path.positions.set(value.position, 3 * n);
+    path.yaw[n] = value.yaw;
+  }
+  return F.evaluateRig(rig, path);
+}
+const poseOf = (result, index) => ({ position: at(result, index), rotation: at(result, index, 4, 'rotations'), fov: result.fov });
+// A camera sample mixed toward a pose by w, written out here (lerp, slerp, lerp).
+const mixedPose = (sample, pose, w) => ({ position: sample.position.map((value, axis) => value + (pose.position[axis] - value) * w),
+  rotation: M.slerp(M.normalize(sample.rotation), pose.rotation, w), fov: sample.fov + (pose.fov - sample.fov) * w });
+const samePose = (sample, pose, message) => {
+  nearVector(sample.position, pose.position, 1e-9, `${message} position`);
+  assert(angle(sample.rotation, pose.rotation) < 1e-6, `${message} rotation (${angle(sample.rotation, pose.rotation)}°)`);
+  near(sample.fov, pose.fov, 1e-9, `${message} fov`);
+};
+const smoothstep = (x) => { const c = Math.min(1, Math.max(0, x)); return c * c * (3 - 2 * c); };
+
+// Blends through the bake: a blend region is the smoothstep mix of the shot's own camera and the
+// rig (off the midpoint, where a linear ramp or an overwrite differ); a later rig blends over an
+// earlier one; a cut rig leaves the frames just outside it as they were.
+async function blending() {
+  const project = nativeProject();
+  const { ctx, at: seek } = harness(project);
+  const shot = event(project, 'cam:1'), source = original('cam:1');   // 181 samples from frame 121
+  seek(shot.start + .5);
+  const a = F.addRig(ctx, { blendIn: .5, blendOut: .4 });   // frames 121..301: 30 in, 24 out
+  await settle(ctx);
+  const poseA = expectedPoses(F.rigs(ctx)[0]);
+  const weightA = (index) => smoothstep(index / 30) * smoothstep((180 - index) / 24);
+  near(weightA(6), .104, 1e-12, 'the weight 0.1 s into the blend in');
+  for (const index of [0, 1, 6, 15, 29, 30, 100, 156, 160, 174, 180]) {
+    samePose(shot.values.keyframes[index], mixedPose(source[index], poseOf(poseA, index), weightA(index)), `rig A, sample ${index}`);
+  }
+  // A second rig over the second half (frames 181..301, 0.5 s blend in, back view): it blends over
+  // rig A (array order), 50 % at its blend midpoint, and wins where its weight is 1.
+  const b = F.addRig(ctx, { blendIn: .5, blendOut: 0, view: 'back' });
+  F.setRange(ctx, b.id, shot.start + 1, shot.start + 3);
+  await settle(ctx);
+  assert.deepEqual(F.rigs(ctx).map((rig) => rig.id), [a.id, b.id]);
+  const poseB = expectedPoses(F.rigs(ctx)[1]);
+  const weightB = (index) => index < 60 ? 0 : smoothstep((index - 60) / 30);
+  near(weightB(75), .5, 1e-12);
+  for (const index of [6, 59, 60, 66, 75, 90, 100, 170, 179]) {
+    const overA = mixedPose(source[index], poseOf(poseA, index), weightA(index));
+    const expected = weightB(index) > 0 ? mixedPose(overA, poseOf(poseB, index - 60), weightB(index)) : overA;
+    samePose(shot.values.keyframes[index], expected, `rigs A then B, sample ${index}`);
+  }
+  assert(Math.hypot(...poseOf(poseA, 100).position.map((value, axis) => value - poseOf(poseB, 40).position[axis])) > 1, 'A and B differ');
+  // A cut rig (no blends) over frames 30..90 of shot 0: frames 29 and 91 keep their pose (the bake
+  // may store a quaternion with the other sign, for continuity with the rig's samples).
+  const shot0 = event(project, 'cam:0'), source0 = original('cam:0');
+  seek(.5);
+  const c = F.addRig(ctx, { blendIn: 0, blendOut: 0 });
+  F.setRange(ctx, c.id, .5, 1.5);
+  await settle(ctx);
+  const poseC = expectedPoses(F.rigs(ctx).find((rig) => rig.id === c.id));
+  for (const index of [0, 29, 91, 120]) samePose(shot0.values.keyframes[index], source0[index], `outside the cut rig, sample ${index}`);
+  for (const index of [30, 60, 90]) samePose(shot0.values.keyframes[index], poseOf(poseC, index - 30), `inside the cut rig, sample ${index}`);
 }
 
 // Order independence: a scoped bake first, then all, equals one bake of all; two rigs keep array order.
@@ -648,15 +733,22 @@ async function sceneSampler() {
   };
   Three.OrbitControls = class { constructor() { this.target = new THREE.Vector3(); } update() {} addEventListener() {} dispose() {} };
   const loaded = [];
+  const turn = (degrees) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), degrees * Math.PI / 180).toArray();
   Three.GLTFLoader = class {
-    parse(_bytes, _base, onLoad) {
+    parse(bytes, _base, onLoad) {
       const root = new THREE.Group(), hips = new THREE.Bone(), head = new THREE.Bone();
-      loaded.push({ root, hips, head });
+      // The 2-byte model is a member without motion whose hips rest turned 30° about +Y.
+      const still = bytes.byteLength === 2;
+      loaded.push({ root, hips, head, still });
       hips.name = 'Hips'; hips.userData.elichika_node = 3; hips.position.set(0, 1, 0);
       head.name = 'Head'; head.userData.elichika_node = 5; head.position.set(0, .5, 0);
       root.add(hips); hips.add(head);
+      if (still) {
+        hips.quaternion.fromArray(turn(30));
+        onLoad({ scene: root, animations: [] });
+        return;
+      }
       // Hips walk +X (three) 1 m/s and turn 90° about +Y over 4 s.
-      const turn = (degrees) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), degrees * Math.PI / 180).toArray();
       const clip = new THREE.AnimationClip('walk', 4, [
         new THREE.VectorKeyframeTrack('Hips.position', [0, 4], [0, 1, 0, 4, 1, 0]),
         new THREE.QuaternionKeyframeTrack('Hips.quaternion', [0, 4], [...turn(0), ...turn(90)]),
@@ -666,7 +758,7 @@ async function sceneSampler() {
   };
   const window = { THREE: Three, requestAnimationFrame() { return 1; }, cancelAnimationFrame() {},
     ResizeObserver: class { observe() {} disconnect() {} }, console: { warn() {} }, performance };
-  const context = vm.createContext({ window, fetch: async () => ({ ok: true, async arrayBuffer() { return new ArrayBuffer(1); } }),
+  const context = vm.createContext({ window, fetch: async (url) => ({ ok: true, async arrayBuffer() { return new ArrayBuffer(/2\.glb$/.test(url) ? 2 : 1); } }),
     AbortController, DOMException, Uint8Array, Uint16Array, Float64Array, setTimeout, Promise });
   for (const file of ['mv-studio-lighting.js', 'mv-studio-split.js', 'mv-studio-scene.js']) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/' + file), 'utf8'), context);
@@ -674,16 +766,20 @@ async function sceneSampler() {
   const scene = window.MVStudioScene.create({ clientWidth: 1280, clientHeight: 720, appendChild() {} }, { visible: true, onError(message) { throw new Error(message); } });
   const project = { token: 'follow', quality: { mode: 10, values: {} }, duration: 4,
     performers: [{ id: 'solo', position: 1, glb: '/api/mv-studio/media/' + '1'.padStart(32, '0') + '.glb',
-      rig: { focusParts: { 0: 5, 2: { world: [3, 0, 4] }, 3: 3 } }, transform: { position: [0, 0, 0] } }],
+      rig: { focusParts: { 0: 5, 2: { world: [3, 0, 4] }, 3: 3 } }, transform: { position: [0, 0, 0] } },
+    // A member turned 50° about +Y (three) by its performer transform, at x = 2.
+    { id: 'turned', position: 2, glb: '/api/mv-studio/media/' + '2'.padStart(32, '0') + '.glb',
+      rig: { focusParts: { 0: 5, 3: 3 } }, transform: { position: [2, 0, 0], rotation: turn(50) } }],
     tracks: [] };
   await scene.load(project);
-  assert.deepEqual(JSON.parse(JSON.stringify(scene.memberTargets())), [{ slot: 1, id: 'solo', parts: [0, 2, 3], facing: true }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(scene.memberTargets())), [{ slot: 1, id: 'solo', parts: [0, 2, 3], facing: true },
+    { slot: 2, id: 'turned', parts: [0, 3], facing: true }]);
   scene.seek(1, project, true);
   const headAt = () => scene.sampleMemberPath({ slot: 1, part: 0, times: [scene.inspect().time] });
   const playhead = await headAt();
   nearVector(playhead.positions, [-1, 1.5, 0], 1e-9, 'the head at the playhead (Unity, mirrored X)');
   // The member's transforms as the playhead posed them, read directly (local TRS and world matrices).
-  const { root: memberRoot, hips: hipsBone, head: headBone } = loaded[0];
+  const { root: memberRoot, hips: hipsBone, head: headBone } = loaded.find((item) => !item.still);
   const transforms = () => [memberRoot, hipsBone, headBone].map((node) => [node.position.toArray(), node.quaternion.toArray(), node.scale.toArray(),
     Array.from(node.matrixWorld.elements)]);
   const posed = transforms();
@@ -702,6 +798,11 @@ async function sceneSampler() {
   // transform and world matrix is exactly the one the playhead posed.
   assert.equal(scene.inspect().time, 1);
   assert.deepEqual(transforms(), posed, 'the playhead pose is restored (local TRS and world matrices)');
+  // The facing is the hips' turn from their rest pose: a member whose hips rest turned 30° and
+  // whose performer turns it 50° faces 50° (Unity yaw −50; −80 if the rest were not removed).
+  const still = await scene.sampleMemberPath({ slot: 2, part: 0, times: [0, 1, 2] });
+  nearVector(still.positions, [-2, 1.5, 0, -2, 1.5, 0, -2, 1.5, 0], 1e-9, 'the turned member\'s head (Unity)');
+  for (const yaw of still.yaw) near(yaw, -50, 1e-9, 'the facing without the hips rest');
   // The fixed world point part (Face) and a member without hips have no time dependence / facing.
   const face = await scene.sampleMemberPath({ slot: 1, part: 2, times: [0, 2] });
   nearVector(face.positions, [3, 0, 4, 3, 0, 4], 1e-12, 'a fixed world point');
@@ -714,6 +815,13 @@ async function sceneSampler() {
   scene.dispose();
 }
 
+// A test that never settles (a sampling that is never released) must not pass: the exit code
+// stays 1 until the end, and a watchdog fails a run that is still busy after two minutes.
+let finished = false;
+process.exitCode = 1;
+process.on('exit', () => { if (!finished) console.error('mv_studio_camera_follow_test: did not finish (a test never settled)'); });
+setTimeout(() => { console.error('mv_studio_camera_follow_test: timed out'); process.exit(1); }, 120000).unref();
+
 (async () => {
   lookRotationMatchesThree();
   staticViews();
@@ -724,6 +832,7 @@ async function sceneSampler() {
   weights();
   cacheKey();
   await bake();
+  await blending();
   await orderIndependence();
   await halfFrame();
   await continuity();
@@ -735,4 +844,6 @@ async function sceneSampler() {
   await commands();
   await sceneSampler();
   console.log('mv_studio_camera_follow_test: ok');
-})().catch((error) => { console.error(error); process.exit(1); });
+  finished = true;
+  process.exitCode = 0;
+})().catch((error) => { finished = true; console.error(error); process.exit(1); });
