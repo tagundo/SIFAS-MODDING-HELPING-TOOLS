@@ -694,6 +694,55 @@ class ViewerTransplantTests(unittest.TestCase):
             for name in ("existing-face.unity", "thumbnail.unity", "modinstall.txt"):
                 self.assertEqual(result.read(name), members[name])
 
+    def test_face_inside_the_wearer_archive_is_read_for_a_head_mesh_part_graft(self):
+        """The archive keeps its face; the part graft still reads its eye and mouth UVs."""
+        from test_model_faces import FaceTests, bundle
+        from webtools.core import viewer_archive
+        from webtools.tools import costume
+        import graft_game_compat
+
+        archive = self.root / "extracted/zipped-face.zip"
+        body = costume_fixture(platform=9, body_owner=207)
+        self.donor.write_bytes(body)
+        face_author = FaceTests()
+        face_author.UnityPy = UnityPy
+        members = {
+            "costume.unity": body,
+            "existing-face.unity": bundle([("Eyes.assets", face_author.scene("Eyes", 207, 13))]),
+            "thumbnail.unity": bundle_fixture(platform=13),
+            "modinstall.txt": (b"chara_id=207\ncostume_file='costume.unity'\n"
+                               b"costume_facedynamic_file='existing-face.unity'\n"
+                               b"thumbnail_file='thumbnail.unity'\n"),
+        }
+        with zipfile.ZipFile(archive, "w") as writer:
+            for name, raw in members.items():
+                writer.writestr(name, raw)
+        cache = self.root / ".viewer-cache"
+        with viewer_archive.expand_inputs([str(archive)], cache) as expanded:
+            rig = model_viewer.prepare(expanded.paths, rigged=True, face_context={"enabled": False})["rig"]
+            model_edits.register_session(self.token, expanded.paths, rig, originals=[str(archive)],
+                                         origins=expanded.origins, archive_members=expanded.archive_members)
+        seen = []
+        real = costume.run_costume_part_transplant
+
+        def graft(job, params):
+            # The staged copies are removed with the job inputs: read them now.
+            for path in params["face_companions"]:
+                seen.append((Path(path).read_bytes(),
+                             len(graft_game_compat.companion_footprints([UnityPy.load(path)]))))
+            return real(job, params)
+
+        request = viewer_transplants.validate_request(self.request(operation="part", partRoot="BreastSize"))
+        job = Job(secrets.token_hex(6), "viewer_transplant")
+        with patch.object(costume, "run_costume_part_transplant", side_effect=graft):
+            viewer_transplants.run_transplant(job, request, output_root=self.root / "modded/viewer", cache_root=cache)
+        self.assertEqual([raw for raw, _ in seen], [members["existing-face.unity"]],
+                         "only the archive's face is read; the thumbnail is not a face")
+        self.assertGreater(seen[0][1], 0, "its renderers give eye/mouth UV footprints")
+        with zipfile.ZipFile(job.output_paths()[0]) as result:
+            self.assertEqual(result.namelist(), list(members))
+            self.assertEqual(result.read("existing-face.unity"), members["existing-face.unity"])
+
     def test_paired_target_archive_is_refused_instead_of_leaving_stale_models(self):
         archive = self.root / "extracted/paired.zip"
         with zipfile.ZipFile(archive, "w") as output:

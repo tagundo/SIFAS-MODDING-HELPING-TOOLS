@@ -291,6 +291,40 @@ def _prepare_face_companions(context, saved, body, body_index, body_platform, di
     return prepared
 
 
+def _archive_face_inputs(context, saved, body_index, directory):
+    """Read-only copies of the facial bundles packed in the wearer's own archive.
+
+    The result archive keeps these members unchanged, so they are never
+    republished here. A part graft onto a head mesh only reads their eye and
+    mouth UVs, which sample the costume's head texture in game.
+    """
+    from . import face_platforms, model_faces, model_viewer
+
+    sources, containers = context["sources"], context["containers"]
+    wearer = sources[body_index]
+    if wearer["member"] is None:
+        return []
+    members = [index for index, source in enumerate(sources)
+               if index != body_index and source["container"] == wearer["container"] and source["member"] is not None]
+    if not members:
+        return []
+    previews = saved.get("preview_paths", [])
+    if len(previews) != len(containers):
+        raise ValueError("The edited facial companions lost their original source identities.")
+    deadline = time.monotonic() + model_faces.FACE_SECONDS
+    directory.mkdir()
+    paths = []
+    for index in members:
+        path = directory / f"archive-face-{index}.unity"
+        path.write_bytes(_face_export_raw(sources[index], previews, containers))
+        scene = model_viewer._Scene(model_viewer._environment([str(path)], deadline), deadline)
+        if not face_platforms.is_face(scene):
+            path.unlink()  # A thumbnail or another model in the archive.
+            continue
+        paths.append(path)
+    return paths
+
+
 def _preserve_face_companions(context, saved, models, body, body_platform, *, prepared):
     """Publish source-bound face copies alongside the transplanted body."""
     if not prepared:
@@ -511,6 +545,10 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
             # Exact face/source checks belong before the potentially long graft.
             face_companions = _prepare_face_companions(context, saved, wearer, request["sourceIndex"],
                                                        wearer_platform, inputs / "facial-companions")
+            # A wearer archive keeps its face inside; a head-mesh part graft
+            # still has to read it to protect the eye and mouth texels.
+            archive_faces = (_archive_face_inputs(context, saved, request["sourceIndex"], inputs / "archive-faces")
+                             if operation == "part" else [])
             if job.should_stop():
                 return "Cancelled"
             job.progress(1, 3)
@@ -532,7 +570,7 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                     "donor_renderer": request["donorRenderer"],
                     "target_renderer": request["targetRenderer"] or None, "new_submesh": "atlas",
                     # Read-only: a head-mesh target protects the face's eye/mouth texels.
-                    "face_companions": [str(item["path"]) for item in face_companions],
+                    "face_companions": [str(item["path"]) for item in face_companions] + list(map(str, archive_faces)),
                     "reuse_empty_uv": request["reuseEmptyUV"], "relocate_empty_uv": request["relocateEmptyUV"],
                     "upscale_textures_for_uv_reuse": request["upscaleTexturesForUVReuse"],
                     **({"uv_placement": request["uvPlacement"]} if request["uvPlacement"] is not None else {})})
