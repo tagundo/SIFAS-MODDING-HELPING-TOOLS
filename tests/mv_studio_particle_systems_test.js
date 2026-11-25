@@ -360,6 +360,68 @@ function testBurstsCyclesAndExpiry() {
   assert.equal(looping.sample(91, 30).length, 4, "a time-zero burst fires once per loop");
 }
 
+// A game run's own device frames (stream.frames, libunity.so 0x1ce1f4 / 0x1cfbd4 / 0x1d7490): each
+// frame's Time.deltaTime, scaled by simulationSpeed, runs in sub-steps of dt / ceil(dt / .03) when it
+// exceeds Time.maximumParticleDeltaTime (.03), the last step taking the accumulator's rest.
+function testDeviceFrameSteps() {
+  // Frames of exactly 1/30 s are the display path: two 1/60 steps, the prewarm remainder after them.
+  for (const main of [{}, {prewarm: true}]) {
+    const row = system({main: {speed: constant(1), gravity: constant(.3), ...main}});
+    const display = P.create(row, 7), device = P.create(row, 7);
+    const updates = Array(200).fill(f32(1 / 30));
+    for (const count of [1, 2, 5, 77, 200]) {
+      assert.deepEqual(snapshot(device, device.frames(updates, count)), snapshot(display, display.sample(count, 30)),
+        `${JSON.stringify(main)} after ${count} frames`);
+    }
+    assert.deepEqual(snapshot(device, device.frames(updates, 33)), snapshot(display, display.sample(33, 30)), "back to a checkpoint");
+  }
+  // Sub-steps from the fall of one burst particle: n equal Euler steps of h fall g h^2 n (n + 1) / 2.
+  const falling = speed => system({main: {looping: false, duration: 10, lifetime: constant(10), gravity: constant(1),
+    simulationSpeed: speed}, shape: null, emission: {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0,
+    probability: 1}]}});
+  const fall = (rawDt, speed = 1) => {
+    const [atom] = P.create(falling(speed), 3).frames([rawDt], 1);
+    return -atom.y;
+  };
+  const expected = (total, steps) => 9.81 * (total / steps) ** 2 * steps * (steps + 1) / 2;
+  for (const [rawDt, steps] of [[.2, 7], [.03, 1], [.031, 2], [1 / 3, 12], [.0166, 1]]) {
+    assert.ok(Math.abs(fall(rawDt) - expected(rawDt, steps)) < 2e-5, `${rawDt} s in ${steps} steps: ${fall(rawDt)}`);
+  }
+  // The speed scales the frame before it is divided: .04 s at speed .5 is one .02 s step.
+  assert.ok(Math.abs(fall(.04, .5) - expected(.02, 1)) < 1e-6, `speed .5: ${fall(.04, .5)}`);
+  // A device run's identity is its update array; a new array starts again from the activation.
+  const stream = P.create(falling(1), 3), first = [.2, .2];
+  const one = snapshot(stream, stream.frames(first, 2));
+  stream.frames([.1], 1);
+  assert.deepEqual(snapshot(stream, stream.frames(first, 2)), one);
+  assert.deepEqual(stream.frames(first, 3), [], "a count past the updates");
+}
+
+// The device frames of a game run: activation, the frame a time shows, the song-end hold.
+function testFrameGrid() {
+  assert.equal(P.frameGrid(null), null);
+  assert.equal(P.frameGrid([[0, .2]]), null, "two frames at least");
+  assert.equal(P.frameGrid([[1, .2], [.9, .2]]), null, "the director never goes back");
+  assert.equal(P.frameGrid([[1, .2], [1.2, 0]]), null, "every frame has a deltaTime");
+  const grid = P.frameGrid([[0, .1, 10], [0, .2, 11], [.4, .25, 12], [.65, .3, 13], [.9, .2, 14], [.9, .15, 15], [.9, .1, 16]]);
+  assert.equal(grid.length, 7);
+  assert.equal(grid.activation(.4), 2, "the first frame reaching the clip start");
+  assert.equal(grid.activation(.5), 3);
+  assert.equal(grid.activation(0), 0, "a clip the first frame already shows: taken from the first frame");
+  assert.equal(grid.activation(1), -1, "no frame reaches the start");
+  assert.equal(grid.shown(.4), 2);
+  assert.equal(grid.shown(.6), 2, "between frames: the last one before");
+  assert.equal(grid.shown(.9), 6, "the song-end hold shows its last frame");
+  assert.equal(grid.shown(-.1), -1);
+  assert.equal(grid.shown(1), null, "past the last frame");
+  grid.pin = 15;
+  assert.equal(grid.shown(.9), 5, "a pinned frame among the frames at its time");
+  assert.equal(grid.shown(.65), 3, "a pin elsewhere does not apply");
+  grid.pin = null;
+  assert.ok(Math.abs(grid.elapsed(2, 4) - (f32(.25) + f32(.3) + f32(.2))) < 1e-12);
+  assert.equal(grid.elapsed(4, 3), 0);
+}
+
 function testCurvesAndColorsOverLifetime() {
   const row = system({main: {looping: false, duration: 1, lifetime: constant(2), size: constant(2)},
     emission: {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]},
@@ -825,6 +887,99 @@ async function testCullingFreezesTheClockOffScreen() {
   controller.dispose();
 }
 
+// update's grid (a game run's own device frames, frameGrid): the clip activates in the first frame
+// whose director time reaches its start and steps that frame's Time.deltaTime; every later frame steps
+// its own, and a culled system only the frames whose previous frame showed its box, on that frame's
+// cameras. 12035 dump5: ParticleSystem.time = sum of deltaTime over frames A .. N-1.
+async function testDeviceFramesInApply() {
+  const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]},
+    {parent: 0, path: "fx/cloud", layer: 1, position: [0, 0, 10], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
+  const once = {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]};
+  const main = {duration: 100, lifetime: constant(100), size: constant(1), cullingMode: 0, looping: true};
+  const culled = system({path: "fx/culled", node: 1, shape: null, emission: once,
+    culling: {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true}, main});
+  const kept = system({path: "fx/kept", node: 1, shape: null, emission: {rate: constant(30), bursts: []},
+    culling: {pauses: false, bounds: null, uniform: true}, main});
+  const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
+    templates: [{name: "fx", nodes, systems: [culled, kept]}],
+    cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1},
+      {trackId: "track", eventId: "track:1", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 2}]};
+  const root = new T.Group();
+  const controller = await P.apply(T, root, descriptor);
+  const project = {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 10}, {id: "track:1", start: .5, duration: 10}]}],
+    quality: {values: {stage_display: true}}};
+  // A slow device: director steps of .19 .. .27 s, Time.deltaTime clamped to 1/3 on a long frame, and a
+  // song-end hold of three frames at 6.5 s.
+  const rows = [];
+  for (let time = .5, k = 0; time < 6.4; k++) {
+    const step = [.19, .23, .27, .21][k % 4] + (k === 9 ? .25 : 0);
+    rows.push([Math.round(time * 1000) / 1000, Math.min(1 / 3, [.18, .24, .26, .22][k % 4] + (k === 9 ? .25 : 0)), 100 + k]);
+    time += step;
+  }
+  rows.push([6.5, .2, 100 + rows.length], [6.5, .21, 101 + rows.length], [6.5, .22, 102 + rows.length]);
+  const grid = P.frameGrid(rows);
+  assert.ok(grid, "a valid device grid");
+  const camera = new T.PerspectiveCamera(30, 16 / 9, .1, 1000);
+  const asked = [];
+  const view = {key: {}, cameraAt(time) {
+    asked.push(time);
+    camera.position.set(0, 0, 0);
+    camera.lookAt(0, 0, time >= 2 && time < 3 ? -10 : 10);
+    camera.updateMatrixWorld();
+    return camera;
+  }};
+  const state = () => Object.fromEntries(controller.inspect().map(row => [`${row.cue}/${row.path}`, row]));
+  const activated = grid.activation(1), last = grid.shown(4);
+  controller.update(4, project, view, null, grid);
+  let row = state();
+  const kept0 = row["track:0/fx/kept"], culled0 = row["track:0/fx/culled"];
+  assert.equal(kept0.device, true);
+  assert.equal(kept0.frames, last - activated + 1);
+  assert.equal(kept0.updates, last - activated + 1);
+  let sum = 0;
+  for (let k = activated; k <= last; k++) sum += f32(rows[k][1]);
+  assert.ok(Math.abs(kept0.time - sum) < 1e-9, `time ${kept0.time} = deltaTime of frames A .. j ${sum}`);
+  // The culled system steps a frame only when the frame before it saw the box.
+  let culledSum = f32(rows[activated][1]), culledUpdates = 1;
+  for (let k = activated + 1; k <= last; k++) {
+    if (rows[k - 1][0] >= 2 && rows[k - 1][0] < 3) continue;
+    culledSum += f32(rows[k][1]);
+    culledUpdates++;
+  }
+  assert.ok(culledUpdates < kept0.updates);
+  assert.equal(culled0.updates, culledUpdates);
+  assert.ok(Math.abs(culled0.time - culledSum) < 1e-9);
+  for (let k = activated; k < last; k++) assert.ok(asked.includes(rows[k][0]), `cameras at frame ${k}'s director time`);
+  // The same particles as the stream on the same updates.
+  const stream = P.create(kept, 1234);
+  const updates = rows.slice(activated, last + 1).map(entry => f32(entry[1]));
+  assert.equal(kept0.alive, stream.frames(updates, updates.length).length);
+  // A clip the first frame already shows runs from the first frame (its earlier frames are not known).
+  const early = row["track:1/fx/kept"];
+  assert.equal(early.device, true);
+  assert.equal(early.frames, last + 1);
+  // Seeking back: the earlier frame's state again.
+  controller.update(1.5, project, view, null, grid);
+  row = state();
+  assert.equal(row["track:0/fx/kept"].frames, grid.shown(1.5) - activated + 1);
+  // A director time between frames shows the last frame before it; before the activation frame the clone is not drawn.
+  controller.update(rows[activated][0] - 1e-3, project, view, null, grid);
+  assert.equal(state()["track:0/fx/kept"], undefined, "inside the clip window but before its first game frame");
+  // The song-end hold: the last frame at its time, or the pinned one.
+  controller.update(6.5, project, view, null, grid);
+  const held = state()["track:0/fx/kept"].frames;
+  grid.pin = 100 + rows.length - 3;
+  controller.update(6.5, project, view, null, grid);
+  assert.equal(state()["track:0/fx/kept"].frames, held - 2);
+  grid.pin = null;
+  // Past the last frame, and without a grid: the display frames.
+  controller.update(7, project, view, null, grid);
+  assert.equal(state()["track:0/fx/kept"].device, false);
+  controller.update(4, project, view);
+  assert.equal(state()["track:0/fx/kept"].frames, P.activeFrames({start: 1, duration: 10}, 4, 30));
+  controller.dispose();
+}
+
 (async () => {
   testDrawOrderMatchesNativeLanes();
   testPerStepLifetimeFloor();
@@ -834,6 +989,8 @@ async function testCullingFreezesTheClockOffScreen() {
   testProceduralPrewarmRegeneration();
   testPrewarmRemainderAtSimulationSpeed();
   testBurstsCyclesAndExpiry();
+  testDeviceFrameSteps();
+  testFrameGrid();
   testCurvesAndColorsOverLifetime();
   testOrbitalRadialAndBurstSpread();
   testLimitVelocityDampenAndDrag();
@@ -845,6 +1002,7 @@ async function testCullingFreezesTheClockOffScreen() {
   await testTiltedAndLocallyScaledBillboards();
   await testPrefabAnimatorCurves();
   await testCullingFreezesTheClockOffScreen();
+  await testDeviceFramesInApply();
   console.log("mv_studio_particle_systems_test: ok");
 })().catch(error => {
   console.error(error);
