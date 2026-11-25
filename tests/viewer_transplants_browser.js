@@ -153,6 +153,11 @@ async function start() {
       await page.waitForFunction(({ operation }) => ModelViewer.getState().transplants.donors.some(entry => entry.operation === operation && entry.donor), { operation: operation.value });
       await panel.locator('.viewer-transplant-stage canvas').waitFor({ state: 'visible' });
       if (operation.value === 'part') {
+        const targetHint = panel.locator('#viewer-part-transplant-target-mesh-help');
+        assert.equal(await panel.locator('label:has(#viewer-part-transplant-target-mesh) > span').innerText(), 'Receiving mesh');
+        assert.equal(await targetHint.getAttribute('data-target-kind'), 'body', 'Body stays the default receiving mesh');
+        assert((await targetHint.innerText()).includes('the blush is not affected'));
+        assert.equal(await panel.locator('#viewer-part-transplant-target-mesh').getAttribute('aria-describedby'), 'viewer-part-transplant-target-mesh-help');
         const placement = panel.locator('#viewer-part-transplant-uv-placement');
         assert.equal(await placement.inputValue(), 'same_position', 'Original UV position reuse is the default');
         assert.deepEqual(await placement.locator('option').evaluateAll(options => options.map(option => option.value)), placementChoices);

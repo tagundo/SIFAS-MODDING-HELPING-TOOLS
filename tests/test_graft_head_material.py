@@ -7,6 +7,7 @@ Head_All/Head_Face/mesh_facedots). A copied material or an atlas on such a
 renderer is never drawn, and an atlas would move the UV0-driven cheek blush.
 """
 from pathlib import Path
+import re
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -206,6 +207,23 @@ class FaceTargetTransplantTests(unittest.TestCase):
                 cpt.transplant_part("donor.unity", "target.unity", "out.unity", auto=True,
                                     target_renderer=renderers["Face"].path_id)
         self.assertEqual(str(caught.exception), FACE_TARGET_REFUSED)
+
+
+class RefusalTranslationTests(unittest.TestCase):
+    """Fixed refusal sentences are translated by exact key in every UI."""
+
+    def test_every_refusal_has_korean_and_japanese_text(self):
+        from graft_texture_atlas import CULL_MODE_HINT
+        from webtools import i18n
+        script = (ROOT / "webtools/web/static/viewer-transplants.js").read_text(encoding="utf-8")
+        for sentence in (HEAD_ATLAS_REFUSED, HEAD_FACE_REQUIRED, HEAD_NO_SPACE, FACE_TARGET_REFUSED, CULL_MODE_HINT):
+            with self.subTest(sentence=sentence[:40]):
+                self.assertIn('"' + sentence + '"', script)
+                for language in ("ko", "ja"):
+                    self.assertNotEqual(i18n.tr(sentence, language), sentence)
+                    self.assertIn(sentence, cpt._TRANSLATIONS[language])
+                    self.assertNotEqual(cpt._TRANSLATIONS[language][sentence], sentence)
+        self.assertNotRegex(CULL_MODE_HINT, re.compile("head accessory", re.I))
 
 
 if __name__ == "__main__":
