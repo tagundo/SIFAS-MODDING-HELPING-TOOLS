@@ -141,6 +141,56 @@ def canonical_body_smr(objects):
     return candidates[0][0]
 
 
+FACE_TARGET_REFUSED = (
+    "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original "
+    "head material and fixed blush positions. Choose Body or Hair as the wearer mesh.")
+
+
+def _hierarchy(objects, owner):
+    """GameObject -> (name, parent GameObject, child GameObjects) in owner's file."""
+    nodes = {}
+    transforms = {}
+    for obj in objects.values():
+        if obj.assets_file is owner.assets_file and obj.type.name in ("Transform", "RectTransform"):
+            transforms[obj.path_id] = obj.read_typetree()
+    for path_id, tree in transforms.items():
+        go = tree.get("m_GameObject", {}).get("m_PathID")
+        father = transforms.get(tree.get("m_Father", {}).get("m_PathID"))
+        parent = father.get("m_GameObject", {}).get("m_PathID") if father else None
+        children = [transforms[c["m_PathID"]].get("m_GameObject", {}).get("m_PathID")
+                    for c in tree.get("m_Children", []) if c.get("m_PathID") in transforms]
+        game_object = objects.get(go)
+        name = game_object.read_typetree().get("m_Name", "") if game_object is not None else ""
+        nodes[go] = (name, parent, children)
+    return nodes
+
+
+def _ancestors(nodes, game_object):
+    seen = []
+    while game_object is not None and game_object in nodes and game_object not in seen:
+        seen.append(game_object)
+        game_object = nodes[game_object][1]
+    return seen
+
+
+def _renderer_game_object(renderer):
+    pointer = renderer.read_typetree().get("m_GameObject", {})
+    return pointer.get("m_PathID") if pointer.get("m_FileID", 0) == 0 else None
+
+
+def face_combined_renderer(objects, renderer):
+    """True when the client folds this renderer into its combined face.
+
+    MergeFace moves mesh_face's surfaces into CombineFace, which is drawn with
+    BodyPartManager.headMaterial and its own baked vertices; bone-less face
+    pieces are only placed rigidly. Neither can carry a skinned graft.
+    """
+    if not renderer.read_typetree().get("m_Bones"):
+        return True
+    nodes = _hierarchy(objects, renderer)
+    return any(nodes[node][0] == "mesh_face" for node in _ancestors(nodes, _renderer_game_object(renderer)))
+
+
 def _reference_trees(objects):
     # AssetBundle preload/container pointers describe dependencies, not another
     # rendered surface. Texture and shader payloads cannot reference a Material
@@ -287,6 +337,8 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     group_count = len(working_mesh.get("m_SubMeshes", []))
     if not materials or group_count != len(materials) + len(additions):
         raise ValueError("The Body needs exactly one material source for each triangle group; reopen an intact costume and retry the graft.")
+    if face_combined_renderer(objects, smr_object):
+        raise ValueError(FACE_TARGET_REFUSED)
     first_material = _resolve(objects, materials[0], "Material", "The Body's original material")
     if first_material.assets_file is not smr_object.assets_file:
         raise ValueError("The Body material must be stored beside its mesh before grafting.")

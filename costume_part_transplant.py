@@ -1999,6 +1999,10 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         raise ValueError("Choose a skinned donor and target mesh.")
     if d_smr is None or t_smr is None:
         raise RuntimeError("donor or target has no skinned body renderer")
+    if new_submesh == "atlas":
+        from graft_game_compat import FACE_TARGET_REFUSED, face_combined_renderer
+        if face_combined_renderer(tid, t_smr):
+            raise ValueError(FACE_TARGET_REFUSED)
 
     # ---- masked / board-face target (e.g. Rina-chan board): world-spacing its body
     #      desyncs it from the untouched face/expression meshes and hangs the in-game
