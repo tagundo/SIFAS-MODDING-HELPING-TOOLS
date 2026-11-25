@@ -4,7 +4,11 @@ Vacancy is measured from texture texels touched by triangles and their original
 point/linear sampler, never from color or alpha. Optional detached enlargement
 matches corresponding source maps before retrying. No border pixels, padding
 or UV inset are generated. Unsupported combinations return None so the caller
-can use the ordinary atlas path.
+can use the ordinary atlas path (or refuse, when the caller has no atlas).
+
+``reserved`` occupancy lists texture areas that other surfaces sample from the
+same receiver texture: their UV0 triangles and fixed UV rectangles. These masks
+only decide where donor texels may go; they never add or change pixels.
 """
 import copy
 import math
@@ -68,9 +72,37 @@ def _triangle_texels(uv, faces, width, height, linear, wraps, budget):
     return mask
 
 
+def _reserved_texels(reserved, width, height, linear, wraps, budget):
+    """Texels sampled by other receiver-texture surfaces at one texture size.
+
+    ``reserved`` is ``{"surfaces": [(uv, faces), ...], "rects": [(u0, v0,
+    u1, v1), ...]}`` in normalized receiver UVs. Rectangles are closed and are
+    widened by the sampler's own support, exactly like triangle footprints.
+    """
+    import numpy as np
+    mask = np.zeros((height, width), dtype=bool)
+    if not reserved:
+        return mask
+    for uv, faces in reserved.get("surfaces", ()):
+        if len(faces):
+            mask |= _triangle_texels(uv, faces, width, height, linear, wraps, budget)
+    radius = .5 if linear else 0.
+    for u0, v0, u1, v1 in reserved.get("rects", ()):
+        xs, ys = np.arange(width), np.arange(height)
+        columns = (xs <= u1 * width + radius + 1e-9) & (xs + 1 >= u0 * width - radius - 1e-9)
+        rows = (ys <= v1 * height + radius + 1e-9) & (ys + 1 >= v0 * height - radius - 1e-9)
+        # Source images use top-left rows; Unity UVs use bottom-left.
+        mask[np.ix_(rows[::-1], columns)] = True
+    return mask
+
+
+def _fallback_note(atlas_fallback):
+    return "; using the texture atlas." if atlas_fallback else "."
+
+
 def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=None,
                      diagnostics=None, max_pixels=16777216, max_total_bytes=268435456,
-                     max_raster_tests=100000000):
+                     max_raster_tests=100000000, reserved=None, atlas_fallback=True):
     """Return a same-UV AtlasBake, or None with an optional fallback diagnostic.
 
     sources must align with the mesh's temporary material/submesh groups. The
@@ -79,6 +111,7 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
     Vacancy is required at every slot's base level. Coarser authored levels are
     copied under their own triangle footprints, with shared receiver/donor mip
     texels counted in diagnostics. Every other receiver texel stays unchanged.
+    Texels in ``reserved`` count as used by the receiver.
     """
     import numpy as np
     from PIL import Image
@@ -87,7 +120,7 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
     sources = list(sources)
     def decline(reason):
         if diagnostics is not None:
-            diagnostics.append("Empty UV reuse unavailable: " + str(reason) + "; using the texture atlas.")
+            diagnostics.append("Empty UV reuse unavailable: " + str(reason) + _fallback_note(atlas_fallback))
         return None
     if original_group_count != 1:
         return decline("this mode requires one original receiver Body material")
@@ -159,6 +192,8 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
                 if output_bytes + decoded_bytes + mask_bytes[0] + width * height > max_total_bytes:
                     raise _CoverageLimit("UV occupancy masks and decoded images exceed the memory budget")
                 masks[key] = _triangle_texels(uv, groups[group_index], width, height, linear, wraps, budget)
+                if group_index == 0 and reserved:
+                    masks[key] |= _reserved_texels(reserved, width, height, linear, wraps, budget)
                 mask_bytes[0] += width * height
             return masks[key]
         # Check every active texture's native sampling footprint before decode.
@@ -166,7 +201,8 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
             receiver = coverage(0, width, height, sampler)
             for group_index in range(1, len(groups)):
                 if np.any(receiver & coverage(group_index, width, height, sampler)):
-                    return decline(slot + " donor UVs touch texture texels already used by retained receiver triangles")
+                    return decline(slot + " donor UVs touch texture texels already used by retained receiver triangles"
+                                   + (" or by other surfaces of this texture" if reserved else ""))
         textures = {}
         decoder = image_decoder or _decode_default
         coarse_receiver = coarse_donors = 0
@@ -210,35 +246,47 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
         return decline(error)
 
 
-def _empty_rectangles(used, width, height, residue, alignment, maximum):
-    """Yield bounded empty native-pixel rectangles using a summed-area table."""
+def _overlap_counts(used, shape):
+    """Count used texels under ``shape`` at every placement, by FFT correlation.
+
+    Returns an array indexed by the shape's top-left image row/column. Only an
+    exact zero count means the shape's own texels are all free there.
+    """
     import numpy as np
-    if width > used.shape[1] or height > used.shape[0]:
-        return
-    integral = np.zeros((used.shape[0] + 1, used.shape[1] + 1), dtype="uint32")
-    integral[1:, 1:] = used[::-1]
-    integral.cumsum(axis=0, out=integral)
-    integral.cumsum(axis=1, out=integral)
-    xs = np.arange(residue[0] % alignment[0], used.shape[1] - width + 1, alignment[0], dtype="int64")
-    found = 0
-    for y in range(residue[1] % alignment[1], used.shape[0] - height + 1, alignment[1]):
-        occupied = (integral[y + height, xs + width] - integral[y, xs + width]
-                    - integral[y + height, xs] + integral[y, xs])
-        for x in xs[occupied == 0]:
-            yield int(x), y
-            found += 1
-            if found >= maximum:
-                return
+    height, width = used.shape
+    h, w = shape.shape
+    spectrum = np.fft.rfft2(used.astype(np.float64)) * np.fft.rfft2(shape[::-1, ::-1].astype(np.float64), s=(height, width))
+    correlation = np.fft.irfft2(spectrum, s=(height, width))
+    # Circular entries at and after (h - 1, w - 1) equal the linear sums.
+    return correlation[h - 1:, w - 1:] > .5
+
+
+# Offsets on these power-of-two grids keep that many authored mip levels exact
+# (level L is exact when the offset is a multiple of 2**L). Coarser grids are
+# tried first; the minimal grid required by the auxiliary maps comes last. A
+# grid is only preferred while it still offers 16 positions along each axis,
+# so small textures keep the ordinary bottom-left first-fit search.
+_PREFERRED_GRIDS = (64, 32, 16, 8, 4, 2, 1)
+_MIN_GRID_POSITIONS = 16
 
 
 def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_decoder,
                           diagnostics, max_pixels, max_total_bytes, max_raster_tests,
-                          max_candidates=4096):
+                          max_candidates=4096, reserved=None, atlas_fallback=True):
+    """Move every donor group by its own integer pixel offset into free texels.
+
+    Groups are placed largest first. Each placement needs only that group's own
+    sampler footprint to be free, not a whole bounding rectangle, so a caller
+    that splits a selection into UV islands places each island separately.
+    Level 0 copies are exact native texels; coarse authored mips use their own
+    images at the nearest texel, which is exact when the offset is a multiple
+    of 2**level. Free space is the receiver's group 0 plus ``reserved``.
+    """
     import numpy as np
     from PIL import Image
     import costume_part_transplant as part
     def decline(reason):
-        diagnostics.append("UV relocation unavailable: " + str(reason) + "; using the texture atlas.")
+        diagnostics.append("UV relocation unavailable: " + str(reason) + _fallback_note(atlas_fallback))
         return None
     if original_group_count != 1 or not 2 <= len(sources) <= 64:
         return decline("one original receiver material and at most 63 donor groups are required")
@@ -272,7 +320,13 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
         objects = {slot: [_texture(source, slot) for source in sources] for slot in slots}
         if any(obj is None for row in objects.values() for obj in row):
             return decline("every relocated shader slot needs a native local texture")
-        keys = {slot: [_texture_key(obj) for obj in row] for slot, row in objects.items()}
+        # Island groups repeat one donor material: read each texture object once.
+        key_cache = {}
+        def texture_key(obj):
+            if id(obj) not in key_cache:
+                key_cache[id(obj)] = (obj, _texture_key(obj))
+            return key_cache[id(obj)][1]
+        keys = {slot: [texture_key(obj) for obj in row] for slot, row in objects.items()}
         main = slots[0]
         target_width, target_height = keys[main][0][:2]
         scales = [UVTransform().scale]
@@ -281,6 +335,7 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
             scales.append((donor_width / target_width, donor_height / target_height))
         output_bytes = decoded_bytes = 0
         align_x = align_y = 1
+        counted = set()
         for slot, row in keys.items():
             tw, th = row[0][:2]
             align_x = math.lcm(align_x, target_width // math.gcd(target_width, tw))
@@ -299,7 +354,9 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                 if mip_count not in (1, max(dw, dh).bit_length()):
                     return decline(slot + " has an unsupported partial authored mip chain")
                 chain_size = sum(max(1, dw >> level) * max(1, dh >> level) * 4 for level in range(mip_count))
-                decoded_bytes += chain_size
+                if id(objects[slot][index]) not in counted:
+                    counted.add(id(objects[slot][index]))
+                    decoded_bytes += chain_size
                 if index == 0:
                     output_bytes += chain_size
             if any((key[3] > 1) != (row[0][3] > 1) for key in row):
@@ -320,66 +377,118 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
         used = {}
         for slot, row in keys.items():
             tw, th = row[0][:2]
-            used[slot] = coverage(uv, 0, tw, th, row[0][5])
+            sampler = row[0][5]
+            used[slot] = coverage(uv, 0, tw, th, sampler)
+            if reserved:
+                used[slot] |= _reserved_texels(reserved, tw, th, sampler[0] != 0, sampler[-2:], budget)
             mask_bytes[0] += tw * th
-        transforms = [UVTransform()]
-        placements = []
+        transforms = [UVTransform()] + [None] * (len(sources) - 1)
+        placements = [None] * len(sources)
+        footprints = {}
         for index in range(1, len(sources)):
             dw, dh = keys[main][index][:2]
             donor_mask = coverage(uv, index, dw, dh, keys[main][index][5])
             rows, columns = np.nonzero(donor_mask)
+            footprints[index] = rows, columns
+        groups_total = len(sources) - 1
+        order = sorted(range(1, len(sources)), key=lambda index: (-len(footprints[index][0]), index))
+        grids = []
+        largest = max(1, min(target_width, target_height) // _MIN_GRID_POSITIONS)
+        for step in _PREFERRED_GRIDS:
+            if step > largest:
+                continue
+            grid = (math.lcm(align_x, step), math.lcm(align_y, step))
+            if grid not in grids:
+                grids.append(grid)
+        if (align_x, align_y) not in grids:
+            grids.append((align_x, align_y))
+        for rank, index in enumerate(order, 1):
+            dw, dh = keys[main][index][:2]
+            rows, columns = footprints[index]
             if not len(rows):
-                transforms.append(UVTransform())
-                placements.append({slot: np.zeros_like(value) for slot, value in used.items()})
+                transforms[index] = UVTransform()
+                placements[index] = {slot: (np.empty(0, "int64"), np.empty(0, "int64")) for slot in used}
                 continue
             left, right = int(columns.min()), int(columns.max()) + 1
             bottom, top = dh - int(rows.max()) - 1, dh - int(rows.min())
-            chosen = None
-            for x, y in _empty_rectangles(used[main], right - left, top - bottom,
-                                           (left, bottom), (align_x, align_y), max_candidates):
-                offset = ((x - left) / target_width, (y - bottom) / target_height)
-                transform = UVTransform(scales[index], offset)
-                moved = uv.copy()
-                vertices = np.unique(groups[index])
-                moved[vertices] = transform.remap_uv(moved[vertices])
-                if len(vertices) and (np.any(moved[vertices, :2] < 0) or np.any(moved[vertices, :2] > 1)):
-                    continue
-                candidate = {}
-                valid = True
-                for slot, row in keys.items():
-                    tw, th = row[0][:2]
-                    sw, sh = row[index][:2]
-                    sampler = row[0][5]
-                    # If target wrapping crosses a differently sized source
-                    # period, a single real texel could require two colors.
-                    if sampler[0] != 0 and len(vertices):
-                        if tw % sw and (moved[vertices, 0].min() * tw < .5 or moved[vertices, 0].max() * tw > tw - .5):
-                            valid = False
-                            break
-                        if th % sh and (moved[vertices, 1].min() * th < .5 or moved[vertices, 1].max() * th > th - .5):
-                            valid = False
-                            break
-                    mask = coverage(moved, index, tw, th, sampler)
-                    if np.any(mask & used[slot]):
-                        valid = False
-                        break
-                    candidate[slot] = mask
-                if valid:
-                    chosen = transform, candidate
+            # Place the island's own texel footprint, not its bounding box: the
+            # overlap count finds every position where those texels are free.
+            shape = np.zeros((top - bottom, right - left), dtype=bool)
+            shape[rows - int(rows.min()), columns - left] = True
+            if shape.shape[0] > used[main].shape[0] or shape.shape[1] > used[main].shape[1]:
+                return decline(f"island {rank} of {groups_total} is larger than the receiver texture")
+            spectrum_bytes = target_height * (target_width // 2 + 1) * 16 * 3
+            if working + mask_bytes[0] + spectrum_bytes > max_total_bytes:
+                raise _CoverageLimit("the free-area search exceeds the memory budget")
+            occupied = _overlap_counts(used[main], shape)
+            vertices = np.unique(groups[index])
+            chosen, tested, exhausted = None, set(), False
+            for grid in grids:
+                if chosen is not None or exhausted:
                     break
+                # Main-texture footprint prefilter; every candidate is still
+                # rasterized and checked for each UV-driven slot below.
+                for x, y in _candidate_positions(occupied, shape.shape, (left, bottom), grid):
+                    if (x, y) in tested:
+                        continue
+                    if len(tested) >= max_candidates:
+                        exhausted = True
+                        break
+                    tested.add((x, y))
+                    offset = ((x - left) / target_width, (y - bottom) / target_height)
+                    transform = UVTransform(scales[index], offset)
+                    moved = uv.copy()
+                    moved[vertices] = transform.remap_uv(moved[vertices])
+                    if len(vertices) and (np.any(moved[vertices, :2] < 0) or np.any(moved[vertices, :2] > 1)):
+                        continue
+                    candidate = {}
+                    valid = True
+                    for slot, row in keys.items():
+                        tw, th = row[0][:2]
+                        sw, sh = row[index][:2]
+                        sampler = row[0][5]
+                        # If target wrapping crosses a differently sized source
+                        # period, a single real texel could require two colors.
+                        if sampler[0] != 0 and len(vertices):
+                            if tw % sw and (moved[vertices, 0].min() * tw < .5 or moved[vertices, 0].max() * tw > tw - .5):
+                                valid = False
+                                break
+                            if th % sh and (moved[vertices, 1].min() * th < .5 or moved[vertices, 1].max() * th > th - .5):
+                                valid = False
+                                break
+                        mask = coverage(moved, index, tw, th, sampler)
+                        if np.any(mask & used[slot]):
+                            valid = False
+                            break
+                        candidate[slot] = np.nonzero(mask)
+                    if valid:
+                        chosen = transform, candidate
+                        break
+            label = f"island {rank} of {groups_total} ({len(rows)} texels, {right - left}×{top - bottom} px)"
             if chosen is None:
-                return decline("no common free native-pixel rectangle fits the selected donor patch within the bounded search")
+                if exhausted:
+                    return decline(f"the search limit of {max_candidates} positions was reached before {label} found free texels")
+                return decline(f"no common free native-pixel area fits {label}")
             transform, candidate = chosen
-            transforms.append(transform)
-            placements.append(candidate)
-            for slot, mask in candidate.items():
-                used[slot] |= mask
-                mask_bytes[0] += mask.nbytes
-            messages.append(f"{sources[index].name}: moved selected UV patch to pixel offset ({round(transform.offset[0] * target_width)}, {round(transform.offset[1] * target_height)}) at native pixel detail.")
+            transforms[index] = transform
+            placements[index] = candidate
+            for slot, (ys, xs) in candidate.items():
+                used[slot][ys, xs] = True
+                mask_bytes[0] += ys.nbytes + xs.nbytes
+            dx = round(transform.offset[0] * target_width)
+            dy = round(transform.offset[1] * target_height)
+            exact = max(level for level in range(13) if dx % (1 << level) == 0 and dy % (1 << level) == 0)
+            messages.append(f"{sources[index].name}: {label} moved by pixel offset ({dx}, {dy}) at native pixel detail; "
+                            f"authored mip levels 0–{exact} are exact copies.")
         decoder = image_decoder or _decode_default
+        chain_cache = {}
+        def chain(obj):
+            if id(obj) not in chain_cache:
+                chain_cache[id(obj)] = (obj, _mip_images(obj, decoder))
+            return chain_cache[id(obj)][1]
         textures, shared_coarse = {}, 0
         for slot, row in keys.items():
-            chains = [_mip_images(obj, decoder) for obj in objects[slot]]
+            chains = [chain(obj) for obj in objects[slot]]
             tw, th, _, count, _, sampler, _ = row[0]
             payload = bytearray()
             for level in range(count):
@@ -390,14 +499,14 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                     source_image = chains[index][min(level, len(chains[index]) - 1)]
                     sw, sh = source_image.size
                     if level == 0:
-                        mask = placements[index - 1][slot]
+                        ys, xs = placements[index][slot]
                     else:
                         moved = uv.copy()
                         vertices = np.unique(groups[index])
                         moved[vertices] = transform.remap_uv(moved[vertices])
                         mask = coverage(moved, index, w, h, sampler)
                         shared_coarse += int(np.count_nonzero(mask & receiver_mask))
-                    ys, xs = np.nonzero(mask)
+                        ys, xs = np.nonzero(mask)
                     # Grid-aligned at level 0. At coarse authored levels use
                     # nearest texel centers; source mip images remain original.
                     dx, dy = transform.offset[0] * w, transform.offset[1] * h
@@ -423,16 +532,37 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
         return decline(error)
 
 
+def _candidate_positions(occupied, shape_size, residue, grid):
+    """Bottom-left grid positions where the shape's own texels are all free.
+
+    ``occupied`` comes from _overlap_counts. Positions run bottom-up, then left
+    to right, through ``residue`` on ``grid``, like the original first-fit scan.
+    """
+    import numpy as np
+    h, w = shape_size
+    rows, columns = occupied.shape
+    total_height = rows + h - 1
+    xs = np.arange(residue[0] % grid[0], columns, grid[0], dtype="int64")
+    for y in range(residue[1] % grid[1], rows, grid[1]):
+        row = total_height - y - h
+        for x in xs[~occupied[row, xs]]:
+            yield int(x), y
+
+
 def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=None,
                      diagnostics=None, max_pixels=16777216, max_total_bytes=268435456,
                      max_raster_tests=100000000, relocate_empty_uv=False,
-                     upscale_textures_for_uv_reuse=True, uv_placement=None):
+                     upscale_textures_for_uv_reuse=True, uv_placement=None,
+                     reserved=None, atlas_fallback=True):
     """Use the selected UV placement strategy, or compatible legacy flags.
 
     ``same_position`` matches map sizes and keeps UV coordinates unchanged.
     ``move_to_empty`` retains Main resolution, adapts auxiliary map ratios and
-    directly searches a free destination. ``atlas`` requests the caller's atlas
-    path. None retains the older independent reuse/enlargement/relocation flags.
+    directly searches a free destination for each donor group. ``atlas``
+    requests the caller's atlas path. None retains the older independent
+    reuse/enlargement/relocation flags. ``reserved`` marks receiver-texture
+    texels used by other surfaces. ``atlas_fallback`` only changes wording:
+    False tells the diagnostics that the caller refuses instead of atlasing.
     """
     if type(upscale_textures_for_uv_reuse) is not bool:
         raise ValueError("Texture enlargement for UV reuse must be true or false.")
@@ -442,7 +572,9 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
     sources = list(sources)
     reasons = []
     options = dict(image_decoder=image_decoder, max_pixels=max_pixels,
-                   max_total_bytes=max_total_bytes, max_raster_tests=max_raster_tests)
+                   max_total_bytes=max_total_bytes, max_raster_tests=max_raster_tests,
+                   reserved=reserved, atlas_fallback=atlas_fallback)
+    note = _fallback_note(atlas_fallback)
     if uv_placement == "atlas":
         if diagnostics is not None:
             diagnostics.append("A new texture atlas was explicitly selected.")
@@ -456,7 +588,7 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
         valid_limits = all(type(value) is int and value > 0 for value in
                            (max_pixels, max_total_bytes, max_raster_tests))
         if not valid_limits:
-            reasons.append("Empty UV relocation unavailable: invalid texture or raster limits; using the texture atlas.")
+            reasons.append("Empty UV relocation unavailable: invalid texture or raster limits" + note)
         else:
             try:
                 enlarged = None
@@ -469,10 +601,10 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
                 result = _prepare_relocated_uv(moving_sources, mesh_tree, original_group_count,
                                                 diagnostics=reasons, **moving_options)
                 if result is not None:
-                    messages.insert(0, "Main texture resolutions retained; selected UVs and their UV-driven maps moved together into unused areas.")
+                    messages.insert(0, "Main texture resolutions retained; each selected UV group and its UV-driven maps moved into unused areas.")
                     return finish_upscaled_reuse(result, messages, target_views)
             except AtlasCompatibilityError as error:
-                reasons.append("Auxiliary texture adjustment for empty UV relocation unavailable: " + str(error) + "; using the texture atlas.")
+                reasons.append("Auxiliary texture adjustment for empty UV relocation unavailable: " + str(error) + note)
         if diagnostics is not None:
             diagnostics.extend(reasons)
         return None
@@ -487,7 +619,7 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
             enlarged = prepare_upscaled_sources(sources, image_decoder=image_decoder,
                                                max_pixels=max_pixels, max_total_bytes=max_total_bytes)
         except AtlasCompatibilityError as error:
-            reasons.append("Texture enlargement for UV reuse unavailable: " + str(error) + "; using the texture atlas.")
+            reasons.append("Texture enlargement for UV reuse unavailable: " + str(error) + note)
     if enlarged is not None:
         enlarged_sources, messages, reserved_bytes, target_views = enlarged
         enlarged_options = dict(options, max_total_bytes=max_total_bytes - reserved_bytes)
@@ -510,3 +642,127 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
     if diagnostics is not None:
         diagnostics.extend(reasons)
     return None
+
+
+def split_uv_islands(sources, mesh_tree, original_group_count, *, max_groups=64):
+    """Split each donor group into separately placeable UV islands.
+
+    An island is a set of triangles connected through shared vertices. Islands
+    whose native Main-texture sampler footprints share a texel stay together, so
+    shared source texels move once. Returns ``(sources, mesh_tree, counts)``:
+    a new mesh tree whose donor submeshes are the islands, one MaterialSource
+    per island (same material, own UV bounds), and the island count of every
+    original donor group. Receiver groups, vertices and UVs are unchanged; with
+    nothing to split, the inputs are returned. Groups above ``max_groups`` are
+    merged smallest first into their nearest island of the same material.
+    """
+    import dataclasses
+    import numpy as np
+    import costume_part_transplant as part
+    sources = list(sources)
+    groups = part.submesh_triangles(mesh_tree)
+    if len(groups) != len(sources) or original_group_count < 1 or len(groups) <= original_group_count:
+        return sources, mesh_tree, None
+    count, channels, strides, starts, _ = part.stream_layout(mesh_tree)
+    data = np.frombuffer(bytes(mesh_tree["m_VertexData"]["m_DataSize"]), dtype="uint8")
+    uv = part.read_attr(data, part.ATTR_UV0, channels, strides, starts, count)
+    if uv is None or uv.shape[1] < 2 or not np.isfinite(uv[:, :2]).all():
+        return sources, mesh_tree, None
+    budget = [100000000]
+    per_group = []
+    for index in range(original_group_count, len(groups)):
+        faces = groups[index]
+        if not len(faces) or np.any(faces < 0) or np.any(faces >= count):
+            per_group.append([faces])
+            continue
+        # Union-find over vertices: triangles sharing a vertex are one island.
+        parent = np.arange(count)
+        def find(value):
+            root = value
+            while parent[root] != root:
+                root = parent[root]
+            while parent[value] != root:
+                parent[value], value = root, parent[value]
+            return root
+        for a, b, c in faces:
+            ra, rb, rc = find(a), find(b), find(c)
+            parent[rb] = ra
+            parent[find(rc)] = ra
+        roots = np.array([find(face[0]) for face in faces])
+        islands = [faces[roots == root] for root in dict.fromkeys(roots.tolist())]
+        # Islands sampling a common texel (mirrored copies, hard-edge seams)
+        # move together, so each shared source texel is copied once.
+        try:
+            main = _texture(sources[index], "_MainTex")
+            key = _texture_key(main) if main is not None else None
+        except AtlasCompatibilityError:
+            key = None
+        if key is not None and len(islands) > 1:
+            width, height, sampler = key[0], key[1], key[5]
+            owners = np.full((height, width), -1, dtype=np.int64)
+            labels = list(range(len(islands)))
+            def label_of(value):
+                while labels[value] != value:
+                    value = labels[value]
+                return value
+            for number, island in enumerate(islands):
+                try:
+                    mask = _triangle_texels(uv, island, width, height, sampler[0] != 0, sampler[-2:], budget)
+                except _CoverageLimit:
+                    return sources, mesh_tree, None
+                for other in np.unique(owners[mask & (owners >= 0)]):
+                    labels[label_of(int(other))] = label_of(number)
+                owners[mask] = number
+            merged = {}
+            for number, island in enumerate(islands):
+                merged.setdefault(label_of(number), []).append(island)
+            islands = [np.concatenate(parts) for parts in merged.values()]
+        per_group.append(islands)
+    limit = max_groups - original_group_count
+    def bounds(faces):
+        values = uv[np.unique(faces), :2]
+        return (*values.min(axis=0), *values.max(axis=0))
+    while sum(len(islands) for islands in per_group) > limit:
+        candidates = [(len(island), group, number) for group, islands in enumerate(per_group)
+                      if len(islands) > 1 for number, island in enumerate(islands)]
+        if not candidates:
+            return sources, mesh_tree, None
+        _, group, number = min(candidates)
+        islands = per_group[group]
+        small = islands.pop(number)
+        low = bounds(small)
+        def growth(other):
+            high = bounds(other)
+            union = (min(low[0], high[0]), min(low[1], high[1]), max(low[2], high[2]), max(low[3], high[3]))
+            return (union[2] - union[0]) * (union[3] - union[1])
+        nearest = min(range(len(islands)), key=lambda position: (growth(islands[position]), position))
+        islands[nearest] = np.concatenate([islands[nearest], small])
+    if all(len(islands) == 1 for islands in per_group):
+        return sources, mesh_tree, [1] * len(per_group)
+    width = 2 if mesh_tree.get("m_IndexFormat", 0) == 0 else 4
+    dtype = "<u2" if width == 2 else "<u4"
+    tree = copy.deepcopy(mesh_tree)
+    template = mesh_tree["m_SubMeshes"]
+    buffer, submeshes, new_sources = bytearray(), [], []
+    def append(faces, descriptor):
+        entry = copy.deepcopy(descriptor)
+        flat = np.asarray(faces, dtype=np.int64).reshape(-1)
+        entry.update(firstByte=len(buffer), indexCount=int(flat.size), baseVertex=0)
+        if flat.size:
+            entry.update(firstVertex=int(flat.min()), vertexCount=int(flat.max() - flat.min() + 1))
+        buffer.extend(flat.astype(dtype).tobytes())
+        submeshes.append(entry)
+    for index in range(original_group_count):
+        append(groups[index], template[index])
+        new_sources.append(sources[index])
+    for offset, islands in enumerate(per_group):
+        index = original_group_count + offset
+        for island in islands:
+            append(island, template[index])
+            values = uv[np.unique(island), :2] if len(island) else None
+            island_bounds = (tuple(float(value) for value in (*values.min(axis=0), *values.max(axis=0)))
+                             if values is not None else sources[index].uv_bounds)
+            new_sources.append(dataclasses.replace(sources[index], uv_bounds=island_bounds))
+    tree["m_IndexBuffer"] = bytes(buffer)
+    tree["m_SubMeshes"] = submeshes
+    return new_sources, tree, [len(islands) for islands in per_group]

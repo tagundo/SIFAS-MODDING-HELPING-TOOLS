@@ -302,10 +302,12 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     UV textures to the larger resolution before trying either UV path.
     An explicit ``uv_placement`` selects same-position reuse, relocation with
     original main dimensions, or an ordinary atlas; it overrides legacy flags.
+    Relocation places every connected UV island of the selection separately.
     """
     from graft_texture_atlas import MaterialSource, bake_game_atlas
     from graft_atlas_geometry import flatten_material_groups
     from costume_part_transplant import _make_object, _rand_pids
+    from graft_uv_reuse import split_uv_islands
 
     if any(type(value) is not bool for value in
            (reuse_empty_uv, relocate_empty_uv, upscale_textures_for_uv_reuse)):
@@ -332,7 +334,7 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
         raise ValueError(f"The Body would have {bone_count} bones; the game limit is 256. Select a smaller donor part.")
     if bone_count != len(working_mesh.get("m_BindPose", [])):
         raise ValueError("The Body bone list and bind poses do not match; reopen an intact costume before grafting.")
-    materials = renderer.get("m_Materials", [])
+    materials = list(renderer.get("m_Materials", []))
     additions = tuple(additional_sources)
     group_count = len(working_mesh.get("m_SubMeshes", []))
     if not materials or group_count != len(materials) + len(additions):
@@ -360,7 +362,15 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
         sources.append(MaterialSource(tree.get("m_Name", f"Donor material {ordinal + 1}"),
             deepcopy(tree), donor_objects, material_object=material, uv_bounds=bounds[ordinal]))
 
+    source_count = len(sources)
     fallback_diagnostics = []
+    relocating = uv_placement == "move_to_empty" or (uv_placement is None and reuse_empty_uv and relocate_empty_uv)
+    if relocating:
+        # Each connected UV island finds its own free texels; one shared box
+        # for the whole selection needs far more empty space than its pixels.
+        sources, working_mesh, islands = split_uv_islands(sources, working_mesh, len(materials))
+        if islands and any(count > 1 for count in islands):
+            fallback_diagnostics.append(f"Selected donor UVs split into {sum(islands)} islands that are placed separately.")
     baked = None
     if uv_placement != "atlas" and (uv_placement is not None or reuse_empty_uv):
         from graft_uv_reuse import prepare_uv_reuse
@@ -450,7 +460,7 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
         mesh_tree.clear(); mesh_tree.update(working_mesh)
     if renderer_tree is not None:
         renderer_tree.clear(); renderer_tree.update(renderer)
-    diagnostics = fallback_diagnostics + list(baked.diagnostics)
+    diagnostics = list(dict.fromkeys(fallback_diagnostics + list(baked.diagnostics)))
     if shared_mesh or detach_material:
         diagnostics.append("Detached shared Body " + " and ".join(
             name for name, detached in (("mesh", shared_mesh), ("material", detach_material)) if detached)
@@ -460,7 +470,7 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     mode_label = {"reuse_empty_uv": "reuse empty UV areas", "relocate_empty_uv": "relocate into empty UV areas",
                   "atlas": "texture atlas", "identity": "original textures"}[texture_mode]
     log(f"Body textures: {mode_label}; {group_count} groups combined into one Body material.")
-    return {**geometry, "source_materials": len(sources), "materials": 1,
+    return {**geometry, "source_materials": source_count, "materials": 1, "placed_groups": len(sources),
             "atlas_textures": len(prepared), "atlas_identity": baked.identity,
             "atlas_sources": baked.unique_sources, "texture_mode": texture_mode,
             "requested_uv_placement": uv_placement, "diagnostics": diagnostics,

@@ -95,11 +95,18 @@ def prepare_upscaled_sources(sources, *, image_decoder, max_pixels, max_total_by
         main_sizes = [_texture_key(obj)[:2] for obj in main_objects]
     plans, normalized_bytes, receiver_bytes = [], 0, 0
     largest_original, reserved = 0, 0
+    # Island groups repeat one donor material. Each distinct texture object and
+    # size is read, budgeted and enlarged once, then shared by those sources.
+    key_cache, counted, view_ids = {}, set(), {}
+    def texture_key(obj):
+        if id(obj) not in key_cache:
+            key_cache[id(obj)] = (obj, _texture_key(obj))
+        return key_cache[id(obj)][1]
     for slot in slots:
         objects = [_texture(source, slot) for source in sources]
         if any(obj is None for obj in objects):
             raise AtlasCompatibilityError(slot + " needs a local texture on every source for enlargement")
-        keys = [_texture_key(obj) for obj in objects]
+        keys = [texture_key(obj) for obj in objects]
         if not preserve_main:
             sizes = [(max(key[0] for key in keys), max(key[1] for key in keys))] * len(sources)
         elif slot == "_MainTex":
@@ -123,7 +130,10 @@ def prepare_upscaled_sources(sources, *, image_decoder, max_pixels, max_total_by
                 raise AtlasCompatibilityError(slot + " enlargement exceeds the configured pixel budget or dimension limit")
             count = max(width, height).bit_length() if key[3] > 1 else 1
             size_bytes = _chain_bytes(width, height, count)
-            normalized_bytes += size_bytes
+            first_use = (id(obj), width, height) not in counted
+            counted.add((id(obj), width, height))
+            if first_use:
+                normalized_bytes += size_bytes
             if index == 0:
                 receiver_bytes += size_bytes
             old_width, old_height, _, old_count = key[:4]
@@ -138,7 +148,8 @@ def prepare_upscaled_sources(sources, *, image_decoder, max_pixels, max_total_by
                     raise AtlasCompatibilityError(slot + " authored mip enlargement requires a uniform power-of-two scale")
                 shift = factor.bit_length() - 1
             plans.append((index, slot, obj, (width, height), count, shift))
-            reserved += size_bytes
+            if first_use:
+                reserved += size_bytes
     if not plans:
         return None
     # Reserve lazy expanded payloads in addition to the reuse baker's decoded
@@ -148,15 +159,19 @@ def prepare_upscaled_sources(sources, *, image_decoder, max_pixels, max_total_by
     enlarged = [replace(source, tree=copy.deepcopy(source.tree), objects=dict(source.objects)) for source in sources]
     messages, target_views = [], {}
     decoder = image_decoder or _decode_default
+    lowest = min([0, *(pid for source in sources for pid in source.objects)])
     for index, slot, obj, size, count, shift in plans:
         source = enlarged[index]
-        path_id = min([0, *source.objects]) - 1
-        view = _UpscaledTexture(obj, size, count, shift, decoder)
+        identity = (id(obj), size, count, shift)
+        if identity not in view_ids:
+            lowest -= 1
+            view_ids[identity] = (lowest, _UpscaledTexture(obj, size, count, shift, decoder))
+            old = obj.read()
+            messages.append(f"{source.name}: enlarged {slot} from {old.m_Width}x{old.m_Height} to {size[0]}x{size[1]} for UV reuse with nearest pixels and no padding.")
+        path_id, view = view_ids[identity]
         source.objects[path_id] = view
         env = _pairs(source.tree, "m_TexEnvs")[slot]
         env["m_Texture"] = {"m_FileID": 0, "m_PathID": path_id}
-        old = obj.read()
-        messages.append(f"{source.name}: enlarged {slot} from {old.m_Width}x{old.m_Height} to {size[0]}x{size[1]} for UV reuse with nearest pixels and no padding.")
         if index == 0:
             target_views[slot] = view
     return enlarged, messages, reserved, target_views
