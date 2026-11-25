@@ -283,6 +283,8 @@ const LAYOUTS = [
   { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, squeeze: true },
   { name: 'tablet', viewport: { width: 768, height: 1024 }, touch: true },
   { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true },
+  // Room beside the preview controls for the folded bar's toggle, not for the open bar.
+  { name: 'small-landscape-phone', viewport: { width: 740, height: 360 }, touch: true },
   { name: 'laptop', viewport: { width: 1280, height: 720 }, touch: false },
 ];
 // The bar's gap below the preview controls, its margin from the preview's edge, the narrowest
@@ -574,7 +576,16 @@ async function synthetic(browser, url) {
   assert.equal(unprevented, false, 'Shift+wheel over the free camera is prevented');
   after = await freeState(page);
   assert(after.fov > widened, `and widens the lens (${after.fov})`);
-  widened = after.fov;
+  // A wheel that scrolls by lines (deltaMode 1, as Firefox sends it) counts 33 px a line.
+  const lined = await page.evaluate(() => {
+    const view = document.querySelector('#mv-scene canvas'), rect = view.getBoundingClientRect();
+    const fov = () => window.probeCtx.scene().freeView.state().fov, before = fov();
+    view.dispatchEvent(new WheelEvent('wheel', { deltaY: 3, deltaMode: 1, shiftKey: true, bubbles: true, cancelable: true,
+      clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 3 }));
+    return [before, fov()];
+  });
+  near(lined[1], lined[0] * Math.exp(3 * 33 * .0012), 1e-9, 'a Shift+wheel step of 3 lines widens the lens as 99 px do');
+  widened = lined[1];
   await setMode(page, 'live');
   await page.keyboard.down('Shift');
   await page.mouse.wheel(0, 200);
