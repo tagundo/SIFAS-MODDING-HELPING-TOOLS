@@ -91,9 +91,50 @@
     return null;
   }
 
+  // The scissor box, depth clear value and depth write mask a context holds: the values
+  // getParameter returns, kept from the context's own setters, which are wrapped once per
+  // context. capture() runs every frame with soft billboards in view, and each getParameter
+  // there is a synchronous round trip that waits for every command queued so far.
+  const rasterStates = new WeakMap();
+  function rasterState(gl) {
+    let state = rasterStates.get(gl);
+    if (state) return state;
+    const read = () => {
+      state.scissor = Array.from(gl.getParameter(gl.SCISSOR_BOX));
+      state.clearDepth = gl.getParameter(gl.DEPTH_CLEAR_VALUE);
+      state.depthMask = gl.getParameter(gl.DEPTH_WRITEMASK);
+    };
+    state = {};
+    read();
+    const {scissor, clearDepth, depthMask} = gl;
+    // The same conversions as the WebGL IDL (GLint/GLsizei, GLclampf clamped by GL, GLboolean).
+    // A negative size is INVALID_VALUE and leaves the box unchanged; a lost context changes nothing.
+    gl.scissor = function (x, y, width, height) {
+      const result = scissor.call(this, x, y, width, height);
+      const box = [x | 0, y | 0, width | 0, height | 0];
+      if (box[2] >= 0 && box[3] >= 0 && !gl.isContextLost()) state.scissor = box;
+      return result;
+    };
+    gl.clearDepth = function (depth) {
+      const result = clearDepth.call(this, depth);
+      if (!gl.isContextLost()) state.clearDepth = Math.min(1, Math.max(0, Math.fround(depth)));
+      return result;
+    };
+    gl.depthMask = function (flag) {
+      const result = depthMask.call(this, flag);
+      if (!gl.isContextLost()) state.depthMask = Boolean(flag);
+      return result;
+    };
+    // A restored context starts again from the defaults.
+    gl.canvas?.addEventListener?.("webglcontextrestored", read);
+    rasterStates.set(gl, state);
+    return state;
+  }
+
   function create(T, renderer) {
     if (!renderer.capabilities.isWebGL2) return null;
     const gl = renderer.getContext(), scene = new T.Scene(), proxies = new WeakMap();
+    const raster = rasterState(gl);
     const materials = new Map(), viewport = new T.Vector4(), scissor = new T.Vector4();
     const targetViewport = new T.Vector4(), targetScissor = new T.Vector4();
     let target = null, ready = false, disposed = false;
@@ -196,9 +237,9 @@
       const shadow = renderer.shadowMap, shadowsEnabled = shadow.enabled;
       const cubeFace = renderer.getActiveCubeFace(), mipLevel = renderer.getActiveMipmapLevel();
       renderer.getCurrentViewport(viewport);
-      scissor.fromArray(gl.getParameter(gl.SCISSOR_BOX));
+      scissor.fromArray(raster.scissor);
       const scissorTest = gl.isEnabled(gl.SCISSOR_TEST), depthTest = gl.isEnabled(gl.DEPTH_TEST);
-      const clearDepth = gl.getParameter(gl.DEPTH_CLEAR_VALUE), depthMask = gl.getParameter(gl.DEPTH_WRITEMASK);
+      const clearDepth = raster.clearDepth, depthMask = raster.depthMask;
       const state = renderer.state, renderInfo = renderer.info;
       const previousAutoReset = renderInfo?.autoReset;
       let skinned = false;
