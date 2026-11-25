@@ -422,7 +422,7 @@ def _resolve_assets(db, master, variant, song, asset, dictionary, extractor, cos
                               for item in row.get(field, [])), movie and movie["background"]])
     return {"name": name, "title": name, "liveId": live_id, "assetId": asset_id, "mvOnly": bool(mv_only),
             "qualitySet": quality, "stage": stage, "stageModel": model, "stageEffect": effect,
-            "timeline": timeline, "cameras": {"timeline": timeline_key},
+            "timeline": timeline, "timelineKey": timeline_key, "cameras": {"timeline": timeline_key},
             "lighting": {"timeline": timeline_key, "stageEffect": effect_key},
             "screens": {"timeline": timeline_key, "stageEffect": effect_key, "movie": movie},
             "songBackground": song_background, "performers": performers, "audio": audio, "movie": movie,
@@ -464,6 +464,7 @@ def resolve(repo_root, *, region, platform, live_id, asset_id, language="en", co
                               "FROM m_live WHERE live_id=?", ids[:1]).fetchone()
         registered_song = _registered_song(master, ids[0])
         registered = registered_song is not None
+        override = _timeline_override(master, ids[1])
         asset = master.execute("SELECT timeline,stage_effect_asset_path,live_prop_skeleton_asset_path,"
                                "quality_setitng_set_id,shader_variant_asset_path FROM m_live_3d_asset WHERE id=?", ids[1:]).fetchone()
         chosen = catalogs[0]
@@ -484,7 +485,8 @@ def resolve(repo_root, *, region, platform, live_id, asset_id, language="en", co
                   "userId": (deck or {}).get("userId"),
                   "saved": any(name in (deck or {}) for name in ("original", "custom"))}
     return dict(result, region=region, platform=platform, assetCatalog=chosen.name, registered=registered,
-                **({"registeredSong": registered_song} if registered else {}), deck=deck_state)
+                **({"registeredSong": registered_song} if registered else {}),
+                **({"timelineOverride": override} if override else {}), deck=deck_state)
 
 
 def _registered_song(master, live_id):
@@ -503,6 +505,20 @@ def _registered_song(master, live_id):
     row = dict(zip(fields, rows[0]))
     return {"revision": row.get("revision") or 0, "updatedAt": row.get("updated_at"),
             "templateLiveId": row["source_live_id"]}
+
+
+def _timeline_override(master, asset_id):
+    """{revision, updatedAt} of the timeline MV Studio applied to this stock 3D MV (Elichika's
+    _elichika_mv_studio_timeline row), or None while it plays its original timeline."""
+    columns = _columns(master, "_elichika_mv_studio_timeline")
+    if not {"asset_id", "revision"} <= columns:
+        return None
+    fields = ["revision"] + (["updated_at"] if "updated_at" in columns else [])
+    rows = _rows(master, f"SELECT {','.join(fields)} FROM _elichika_mv_studio_timeline WHERE asset_id=?", (asset_id,))
+    if not rows:
+        return None
+    row = dict(zip(fields, rows[0]))
+    return {"revision": row.get("revision") or 0, "updatedAt": row.get("updated_at")}
 
 
 def _cached_pack(extractor, root, name):

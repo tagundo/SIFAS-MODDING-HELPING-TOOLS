@@ -466,6 +466,10 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                   "registered": selected.get("registered", False),
                   # Which registered song this is (its revision and base): the store reuses removed songs' IDs.
                   **({"registeredSong": selected["registeredSong"]} if selected.get("registeredSong") else {}),
+                  # The timeline key this import read, and the MV Studio version it was when MV Studio had
+                  # applied a timeline to this MV: "Apply only the edits" merges relative to that version.
+                  **({"timelineKey": selected["timelineKey"]} if isinstance(selected.get("timelineKey"), str) else {}),
+                  **({"timelineOverride": selected["timelineOverride"]} if selected.get("timelineOverride") else {}),
                   # The deck tab / local player and every position's suit source, so a saved
                   # project or a frame capture says which player state dressed the members.
                   **mv_studio_suits.provenance(selected.get("deck"), selected.get("performers"))}
