@@ -164,7 +164,16 @@ async function run() {
     const samples = runtime.gameClockSamples(clocked);
     assert.equal(samples.source, 'frameClock');
     assert.equal(await runtime.setGameClock(page, samples.samples), samples.samples.length);
+    assert.equal(samples.frames, null, 'a director that goes back gives no device frames');
+    // The run's own device frames: the scene steps them, and a seek can show one of several frames at a time.
+    const frames = [[0.44, DT, 100], [0.5, DT, 101], [1.0, DT, 102], [1.0, DT, 103], [1.06, DT, 104]];
+    assert.equal(await runtime.setGameClock(page, samples.samples, frames), samples.samples.length);
+    assert.equal(await runtime.gameFrameCount(page), 5);
+    assert.equal(await page.evaluate(() => mvFrameProbe.scene.setGameFrame(102)), 102);
+    await page.evaluate(() => mvFrameProbe.scene.seek(1.0, undefined, true));
+    assert.equal(await page.evaluate(() => mvFrameProbe.scene.setGameFrame(null)), null);
     assert.equal(await runtime.setGameClock(page, null), 0);
+    assert.equal(await runtime.gameFrameCount(page), 0);
     assert.deepEqual(errors, []);
 
     const doc = runtime.editorDocument({ game: read.doc, gameFile, sha256: read.sha256, records, timing,

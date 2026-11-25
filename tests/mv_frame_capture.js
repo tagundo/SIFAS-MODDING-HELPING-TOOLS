@@ -30,7 +30,10 @@
    With --game-dump the original particle systems also run on the game run's Time.time
    (--particle-clock game, the default: mv_runtime_capture.gameClockSamples, the dump's
    frame clock rows or record clocks), which falls behind the director when frames hit
-   Time.maximumDeltaTime; capture.json physics.particleClock records it.
+   Time.maximumDeltaTime; with a complete frame clock they step the run's own frames, each
+   by its Time.deltaTime (mv_runtime_capture.deviceFrames). A manifest frame
+   {time, frameCount} shows that game frame where several share the director time (the
+   song-end hold). capture.json physics.particleClock records it.
 
    Members follow the client's MV deck chain; source.deck "original" picks the
    Original tab instead of Customize, source.player picks a local Elichika player of
@@ -407,9 +410,9 @@ function prerollPlan(time, preroll, rate, warmup = 0, grid = null, stampRate = r
 // preroll, so the client state that changes only on rendered frames (the director's beat origin, the
 // ambient components' last written colors, the cheek floats a finished clip leaves) starts from the
 // frames the game drew before it; the preroll frames then advance it frame by frame.
-async function renderFrame(page, time, preroll, rate, warmup = 0, grid = null, stampRate = rate, history = null) {
+async function renderFrame(page, time, preroll, rate, warmup = 0, grid = null, stampRate = rate, history = null, gameFrame = null) {
   const plan = prerollPlan(time, preroll, rate, warmup, grid, stampRate);
-  const result = await page.evaluate(({ time, plan, history }) => {
+  const result = await page.evaluate(({ time, plan, history, gameFrame }) => {
     const scene = mvFrameProbe.scene;
     // A grid slower than 25 Hz (a device run's achieved rate, e.g. ~4.9 fps at Max 3D) would trip
     // the playback's slow-frame preview downscale and draw below the pinned size. A fixed-step
@@ -423,15 +426,18 @@ async function renderFrame(page, time, preroll, rate, warmup = 0, grid = null, s
     scene.setPlaying(true);
     try {
       plan.times.forEach((value, index) => scene.playbackFrame(value, plan.stamps[index], true));
+      // The game frame the drawn time shows (several share a director time while it holds).
+      if (typeof scene.setGameFrame === 'function') scene.setGameFrame(gameFrame);
       scene.playbackFrame(time, plan.drawStamp, false);
       const canvas = document.querySelector('#mv-scene canvas');
       const png = canvas.toDataURL('image/png');
       return { png, state: scene.inspect() };
     } finally {
+      if (typeof scene.setGameFrame === 'function') scene.setGameFrame(null);
       scene.setPlaying(false);
       scene.setAdaptivePreview(true);
     }
-  }, { time, plan, history: Array.isArray(history) ? history : null });
+  }, { time, plan, history: Array.isArray(history) ? history : null, gameFrame: Number.isInteger(gameFrame) ? gameFrame : null });
   return { ...result, steps: plan.steps, warmupSteps: plan.warmupSteps, prerollStart: plan.start, prerollSource: plan.source };
 }
 
@@ -573,9 +579,11 @@ async function run() {
     const physics = physicsReference(manifest, quality.values, target);
     await applyPhysicsReference(page, physics);
     // The game run's Time.time for the original particle systems (null: the director's clock).
-    const clockPlan = particleClockMode === 'game' ? require('./mv_runtime_capture').gameClockSamples(gameDump.doc) : null;
-    const clockSamples = await require('./mv_runtime_capture').setGameClock(page, clockPlan?.samples ?? null);
-    const particleClock = { mode: particleClockMode, source: clockPlan?.source ?? 'director', samples: clockSamples, lagMax: clockPlan?.lagMax ?? null };
+    const runtime = require('./mv_runtime_capture');
+    const clockPlan = particleClockMode === 'game' ? runtime.gameClockSamples(gameDump.doc) : null;
+    const clockSamples = await runtime.setGameClock(page, clockPlan?.samples ?? null, clockPlan?.frames ?? null);
+    const particleClock = { mode: particleClockMode, source: clockPlan?.source ?? 'director', samples: clockSamples,
+      deviceFrames: await runtime.gameFrameCount(page), lagMax: clockPlan?.lagMax ?? null };
     const rate = physics.rate, stampRate = physics.ruleRate ?? physics.rate;
     const project = await projectRecord(page);
     let soundtrack = null;
@@ -595,7 +603,7 @@ async function run() {
     const frames = [];
     for (const frame of wanted.sort((a, b) => a.time - b.time)) {
       const { png, state, steps, warmupSteps, prerollStart, prerollSource } = await renderFrame(page, frame.time, manifest.physics.preroll, rate,
-        physics.warmupSteps, grid?.times ?? null, stampRate, history);
+        physics.warmupSteps, grid?.times ?? null, stampRate, history, frame.frameCount ?? null);
       const file = frameName(frame.time);
       fs.writeFileSync(path.join(out, file), Buffer.from(png.slice(png.indexOf(',') + 1), 'base64'));
       assert.equal(state.canvas.width, renderWidth, 'The editor canvas width does not match the requested render size');

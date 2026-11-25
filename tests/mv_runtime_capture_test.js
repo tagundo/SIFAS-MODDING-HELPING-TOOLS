@@ -248,16 +248,38 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
       { clock: { frameCount: 1, directorTime: 0, unityTime: 900 } }, { clock: { frameCount: 2, directorTime: 1, unityTime: 901 } },
       { clock: { frameCount: 3, directorTime: 106.666, unityTime: 1005 } }, { clock: { frameCount: 4, directorTime: 106.666, unityTime: 1005.2 } }] });
     assert.deepEqual([fromRecords.source, fromRecords.samples], ['records', [[1, 901], [106.666, 1005]]]);
-    assert.deepEqual(capture.gameClockSamples({ records: [] }), { source: 'records', samples: [], lagMax: null });
+    assert.deepEqual(capture.gameClockSamples({ records: [] }), { source: 'records', samples: [], lagMax: null, frames: null });
+    // The run's own device frames (MVStudioParticleSystems.frameGrid): every frame from the first row to the
+    // last one with its director time and Time.deltaTime, when the frame clock holds them all.
+    assert.deepEqual(capture.deviceFrames(doc), [[49.2, 0.25, 498], [49.62, 1 / 3, 499], [50.1, 1 / 3, 500], [50.3, 0.2, 501],
+      [50.6, 0.1, 502], [50.9, 0.2, 503], [51.12, 0.22, 504]]);
+    assert.deepEqual(game.frames, capture.deviceFrames(doc));
+    const gap = { records: [doc.records[1]], trailer: { frameClocks: { ...doc.trailer.frameClocks,
+      rows: doc.trailer.frameClocks.rows.filter((entry) => entry[0] !== 500) } } };
+    assert.equal(capture.deviceFrames(gap), null, 'a frame the clock missed: no device frames');
+    assert.equal(capture.deviceFrames(older), null, 'no frame clock rows');
+    const back = { records: [], trailer: { frameClocks: { ...doc.trailer.frameClocks,
+      rows: [row(1, 2, 900, .2), row(2, 1.9, 900.2, .2)] } } };
+    assert.equal(capture.deviceFrames(back), null, 'a director going back');
+    // Each request names the game frame it shows (scene.setGameFrame) where it is known.
+    const frames = new Map(capture.planRequests(doc, [-1, 0, 1]).map((request) => [request.id, request.frame]));
+    assert.deepEqual([frames.get('f0001@-1'), frames.get('f0001@0'), frames.get('f0001@1')], [499, 500, 501]);
+    assert.deepEqual(capture.planRequests(older, [-1]).map((request) => request.frame), [null, null], 'deltaTime estimates name no frame');
 
     // The capture hands the samples to the scene (MVStudioScene.setGameClock); null keeps the director's clock.
     const calls = [];
-    globalThis.mvFrameProbe = { scene: { setGameClock: (samples) => { calls.push(samples); return samples ? samples.length : 0; } } };
+    let held = 0;
+    globalThis.mvFrameProbe = { scene: { setGameClock: (...args) => { calls.push(args); held = args[1] ? args[1].length : 0;
+      return args[0] ? args[0].length : 0; }, gameFrames: () => held } };
     const fake = { evaluate: async (fn, arg) => fn(arg) };
     try {
       assert.equal(await capture.setGameClock(fake, game.samples), 7);
       assert.equal(await capture.setGameClock(fake, null), 0);
-      assert.deepEqual(calls, [game.samples, null]);
+      assert.equal(await capture.setGameClock(fake, game.samples, game.frames), 7);
+      assert.equal(await capture.gameFrameCount(fake), 7);
+      assert.deepEqual(calls, [[game.samples], [null], [game.samples, game.frames]]);
+      globalThis.mvFrameProbe = { scene: { setGameClock: () => 0 } };
+      await assert.rejects(capture.setGameClock(fake, game.samples, game.frames), /gameFrames/);
       globalThis.mvFrameProbe = { scene: {} };
       await assert.rejects(capture.setGameClock(fake, game.samples), /setGameClock/);
     } finally {
