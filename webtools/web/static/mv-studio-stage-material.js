@@ -11,6 +11,10 @@
       uniform vec4 mainUVTransform;
       varying vec2 vStageUV;
     #endif
+    #ifdef BLEND
+      uniform vec4 blendUVTransform;
+      varying vec2 vStageBlendUV;
+    #endif
     #ifdef VERTEX_COLOR
       attribute vec4 _stage_color;
       varying vec4 vStageColor;
@@ -34,6 +38,9 @@
       #include <skinning_vertex>
       #ifdef TEXTURED
         vStageUV = uv * mainUVTransform.xy + mainUVTransform.zw;
+      #endif
+      #ifdef BLEND
+        vStageBlendUV = uv * blendUVTransform.xy + blendUVTransform.zw;
       #endif
       #ifdef VERTEX_COLOR
         vStageColor = _stage_color;
@@ -62,6 +69,11 @@
       uniform sampler2D mainMap;
       uniform vec4 ambient;
       varying vec2 vStageUV;
+    #endif
+    #ifdef BLEND
+      uniform sampler2D blendMap;
+      uniform float blendRate;
+      varying vec2 vStageBlendUV;
     #endif
     #ifdef VERTEX_COLOR
       varying vec4 vStageColor;
@@ -122,6 +134,11 @@
         gl_FragColor = vec4(color, surface.a * tint.a);
       #elif defined(TEXTURED)
         vec4 surface = texture2D(mainMap, vStageUV);
+        #ifdef BLEND
+          // AS/Blend/Opaque: (B - A) * _BlendRate + A, then the shared COLOR,
+          // _AmbientColor and _TintColor steps below.
+          surface += blendRate * (texture2D(blendMap, vStageBlendUV) - surface);
+        #endif
         #ifdef VERTEX_COLOR
           surface *= vStageColor;
         #endif
@@ -141,11 +158,32 @@
   // value only. Its channel holds Unity's (scale, offset) order for the
   // animated node; update() converts it to the glTF-space mainUVTransform.
   const uvOwners = new WeakMap();
+  // AS/Blend/Opaque renderers: an AnimationClip's MeshRenderer _TintColor,
+  // _AmbientColor and _BlendRate curves write the renderer's
+  // MaterialPropertyBlock, which then overrides the shared material for that
+  // renderer (owner node -> {record}; record.motionHeld names the uniforms).
+  const blendOwners = new WeakMap();
+  const blendChannels = { overlayTint: "tint", overlayAmbient: "ambient" };
   const mainStage = "/EntryPoint/Live/Stages/MainStage";
   const stageModel = mainStage + "/Model";
 
   function isColor(value) {
     return Array.isArray(value) && value.length === 4 && value.every(Number.isFinite);
+  }
+
+  function textureIndex(value) {
+    return value === null || (Number.isSafeInteger(value) && value >= 0);
+  }
+
+  // Unity binds the "white" default texture to an unset AS/Blend/Opaque map.
+  function blendReady(meta) {
+    return isColor(meta.blendUVTransform) && Number.isFinite(meta.blendRate) && meta.vertexColor === true &&
+      textureIndex(meta.mainTexture) && textureIndex(meta.blendTexture);
+  }
+
+  function opaqueSortSource(value) {
+    return Number.isInteger(value?.queue) && value.queue >= 0 && value.queue <= 2500 &&
+      Array.isArray(value.center) && value.center.length === 3 && value.center.every(Number.isFinite);
   }
 
   function reflectionSource(value) {
@@ -348,9 +386,10 @@
     root.traverse((node) => {
       sampler.retainOriginalMaterial(node.material);
       const meta = node.geometry?.userData?.mvStageMaterial;
-      if (!node.isMesh || !["stage", "general", "solid"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
-      if (meta.shader !== "solid" && (!node.material?.map || !isColor(meta.uvTransform) ||
+      if (!node.isMesh || !["stage", "general", "solid", "blend"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
+      if (meta.shader !== "solid" && ((meta.shader !== "blend" && !node.material?.map) || !isColor(meta.uvTransform) ||
           !isColor(meta.colors._AmbientColor))) return;
+      if (meta.shader === "blend" && (!parser || !blendReady(meta))) return;
       if (meta.vertexColor && !node.geometry.getAttribute("_stage_color") && meta.vertexColorAbsent !== true) return;
       if (meta.shader === "stage" && (!parser || !Number.isSafeInteger(meta.lightmap) ||
           meta.lightmap < 0 || !node.geometry.getAttribute("_stage_light_uv") ||
@@ -365,9 +404,21 @@
         sampler.reserveBase(meta.lightmap);
         if (meta.emissive) sampler.reserveBase(meta.emissive.texture);
       }
+      if (meta.shader === "blend") {
+        for (const index of [meta.mainTexture, meta.blendTexture]) if (index !== null) sampler.reserveBase(index);
+      }
       candidates.push({node, original: node.material, meta});
     });
     if (!candidates.length) return null;
+    let white = null;
+    function blendTexture(index, source) {
+      if (index !== null) return sampledNativeTexture(index, source);
+      if (!white) {
+        white = new T.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+        white.needsUpdate = true;
+      }
+      return white;
+    }
 
     for (const entry of candidates) {
       if (!active()) break;
@@ -377,7 +428,21 @@
       const uniforms = { tint: {value: new T.Vector4().fromArray(meta.colors._TintColor)} };
       const defines = {};
       let reflectionCube = null;
-      if (meta.shader !== "solid") {
+      if (meta.shader === "blend") {
+        defines.TEXTURED = 1;
+        defines.BLEND = 1;
+        const map = await blendTexture(meta.mainTexture, meta.mainSampler);
+        if (!active()) break;
+        const second = await blendTexture(meta.blendTexture, meta.blendSampler);
+        if (!active()) break;
+        if (!map || !second) continue;
+        uniforms.mainMap = {value: map};
+        uniforms.mainUVTransform = {value: new T.Vector4().fromArray(meta.uvTransform)};
+        uniforms.blendMap = {value: second};
+        uniforms.blendUVTransform = {value: new T.Vector4().fromArray(meta.blendUVTransform)};
+        uniforms.blendRate = {value: meta.blendRate};
+        uniforms.ambient = {value: new T.Vector4().fromArray(meta.colors._AmbientColor)};
+      } else if (meta.shader !== "solid") {
         defines.TEXTURED = 1;
         const map = meta.mainSampler
           ? await sampledTexture(original.map, meta.mainSampler) : gammaTexture(original.map);
@@ -438,16 +503,21 @@
       const propLight = node.geometry.userData?.mvPropLight;
       const prop = propLight?.ambient === true && uniforms.ambient &&
         global.MVStudioPropLight?.create(propLight.binding) || null;
-      records.push({...entry, material, reflectionCube, prop});
+      records.push({...entry, material, reflectionCube, prop, motionHeld: new Set()});
     }
 
     // The animated GameObject's node owns the renderer's mesh. Only a renderer
     // with one stage material gets a channel, so restoring it keeps that value.
-    const uvOwnerRecords = new Map(), uvRecords = [];
+    const uvOwnerRecords = new Map(), uvRecords = [], blendOwnerRecords = new Map(), blendEntries = [];
     for (const record of records) {
       let owner = record.node;
       while (owner && typeof owner.userData.mvStageNode?.binding !== "string") owner = owner.parent;
       if (!owner || !record.material.uniforms.mainUVTransform) continue;
+      if (record.meta.shader === "blend") {
+        // _MainTex_ST is not an AS/Blend/Opaque property; its maps read _MainTexA_ST and _MainTexB_ST.
+        blendOwnerRecords.set(owner, blendOwnerRecords.has(owner) || blendOwners.has(owner) ? null : record);
+        continue;
+      }
       uvOwnerRecords.set(owner, uvOwnerRecords.has(owner) || uvOwners.has(owner) ? null : record);
     }
     for (const [owner, record] of uvOwnerRecords) {
@@ -455,6 +525,20 @@
       const entry = {owner, record, channel: null};
       uvOwners.set(owner, entry);
       uvRecords.push(entry);
+    }
+    for (const [owner, record] of blendOwnerRecords) {
+      if (!record) continue;
+      const entry = {owner, record};
+      blendOwners.set(owner, entry);
+      blendEntries.push(entry);
+    }
+    // Unity sorts each opaque queue front to back by the renderer bounds centre
+    // (MVStudioOpaqueSort); every submesh of a renderer shares its bounds.
+    const opaqueEntries = [];
+    for (const record of records) {
+      const source = record.meta.opaqueSort;
+      if (opaqueSortSource(source)) opaqueEntries.push({ node: record.node, material: record.material,
+        center: new T.Vector3().fromArray(source.center), queue: source.queue });
     }
 
     const singleBindings = new Set(records.map(({meta}) => meta.singleAmbientBinding).filter(Boolean));
@@ -539,7 +623,7 @@
           if (emissive) emissive = {color, intensity};
         }
         const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
-        for (const {node, original, meta, material, reflectionCube, prop} of records) {
+        for (const {node, original, meta, material, reflectionCube, prop, motionHeld} of records) {
           if (meta.reflectionToggle) {
             const enable = meta.reflectionQualityControlled === false ||
               project?.quality?.values?.stage_cubemap !== false;
@@ -576,7 +660,8 @@
           const single = singleTrack ? trackColorsAt(singleTrack, seconds) : null;
           for (let index = 0; index < ambientUniforms.length; index++) {
             const uniform = material.uniforms[ambientUniforms[index]];
-            if (!uniform) continue;
+            // A property an AnimationClip curve holds in the renderer's property block.
+            if (!uniform || motionHeld.has(ambientUniforms[index])) continue;
             if (singleTrack) {
               if (holding) {
                 // The clip colors, or LiveCoreStageAmbient's own defaults without one.
@@ -605,19 +690,33 @@
           }
         }
       },
+      // The opaque renderers the native front-to-back rule orders (MVStudioOpaqueSort).
+      opaqueSortEntries: () => opaqueEntries.filter(entry => entry.node.material === entry.material),
       dispose() {
         for (const entry of uvRecords) if (uvOwners.get(entry.owner) === entry) uvOwners.delete(entry.owner);
+        for (const entry of blendEntries) if (blendOwners.get(entry.owner) === entry) blendOwners.delete(entry.owner);
         for (const {node, original, material} of records) {
           node.material = original;
           material.dispose();
         }
+        opaqueEntries.length = 0;
         sampler.dispose();
+        white?.dispose();
         for (const cube of cubes.values()) cube?.dispose();
       },
     };
   }
 
-  function materialChannel(owner, kind) {
+  // kind: an MVStudioStageMotion material channel; property names an overlayScalar.
+  function materialChannel(owner, kind, property) {
+    const blend = blendOwners.get(owner);
+    if (blend) {
+      const name = kind === "overlayScalar" ? (property === "_BlendRate" ? "blendRate" : null) : blendChannels[kind];
+      const uniform = name && blend.record.material.uniforms[name];
+      if (!uniform) return;
+      blend.record.motionHeld.add(name);
+      return name === "blendRate" ? uniform : uniform.value;
+    }
     const entry = kind === "overlayUV" ? uvOwners.get(owner) : null;
     if (!entry) return;
     if (!entry.channel) {

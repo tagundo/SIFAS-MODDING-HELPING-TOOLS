@@ -16,11 +16,15 @@ _MATERIAL_PROPERTIES = {
     crc32(b"_MainTex_ST") & 0x0FFFFFFF: "overlayUV",
 }
 _SOFT_BILLBOARD_COLOR = crc32(b"_Color") & 0x0FFFFFFF
-_SOFT_BILLBOARD_SCALARS = {
+# World MeshRenderer scalars: the AS/SoftParticleBillboard and AS/Smoke inputs,
+# and AS/Blend/Opaque _BlendRate (the only shipped shader that declares it).
+_WORLD_SCALARS = {
     crc32(name.encode("ascii")) & 0x0FFFFFFF: name
     for name in ("_Density", "_MoveIntensity", "_AlphaAnimPower", "_AlphaAnimScale",
-                 "_SizeStartX", "_SizeStartY", "_SizeEndX", "_SizeEndY", "_SizeRandom")
+                 "_SizeStartX", "_SizeStartY", "_SizeEndX", "_SizeEndY", "_SizeRandom", "_BlendRate")
 }
+# AS/Blend/Opaque _AmbientColor (its .x-.w or .r-.a lanes, like _TintColor).
+_AMBIENT_COLOR = crc32(b"_AmbientColor") & 0x0FFFFFFF
 
 
 def material_channels(bindings, curves, width_of, *, world=False):
@@ -41,8 +45,10 @@ def material_channels(bindings, curves, width_of, *, world=False):
                     return [], 0
                 if property_hash == _SOFT_BILLBOARD_COLOR and family == 0:
                     kind = "overlayColor"
+                elif property_hash == _AMBIENT_COLOR and family in (0, 1):
+                    kind = "overlayAmbient"
                 elif family == 2 and channel == 0:
-                    property_name = _SOFT_BILLBOARD_SCALARS.get(property_hash)
+                    property_name = _WORLD_SCALARS.get(property_hash)
                     if property_name is not None:
                         kind = "overlayScalar"
             elif (family not in (0, 1) or family == 1 and kind != "overlayTint"

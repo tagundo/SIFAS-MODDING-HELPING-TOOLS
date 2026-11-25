@@ -2,8 +2,9 @@
   "use strict";
 
   const kinds = { translation: "position", rotation: "quaternion", euler: "quaternion", scale: "scale", visibility: "visible",
-    overlayTint: "overlayTint", overlayUV: "overlayUV", overlayColor: "overlayColor", overlayScalar: "overlayScalar" };
-  const materialKinds = new Set(["overlayTint", "overlayUV", "overlayColor", "overlayScalar"]);
+    overlayTint: "overlayTint", overlayUV: "overlayUV", overlayColor: "overlayColor", overlayScalar: "overlayScalar",
+    overlayAmbient: "overlayAmbient" };
+  const materialKinds = new Set(["overlayTint", "overlayUV", "overlayColor", "overlayScalar", "overlayAmbient"]);
   // Unity RotationOrder (0 XYZ ... 4 ZXY, the default) -> three.js Euler order. Unity
   // names the axes in the order they apply (XYZ: q = qZ*qY*qX); three.js names
   // the product left to right, so the string reverses. The X mirror keeps it.
@@ -100,13 +101,16 @@
       const color = kind === "overlayColor";
       const value = global.MVStudioSoftBillboards?.materialChannel?.(node, kind, color ? "_Color" : property);
       if (color ? value?.isVector4 : Number.isFinite(value?.value)) return value;
+      // A world MeshRenderer scalar of its own stage material (AS/Blend/Opaque _BlendRate).
+      const own = color ? null : global.MVStudioStageMaterial?.materialChannel?.(node, kind, property);
+      if (Number.isFinite(own?.value)) return own;
       return;
     }
     if (requiresMaterial) {
       const overlay = global.MVStudioStageOverlay?.materialChannel?.(node, kind, rendererClass, scope);
       if (overlay || scope !== "world" || rendererClass !== undefined) return overlay;
       // A world MeshRenderer without an overlay pass: its own stage material.
-      return global.MVStudioStageMaterial?.materialChannel?.(node, kind);
+      return global.MVStudioStageMaterial?.materialChannel?.(node, kind, property);
     }
     if (rendererClass === undefined) return node.userData.mvStageOverlayChannels?.[kind];
   }
