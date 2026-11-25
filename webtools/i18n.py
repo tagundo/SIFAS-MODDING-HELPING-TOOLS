@@ -2970,6 +2970,39 @@ for _source, (_korean, _japanese) in _MV_EDITOR_A_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 
+# MV Studio free camera views (mv-studio-free-camera.js). Front, Back, Left side, Right side
+# and FOV are the 3D model tab's and the camera editor's strings.
+_MV_FREE_CAMERA_TRANSLATIONS = {
+    "Free camera views": ("자유 카메라 시점", "自由カメラの視点"),
+    "Views": ("시점", "視点"),
+    "Show or hide the free camera views. A short preview keeps them folded so the view stays visible.": (
+        "자유 카메라 시점 조절을 펼치거나 접습니다. 미리보기 높이가 낮으면 화면이 가려지지 않도록 접어 둡니다.",
+        "自由カメラの視点操作を開閉します。プレビューが低いときは画面が隠れないよう畳んでおきます。"),
+    "Target": ("대상", "対象"),
+    "Stage centre": ("무대 중앙", "ステージ中央"),
+    "The free camera looks at this point and turns around it.": (
+        "자유 카메라가 이 지점을 바라보며 그 주위를 돕니다.", "自由カメラはこの点を見ながら、その周りを回ります。"),
+    "View direction": ("보는 방향", "見る方向"),
+    "Look from the audience side (the side the members face).": (
+        "관객석 쪽(멤버가 바라보는 쪽)에서 봅니다.", "客席側（メンバーが向いている側）から見ます。"),
+    "Look from behind the stage.": ("무대 뒤쪽에서 봅니다.", "ステージの後ろ側から見ます。"),
+    "Look from the members' left.": ("멤버의 왼쪽에서 봅니다.", "メンバーの左側から見ます。"),
+    "Look from the members' right.": ("멤버의 오른쪽에서 봅니다.", "メンバーの右側から見ます。"),
+    "Distance": ("거리", "距離"),
+    "Distance from the target (m). The mouse wheel also moves the camera forward and back.": (
+        "대상과의 거리(m)입니다. 마우스 휠로도 카메라를 앞뒤로 움직일 수 있습니다.",
+        "対象からの距離（m）です。マウスホイールでもカメラを前後に動かせます。"),
+    "Vertical field of view (°). Shift+mouse wheel also changes it.": (
+        "세로 화각(°)입니다. Shift+마우스 휠로도 바꿀 수 있습니다.", "縦の画角（°）です。Shift+マウスホイールでも変えられます。"),
+    "Follow member": ("멤버 따라가기", "メンバーを追う"),
+    "While a member is the target, the free camera moves with that member as the MV plays or the playhead moves. Preview only.": (
+        "멤버가 대상일 때 MV를 재생하거나 재생 위치를 옮기면 자유 카메라가 그 멤버와 함께 움직입니다. 미리보기 전용입니다.",
+        "メンバーが対象のとき、MVの再生中や再生位置の移動に合わせて自由カメラがそのメンバーと一緒に動きます。プレビュー専用です。"),
+}
+for _source, (_korean, _japanese) in _MV_FREE_CAMERA_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
 # MV-only song registration (mv-studio-register.js, core/mv_studio_register.py): the panel, the
 # job stages, the plan notes, every Elichika store message (mv_studio_live.MESSAGES), the CRI
 # encoder's fixed messages and the native export refusals a registration can show.

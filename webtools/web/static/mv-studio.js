@@ -1467,6 +1467,7 @@
 
   function translateAria() {
     for (const node of document.querySelectorAll("#tab-mv [data-i18n-aria-label]")) node.setAttribute("aria-label", t(node.dataset.i18nAriaLabel));
+    for (const node of document.querySelectorAll("#tab-mv [data-i18n-title]")) node.title = t(node.dataset.i18nTitle);
     for (const node of document.querySelectorAll("#tab-mv [data-mv-panel-name]")) node.textContent = t(node.dataset.mvPanelName);
   }
 

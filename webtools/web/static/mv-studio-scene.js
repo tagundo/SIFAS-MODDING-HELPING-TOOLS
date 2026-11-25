@@ -1352,6 +1352,7 @@
       gaze.members = {};
       frameAll();
       seek(currentTime, project);
+      notifyFreeView();
     }
 
     function cancelStagePreparation(redraw = true) {
@@ -1505,6 +1506,8 @@
           }
           if (!record.prop) entry.group.add(record.root);
           records.push(record);
+          // The free camera's targets follow the members as they load.
+          if (entry.group === actors) notifyFreeView();
           if (entry.group === stage) {
             grid.visible = false;
             frameAll();
@@ -2239,6 +2242,7 @@
         }
       }
       advanceFocus();
+      followFreeView();
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
       else if (deferDraw && visible) {
         // Motion sampling is still synchronous. Preserve the world matrices
@@ -2713,9 +2717,143 @@
       return offset;
     }
 
+    // ---- Free camera views (mv-studio-free-camera.js): presets around a target ----
+    // Preview only: these move the free (orbit) camera and its lens, never the game camera,
+    // the project or a timeline. Views are yaws on Unity's stage axes (three space mirrors x):
+    // front is the audience side (+Z, the side members face), right the members' right (+X).
+    const FREE_VIEW_YAW = Object.freeze({ front: 0, right: 90, back: 180, left: -90 });
+    const FREE_DISTANCE = [.05, 900], FREE_FOV = [1, 170];
+    // The stage centre: the stage origin at about a member's chest height.
+    const FREE_STAGE_HEIGHT = 1;
+    const freeView = { target: "stage", follow: false, last: new T.Vector3(), listeners: new Set() };
+    const freePoint = new T.Vector3(), freeOffset = new T.Vector3(), freeHips = new T.Vector3(), freeBounds = new T.Box3();
+    const freeClamp = (value, [min, max]) => Math.min(max, Math.max(min, value));
+
+    function freeMember(target) {
+      const slot = typeof target === "string" && /^member:\d+$/.test(target) ? Number(target.slice(7)) : null;
+      return slot === null ? null : records.find((record) => record.group === actors && record.position === slot) || null;
+    }
+
+    // A member's chest: halfway between its neck and hips (BodyPartType 4, 3), else its head,
+    // neck, hips or face, else the middle of its bounds.
+    function freeTargetPoint(target, out) {
+      if (target === "stage") return out.set(0, FREE_STAGE_HEIGHT, 0);
+      const record = freeMember(target);
+      if (!record) return null;
+      if (focusPoint(record, 4, out) && focusPoint(record, 3, freeHips)) return out.add(freeHips).multiplyScalar(.5);
+      for (const part of [0, 1, 4, 3, 2]) if (focusPoint(record, part, out)) return out;
+      freeBounds.setFromObject(record.root);
+      return freeBounds.isEmpty() ? null : freeBounds.getCenter(out);
+    }
+
+    function notifyFreeView() {
+      for (const listener of freeView.listeners) {
+        try { listener(); } catch (error) { console.error(error); }
+      }
+    }
+
+    // Each evaluated frame (seek or playback), before it is drawn: a followed member carries the
+    // free camera and its orbit target by the distance it moved, so the view keeps its offset.
+    function followFreeView() {
+      if (!freeView.follow || freeView.target === "stage") return;
+      const point = freeTargetPoint(freeView.target, freePoint);
+      if (!point) return;
+      freeOffset.copy(point).sub(freeView.last);
+      freeView.last.copy(point);
+      if (freeOffset.lengthSq() === 0) return;
+      controls.target.add(freeOffset);
+      editorCamera.position.add(freeOffset);
+      editorCamera.updateMatrixWorld();
+    }
+
+    const freeViewApi = Object.freeze({
+      // [{ id: "stage" }, { id: "member:<slot>", slot, performer }] of the loaded members.
+      targets() {
+        return [{ id: "stage", kind: "stage" }, ...records.filter((record) => record.group === actors && Number.isInteger(record.position))
+          .sort((a, b) => a.position - b.position)
+          .map((record) => ({ id: `member:${record.position}`, kind: "member", slot: record.position, performer: record.id ?? null }))];
+      },
+      state() {
+        return { target: freeView.target, follow: freeView.follow, mode: useLive ? "live" : "orbit",
+          distance: editorCamera.position.distanceTo(controls.target), fov: editorCamera.fov, orbitTarget: controls.target.toArray() };
+      },
+      // The target's point now (three space), or null when it is not loaded.
+      targetPoint(id = freeView.target) {
+        const point = freeTargetPoint(id, new T.Vector3());
+        return point ? point.toArray() : null;
+      },
+      // A new target; recentre moves the orbit target onto it and carries the camera along
+      // (same offset, same direction), so the view turns around it from where it was. The stage
+      // centre has nothing to follow: it turns Follow member off.
+      setTarget(id, { recentre = true } = {}) {
+        const point = freeTargetPoint(id, freePoint);
+        if (!point) return false;
+        freeView.target = id;
+        if (id === "stage") freeView.follow = false;
+        freeView.last.copy(point);
+        if (recentre) {
+          freeOffset.copy(point).sub(controls.target);
+          controls.target.copy(point);
+          editorCamera.position.add(freeOffset);
+          controls.update();
+        }
+        notifyFreeView();
+        return true;
+      },
+      setFollow(enabled) {
+        freeView.follow = enabled === true;
+        if (freeView.follow && !freeTargetPoint(freeView.target, freeView.last)) freeView.last.copy(controls.target);
+        notifyFreeView();
+        return freeView.follow;
+      },
+      // Orbits the camera around the target to a preset yaw, keeping its distance, its height
+      // angle and its FOV; the target ends up at the screen centre.
+      orbit(view) {
+        const yaw = FREE_VIEW_YAW[view];
+        const point = yaw === undefined ? null : freeTargetPoint(freeView.target, freePoint);
+        if (!point) return false;
+        freeOffset.copy(editorCamera.position).sub(controls.target);
+        const distance = freeClamp(freeOffset.length() || 4, FREE_DISTANCE);
+        const elevation = Math.asin(Math.min(1, Math.max(-1, freeOffset.y / (freeOffset.length() || 1))));
+        const turn = yaw * Math.PI / 180, flat = Math.cos(elevation);
+        controls.target.copy(point);
+        freeView.last.copy(point);
+        editorCamera.position.set(-Math.sin(turn) * flat, Math.sin(elevation), Math.cos(turn) * flat).multiplyScalar(distance).add(point);
+        controls.update();
+        return true;
+      },
+      // Dolly: the camera moves along its view to `metres` from the orbit target.
+      setDistance(metres) {
+        if (!Number.isFinite(metres)) return false;
+        freeOffset.copy(editorCamera.position).sub(controls.target);
+        if (freeOffset.lengthSq() < 1e-12) freeOffset.set(0, 0, 1);
+        editorCamera.position.copy(controls.target).addScaledVector(freeOffset.normalize(), freeClamp(metres, FREE_DISTANCE));
+        controls.update();
+        return true;
+      },
+      // The free camera's vertical FOV (°); its position and direction stay.
+      setFov(degrees) {
+        if (!Number.isFinite(degrees)) return false;
+        editorCamera.fov = freeClamp(degrees, FREE_FOV);
+        editorCamera.updateProjectionMatrix();
+        requestDraw();
+        notifyFreeView();
+        return true;
+      },
+      // A finished free-camera change made outside a drag: listeners of onViewChange (auto key) run.
+      commit() { controls.dispatchEvent({ type: "end" }); },
+      // listener() after any change of the free view (drags, wheel, presets, lens); returns the remover.
+      onChange(listener) {
+        if (typeof listener !== "function") return () => {};
+        freeView.listeners.add(listener);
+        return () => freeView.listeners.delete(listener);
+      },
+    });
+
     const observer = global.ResizeObserver ? new global.ResizeObserver(() => resize(false)) : null;
     if (observer) observer.observe(mount);
     controls.addEventListener("change", requestDraw);
+    controls.addEventListener("change", notifyFreeView);
     resize();
     return {
       load, prepareStage, cancelStagePreparation, seek, playbackFrame, setPlaying, resize,
@@ -2802,6 +2940,7 @@
         controls.target.copy(alignTarget.set(0, 0, -1).applyQuaternion(liveCamera.quaternion).multiplyScalar(distance).add(liveCamera.position));
         editorCamera.updateMatrixWorld();
         requestDraw();
+        notifyFreeView();
         return true;
       },
       cameraOffsetAt(time = currentTime, binding) { return cameraOffsetAt(time, binding); },
@@ -2823,6 +2962,8 @@
         gameHelperEnabled = value;
         if (!useLive) requestDraw();
       },
+      // Free camera views (mv-studio-free-camera.js): target, preset views, distance and FOV.
+      freeView: freeViewApi,
       // Read-only state of the last evaluated frame for frame comparisons.
       inspect() {
         const live = useLive && hasShot, camera = live ? liveCamera : editorCamera;
