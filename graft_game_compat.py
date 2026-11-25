@@ -167,9 +167,31 @@ HEAD_FACE_REQUIRED = (
 HEAD_NO_SPACE = (
     "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and "
     "existing head meshes. Choose Body as the wearer mesh, or select a smaller part.")
+HEAD_MAP_DETAIL = (
+    "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's "
+    "textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving "
+    "mesh.")
+# Detail sentences after a refusal; {slot} is a shader property name and the
+# sizes are "width×height", so translated tables only reorder the words.
+HEAD_MAP_DETAIL_DENSITY = "{slot}: the part uses {part} for a {part_main} main texture; the head uses {head} for {head_main}."
+HEAD_MAP_DETAIL_SIZE = "{slot}: the part uses {part}; the head uses {head}."
 FACE_TARGET_REFUSED = (
     "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original "
     "head material and fixed blush positions. Choose Body or Hair as the wearer mesh.")
+
+
+def _size_text(size):
+    return f"{size[0]}×{size[1]}"
+
+
+def head_map_refusal(locked):
+    """The translatable refusal for a donor map finer than the head's (no resize)."""
+    if locked.part_main:
+        detail = HEAD_MAP_DETAIL_DENSITY.format(slot=locked.slot, part=_size_text(locked.part),
+            part_main=_size_text(locked.part_main), head=_size_text(locked.head), head_main=_size_text(locked.head_main))
+    else:
+        detail = HEAD_MAP_DETAIL_SIZE.format(slot=locked.slot, part=_size_text(locked.part), head=_size_text(locked.head))
+    return HEAD_MAP_DETAIL + " " + detail
 
 
 def _script_identity(objects, owner, tree):
@@ -463,7 +485,9 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     texels go into the head material's own texture at free texels, avoiding
     every head surface, the ``face_surfaces`` of the separate facial bundle
     (UV0 footprints, or a function returning them, required) and the cheek
-    window. Face bundles are only read for such a head renderer.
+    window. Face bundles are only read for such a head renderer. Every head
+    texture keeps its size and mip count: only smaller donor maps are enlarged
+    to match, and a donor map with finer pixels is refused.
     """
     from graft_texture_atlas import MaterialSource, bake_game_atlas
     from graft_atlas_geometry import flatten_material_groups
@@ -551,14 +575,21 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     baked = None
     if uv_placement != "atlas" and (uv_placement is not None or reuse_empty_uv):
         from graft_uv_reuse import prepare_uv_reuse
+        from graft_uv_upscale import ReceiverMapsLocked
         reuse_options = {"diagnostics": fallback_diagnostics,
                          "upscale_textures_for_uv_reuse": upscale_textures_for_uv_reuse,
                          "uv_placement": uv_placement, "reserved": reserved,
-                         "atlas_fallback": head is None}
+                         "atlas_fallback": head is None,
+                         # The face, eyes and mouth sample the head textures:
+                         # their sizes and texels stay as they are.
+                         "keep_receiver_textures": head is not None}
         if relocate_empty_uv:
             reuse_options["relocate_empty_uv"] = True
-        baked = prepare_uv_reuse(sources, working_mesh, original_group_count=len(materials),
-                                **reuse_options)
+        try:
+            baked = prepare_uv_reuse(sources, working_mesh, original_group_count=len(materials),
+                                     **reuse_options)
+        except ReceiverMapsLocked as locked:
+            raise ValueError(head_map_refusal(locked)) from None
     texture_mode = "reuse_empty_uv" if baked is not None else "atlas"
     if baked is not None and baked.identity:
         texture_mode = "identity"
@@ -586,6 +617,17 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     prepared = []
     for slot, texture in baked.textures.items():
         pid = next(pids)
+        if head is not None:
+            # Defensive: a head texture is rewritten texel for texel, never
+            # added, resized or given another mip chain.
+            current = slots.get(slot, {}).get("m_Texture", {})
+            original = objects.get(current.get("m_PathID")) if current.get("m_FileID", 0) == 0 else None
+            if original is None or original.type.name != "Texture2D":
+                raise ValueError(HEAD_MAP_DETAIL)
+            info = original.read()
+            if (int(info.m_Width), int(info.m_Height), int(getattr(info, "m_MipCount", 1) or 1)) != (
+                    texture.width, texture.height, texture.mip_count):
+                raise ValueError(HEAD_MAP_DETAIL)
         if slot not in slots:
             known_slots = {"_MainTex", "_RimlightTex", "_MatcapMaskTex", "_EmissiveTex", "_EmissiveScrollTex"}
             if slot not in known_slots:

@@ -553,7 +553,7 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
                      diagnostics=None, max_pixels=16777216, max_total_bytes=268435456,
                      max_raster_tests=100000000, relocate_empty_uv=False,
                      upscale_textures_for_uv_reuse=True, uv_placement=None,
-                     reserved=None, atlas_fallback=True):
+                     reserved=None, atlas_fallback=True, keep_receiver_textures=False):
     """Use the selected UV placement strategy, or compatible legacy flags.
 
     ``same_position`` matches map sizes and keeps UV coordinates unchanged.
@@ -563,6 +563,9 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
     reuse/enlargement/relocation flags. ``reserved`` marks receiver-texture
     texels used by other surfaces. ``atlas_fallback`` only changes wording:
     False tells the diagnostics that the caller refuses instead of atlasing.
+    ``keep_receiver_textures`` keeps every receiver map at its own size (other
+    surfaces sample it): only smaller donor maps may be enlarged to match, and
+    a donor map needing more texels raises graft_uv_upscale.ReceiverMapsLocked.
     """
     if type(upscale_textures_for_uv_reuse) is not bool:
         raise ValueError("Texture enlargement for UV reuse must be true or false.")
@@ -582,7 +585,7 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
     if uv_placement == "same_position":
         relocate_empty_uv, upscale_textures_for_uv_reuse = False, True
     elif uv_placement == "move_to_empty":
-        from graft_uv_upscale import prepare_upscaled_sources, finish_upscaled_reuse
+        from graft_uv_upscale import ReceiverMapsLocked, prepare_upscaled_sources, finish_upscaled_reuse
         moving_sources, messages, target_views = sources, [], {}
         moving_options = options
         valid_limits = all(type(value) is int and value > 0 for value in
@@ -594,7 +597,8 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
                 enlarged = None
                 if original_group_count == 1 and 2 <= len(sources) <= 64:
                     enlarged = prepare_upscaled_sources(sources, image_decoder=image_decoder,
-                        max_pixels=max_pixels, max_total_bytes=max_total_bytes, preserve_main=True)
+                        max_pixels=max_pixels, max_total_bytes=max_total_bytes, preserve_main=True,
+                        fixed_receiver=keep_receiver_textures)
                 if enlarged is not None:
                     moving_sources, messages, reserved_bytes, target_views = enlarged
                     moving_options = dict(options, max_total_bytes=max_total_bytes - reserved_bytes)
@@ -603,6 +607,8 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
                 if result is not None:
                     messages.insert(0, "Main texture resolutions retained; each selected UV group and its UV-driven maps moved into unused areas.")
                     return finish_upscaled_reuse(result, messages, target_views)
+            except ReceiverMapsLocked:
+                raise
             except AtlasCompatibilityError as error:
                 reasons.append("Auxiliary texture adjustment for empty UV relocation unavailable: " + str(error) + note)
         if diagnostics is not None:
@@ -611,13 +617,18 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
     result = _prepare_same_uv(sources, mesh_tree, original_group_count, diagnostics=reasons, **options)
     if result is not None:
         return result
-    enlarged = None
+    enlarged = locked = None
     if (upscale_textures_for_uv_reuse and original_group_count == 1 and 2 <= len(sources) <= 64
             and all(type(value) is int and value > 0 for value in (max_pixels, max_total_bytes, max_raster_tests))):
-        from graft_uv_upscale import prepare_upscaled_sources, finish_upscaled_reuse
+        from graft_uv_upscale import ReceiverMapsLocked, prepare_upscaled_sources, finish_upscaled_reuse
         try:
             enlarged = prepare_upscaled_sources(sources, image_decoder=image_decoder,
-                                               max_pixels=max_pixels, max_total_bytes=max_total_bytes)
+                                               max_pixels=max_pixels, max_total_bytes=max_total_bytes,
+                                               fixed_receiver=keep_receiver_textures)
+        except ReceiverMapsLocked as error:
+            if not relocate_empty_uv:
+                raise
+            locked = error  # Native relocation below may still fit without enlargement.
         except AtlasCompatibilityError as error:
             reasons.append("Texture enlargement for UV reuse unavailable: " + str(error) + note)
     if enlarged is not None:
@@ -639,6 +650,8 @@ def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=
         if result is not None:
             return result
         reasons.extend(relocated)
+    if locked is not None:
+        raise locked
     if diagnostics is not None:
         diagnostics.extend(reasons)
     return None

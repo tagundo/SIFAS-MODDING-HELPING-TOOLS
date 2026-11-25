@@ -121,7 +121,8 @@
     "Load the costume together with its face before transplanting onto a head mesh. The game draws the face's eyes and mouth from the same head texture, and their areas must be protected.",
     "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the wearer mesh, or select a smaller part.",
     "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the wearer mesh.",
-    "One game material holds one culling setting, so the donor and wearer materials must match. Choose a wearer mesh whose material uses the same culling, such as Body or Hair."
+    "One game material holds one culling setting, so the donor and wearer materials must match. Choose a wearer mesh whose material uses the same culling, such as Body or Hair.",
+    "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh."
   ];
   Object.assign(TEXT, {
     "Receiving mesh": ["이식받을 메시", "移植先のメッシュ"],
@@ -142,6 +143,8 @@
     "顔のメッシュにはパーツを移植できません。ゲームは顔のメッシュを元の頭マテリアルと固定のチーク位置で結合し直して描画します。移植先のメッシュにBodyかHairを選んでください。"];
   TEXT[REASONS[4]] = ["게임 머티리얼 하나에는 컬링 설정이 하나뿐이므로 Donor와 착용자 머티리얼이 같아야 합니다. 같은 컬링을 쓰는 머티리얼의 메시(Body나 Hair 등)를 이식받을 메시로 고르세요.",
     "ゲームのマテリアル1つにはカリング設定が1つしかないため、ドナーと移植先のマテリアルが一致する必要があります。同じカリングを使うマテリアルのメッシュ（BodyやHairなど）を移植先に選んでください。"];
+  TEXT[REASONS[5]] = ["선택한 부분의 텍스처가 같은 UV 면적에 대해 대응하는 머리 텍스처보다 더 촘촘한 픽셀을 씁니다. 얼굴·눈·입이 머리 텍스처로 그려지므로 머리 텍스처의 크기는 바꾸지 않습니다. 이식받을 메시로 Body를 고르세요.",
+    "選択したパーツのテクスチャは、同じUV面積に対して対応する頭テクスチャより細かいピクセルを使っています。顔・目・口は頭テクスチャで描画されるため、頭テクスチャのサイズは変更しません。移植先のメッシュにBodyを選んでください。"];
   TEXT["Selected bones"] = ["선택 본", "選択ボーン"];
   TEXT["Selected faces"] = ["이식할 면", "移植する面"];
   function selectedBoneManifest(parts, selected) {
