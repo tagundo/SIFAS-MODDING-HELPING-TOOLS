@@ -147,6 +147,10 @@ _TRANSLATIONS = {
             "게임 머티리얼 하나에는 컬링 설정이 하나뿐이므로 Donor와 착용자 머티리얼이 같아야 합니다. 같은 컬링을 쓰는 머티리얼의 메시(Body나 Hair 등)를 이식받을 메시로 고르세요.",
         "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.":
             "선택한 부분의 텍스처가 같은 UV 면적에 대해 대응하는 머리 텍스처보다 더 촘촘한 픽셀을 씁니다. 얼굴·눈·입이 머리 텍스처로 그려지므로 머리 텍스처의 크기는 바꾸지 않습니다. 이식받을 메시로 Body를 고르세요.",
+        "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.":
+            "선택한 부분의 원래 UV 위치는 머리 텍스처에서 이미 얼굴·눈·입·홍조 또는 다른 머리 메시가 쓰고 있습니다. '빈 UV 영역으로 이동'을 고르거나, 이식받을 메시로 Body를 고르세요.",
+        "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh.":
+            "선택한 부분의 텍스처를 원래 픽셀 그대로 머리 텍스처에 넣을 수 없습니다. 이유는 로그에 있습니다. 이식받을 메시로 Body를 고르세요.",
         "Receiving mesh":
             "이식받을 메시",
         "Body: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into the body texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":
@@ -210,6 +214,10 @@ _TRANSLATIONS = {
             "ゲームのマテリアル1つにはカリング設定が1つしかないため、ドナーと移植先のマテリアルが一致する必要があります。同じカリングを使うマテリアルのメッシュ（BodyやHairなど）を移植先に選んでください。",
         "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.":
             "選択したパーツのテクスチャは、同じUV面積に対して対応する頭テクスチャより細かいピクセルを使っています。顔・目・口は頭テクスチャで描画されるため、頭テクスチャのサイズは変更しません。移植先のメッシュにBodyを選んでください。",
+        "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.":
+            "選択したパーツの元のUV位置は、頭テクスチャ上ですでに顔・目・口・チークまたは別の頭メッシュが使っています。「空きUV領域へ移動」を選ぶか、移植先のメッシュにBodyを選んでください。",
+        "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh.":
+            "選択したパーツのテクスチャを元のピクセルのまま頭テクスチャに書き込めません。理由はログに記録されています。移植先のメッシュにBodyを選んでください。",
         "Receiving mesh":
             "移植先のメッシュ",
         "Body: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into the body texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":

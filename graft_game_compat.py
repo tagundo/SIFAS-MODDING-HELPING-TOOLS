@@ -167,6 +167,15 @@ HEAD_FACE_REQUIRED = (
 HEAD_NO_SPACE = (
     "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and "
     "existing head meshes. Choose Body as the wearer mesh, or select a smaller part.")
+HEAD_POSITION_IN_USE = (
+    "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, "
+    "blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.")
+HEAD_TEXTURES_INCOMPATIBLE = (
+    "The selected part's textures cannot be written into the head texture with their exact pixels; the log "
+    "names the reason. Choose Body as the receiving mesh.")
+HEAD_DETAIL_POSITION = "{slot} is already used at the part's original UV position."
+HEAD_DETAIL_ISLAND = "Island {island} of {islands} ({width}×{height} px) found no free texels in {slot}."
+HEAD_DETAIL_SEARCH = "The search stopped after {count} positions for island {island} of {islands}."
 HEAD_MAP_DETAIL = (
     "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's "
     "textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving "
@@ -192,6 +201,24 @@ def head_map_refusal(locked):
     else:
         detail = HEAD_MAP_DETAIL_SIZE.format(slot=locked.slot, part=_size_text(locked.part), head=_size_text(locked.head))
     return HEAD_MAP_DETAIL + " " + detail
+
+
+def head_placement_refusal(reasons):
+    """The translatable refusal for a head mesh whose donor texels found no place.
+
+    ``reasons`` are prepare_uv_reuse diagnostics; the last one that says why
+    placement failed picks the sentence. Technical reasons belong in the log.
+    """
+    failures = [reason for reason in reasons if getattr(reason, "kind", None) in ("occupied", "no_space", "search_limit")]
+    if not failures:
+        return HEAD_TEXTURES_INCOMPATIBLE
+    failure = failures[-1]
+    details = failure.details
+    if failure.kind == "occupied":
+        return HEAD_POSITION_IN_USE + " " + HEAD_DETAIL_POSITION.format(slot=details["slot"])
+    if failure.kind == "search_limit":
+        return HEAD_NO_SPACE + " " + HEAD_DETAIL_SEARCH.format(**details)
+    return HEAD_NO_SPACE + " " + HEAD_DETAIL_ISLAND.format(**details)
 
 
 def _script_identity(objects, owner, tree):
@@ -537,7 +564,8 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
         if face_surfaces is None:
             raise ValueError(HEAD_FACE_REQUIRED)
         if len(materials) != 1:
-            raise ValueError(HEAD_NO_SPACE)
+            log("The head mesh has several material slots; the game draws it with the one head material.")
+            raise ValueError(HEAD_TEXTURES_INCOMPATIBLE)
         materials[0] = {"m_FileID": 0, "m_PathID": head["material"].path_id}
         others = [obj for obj in head["renderers"] if obj is not smr_object]
         reserved = {"surfaces": renderer_footprints(objects, others) + list(face_surfaces),
@@ -597,8 +625,9 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
                                  for transform in baked.transforms):
         texture_mode = "relocate_empty_uv"
     if baked is None and head is not None:
-        reasons = " ".join(dict.fromkeys(str(reason) for reason in fallback_diagnostics))
-        raise ValueError(HEAD_NO_SPACE + (" " + reasons if reasons else ""))
+        for reason in dict.fromkeys(str(reason) for reason in fallback_diagnostics):
+            log(reason)
+        raise ValueError(head_placement_refusal(fallback_diagnostics))
     if baked is None:
         baked = bake_game_atlas(sources[0], sources[1:], max_dimension=max_dimension, gutter=0)
         if baked.identity:

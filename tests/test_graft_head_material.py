@@ -168,14 +168,19 @@ class HeadBakeTests(unittest.TestCase):
         tree = self.groups(((.9, .05), (.95, .05), (.9, .1)), ((.1, .7), (.3, .7), (.1, .9)))
         everything = (np.array([[0., 0.], [1., 0.], [0., 1.], [1., 1.]]), np.array([[0, 1, 2], [1, 3, 2]]))
         before = raw_objects(self.target)
-        for placement in ("same_position", "move_to_empty"):
+        logged = []
+        for placement, sentence in (("same_position", compat.HEAD_POSITION_IN_USE), ("move_to_empty", HEAD_NO_SPACE)):
             with self.subTest(placement=placement), self.head(), self.assertRaises(ValueError) as caught:
-                self.bake(tree, uv_placement=placement, face_surfaces=[everything])
-            self.assertTrue(str(caught.exception).startswith(HEAD_NO_SPACE), str(caught.exception))
-            self.assertNotIn("using the texture atlas", str(caught.exception))
+                self.bake(tree, uv_placement=placement, face_surfaces=[everything], log=logged.append)
+            self.assertTrue(str(caught.exception).startswith(sentence), str(caught.exception))
+            # Only fixed, translatable sentences reach the message; the
+            # technical diagnostics go to the job log instead.
+            self.assertNotIn("unavailable", str(caught.exception))
+            self.assertTrue(any("unavailable" in line for line in logged), logged)
         with self.head(), self.assertRaises(ValueError) as caught:
             self.bake(tree, uv_placement="same_position", face_surfaces=[])
-        self.assertTrue(str(caught.exception).startswith(HEAD_NO_SPACE), "the cheek window is reserved")
+        self.assertEqual(str(caught.exception), compat.HEAD_POSITION_IN_USE + " "
+                         + compat.HEAD_DETAIL_POSITION.format(slot="_MainTex"), "the cheek window is reserved")
         self.assertEqual(raw_objects(self.target), before)
         self.assertEqual(sum(obj.type.name == "Material" for obj in self.target.objects), 1)
 
@@ -358,7 +363,7 @@ class RefusalTranslationTests(unittest.TestCase):
         from webtools import i18n
         script = (ROOT / "webtools/web/static/viewer-transplants.js").read_text(encoding="utf-8")
         for sentence in (HEAD_ATLAS_REFUSED, HEAD_FACE_REQUIRED, HEAD_NO_SPACE, FACE_TARGET_REFUSED, CULL_MODE_HINT,
-                         compat.HEAD_MAP_DETAIL):
+                         compat.HEAD_MAP_DETAIL, compat.HEAD_POSITION_IN_USE, compat.HEAD_TEXTURES_INCOMPATIBLE):
             with self.subTest(sentence=sentence[:40]):
                 self.assertIn('"' + sentence + '"', script)
                 for language in ("ko", "ja"):

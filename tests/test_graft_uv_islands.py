@@ -184,5 +184,23 @@ def _reserved_from(occupied):
     return uv, np.arange(len(uv)).reshape(-1, 3)
 
 
+class LimitingMapTests(unittest.TestCase):
+    def test_failure_names_the_map_that_had_no_room(self):
+        """Main texels are free in every 8x8 block, but each rim texel is already used."""
+        target = source("receiver", [image((32, 32), "red")], rim=[image((4, 4), "red")])
+        donor = source("donor", [image((32, 32), "blue")], rim=[image((4, 4), "blue")])
+        # Off the donor's 8-pixel placement grid, so free Main candidates exist.
+        dots = [((8 * x + 6.2) / 32, (8 * y + 6.2) / 32, (8 * x + 6.8) / 32, (8 * y + 6.8) / 32)
+                for x in range(4) for y in range(4)]
+        geometry = grouped_mesh([[((.1, .1), (.11, .1), (.1, .11))], [((.55, .55), (.6, .55), (.55, .6))]])
+        reasons = []
+        result = prepare_uv_reuse([target, donor], geometry, 1, uv_placement="move_to_empty",
+                                  reserved={"surfaces": [], "rects": dots}, diagnostics=reasons, atlas_fallback=False)
+        self.assertIsNone(result)
+        failure = next(reason for reason in reasons if getattr(reason, "kind", None) == "no_space")
+        self.assertEqual(failure.details["slot"], "_RimlightTex")
+        self.assertEqual((failure.details["island"], failure.details["islands"]), (1, 1))
+        self.assertIn("every position free in _MainTex was used in _RimlightTex", failure)
+
 if __name__ == "__main__":
     unittest.main()

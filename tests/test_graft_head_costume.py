@@ -14,6 +14,7 @@ they do in game. Its 16x16 nearest-sampled texture is split in quadrants
 """
 from copy import deepcopy
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -224,7 +225,9 @@ class RealHeadBakeTests(unittest.TestCase):
         before = raw_objects(target)
         with self.assertRaises(ValueError) as caught:
             self.bake(target, ids, quad(1, 1, 4, 4), uv_placement="same_position", face_surfaces=[])
-        self.assertIn("other surfaces of this texture", str(caught.exception))
+        # The original position is taken, but empty UV areas still fit: say so.
+        self.assertEqual(str(caught.exception), compat.HEAD_POSITION_IN_USE + " "
+                         + compat.HEAD_DETAIL_POSITION.format(slot="_MainTex"))
         self.assertEqual(raw_objects(target), before)
         stats, _ = self.bake(target, ids, quad(1, 1, 4, 4), uv_placement="move_to_empty", face_surfaces=[])
         self.assertEqual(stats["texture_mode"], "relocate_empty_uv")
@@ -286,10 +289,13 @@ class FaceBundleTransplantTests(unittest.TestCase):
                 self.assertEqual(paths["face"].read_bytes(), face)
 
     def test_a_free_area_covered_by_the_facial_bundle_is_refused(self):
-        for placement in ("same_position", "move_to_empty"):
-            with self.subTest(placement=placement), self.assertRaises(ValueError) as caught:
-                self.run_part(FREE, placement)
-            self.assertTrue(str(caught.exception).startswith(compat.HEAD_NO_SPACE), caught.exception)
+        with self.assertRaises(ValueError) as caught:
+            self.run_part(FREE, "same_position")
+        self.assertTrue(str(caught.exception).startswith(compat.HEAD_POSITION_IN_USE), caught.exception)
+        with self.assertRaises(ValueError) as caught:
+            self.run_part(FREE, "move_to_empty")
+        self.assertRegex(str(caught.exception), "^" + re.escape(compat.HEAD_NO_SPACE)
+                         + r" Island 1 of 1 \(\d+×\d+ px\) found no free texels in _MainTex\.$")
 
     def test_free_texels_outside_the_facial_bundle_receive_the_part(self):
         for placement in ("same_position", "move_to_empty"):

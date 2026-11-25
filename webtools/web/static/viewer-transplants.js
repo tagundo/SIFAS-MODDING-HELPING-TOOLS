@@ -122,7 +122,9 @@
     "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the wearer mesh, or select a smaller part.",
     "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the wearer mesh.",
     "One game material holds one culling setting, so the donor and wearer materials must match. Choose a wearer mesh whose material uses the same culling, such as Body or Hair.",
-    "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh."
+    "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.",
+    "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.",
+    "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh."
   ];
   Object.assign(TEXT, {
     "Receiving mesh": ["이식받을 메시", "移植先のメッシュ"],
@@ -145,6 +147,10 @@
     "ゲームのマテリアル1つにはカリング設定が1つしかないため、ドナーと移植先のマテリアルが一致する必要があります。同じカリングを使うマテリアルのメッシュ（BodyやHairなど）を移植先に選んでください。"];
   TEXT[REASONS[5]] = ["선택한 부분의 텍스처가 같은 UV 면적에 대해 대응하는 머리 텍스처보다 더 촘촘한 픽셀을 씁니다. 얼굴·눈·입이 머리 텍스처로 그려지므로 머리 텍스처의 크기는 바꾸지 않습니다. 이식받을 메시로 Body를 고르세요.",
     "選択したパーツのテクスチャは、同じUV面積に対して対応する頭テクスチャより細かいピクセルを使っています。顔・目・口は頭テクスチャで描画されるため、頭テクスチャのサイズは変更しません。移植先のメッシュにBodyを選んでください。"];
+  TEXT[REASONS[6]] = ["선택한 부분의 원래 UV 위치는 머리 텍스처에서 이미 얼굴·눈·입·홍조 또는 다른 머리 메시가 쓰고 있습니다. '빈 UV 영역으로 이동'을 고르거나, 이식받을 메시로 Body를 고르세요.",
+    "選択したパーツの元のUV位置は、頭テクスチャ上ですでに顔・目・口・チークまたは別の頭メッシュが使っています。「空きUV領域へ移動」を選ぶか、移植先のメッシュにBodyを選んでください。"];
+  TEXT[REASONS[7]] = ["선택한 부분의 텍스처를 원래 픽셀 그대로 머리 텍스처에 넣을 수 없습니다. 이유는 로그에 있습니다. 이식받을 메시로 Body를 고르세요.",
+    "選択したパーツのテクスチャを元のピクセルのまま頭テクスチャに書き込めません。理由はログに記録されています。移植先のメッシュにBodyを選んでください。"];
   TEXT["Selected bones"] = ["선택 본", "選択ボーン"];
   TEXT["Selected faces"] = ["이식할 면", "移植する面"];
   function selectedBoneManifest(parts, selected) {

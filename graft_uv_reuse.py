@@ -96,6 +96,20 @@ def _reserved_texels(reserved, width, height, linear, wraps, budget):
     return mask
 
 
+class PlacementDecline(str):
+    """A decline diagnostic (its text) that also records why it declined.
+
+    ``kind`` is "occupied" (same-position texels already used), "no_space"
+    (no free texels for an island), "search_limit" or "other"; ``details``
+    names the slot and island, so callers can phrase their own refusal.
+    """
+
+    def __new__(cls, text, kind="other", **details):
+        value = super().__new__(cls, text)
+        value.kind, value.details = kind, details
+        return value
+
+
 def _fallback_note(atlas_fallback):
     return "; using the texture atlas." if atlas_fallback else "."
 
@@ -118,9 +132,10 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
     import costume_part_transplant as part
 
     sources = list(sources)
-    def decline(reason):
+    def decline(reason, kind="other", **details):
         if diagnostics is not None:
-            diagnostics.append("Empty UV reuse unavailable: " + str(reason) + _fallback_note(atlas_fallback))
+            diagnostics.append(PlacementDecline("Empty UV reuse unavailable: " + str(reason) + _fallback_note(atlas_fallback),
+                                                kind, **details))
         return None
     if original_group_count != 1:
         return decline("this mode requires one original receiver Body material")
@@ -202,7 +217,7 @@ def _prepare_same_uv(sources, mesh_tree, original_group_count, *, image_decoder=
             for group_index in range(1, len(groups)):
                 if np.any(receiver & coverage(group_index, width, height, sampler)):
                     return decline(slot + " donor UVs touch texture texels already used by retained receiver triangles"
-                                   + (" or by other surfaces of this texture" if reserved else ""))
+                                   + (" or by other surfaces of this texture" if reserved else ""), "occupied", slot=slot)
         textures = {}
         decoder = image_decoder or _decode_default
         coarse_receiver = coarse_donors = 0
@@ -285,8 +300,9 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
     import numpy as np
     from PIL import Image
     import costume_part_transplant as part
-    def decline(reason):
-        diagnostics.append("UV relocation unavailable: " + str(reason) + _fallback_note(atlas_fallback))
+    def decline(reason, kind="other", **details):
+        diagnostics.append(PlacementDecline("UV relocation unavailable: " + str(reason) + _fallback_note(atlas_fallback),
+                                            kind, **details))
         return None
     if original_group_count != 1 or not 2 <= len(sources) <= 64:
         return decline("one original receiver material and at most 63 donor groups are required")
@@ -415,14 +431,16 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
             # overlap count finds every position where those texels are free.
             shape = np.zeros((top - bottom, right - left), dtype=bool)
             shape[rows - int(rows.min()), columns - left] = True
+            island = dict(island=rank, islands=groups_total, width=right - left, height=top - bottom)
             if shape.shape[0] > used[main].shape[0] or shape.shape[1] > used[main].shape[1]:
-                return decline(f"island {rank} of {groups_total} is larger than the receiver texture")
+                return decline(f"island {rank} of {groups_total} is larger than the receiver texture",
+                               "no_space", slot=main, **island)
             spectrum_bytes = target_height * (target_width // 2 + 1) * 16 * 3
             if working + mask_bytes[0] + spectrum_bytes > max_total_bytes:
                 raise _CoverageLimit("the free-area search exceeds the memory budget")
             occupied = _overlap_counts(used[main], shape)
             vertices = np.unique(groups[index])
-            chosen, tested, exhausted = None, set(), False
+            chosen, tested, exhausted, rejected = None, set(), False, {}
             for grid in grids:
                 if chosen is not None or exhausted:
                     break
@@ -458,6 +476,7 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                                 break
                         mask = coverage(moved, index, tw, th, sampler)
                         if np.any(mask & used[slot]):
+                            rejected[slot] = rejected.get(slot, 0) + 1
                             valid = False
                             break
                         candidate[slot] = np.nonzero(mask)
@@ -466,9 +485,14 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                         break
             label = f"island {rank} of {groups_total} ({len(rows)} texels, {right - left}×{top - bottom} px)"
             if chosen is None:
+                # Main texels decide the candidates; another map that rejected
+                # every one of them is the map that had no room.
+                limit = max(rejected, key=lambda slot: (rejected[slot], slot != main)) if rejected else main
+                where = (f"; every position free in {main} was used in {limit}" if limit != main else f" in {main}")
                 if exhausted:
-                    return decline(f"the search limit of {max_candidates} positions was reached before {label} found free texels")
-                return decline(f"no common free native-pixel area fits {label}")
+                    return decline(f"the search limit of {max_candidates} positions was reached before {label} "
+                                   f"found free texels{where}", "search_limit", slot=limit, count=max_candidates, **island)
+                return decline(f"no common free native-pixel area fits {label}{where}", "no_space", slot=limit, **island)
             transform, candidate = chosen
             transforms[index] = transform
             placements[index] = candidate
