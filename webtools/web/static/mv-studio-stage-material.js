@@ -158,6 +158,12 @@
   // value only. Its channel holds Unity's (scale, offset) order for the
   // animated node; update() converts it to the glTF-space mainUVTransform.
   const uvOwners = new WeakMap();
+  // AS/Blend/Opaque renderers: an AnimationClip's MeshRenderer _TintColor,
+  // _AmbientColor and _BlendRate curves write the renderer's
+  // MaterialPropertyBlock, which then overrides the shared material for that
+  // renderer (owner node -> {record}; record.motionHeld names the uniforms).
+  const blendOwners = new WeakMap();
+  const blendChannels = { overlayTint: "tint", overlayAmbient: "ambient" };
   const mainStage = "/EntryPoint/Live/Stages/MainStage";
   const stageModel = mainStage + "/Model";
 
@@ -492,18 +498,21 @@
       const propLight = node.geometry.userData?.mvPropLight;
       const prop = propLight?.ambient === true && uniforms.ambient &&
         global.MVStudioPropLight?.create(propLight.binding) || null;
-      records.push({...entry, material, reflectionCube, prop});
+      records.push({...entry, material, reflectionCube, prop, motionHeld: new Set()});
     }
 
     // The animated GameObject's node owns the renderer's mesh. Only a renderer
     // with one stage material gets a channel, so restoring it keeps that value.
-    const uvOwnerRecords = new Map(), uvRecords = [];
+    const uvOwnerRecords = new Map(), uvRecords = [], blendOwnerRecords = new Map(), blendEntries = [];
     for (const record of records) {
       let owner = record.node;
       while (owner && typeof owner.userData.mvStageNode?.binding !== "string") owner = owner.parent;
       if (!owner || !record.material.uniforms.mainUVTransform) continue;
-      // _MainTex_ST is not an AS/Blend/Opaque property; its maps read _MainTexA_ST and _MainTexB_ST.
-      if (record.meta.shader === "blend") continue;
+      if (record.meta.shader === "blend") {
+        // _MainTex_ST is not an AS/Blend/Opaque property; its maps read _MainTexA_ST and _MainTexB_ST.
+        blendOwnerRecords.set(owner, blendOwnerRecords.has(owner) || blendOwners.has(owner) ? null : record);
+        continue;
+      }
       uvOwnerRecords.set(owner, uvOwnerRecords.has(owner) || uvOwners.has(owner) ? null : record);
     }
     for (const [owner, record] of uvOwnerRecords) {
@@ -511,6 +520,12 @@
       const entry = {owner, record, channel: null};
       uvOwners.set(owner, entry);
       uvRecords.push(entry);
+    }
+    for (const [owner, record] of blendOwnerRecords) {
+      if (!record) continue;
+      const entry = {owner, record};
+      blendOwners.set(owner, entry);
+      blendEntries.push(entry);
     }
 
     const singleBindings = new Set(records.map(({meta}) => meta.singleAmbientBinding).filter(Boolean));
@@ -595,7 +610,7 @@
           if (emissive) emissive = {color, intensity};
         }
         const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
-        for (const {node, original, meta, material, reflectionCube, prop} of records) {
+        for (const {node, original, meta, material, reflectionCube, prop, motionHeld} of records) {
           if (meta.reflectionToggle) {
             const enable = meta.reflectionQualityControlled === false ||
               project?.quality?.values?.stage_cubemap !== false;
@@ -632,7 +647,8 @@
           const single = singleTrack ? trackColorsAt(singleTrack, seconds) : null;
           for (let index = 0; index < ambientUniforms.length; index++) {
             const uniform = material.uniforms[ambientUniforms[index]];
-            if (!uniform) continue;
+            // A property an AnimationClip curve holds in the renderer's property block.
+            if (!uniform || motionHeld.has(ambientUniforms[index])) continue;
             if (singleTrack) {
               if (holding) {
                 // The clip colors, or LiveCoreStageAmbient's own defaults without one.
@@ -663,6 +679,7 @@
       },
       dispose() {
         for (const entry of uvRecords) if (uvOwners.get(entry.owner) === entry) uvOwners.delete(entry.owner);
+        for (const entry of blendEntries) if (blendOwners.get(entry.owner) === entry) blendOwners.delete(entry.owner);
         for (const {node, original, material} of records) {
           node.material = original;
           material.dispose();
@@ -674,7 +691,16 @@
     };
   }
 
-  function materialChannel(owner, kind) {
+  // kind: an MVStudioStageMotion material channel; property names an overlayScalar.
+  function materialChannel(owner, kind, property) {
+    const blend = blendOwners.get(owner);
+    if (blend) {
+      const name = kind === "overlayScalar" ? (property === "_BlendRate" ? "blendRate" : null) : blendChannels[kind];
+      const uniform = name && blend.record.material.uniforms[name];
+      if (!uniform) return;
+      blend.record.motionHeld.add(name);
+      return name === "blendRate" ? uniform : uniform.value;
+    }
     const entry = kind === "overlayUV" ? uvOwners.get(owner) : null;
     if (!entry) return;
     if (!entry.channel) {

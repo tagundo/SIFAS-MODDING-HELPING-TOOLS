@@ -14,10 +14,15 @@ _ASSEMBLY = "UnityEngine.Timeline.dll"
 _NAMESPACE = "UnityEngine.Timeline"
 _MAX_SCALARS = 300_000
 _MAX_MIX_KEYS = 128
-_MATERIAL_KINDS = {"overlayTint", "overlayUV", "overlayColor", "overlayScalar"}
+_MATERIAL_KINDS = {"overlayTint", "overlayUV", "overlayColor", "overlayScalar", "overlayAmbient"}
 _SOFT_BILLBOARD_KINDS = {"overlayColor", "overlayScalar"}
+# AS/Blend/Opaque's material curves: _BlendRate (declared by no other shipped
+# shader) marks the renderer, whose _TintColor and _AmbientColor its own
+# stage material also holds (MVStudioStageMaterial.materialChannel).
+_BLEND_KINDS = {"overlayTint", "overlayAmbient", "overlayScalar"}
+_BLEND_RATE = "_BlendRate"
 _WIDTH = {"translation": 3, "rotation": 4, "euler": 3, "scale": 3, "visibility": 1,
-          "overlayTint": 4, "overlayUV": 4, "overlayColor": 4, "overlayScalar": 1}
+          "overlayTint": 4, "overlayUV": 4, "overlayColor": 4, "overlayScalar": 1, "overlayAmbient": 4}
 _STAGE_QUALITY = {"post": "posteffect", "ambient": "stage_ambient", "animation": "stage_animation",
                   "coloring": "stage_coloring", "control": "stage_control", "flashlight": "stage_flash_light",
                   "display": "stage_display", "audience": "stage_audience", "emissive": "stage_emissive",
@@ -365,17 +370,25 @@ def read(objects, mono, tracks, deadline):
             requires_material = False
             if material_channels:
                 has_skin = any(channel.get("rendererClass") == 137 for channel in material_channels)
-                has_soft_billboard = any(channel["kind"] in _SOFT_BILLBOARD_KINDS for channel in material_channels)
+                has_soft_billboard = any(channel["kind"] in _SOFT_BILLBOARD_KINDS and channel.get("property") != _BLEND_RATE
+                                         for channel in material_channels)
+                blend_paths = {channel["path"] for channel in material_channels
+                               if channel["kind"] == "overlayScalar" and channel.get("property") == _BLEND_RATE}
+                renderer_blend = bool(blend_paths) and all(
+                    channel["path"] in blend_paths and channel["kind"] in _BLEND_KINDS
+                    and channel.get("property") in (None, _BLEND_RATE) for channel in material_channels)
                 if material_scope == "world":
                     # A MeshRenderer _MainTex_ST curve (e.g. 12025 Anim_root's
                     # speaker) animates that renderer only, and the runtime binds
-                    # it to the renderer's own stage material (MVStudioStageMaterial
-                    # serves overlayUV only) or skips the whole event. Any other
+                    # it to the renderer's own stage material or skips the whole
+                    # event. So does an AS/Blend/Opaque renderer's _BlendRate with
+                    # its _TintColor and _AmbientColor (MVStudioStageMaterial serves
+                    # overlayUV, and these for AS/Blend/Opaque only). Any other
                     # MeshRenderer channel (_TintColor) has no world holder there,
                     # so such a clip stays rejected instead of exporting a binding
                     # root that never animates.
                     renderer_uv = all(channel["kind"] == "overlayUV" for channel in material_channels)
-                    if has_skin or has_soft_billboard or renderer_uv and not resident_laser:
+                    if has_skin or has_soft_billboard or (renderer_uv or renderer_blend) and not resident_laser:
                         timing["materialScope"] = "world"
                         timing_cost += 1
                         requires_material = True
