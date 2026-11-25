@@ -647,9 +647,11 @@ async function sceneSampler() {
     getPixelRatio() { return 1; } setPixelRatio() {} render() {} dispose() {}
   };
   Three.OrbitControls = class { constructor() { this.target = new THREE.Vector3(); } update() {} addEventListener() {} dispose() {} };
+  const loaded = [];
   Three.GLTFLoader = class {
     parse(_bytes, _base, onLoad) {
       const root = new THREE.Group(), hips = new THREE.Bone(), head = new THREE.Bone();
+      loaded.push({ root, hips, head });
       hips.name = 'Hips'; hips.userData.elichika_node = 3; hips.position.set(0, 1, 0);
       head.name = 'Head'; head.userData.elichika_node = 5; head.position.set(0, .5, 0);
       root.add(hips); hips.add(head);
@@ -680,6 +682,12 @@ async function sceneSampler() {
   const headAt = () => scene.sampleMemberPath({ slot: 1, part: 0, times: [scene.inspect().time] });
   const playhead = await headAt();
   nearVector(playhead.positions, [-1, 1.5, 0], 1e-9, 'the head at the playhead (Unity, mirrored X)');
+  // The member's transforms as the playhead posed them, read directly (local TRS and world matrices).
+  const { root: memberRoot, hips: hipsBone, head: headBone } = loaded[0];
+  const transforms = () => [memberRoot, hipsBone, headBone].map((node) => [node.position.toArray(), node.quaternion.toArray(), node.scale.toArray(),
+    Array.from(node.matrixWorld.elements)]);
+  const posed = transforms();
+  nearVector(new THREE.Vector3().setFromMatrixPosition(headBone.matrixWorld).toArray(), [1, 1.5, 0], 1e-9, 'the head world matrix at t = 1 (three)');
   const times = Float64Array.from({ length: 241 }, (_, n) => n / 60);
   const slices = [];
   const result = await scene.sampleMemberPath({ slot: 1, part: 0, times, budgetMs: .01, onProgress: (done) => slices.push(done) });
@@ -690,9 +698,10 @@ async function sceneSampler() {
     nearVector(Array.from(result.positions.subarray(3 * n, 3 * n + 3)), [-n / 60, 1.5, 0], 1e-6, `head at ${n / 60} s`);
     near(result.yaw[n], -90 * (n / 240), 1e-4, `facing yaw at ${n / 60} s (Unity: three +Y turn = negative yaw)`);
   }
-  // The playhead's own frame is back after the sampling (the member stands at t = 1).
+  // The playhead's own frame is back after the sampling (the member stands at t = 1): every
+  // transform and world matrix is exactly the one the playhead posed.
   assert.equal(scene.inspect().time, 1);
-  nearVector((await headAt()).positions, [-1, 1.5, 0], 1e-9, 'the playhead pose is restored');
+  assert.deepEqual(transforms(), posed, 'the playhead pose is restored (local TRS and world matrices)');
   // The fixed world point part (Face) and a member without hips have no time dependence / facing.
   const face = await scene.sampleMemberPath({ slot: 1, part: 2, times: [0, 2] });
   nearVector(face.positions, [3, 0, 4, 3, 0, 4], 1e-12, 'a fixed world point');

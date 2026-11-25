@@ -18,7 +18,9 @@
    - random scrubbing gives the same pose as playing to the same time;
    - Ctrl+Z restores the longer rig;
    - save → reopen keeps the rig and the baked samples;
-   - every follow camera string has Korean and Japanese copy, and the panel follows a language switch.
+   - every follow camera string has Korean and Japanese copy, and the panel follows a language switch;
+   - a member path sampling leaves the scene as the playhead had it: paused, the bones and springs;
+     while playing (frames driven with explicit timestamps), the spring trajectory after it.
 
    Korean screenshots (the panel, and the rig on the Camera tab) go to EVIDENCE_DIR (a temporary
    folder otherwise). */
@@ -39,6 +41,37 @@ const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(
 fs.mkdirSync(modded, { recursive: true });
 fs.mkdirSync(evidence, { recursive: true });
 fs.writeFileSync(path.join(modded, 'stage-fixture.glb'), fixture().glb);
+const swing = swingFixture();
+fs.writeFileSync(path.join(modded, 'swing-fixture.glb'), swing.glb);
+
+// The rig fixture with a swing bone (Hair_Dyna, tip Hair_Tip) under BreastSize, whose rotation
+// the fixture's clip animates (looping each second), so the spring moves while it plays.
+function swingFixture() {
+  const glb = fixture().glb;
+  const jsonLength = glb.readUInt32LE(12);
+  const doc = JSON.parse(glb.subarray(20, 20 + jsonLength).toString('utf8'));
+  const bin = glb.subarray(20 + jsonLength);  // the BIN chunk, header included
+  const hair = doc.nodes.length;
+  doc.nodes.push({ name: 'Hair_Dyna', translation: [0, .3, -.1], children: [hair + 1], extras: { elichika_node: hair, role: 'bone' } },
+    { name: 'Hair_Tip', translation: [0, -.3, 0], extras: { elichika_node: hair + 1, role: 'bone' } });
+  (doc.nodes[2].children ||= []).push(hair);
+  const json = Buffer.from(JSON.stringify(doc)), padded = Buffer.concat([json, Buffer.alloc((4 - json.length % 4) % 4, 32)]);
+  const header = Buffer.alloc(20);
+  header.writeUInt32LE(0x46546c67, 0); header.writeUInt32LE(2, 4); header.writeUInt32LE(20 + padded.length + bin.length, 8);
+  header.writeUInt32LE(padded.length, 12); header.writeUInt32LE(0x4e4f534a, 16);
+  return { glb: Buffer.concat([header, padded, bin]), hair };
+}
+
+// Its physics catalog (mv-studio-physics.js format): one swing bone, no colliders.
+function swingPhysics(hair) {
+  return { available: true,
+    components: [{ id: 'hair', kind: 'bone', node: hair, name: 'Hair_Dyna',
+      values: { stiffnessForce: .02, dragForce: .4, lowRotationLimit: [-180, -180, -180], highRotationLimit: [180, 180, 180] },
+      simulation: { childNode: hair + 1, parentIndex: -1, childIndex: -1, siblingIndex: -1, boneAxis: [0, -1, 0],
+        externalForce: [0, -.01, .004], radius: .02, colliderIds: [], colliderBits: 0 } }],
+    native: { available: true, runtime: { sources: [{ sourceIndex: 0, known: true, skirtsafeDisable: true }] } },
+    managers: [{ id: 'm', sourceIndex: 0, bones: ['hair'], lodBones: [], colliders: [], kneeTransforms: [] }] };
+}
 
 async function startServer() {
   const socket = net.createServer();
@@ -452,6 +485,66 @@ async function synthetic(browser, url) {
   await page.close();
 }
 
+// Sampling a member path (a follow camera bake) leaves the scene as the playhead had it: paused,
+// every bone (world matrices) and spring is unchanged; while playing, on frames driven with
+// explicit timestamps (springs step at 30 Hz, so every other frame runs a spring job), a sampling
+// after either kind of frame leaves the spring trajectory of the following frames unchanged.
+async function springsKept(browser, url) {
+  const errors = [];
+  const page = await newPage(browser, errors);
+  await page.goto(url + '/#mv');
+  await page.waitForFunction(() => MVStudio.getState().visible);
+  const open = (file) => page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, file) } }).then((reply) => reply.json());
+  const local = await open('stage-fixture.glb'), member = await open('swing-fixture.glb');
+  const project = gameProject(local);
+  project.name = 'Follow camera springs';
+  project.assets = [...(local.assets || []), ...(member.assets || [])];
+  project.performers[0].glb = member.stage.glb;
+  project.performers[0].rig = { focusParts: { 0: 6, 3: 1 }, physics: swingPhysics(swing.hair),
+    bones: [{ node: 1, path: 'Move' }, { node: 2, path: 'Move/BreastSize' }, { node: 6, path: 'Move/Head' },
+      { node: swing.hair, path: 'Move/BreastSize/Hair_Dyna' }, { node: swing.hair + 1, path: 'Move/BreastSize/Hair_Dyna/Hair_Tip' }] };
+  await importGame(page, project);
+  await page.waitForFunction(() => window.probeCtx.scene()?.memberTargets?.().some((item) => item.slot === 1));
+  const result = await page.evaluate(async () => {
+    const scene = window.probeCtx.scene();
+    const springs = () => scene.assetDump({ sections: ['springs'] }).springs[0].bones.map((bone) => bone.localRotation);
+    const pose = () => { const dump = scene.assetDump({ sections: ['members', 'springs'] }); return JSON.stringify([dump.members, dump.springs]); };
+    const sample = () => scene.sampleMemberPath({ slot: 1, part: 0, times: Float64Array.from({ length: 240 }, (_, n) => 5 + n / 60), budgetMs: 1 });
+    const play = async (sampleAfter) => {
+      scene.setPlaying(false);
+      scene.seek(3);
+      scene.seek(.5);
+      scene.setPlaying(true);
+      const trail = [];
+      for (let frame = 1; frame <= 60; frame++) {
+        scene.playbackFrame(.5 + frame / 60, 10000 + frame * 1000 / 60);
+        if (frame === sampleAfter) await sample();
+        trail.push(springs());
+      }
+      scene.setPlaying(false);
+      return trail;
+    };
+    const worst = (a, b) => Math.max(...a.flatMap((frame, index) => frame.flatMap((q, bone) => q.map((value, axis) => Math.abs(value - b[index][bone][axis])))));
+    const plain = await play(-1), again = await play(-1), odd = await play(21), even = await play(22);
+    const moving = Math.max(...plain.map((frame) => Math.abs(frame[0][3] - plain[0][0][3]) + Math.abs(frame[0][0] - plain[0][0][0])));
+    scene.seek(1.25);
+    const before = pose();
+    await sample();
+    const after = pose();
+    return { bones: plain[0].length, moving, repeat: worst(plain, again), odd: worst(plain, odd), even: worst(plain, even), paused: before === after,
+      members: JSON.parse(before)[0][0].bones.length };
+  });
+  assert.equal(result.bones, 1, 'the spring is listed');
+  assert(result.moving > 1e-3, `the spring moves while the clip plays (${result.moving})`);
+  assert.equal(result.repeat, 0, 'the driven frames replay exactly');
+  assert.equal(result.odd, 0, 'a sampling after frame 21 leaves the spring trajectory unchanged');
+  assert.equal(result.even, 0, 'a sampling after frame 22 leaves the spring trajectory unchanged');
+  assert.equal(result.members, 5, 'the member bones are listed');
+  assert(result.paused, 'paused: every bone world matrix and the spring are as they were');
+  assert.deepEqual(errors, []);
+  await page.close();
+}
+
 async function run() {
   let browser, server;
   try {
@@ -459,6 +552,7 @@ async function run() {
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     await synthetic(browser, server.url);
+    await springsKept(browser, server.url);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {
     if (browser) await browser.close();

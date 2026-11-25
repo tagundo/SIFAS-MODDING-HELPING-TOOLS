@@ -561,8 +561,9 @@
 
     // The path of one member's body part at `times` (director seconds): Unity positions and the
     // member's facing yaw (deg, Unity; null without hips). Time-sliced (budgetMs per slice);
-    // after each slice the playhead's own frame is evaluated again, so the visible frame and
-    // the physics state stay the playhead's. Physics is never reset.
+    // before each slice the spring job keeps the playhead's pose, and after it the playhead's
+    // own frame is evaluated again, so the visible frame and the physics state stay the
+    // playhead's. Physics is never reset.
     async function sampleMemberPath({ slot, part, times, signal, onProgress, budgetMs = 8 } = {}) {
       const list = times instanceof Float64Array ? times : Float64Array.from(times || []);
       const count = list.length;
@@ -585,6 +586,12 @@
       while (index < count) {
         if (signal?.aborted || disposed || ticket !== generation) throw cancelled();
         if (find() !== record) throw new Error("The member to follow is not loaded.");
+        // A displayed frame without a spring job keeps the pose the last game frame ended with
+        // for the next job (the physics update hook with no step, which playbackFrame runs before
+        // it poses the members). Run that hook before this slice poses the member at other times,
+        // so the pose kept is the playhead's, not a sampled one; in the playbackFrame after the
+        // slice it then keeps nothing new.
+        record.physics?.frame?.("update", currentTime, 0, settings, record.motion, physicsTiming?.order);
         const started = clock();
         try {
           do {
