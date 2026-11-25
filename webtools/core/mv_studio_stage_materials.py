@@ -18,6 +18,10 @@ _SHADERS = {
     # below _Cutoff without a keyword; Cull, ZWrite, ZTest and the stencil are
     # material floats.
     ("cab-ac0988328357841c205babac78d7cf4e", -6136900368392166873): "cutout",
+    # Hidden/AS/Coloring/Opaque: fixed Blend One Zero, ZWrite On and ZTest
+    # LEqual with Cull [_CullMode]; _PaletteTex (UV1 * _ColorIdTex_ST) scales
+    # _TintColor, and UsePass "Hidden/AS/Depth/DEPTH" writes plain depth.
+    ("cab-a82d81c63f90a9578a472659ba4c195f", -6110577314968069779): "coloring",
 }
 # Each shader's keyword space. Unity ignores a material keyword its shader
 # does not declare, so only these select a compiled variant.
@@ -29,9 +33,11 @@ _KEYWORDS = {
         "_CUBEMAP_REFLECTIVITY_MULTIPLY", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA", "_FRESNEL_ON",
         "_PARALLAX_CORRECTED_CUBEMAP_ON", "_THIRD_TEX_MODE_DECAL", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_OFF"}),
     "cutout": frozenset({"PROCEDURAL_INSTANCING_ON", "SOFTPARTICLES_ON", "_SATURATE_ON", "_VERTEX_COLOR_ON"}),
+    # _AUTO_PLAY_ON compiles to the same programs as its absence.
+    "coloring": frozenset({"_AUTO_PLAY_ON", "_VERTEX_COLOR_ON"}),
 }
 # Tags { "Queue" } of each shader's subshader.
-_SHADER_QUEUES = {"stage": 2000, "cutout": 2450}
+_SHADER_QUEUES = {"stage": 2000, "cutout": 2450, "coloring": 2000}
 # _ALPHA_TRANSPARENCY: the alpha the variant tests against _Cutoff and multiplies by _TintColor.a.
 _ALPHA_SOURCES = {"_ALPHA_TRANSPARENCY_VERTEX_ALPHA": "vertex", "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA": "texture",
                   "_ALPHA_TRANSPARENCY_MULTIPLY": "multiply"}
@@ -259,9 +265,11 @@ def read_material(scene, material, ambient, single_ambient):
         state = (_stage_state if mode == "stage" else _cutout_state)(tree, floats)
         if state is None:
             return None
-    # AS/General/Opaque fixes blend and depth in its compiled passes.
-    # Serialized values for those properties can survive a material shader swap.
-    elif mode != "general" and (floats.get("_SrcBlend", 1), floats.get("_DstBlend", 0), floats.get("_ZWrite", 1)) != (1, 0, 1):
+    # AS/General/Opaque and Hidden/AS/Coloring/Opaque fix blend and depth in
+    # their compiled passes. Serialized values for those properties can
+    # survive a material shader swap.
+    elif mode not in ("general", "coloring") and (
+            floats.get("_SrcBlend", 1), floats.get("_DstBlend", 0), floats.get("_ZWrite", 1)) != (1, 0, 1):
         return None
     if mode in ("general", "solid") and (floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
                                          or floats.get("_StencilZFailOp", 0) != 0):
@@ -297,6 +305,15 @@ def read_material(scene, material, ambient, single_ambient):
         if "_SATURATE_ON" in keywords:
             meta["saturate"] = True
         return meta
+    if mode == "coloring":
+        # No component sets these materials' palette, so Unity binds the
+        # property's "white" default: the palette lookup leaves _TintColor as is.
+        palette = _properties(tree, "m_TexEnvs").get("_PaletteTex", {}).get("m_Texture") or {}
+        cull, queue = _enum(floats, "_CullMode", 0, 3), tree.get("m_CustomRenderQueue", -1)
+        if palette.get("m_PathID") or cull is None or type(queue) is not int or not -1 <= queue <= 5000:
+            return None
+        return dict(meta, cull=cull, queue=_SHADER_QUEUES["coloring"] if queue == -1 else queue,
+                    vertexColor="_VERTEX_COLOR_ON" in keywords)
     third_modes = keywords & {"_THIRD_TEX_MODE_OFF", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_DECAL"}
     alpha = [source for name, source in _ALPHA_SOURCES.items() if name in keywords]
     if len(alpha) != 1 or len(third_modes) != 1 or "_THIRD_TEX_MODE_DECAL" in third_modes:

@@ -180,7 +180,8 @@
         #endif
         gl_FragColor = vec4(color, alpha * tint.a);
       #elif defined(TINT_THEN_COLOR)
-        // AS/General/TransparentCutout: ambient, then tint, then COLOR, then
+        // AS/General/TransparentCutout and Hidden/AS/Coloring/Opaque: ambient,
+        // then tint (times the palette), then COLOR; the cutout's
         // _SATURATE_ON adds _MainTex.rgb to the fourth power.
         vec4 surface = texture2D(mainMap, vStageUV);
         #ifdef CUTOUT
@@ -491,7 +492,8 @@
     root.traverse((node) => {
       sampler.retainOriginalMaterial(node.material);
       const meta = node.geometry?.userData?.mvStageMaterial;
-      if (!node.isMesh || !["stage", "general", "solid", "cutout"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
+      if (!node.isMesh || !["stage", "general", "solid", "cutout", "coloring"].includes(meta?.shader) ||
+          !isColor(meta.colors?._TintColor)) return;
       if (meta.shader !== "solid" && (!node.material?.map || !isColor(meta.uvTransform) ||
           !isColor(meta.colors._AmbientColor))) return;
       if (meta.vertexColor && !node.geometry.getAttribute("_stage_color") && meta.vertexColorAbsent !== true) return;
@@ -533,6 +535,8 @@
         uniforms.ambient = {value: new T.Vector4().fromArray(meta.colors._AmbientColor)};
       }
       if (meta.vertexColor) defines.VERTEX_COLOR = 1;
+      // Hidden/AS/Coloring/Opaque with its "white" default palette shares the cutout's order without the test.
+      if (meta.shader === "coloring") defines.TINT_THEN_COLOR = 1;
       if (meta.shader === "cutout") {
         defines.TINT_THEN_COLOR = defines.CUTOUT = 1;
         if (meta.saturate) defines.SATURATE = 1;

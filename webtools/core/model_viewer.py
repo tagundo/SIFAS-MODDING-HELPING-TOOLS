@@ -1971,10 +1971,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         custom["_STAGE_EMISSIVE_UV"] = stage_emissive_uv
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], **custom}
                     primitives[-1]["extras"]["mvStageMaterial"] = descriptor
-                    if descriptor["shader"] in {"stage", "general", "cutout"}:
+                    if descriptor["shader"] in {"stage", "general", "cutout", "coloring"}:
                         mv_studio_stage_materials.collect_main_sampler(
                             scene, materials, material_obj, descriptor,
-                            static_opaque=descriptor["shader"] in {"general", "cutout"} and stage_opaque is None,
+                            static_opaque=descriptor["shader"] in {"general", "cutout", "coloring"} and stage_opaque is None,
                         )
                     if descriptor["shader"] == "stage":
                         mv_studio_stage_materials.collect_texture_sampler(

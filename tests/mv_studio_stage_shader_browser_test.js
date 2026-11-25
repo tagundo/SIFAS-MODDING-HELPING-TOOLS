@@ -47,6 +47,9 @@ const CASES = [
     { shader: 'cutout', cutoff: 0.5, vertexColor: true, saturate: true }, null],
   ['cutout, saturate', { shader: 'cutout', cutoff: 0.2, saturate: true }, null],
   ['cutout discarding (_Cutoff above _MainTex.a)', { shader: 'cutout', cutoff: 0.7, vertexColor: true }, null],
+  // Hidden/AS/Coloring/Opaque with its default white palette.
+  ['coloring, COLOR (10008/3 cmn_mat_lit_02)', { shader: 'coloring', vertexColor: true }, null],
+  ['coloring', { shader: 'coloring' }, null],
 ];
 
 const SAMPLE = {
@@ -86,9 +89,9 @@ function reference(fields, variant, point) {
   const v = (c) => c / 255;
   const tex = SAMPLE.main.map(v), light = SAMPLE.light.slice(0, 3).map(v), color = SAMPLE.color;
   const mix = (a, b, t) => a.map((x, i) => x + (b[i] - x) * t);
-  if (fields.shader === 'cutout') {
-    // The compiled AS/General/TransparentCutout fragment programs.
-    if (tex[3] < fields.cutoff) return [0, 0, 0, 0];
+  if (fields.shader === 'cutout' || fields.shader === 'coloring') {
+    // The compiled AS/General/TransparentCutout and Hidden/AS/Coloring/Opaque fragment programs.
+    if (fields.shader === 'cutout' && tex[3] < fields.cutoff) return [0, 0, 0, 0];
     let out = [...mix(tex.slice(0, 3), SAMPLE.ambient.slice(0, 3), SAMPLE.ambient[3]).map((x, i) => x * SAMPLE.tint[i]),
       tex[3] * SAMPLE.tint[3]];
     if (fields.vertexColor) out = out.map((x, i) => x * color[i]);
@@ -161,7 +164,10 @@ function reference(fields, variant, point) {
         floor.setAttribute('_stage_light_uv', floor.getAttribute('uv').clone());
         floor.setAttribute('_stage_emissive_uv', floor.getAttribute('uv').clone());
         floor.setAttribute('_stage_color', new T.Float32BufferAttribute(Array(count).fill(sample.color).flat(), 4));
-        const meta = fields.shader === 'cutout' ? {
+        const meta = fields.shader === 'coloring' ? {
+          shader: 'coloring', colors: { _TintColor: sample.tint, _AmbientColor: sample.ambient }, cull: 0,
+          uvTransform: [1, 1, 0, 0], vertexColor: Boolean(fields.vertexColor), queue: 2000,
+        } : fields.shader === 'cutout' ? {
           shader: 'cutout', colors: { _TintColor: sample.tint, _AmbientColor: sample.ambient }, cull: 0,
           uvTransform: [1, 1, 0, 0], vertexColor: Boolean(fields.vertexColor), alphaCutoff: fields.cutoff,
           queue: fields.queue ?? 2450, ...(fields.saturate ? { saturate: true } : {}),

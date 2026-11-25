@@ -121,10 +121,23 @@ async function cutoutTest() {
   assert.equal(chair.renderOrder, 0);
 }
 
+async function coloringTest() {
+  const root = new T.Group();
+  // 10008/3 cmn_mat_lit_02 (the litC bodies): Cull Off, COLOR, the white default palette.
+  const body = plain(root, {shader: "coloring", colors: {_AmbientColor: [1, 1, 1, 0], _TintColor: [1, 1, 1, 1]}, cull: 0,
+    uvTransform: [1, 1, 0, 0], vertexColor: true, queue: 2000}, true);
+  const controller = await MVStudioStageMaterial.apply(T, root, {getDependency: async () => new T.Texture()});
+  const {defines, side, transparent, uniforms} = body.material;
+  assert.deepEqual([defines.TINT_THEN_COLOR, defines.CUTOUT, defines.VERTEX_COLOR, side, transparent, uniforms.alphaCutoff],
+    [1, undefined, 1, T.DoubleSide, false, undefined]);
+  controller.dispose();
+}
+
 (async () => {
   await passStateTest();
   await cutoutTest();
-  console.log("Stage pass state and TransparentCutout: blend, ZWrite, ZTest, cull, queue and stencil follow the material floats.");
+  await coloringTest();
+  console.log("Stage pass state, TransparentCutout and Coloring/Opaque: blend, ZWrite, ZTest, cull, queue and stencil follow the material floats.");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

@@ -614,6 +614,42 @@ class StageCubemapTests(unittest.TestCase):
         scene, material, _ = self.cutout_material("", {}, queue=3000)
         self.assertIsNone(stage.camera_depth(scene, material, renderer, supports_cutout=True))
 
+    def test_coloring_opaque_reads_the_default_white_palette(self):
+        def coloring(keywords, floats, palette=0, queue=-1):
+            material = SimpleNamespace(
+                path_id=15, type=SimpleNamespace(name="Material"),
+                assets_file=SimpleNamespace(externals=[SimpleNamespace(path="CAB-a82d81c63f90a9578a472659ba4c195f")]))
+            white = dict.fromkeys("rgba", 1)
+            tree = {
+                "m_Shader": {"m_FileID": 1, "m_PathID": -6110577314968069779}, "m_ShaderKeywords": keywords,
+                "m_CustomRenderQueue": queue,
+                "m_SavedProperties": {
+                    "m_Floats": list(floats.items()),
+                    "m_Colors": [("_AmbientColor", {**white, "a": 0}), ("_TintColor", white), ("_Color", white)],
+                    "m_TexEnvs": [("_MainTex", {"m_Scale": {"x": 1, "y": 1}, "m_Offset": {"x": 0, "y": 0}}),
+                                  ("_ColorIdTex", {"m_Texture": {"m_FileID": 0, "m_PathID": 0}}),
+                                  ("_PaletteTex", {"m_Texture": {"m_FileID": 0, "m_PathID": palette}})],
+                },
+            }
+            scene = SimpleNamespace(tree=lambda _: tree)
+            return scene, material, stage.read_material(scene, material, {}, {})
+
+        # 10008/3, 11008/3, 11044/3 cmn_mat_lit_02 (litC bodies): stale AS/Stage keywords and floats.
+        stale = ("_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA _CUBEMAP_BLEND_OP_ALPHA_BLEND _CUBEMAP_MODE_FRAGMENT "
+                 "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA _FRESNEL_ON _PARALLAX_CORRECTED_CUBEMAP_ON _THIRD_TEX_MODE_OFF "
+                 "_VERTEX_COLOR_ON")
+        floats = {"_AUTO_PLAY": 0, "_CullMode": 0, "_Cutoff": .5, "_Shift": 0, "_Speed": 1, "_VERTEX_COLOR": 1}
+        scene, material, body = coloring(stale, floats)
+        self.assertEqual({key: body.get(key) for key in ("shader", "cull", "queue", "vertexColor", "alphaCutoff")},
+                         {"shader": "coloring", "cull": 0, "queue": 2000, "vertexColor": True, "alphaCutoff": None})
+        self.assertEqual(stage.camera_depth(scene, material, {"m_CastShadows": 1}, supports_cutout=False), {"kind": "opaque"})
+        # The pass fixes blend and depth; stale floats from another shader do not reject it.
+        self.assertEqual(coloring("_AUTO_PLAY_ON", {**floats, "_SrcBlend": 5, "_DstBlend": 10, "_ZWrite": 0})[2]["vertexColor"],
+                         False)
+        self.assertEqual(coloring("", {})[2]["cull"], 0)
+        self.assertIsNone(coloring("", floats, palette=77)[2], "an assigned palette is not drawn without its lookup")
+        self.assertIsNone(coloring("", {**floats, "_CullMode": 4})[2])
+
     def test_quality_ownership_uses_only_typed_primary_model_ambient(self):
         def node(kind, path):
             return SimpleNamespace(type=SimpleNamespace(name=kind), assets_file=object(), path_id=path)
