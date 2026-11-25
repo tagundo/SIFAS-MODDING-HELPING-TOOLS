@@ -24,6 +24,7 @@ KNOWN = {
     ("cab-a44cd34f6481b592fc0475c6e5d23bfa", 9060382612279247893): "AS/FlashLight",
     ("cab-fc0511ca63f2d94bbfe211260d08ddd1", -6509019661097744245): "AS/Stage",
     ("cab-4004e36071ab5261ebac9281e0eccd75", 3926475870365283136): "AS/Penlight",
+    ("cab-f8a6d724e5bbefa191ed2e1f27102738", -3111404110691668338): "AS/Blend/Opaque",
 }
 
 # A loaded Shader's type tree holds its compiled programs; read its name once per object.

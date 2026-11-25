@@ -27,6 +27,16 @@
     mipBias: { name: "_MainTexMipmapBias", t: "float" },
     alphaCutoff: { name: "_Cutoff", t: "float" },
   };
+  // MVStudioStageMaterial's AS/Blend/Opaque variant (its BLEND define).
+  const BLEND_TABLE = {
+    tint: { name: "_TintColor", t: "color" },
+    ambient: { name: "_AmbientColor", t: "color" },
+    mainUVTransform: { name: "_MainTexA", t: "st" },
+    mainMap: { name: "_MainTexA", t: "tex" },
+    blendUVTransform: { name: "_MainTexB", t: "st" },
+    blendMap: { name: "_MainTexB", t: "tex" },
+    blendRate: { name: "_BlendRate", t: "float" },
+  };
   // MVStudioStageColoring uniforms, checked against the AS/Coloring/* shader property lists.
   const COLORING_TABLE = {
     uTint: { name: "_TintColor", t: "color" },
@@ -208,6 +218,7 @@
     if (!material) return { kind: "none", properties: {}, unmapped: [], editorOnly: [], globals: {} };
     if (material.userData?.sifas && material.uniforms) return memberUniforms(material);
     const uniforms = material.uniforms || {};
+    if (uniforms.tint && uniforms.blendRate && material.defines?.BLEND) return tableUniforms(material, BLEND_TABLE, "stage");
     if (uniforms.tint && (uniforms.mainUVTransform || uniforms.ambient || !uniforms.uTint)) return stageUniforms(material);
     if (uniforms.uShift && uniforms.uSpeed && uniforms.uSelfTime) return coloringUniforms(material);
     if (material.isShaderMaterial) {

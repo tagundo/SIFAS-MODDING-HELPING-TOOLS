@@ -11,6 +11,10 @@
       uniform vec4 mainUVTransform;
       varying vec2 vStageUV;
     #endif
+    #ifdef BLEND
+      uniform vec4 blendUVTransform;
+      varying vec2 vStageBlendUV;
+    #endif
     #ifdef VERTEX_COLOR
       attribute vec4 _stage_color;
       varying vec4 vStageColor;
@@ -34,6 +38,9 @@
       #include <skinning_vertex>
       #ifdef TEXTURED
         vStageUV = uv * mainUVTransform.xy + mainUVTransform.zw;
+      #endif
+      #ifdef BLEND
+        vStageBlendUV = uv * blendUVTransform.xy + blendUVTransform.zw;
       #endif
       #ifdef VERTEX_COLOR
         vStageColor = _stage_color;
@@ -62,6 +69,11 @@
       uniform sampler2D mainMap;
       uniform vec4 ambient;
       varying vec2 vStageUV;
+    #endif
+    #ifdef BLEND
+      uniform sampler2D blendMap;
+      uniform float blendRate;
+      varying vec2 vStageBlendUV;
     #endif
     #ifdef VERTEX_COLOR
       varying vec4 vStageColor;
@@ -122,6 +134,11 @@
         gl_FragColor = vec4(color, surface.a * tint.a);
       #elif defined(TEXTURED)
         vec4 surface = texture2D(mainMap, vStageUV);
+        #ifdef BLEND
+          // AS/Blend/Opaque: (B - A) * _BlendRate + A, then the shared COLOR,
+          // _AmbientColor and _TintColor steps below.
+          surface += blendRate * (texture2D(blendMap, vStageBlendUV) - surface);
+        #endif
         #ifdef VERTEX_COLOR
           surface *= vStageColor;
         #endif
@@ -146,6 +163,16 @@
 
   function isColor(value) {
     return Array.isArray(value) && value.length === 4 && value.every(Number.isFinite);
+  }
+
+  function textureIndex(value) {
+    return value === null || (Number.isSafeInteger(value) && value >= 0);
+  }
+
+  // Unity binds the "white" default texture to an unset AS/Blend/Opaque map.
+  function blendReady(meta) {
+    return isColor(meta.blendUVTransform) && Number.isFinite(meta.blendRate) && meta.vertexColor === true &&
+      textureIndex(meta.mainTexture) && textureIndex(meta.blendTexture);
   }
 
   function reflectionSource(value) {
@@ -348,9 +375,10 @@
     root.traverse((node) => {
       sampler.retainOriginalMaterial(node.material);
       const meta = node.geometry?.userData?.mvStageMaterial;
-      if (!node.isMesh || !["stage", "general", "solid"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
-      if (meta.shader !== "solid" && (!node.material?.map || !isColor(meta.uvTransform) ||
+      if (!node.isMesh || !["stage", "general", "solid", "blend"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
+      if (meta.shader !== "solid" && ((meta.shader !== "blend" && !node.material?.map) || !isColor(meta.uvTransform) ||
           !isColor(meta.colors._AmbientColor))) return;
+      if (meta.shader === "blend" && (!parser || !blendReady(meta))) return;
       if (meta.vertexColor && !node.geometry.getAttribute("_stage_color") && meta.vertexColorAbsent !== true) return;
       if (meta.shader === "stage" && (!parser || !Number.isSafeInteger(meta.lightmap) ||
           meta.lightmap < 0 || !node.geometry.getAttribute("_stage_light_uv") ||
@@ -365,9 +393,21 @@
         sampler.reserveBase(meta.lightmap);
         if (meta.emissive) sampler.reserveBase(meta.emissive.texture);
       }
+      if (meta.shader === "blend") {
+        for (const index of [meta.mainTexture, meta.blendTexture]) if (index !== null) sampler.reserveBase(index);
+      }
       candidates.push({node, original: node.material, meta});
     });
     if (!candidates.length) return null;
+    let white = null;
+    function blendTexture(index, source) {
+      if (index !== null) return sampledNativeTexture(index, source);
+      if (!white) {
+        white = new T.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+        white.needsUpdate = true;
+      }
+      return white;
+    }
 
     for (const entry of candidates) {
       if (!active()) break;
@@ -377,7 +417,21 @@
       const uniforms = { tint: {value: new T.Vector4().fromArray(meta.colors._TintColor)} };
       const defines = {};
       let reflectionCube = null;
-      if (meta.shader !== "solid") {
+      if (meta.shader === "blend") {
+        defines.TEXTURED = 1;
+        defines.BLEND = 1;
+        const map = await blendTexture(meta.mainTexture, meta.mainSampler);
+        if (!active()) break;
+        const second = await blendTexture(meta.blendTexture, meta.blendSampler);
+        if (!active()) break;
+        if (!map || !second) continue;
+        uniforms.mainMap = {value: map};
+        uniforms.mainUVTransform = {value: new T.Vector4().fromArray(meta.uvTransform)};
+        uniforms.blendMap = {value: second};
+        uniforms.blendUVTransform = {value: new T.Vector4().fromArray(meta.blendUVTransform)};
+        uniforms.blendRate = {value: meta.blendRate};
+        uniforms.ambient = {value: new T.Vector4().fromArray(meta.colors._AmbientColor)};
+      } else if (meta.shader !== "solid") {
         defines.TEXTURED = 1;
         const map = meta.mainSampler
           ? await sampledTexture(original.map, meta.mainSampler) : gammaTexture(original.map);
@@ -448,6 +502,8 @@
       let owner = record.node;
       while (owner && typeof owner.userData.mvStageNode?.binding !== "string") owner = owner.parent;
       if (!owner || !record.material.uniforms.mainUVTransform) continue;
+      // _MainTex_ST is not an AS/Blend/Opaque property; its maps read _MainTexA_ST and _MainTexB_ST.
+      if (record.meta.shader === "blend") continue;
       uvOwnerRecords.set(owner, uvOwnerRecords.has(owner) || uvOwners.has(owner) ? null : record);
     }
     for (const [owner, record] of uvOwnerRecords) {
@@ -612,6 +668,7 @@
           material.dispose();
         }
         sampler.dispose();
+        white?.dispose();
         for (const cube of cubes.values()) cube?.dispose();
       },
     };

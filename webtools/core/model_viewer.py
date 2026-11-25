@@ -655,11 +655,22 @@ _AS_TINT_SHADERS = {
     ("cab-a44cd34f6481b592fc0475c6e5d23bfa", 9060382612279247893): "AS/FlashLight",
     ("cab-fc0511ca63f2d94bbfe211260d08ddd1", -6509019661097744245): "AS/Stage",
     ("cab-4004e36071ab5261ebac9281e0eccd75", 3926475870365283136): "AS/Penlight",
+    ("cab-f8a6d724e5bbefa191ed2e1f27102738", -3111404110691668338): "AS/Blend/Opaque",
 }
 # Only these verified shaders tint, loaded or not: other AS/* shaders that
 # declare _TintColor without _Color (AS/MatCap/*, AS/Member) are not checked.
 _AS_TINT_NAMES = frozenset(_AS_TINT_SHADERS.values())
 _WHITE = {"r": 1., "g": 1., "b": 1., "a": 1.}
+
+
+def _as_blend_material(obj, tree):
+    """Whether a material uses AS/Blend/Opaque (by ShaderLab name, or its verified shared identity)."""
+    from .mv_studio_shader_identity import name
+
+    try:
+        return obj is not None and name(obj, tree) == "AS/Blend/Opaque"
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
 
 
 def _as_tint_default(scene, obj, tree):
@@ -1040,6 +1051,10 @@ class _Materials:
             material["alphaMode"] = "BLEND"
         envs = _properties(tree, "m_TexEnvs")
         main = envs.get("_MainTex") or envs.get("_BaseMap")
+        if main is None and "_MainTexA" in envs and _as_blend_material(obj, tree):
+            # AS/Blend/Opaque draws _MainTexA at its default _BlendRate 0; the
+            # MV stage material evaluates both maps (mv_studio_stage_materials).
+            main = envs["_MainTexA"]
         texture = _ref(obj, main.get("m_Texture")) if obj is not None and main else None
         if texture is not None and texture.type.name == "Texture2D":
             try:
@@ -1959,6 +1974,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             coords = stage_inputs["emissiveUV"].copy()
                             coords[:, 1] = 1 - coords[:, 1]
                             stage_emissive_uv = glb.attribute(coords, "VEC2")
+                if descriptor and descriptor["shader"] == "blend":
+                    try:
+                        if uv is None or not mv_studio_stage_materials.export_blend_maps(materials, material_obj, descriptor):
+                            descriptor = None
+                    except ValueError:
+                        descriptor = None
                 if descriptor:
                     custom = {}
                     if descriptor.get("vertexColor") and not descriptor.get("vertexColorAbsent"):

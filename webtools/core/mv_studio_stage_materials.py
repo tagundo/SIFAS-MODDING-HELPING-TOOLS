@@ -14,7 +14,15 @@ _SHADERS = {
     ("cab-fc0511ca63f2d94bbfe211260d08ddd1", -6509019661097744245): "stage",
     ("cab-31fad648db7286e0012ae8cc07024bff", -1043432931367049882): "solid",
     ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367): "general",
+    # AS/Blend/Opaque (shader06 of the stage shader set). Its only program,
+    # with no keyword variants, reads both maps through their own _ST, COLOR
+    # unconditionally, and fixes Blend One Zero, ZWrite On, ZTest LEqual.
+    ("cab-f8a6d724e5bbefa191ed2e1f27102738", -3111404110691668338): "blend",
 }
+# AS/Blend/Opaque m_PropInfo defaults: _TintColor (1, 1, 1, 1), _AmbientColor
+# (1, 1, 1, 0), _BlendRate Range(0, 1) = 0, and "white" for both 2D maps.
+_BLEND_DEFAULTS = {"_TintColor": [1., 1., 1., 1.], "_AmbientColor": [1., 1., 1., 0.]}
+_BLEND_MAPS = ("_MainTexA", "_MainTexB")
 _RIMLIGHT_DEPTH = ("cab-6cf8387efa4151b6220fceb9384d0e8e", 7983779172275908372)
 _AMBIENT_SCRIPT = ("LiveCoreStageAmbient", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll")
 _MODEL_SCRIPT = ("LiveCoreStageModel", *_AMBIENT_SCRIPT[1:])
@@ -168,19 +176,27 @@ def read_material(scene, material, ambient, single_ambient):
         return None
     floats = _properties(tree, "m_Floats")
     keywords = set(tree.get("m_ShaderKeywords", "").split())
-    # AS/General/Opaque fixes blend and depth in its compiled passes.
-    # Serialized values for those properties can survive a material shader swap.
-    if mode != "general" and (floats.get("_SrcBlend", 1), floats.get("_DstBlend", 0), floats.get("_ZWrite", 1)) != (1, 0, 1):
+    # AS/General/Opaque and AS/Blend/Opaque fix blend and depth in their
+    # compiled passes. Serialized values for those properties can survive a
+    # material shader swap.
+    if mode not in ("general", "blend") and (
+            floats.get("_SrcBlend", 1), floats.get("_DstBlend", 0), floats.get("_ZWrite", 1)) != (1, 0, 1):
         return None
     if (floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
             or floats.get("_StencilZFailOp", 0) != 0):
         return None
     colors = _colors(tree)
+    if mode == "blend":
+        # A property the material does not save reads the shader default.
+        colors = {**_BLEND_DEFAULTS, **colors}
+        colors.pop("_BlendColor", None)
     if "_TintColor" not in colors or mode != "solid" and "_AmbientColor" not in colors:
         return None
     identity = _key(material)
-    meta = {"shader": mode, "colors": colors, "ambientDefaults": ambient.get(identity),
-            "cull": floats.get("_CullMode", 2) if mode != "stage" else 2}
+    cull = floats.get("_CullMode", 2) if mode != "stage" else 2
+    if mode == "blend" and cull not in (0, 1, 2):
+        return None
+    meta = {"shader": mode, "colors": colors, "ambientDefaults": ambient.get(identity), "cull": cull}
     if single := single_ambient.get(identity):
         meta["singleAmbientBinding"] = single
     if "_ALPHATEST_ON" in keywords:
@@ -190,6 +206,22 @@ def read_material(scene, material, ambient, single_ambient):
         meta["alphaCutoff"] = cutoff
     if mode == "solid":
         return meta
+    if mode == "blend":
+        rate = floats.get("_BlendRate", 0.)
+        if type(rate) not in (int, float) or not math.isfinite(rate):
+            return None
+        envs = _properties(tree, "m_TexEnvs")
+        transforms = []
+        for name in _BLEND_MAPS:
+            env = envs.get(name, {})
+            scale, offset = _numbers(env.get("m_Scale", {"x": 1, "y": 1}), "xy"), _numbers(env.get("m_Offset", {"x": 0, "y": 0}), "xy")
+            if scale is None or offset is None:
+                return None
+            transforms.append([*scale, offset[0], 1 - scale[1] - offset[1]])
+        # The only program reads COLOR without a keyword; _VERTEX_COLOR_ON is
+        # not one of this shader's keywords.
+        return dict(meta, blendRate=float(rate), uvTransform=transforms[0], blendUVTransform=transforms[1],
+                    vertexColor=True)
     env = _properties(tree, "m_TexEnvs").get("_MainTex", {})
     scale, offset = _numbers(env.get("m_Scale", {}), "xy"), _numbers(env.get("m_Offset", {}), "xy")
     if scale is None or offset is None:
@@ -235,6 +267,23 @@ def export_emissive(scene, materials, material, controlled=False):
         collect_texture_sampler(materials, texture, result, "sampler")
         return result
     return None
+
+
+def export_blend_maps(materials, material, descriptor):
+    """Embed both AS/Blend/Opaque maps as authored. An unset map reads Unity's "white" default."""
+    envs = _properties(materials.scene.tree(material), "m_TexEnvs")
+    for name, field, sampler in (("_MainTexA", "mainTexture", "mainSampler"),
+                                 ("_MainTexB", "blendTexture", "blendSampler")):
+        pointer = envs.get(name, {}).get("m_Texture") or {}
+        if not pointer.get("m_PathID"):
+            descriptor[field] = None
+            continue
+        texture = _ref(material, pointer)
+        if texture is None or texture.type.name != "Texture2D":
+            return False
+        descriptor[field] = materials.texture(texture)
+        collect_texture_sampler(materials, texture, descriptor, sampler, priority=MAIN_SAMPLERS)
+    return True
 
 
 def collect_main_sampler(scene, materials, material, descriptor, *, static_opaque=False):
