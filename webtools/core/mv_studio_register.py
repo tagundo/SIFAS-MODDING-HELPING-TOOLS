@@ -59,8 +59,10 @@ _TIMING = frozenset(mv_studio_timeline._CLIP_TIMING.values())
 _PCM_NAME = re.compile(r"[a-f0-9]{32}\.wav\Z")
 _PARSED = OrderedDict()
 _PARSED_LOCK = threading.Lock()
-# A stock original, both registered timelines of the target song and the two bake checks.
-_PARSED_ENTRIES = 5
+# Apply to game (mv_studio_apply) parses the source snapshot, the stock and the served timeline of
+# both platforms and the verify bakes; registration a stock original, two registered timelines and
+# the two bake checks.
+_PARSED_ENTRIES = 8
 # One registration or removal at a time in this process (the database guard covers other tools).
 _ACTIVE = threading.Lock()
 
@@ -350,13 +352,27 @@ def _first_catalog_row(root, region, platform, language, table, key):
     return None, None
 
 
+def _stock_key(master, asset_id, served):
+    """The TRUE stock timeline key of a 3D asset: Elichika's mv_studio_stock keeps it when MV Studio
+    replaced the asset's timeline (``_elichika_mv_studio_timeline``); else the key it plays."""
+    try:
+        row = master.execute("SELECT stock_key FROM _elichika_mv_studio_timeline WHERE asset_id=?", (asset_id,)).fetchone()
+    except sqlite3.Error:
+        return served
+    return row[0] if row is not None and isinstance(row[0], str) and row[0] else served
+
+
 def _facts(repo_root, region, live_id, asset_id, language="en"):
-    """Catalog facts of a stock base MV: title, stage, timeline descriptors per platform, audio descriptors."""
+    """Catalog facts of a stock base MV: title, stage, timeline descriptors per platform, audio descriptors.
+
+    The timeline descriptors are the TRUE stock's; ``servedKey`` is the key the asset plays now
+    (another one after an apply to game)."""
     root = Path(repo_root).resolve()
     with closing(game._readonly(root / "assets/db" / region / "masterdata.db")) as master:
         master.row_factory = sqlite3.Row
         live = master.execute("SELECT * FROM m_live WHERE live_id=?", (live_id,)).fetchone()
         asset = master.execute("SELECT * FROM m_live_3d_asset WHERE id=?", (asset_id,)).fetchone()
+        stock_key = _stock_key(master, asset_id, asset["timeline"]) if asset is not None else None
         stage = None
         if asset is not None:
             try:
@@ -382,7 +398,7 @@ def _facts(repo_root, region, live_id, asset_id, language="en"):
         pass
     timelines, audio = {}, {"music": None, "preview": None}
     for platform in PLATFORMS:
-        descriptor, path = _first_catalog_row(root, region, platform, language, "live_timeline", asset["timeline"])
+        descriptor, path = _first_catalog_row(root, region, platform, language, "live_timeline", stock_key)
         if descriptor is not None:
             timelines[platform] = descriptor
             if audio["music"] is None:
@@ -390,7 +406,7 @@ def _facts(repo_root, region, live_id, asset_id, language="en"):
                     audio["music"] = mv_studio_game._sound(db, live["bgm_path"], [], "audio")
                     audio["preview"] = mv_studio_game._sound(db, live["chorus_bgm_path"], [], "chorus")
     return {"liveId": live_id, "assetId": asset_id, "title": title, "stage": stage_name,
-            "timelineKey": asset["timeline"], "timelines": timelines, "audio": audio,
+            "timelineKey": stock_key, "servedKey": asset["timeline"], "timelines": timelines, "audio": audio,
             "bgmPath": live["bgm_path"], "chorusPath": live["chorus_bgm_path"]}
 
 
@@ -400,13 +416,28 @@ def _stock_identity(descriptor):
 
 # ---------------------------------------------------------------- originals per platform
 
-def _project_blob(project, base):
+def _overridden_source(source, raw, facts):
+    """True when a game import of the base MV loaded a timeline MV Studio applied, not the stock.
+
+    The import records the key it read (``source.timelineKey``); an older project has none, and
+    its snapshot is the stock only when it has the stock section's exact size."""
+    if facts is None:
+        return False
+    key = source.get("timelineKey")
+    if isinstance(key, str):
+        return key != facts["timelineKey"]
+    descriptor = facts["timelines"].get(source.get("platform"))
+    return descriptor is not None and len(raw) != descriptor.get("size")
+
+
+def _project_blob(project, base, facts=None):
     """The project's own native timeline: {"kind", "raw", "platform"}.
 
     kind is None (no native timeline: audio or GLB only), "stock" (a game import of the base MV,
     whose blob is the stock pack of ``platform``), "registered" (an import of a registered song:
     its blob is the song's edited timeline, never a base) or "mod" (a mod timeline, the base of
-    its own platform).
+    its own platform). A game import of a base MV whose timeline was applied from MV Studio is a
+    "mod" of that base (``facts`` tells): its edits are relative to the applied timeline.
     """
     if project.get("nativeTimeline") is not True:
         return {"kind": None, "raw": None, "platform": None}
@@ -418,7 +449,8 @@ def _project_blob(project, base):
     if raw is None:
         raise ValueError(TIMELINE_UNAVAILABLE)
     if game_source:
-        if source.get("liveId") == base["liveId"] and source.get("assetId") == base["assetId"]:
+        if (source.get("liveId") == base["liveId"] and source.get("assetId") == base["assetId"]
+                and not _overridden_source(source, raw, facts)):
             return {"kind": "stock", "raw": raw, "platform": source["platform"]}
     return {"kind": "mod", "raw": raw, "platform": _blob_platform(raw)}
 
@@ -918,7 +950,7 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
         result["jacket"]["default"] = "keep"
     # Originals per platform and the base parse.
     try:
-        blob = _project_blob(project, base)
+        blob = _project_blob(project, base, facts)
     except ValueError as error:
         result["blocked"].append({"message": str(error)})
         _audio_plan(result, project, facts, repo_root, chosen, hint)
@@ -1192,6 +1224,19 @@ def _timeline_identity(descriptor, platform, blob):
     return identity
 
 
+def _unchanged_stock(blob, tracks):
+    """True when a game import of the base MV carries no edits: its bake reads no original (every
+    platform not kept plays the stock rows), so no download is needed for it."""
+    if blob["kind"] != "stock" or blob["raw"] is None:
+        return False
+    try:
+        reference = _parse(blob["raw"])
+        result, _ = normalize(reference["tracks"], tracks)
+        return not count_edits(reference["tracks"], result)["clips"]
+    except (StructureError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _left_out(repo_root, facts, platform, blob, request):
     """Check that a platform missing from ``platforms`` was left out with the user's consent.
 
@@ -1209,7 +1254,7 @@ def _left_out(repo_root, facts, platform, blob, request):
         raise ValueError(STALE)
 
 
-def _bake(job, progress, repo_root, project, base, facts, request, song):
+def _bake(job, progress, repo_root, project, base, facts, request, song, *, left_out_keep=False):
     """Timelines, originals and fingerprints for the store. Runs before the game server stops.
 
     The server decides what to keep and what to bake from the posted project: an update keeps a
@@ -1226,9 +1271,12 @@ def _bake(job, progress, repo_root, project, base, facts, request, song):
     unchanged (``_carries``: a project opened from the song, no bake), and one whose baked
     bytes equal the bytes the song plays now. Either way nothing is written for it, so an
     update without changes never stops the game server.
+
+    With ``left_out_keep`` (apply to game) a platform left out with consent keeps what it plays
+    now instead of going back to the original MV.
     """
     from mv_studio_live import KEEP
-    blob = _project_blob(project, base)
+    blob = _project_blob(project, base, facts)
     if blob["kind"] is None:
         # Audio or GLB only: the base timeline plays unchanged (an update keeps what is there).
         return ({} if song is None else None), {}, {}
@@ -1268,15 +1316,29 @@ def _bake(job, progress, repo_root, project, base, facts, request, song):
         unchanged = mod_raw is None and not count_edits(reference["tracks"], result)["clips"]
         return result, unchanged
 
+    def left_out(platform):
+        _left_out(repo_root, facts, platform, blob, request)
+        if left_out_keep:
+            keep(platform, None)
+
+    def unchanged_result():
+        # Every platform not kept plays the stock rows, except one left out with consent when it
+        # keeps what it plays (apply to game): the consent said so, whatever the edits are.
+        if left_out_keep:
+            for platform in catalogued:
+                if platform not in wanted and timelines.get(platform) is not KEEP:
+                    left_out(platform)
+        return timelines, {}, fingerprints
+
     if mod_raw is not None or blob["kind"] == "stock":
         normalized, unchanged = reference_from(mod_raw if mod_raw is not None else blob["raw"])
         if unchanged:
-            return timelines, originals, fingerprints
+            return unchanged_result()
     for platform, descriptor in catalogued.items():
         if timelines.get(platform) is KEEP:
             continue
         if platform not in wanted:
-            _left_out(repo_root, facts, platform, blob, request)
+            left_out(platform)
             continue
         own = mod_raw is not None and platform == blob["platform"]
         fingerprint = expected[platform]
@@ -1290,7 +1352,7 @@ def _bake(job, progress, repo_root, project, base, facts, request, song):
         if normalized is None:
             normalized, unchanged = reference_from(stock)
             if unchanged:
-                return timelines, {}, fingerprints
+                return unchanged_result()
         try:
             output = _export(mod_raw if own else stock, request["title"], normalized)
         except ValueError:

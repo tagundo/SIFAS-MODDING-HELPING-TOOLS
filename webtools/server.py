@@ -25,7 +25,8 @@ _MV_STREAM_WRITE_TIMEOUT = 20
 _MV_STREAM_FIRST_RECORD_BYTES = 4096
 
 
-# MV-only song registration (webtools/core/mv_studio_register.py).
+# MV-only song registration (webtools/core/mv_studio_register.py) and apply to game
+# (webtools/core/mv_studio_apply.py): the same local-host, same-origin and job-slot rules.
 _MV_REGISTRATION_ROUTES = {
     "/api/mv-studio/registration-plan": "plan",
     "/api/mv-studio/pcm": "pcm",
@@ -33,6 +34,9 @@ _MV_REGISTRATION_ROUTES = {
     "/api/mv-studio/register-job": "register-job",
     "/api/mv-studio/songs/remove-plan": "remove-plan",
     "/api/mv-studio/songs/remove-job": "remove-job",
+    "/api/mv-studio/apply-plan": "apply-plan",
+    "/api/mv-studio/apply-job": "apply-job",
+    "/api/mv-studio/restore-job": "restore-job",
 }
 
 
@@ -123,6 +127,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_mv_chart_templates()
             if path == "/api/mv-studio/songs":
                 return self._api_mv_registration("songs")
+            if path == "/api/mv-studio/timelines":
+                return self._api_mv_registration("timelines")
             if path.startswith("/api/mv-studio/media/"):
                 from webtools.core import mv_studio
                 try:
@@ -422,9 +428,10 @@ class Handler(BaseHTTPRequestHandler):
         return b"".join(chunks)
 
     def _api_mv_registration(self, route):
-        """MV-only song registration: songs, plan, PCM upload, jacket preview, register and remove jobs."""
+        """MV-only song registration (songs, plan, PCM upload, jacket preview, register and remove jobs) and
+        apply to game (apply plan, apply and restore jobs, applied timelines)."""
         from sqlite3 import Error as SQLiteError
-        from webtools.core import mv_studio, mv_studio_register as register
+        from webtools.core import mv_studio, mv_studio_apply as apply, mv_studio_register as register
         try:
             register.store()
             import database_maintenance
@@ -439,6 +446,18 @@ class Handler(BaseHTTPRequestHandler):
                 if set(query) - {"region", "lang"} or any(len(values) != 1 for values in query.values()):
                     raise ValueError("Select the GL or JP catalog.")
                 return self._send_json(register.songs(root, region=query.get("region", ["gl"])[0]))
+            if route == "timelines":
+                query = self._query()
+                if set(query) - {"region", "lang"} or any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Select the GL or JP catalog.")
+                return self._send_json(apply.list_timelines(root, region=query.get("region", ["gl"])[0]))
+            if route == "apply-plan":
+                data = self._viewer_feature_request({"project"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                                                    optional_fields={"unbaked"})
+                unbaked = data.get("unbaked", [])
+                if not isinstance(unbaked, list) or len(unbaked) > 4096:
+                    raise ValueError(apply.REQUEST)
+                return self._send_json(apply.plan(root, data["project"], unbaked=unbaked, language=self._lang()))
             if route == "pcm":
                 return self._send_json(register.store_pcm(self._mv_raw_body(register.PCM_BYTES)))
             if route == "jacket-preview":
@@ -465,6 +484,18 @@ class Handler(BaseHTTPRequestHandler):
                 # Read now: the job thread outlives this request (the handler may serve another one).
                 language = self._lang()
                 body, tool = (lambda job: register.run_register(job, root, request, language=language)), "mv_register"
+            elif route == "apply-job":
+                data = self._viewer_feature_request({"mode", "project", "platforms", "expected"}, token=False,
+                                                    max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                                                    optional_fields={"download", "unbaked"})
+                request = apply.validate_apply(root, data)
+                language = self._lang()
+                body, tool = (lambda job: apply.run_apply(job, root, request, language=language)), "mv_apply"
+            elif route == "restore-job":
+                data = self._viewer_feature_request({"region", "assetId", "expected"}, token=False, max_bytes=4096)
+                request = apply.validate_restore(data)
+                language = self._lang()
+                body, tool = (lambda job: apply.run_restore(job, root, request, language=language)), "mv_restore"
             else:
                 data = self._viewer_feature_request({"region", "liveId", "reviewToken"}, token=False, max_bytes=4096)
                 request = register.validate_remove(data)

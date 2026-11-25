@@ -78,8 +78,10 @@
   function stale() { return state.planned !== state.revision; }
 
   // ---- export preparation (camera bakes and other plugins) --------------------------------
-  async function prepare() {
-    const others = (Array.isArray(global.MVStudioPlugins) ? global.MVStudioPlugins : []).filter((item) => item && item !== plugin);
+  // `excluded` is the calling plugin (the apply panel shares this preparation).
+  async function prepare(excluded) {
+    const others = (Array.isArray(global.MVStudioPlugins) ? global.MVStudioPlugins : [])
+      .filter((item) => item && item !== plugin && item !== excluded);
     for (const other of others) if (typeof other.beforeExport === "function") await other.beforeExport.call(other, ctx);
     let project = copy(ctx.project());
     const unbaked = [];
@@ -1113,36 +1115,36 @@
   }
 
   const STYLE = `
-#mv-panel-register .mv-register-error { color: var(--err, #a22); margin: 0; }
-#mv-panel-register .mv-register-plan { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
-#mv-panel-register .mv-register-plan li { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; }
-#mv-panel-register .mv-register-plan li > span:nth-child(2) { flex: 1 1 12em; min-width: 0; }
-#mv-panel-register .mv-register-ok .mv-register-icon { color: var(--ok, #2a7); }
-#mv-panel-register .mv-register-warn .mv-register-icon { color: var(--warn, #b70); }
-#mv-panel-register .mv-register-blocked { color: var(--err, #a22); }
-#mv-panel-register .mv-register-choice, #mv-panel-register .mv-register-download { display: flex; gap: 6px; align-items: center; }
-#mv-panel-register .mv-register-audio-fields { display: grid; gap: 6px; padding-inline-start: 1.6em; }
-#mv-panel-register .mv-register-jacket { width: 96px; height: 96px; object-fit: contain; border: 1px solid var(--line); }
-#mv-panel-register .mv-register-crop-wrap { display: grid; gap: 6px; }
-#mv-panel-register .mv-register-crop { position: relative; width: 100%; max-width: 320px; touch-action: none; user-select: none; }
-#mv-panel-register .mv-register-crop img { display: block; width: 100%; height: 100%; }
-#mv-panel-register .mv-register-crop-box { position: absolute; box-sizing: border-box; border: 2px solid var(--accent, #39f);
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-error { color: var(--err, #a22); margin: 0; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-plan { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-plan li { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-plan li > span:nth-child(2) { flex: 1 1 12em; min-width: 0; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-ok .mv-register-icon { color: var(--ok, #2a7); }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-warn .mv-register-icon { color: var(--warn, #b70); }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-blocked { color: var(--err, #a22); }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-choice, :is(#mv-panel-register, #mv-panel-apply) .mv-register-download { display: flex; gap: 6px; align-items: center; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-audio-fields { display: grid; gap: 6px; padding-inline-start: 1.6em; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-jacket { width: 96px; height: 96px; object-fit: contain; border: 1px solid var(--line); }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-crop-wrap { display: grid; gap: 6px; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-crop { position: relative; width: 100%; max-width: 320px; touch-action: none; user-select: none; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-crop img { display: block; width: 100%; height: 100%; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-crop-box { position: absolute; box-sizing: border-box; border: 2px solid var(--accent, #39f);
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, .45); cursor: move; }
-#mv-panel-register .mv-register-crop { overflow: hidden; }
-#mv-panel-register .mv-register-confirm { border: 1px solid var(--line); border-radius: 6px; padding: 8px; display: grid; gap: 6px;
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-crop { overflow: hidden; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-confirm { border: 1px solid var(--line); border-radius: 6px; padding: 8px; display: grid; gap: 6px;
   background: var(--panel); }
-#mv-panel-register .mv-register-confirm-title { font-weight: 600; }
-#mv-panel-register .mv-register-progress { display: grid; gap: 4px; }
-#mv-panel-register .mv-register-progress progress { width: 100%; }
-#mv-panel-register .mv-register-songs summary { padding: 6px 0; }
-#mv-panel-register .mv-register-song-list { list-style: none; padding: 0; display: grid; gap: 8px; }
-#mv-panel-register .mv-register-song-list li { display: grid; gap: 4px; border-top: 1px solid var(--line); padding-top: 6px; }
-#mv-panel-register .mv-register-song-head { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
-#mv-panel-register .mv-register-badge { color: var(--warn, #b70); font-size: .76rem; }
-#mv-panel-register .mv-register-actions button { flex: 1 1 auto; }
-#mv-panel-register button[aria-pressed=true] { border-color: var(--accent, #39f); box-shadow: inset 0 0 0 1px var(--accent, #39f); }
-#mv-panel-register input[type=text], #mv-panel-register input[type=search] { min-width: 0; }
-#mv-panel-register .mv-register-path { overflow-wrap: anywhere; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-confirm-title { font-weight: 600; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-progress { display: grid; gap: 4px; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-progress progress { width: 100%; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-songs summary { padding: 6px 0; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-song-list { list-style: none; padding: 0; display: grid; gap: 8px; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-song-list li { display: grid; gap: 4px; border-top: 1px solid var(--line); padding-top: 6px; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-song-head { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-badge { color: var(--warn, #b70); font-size: .76rem; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-actions button { flex: 1 1 auto; }
+:is(#mv-panel-register, #mv-panel-apply) button[aria-pressed=true] { border-color: var(--accent, #39f); box-shadow: inset 0 0 0 1px var(--accent, #39f); }
+:is(#mv-panel-register, #mv-panel-apply) input[type=text], :is(#mv-panel-register, #mv-panel-apply) input[type=search] { min-width: 0; }
+:is(#mv-panel-register, #mv-panel-apply) .mv-register-path { overflow-wrap: anywhere; }
 `;
 
   const plugin = {
@@ -1241,6 +1243,6 @@
     "The edits are counted once the original MV is available. Allow the download to bake them.",
   ]);
 
-  global.MVStudioRegister = Object.freeze({ STRINGS, wav, platformsFor });
+  global.MVStudioRegister = Object.freeze({ STRINGS, wav, platformsFor, prepare: (excluded) => prepare(excluded) });
   (global.MVStudioPlugins = global.MVStudioPlugins || []).push(plugin);
 })(window);
