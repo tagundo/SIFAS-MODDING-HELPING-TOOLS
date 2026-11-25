@@ -1,0 +1,230 @@
+/* MV Studio free camera views (MVStudioFreeCamera): the 3D model tab's Front / Back / Left /
+   Right buttons for the MV preview's free camera, with a target and distance / FOV controls.
+
+   - Target: the stage centre (the stage origin at chest height) or a member's chest. A view
+     button orbits the free camera around it to that side, keeping the current distance,
+     height angle and FOV, so the target sits at the screen centre. Front is the audience side
+     (the side the members face), Left and Right are the members' left and right.
+   - No fit-to-screen: whether to fit the stage or the members is ambiguous, so the framing is
+     the user's: Distance moves the camera forward and back (the mouse wheel does too) and FOV
+     widens or narrows the lens (Shift+wheel does too).
+   - Follow member (off by default, so the view stays where it was put): while a member is the
+     target, the free camera moves with that member as the MV plays or the playhead moves.
+
+   Preview only: nothing here writes the project, a timeline, the game camera or an export.
+   "Key current view" (mv-studio-camera-keys.js) keys whatever the free camera shows. */
+(function (global) {
+  "use strict";
+
+  // [id, label, tooltip]; the labels are the 3D model tab's.
+  const VIEWS = Object.freeze([
+    ["front", "Front", "Look from the audience side (the side the members face)."],
+    ["back", "Back", "Look from behind the stage."],
+    ["left", "Left side", "Look from the members' left."],
+    ["right", "Right side", "Look from the members' right."],
+  ]);
+  // The slider ranges; the number boxes take the same values. Distance slides on a log scale.
+  const DISTANCE = Object.freeze({ min: .3, max: 300, steps: 1000 });
+  const FOV = Object.freeze({ min: 5, max: 120 });
+  const LOG_SPAN = Math.log(DISTANCE.max / DISTANCE.min);
+  const finite = Number.isFinite;
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+  const sliderOf = (metres) => Math.round(clamp(Math.log(metres / DISTANCE.min) / LOG_SPAN, 0, 1) * DISTANCE.steps);
+  const metresOf = (value) => DISTANCE.min * Math.exp(LOG_SPAN * clamp(value, 0, DISTANCE.steps) / DISTANCE.steps);
+  const round = (value, digits) => Number(value.toFixed(digits));
+
+  const STRINGS = Object.freeze([
+    "Free camera views", "Target", "Stage centre", "The free camera looks at this point and turns around it.",
+    "View direction", ...VIEWS.flatMap(([, label, title]) => [label, title]),
+    "Distance", "Distance from the target (m). The mouse wheel also moves the camera forward and back.",
+    "FOV", "Vertical field of view (°). Shift+mouse wheel also changes it.",
+    "Follow member", "While a member is the target, the free camera moves with that member as the MV plays or the playhead moves. Preview only.",
+  ]);
+
+  let ctx = null, refs = null, scene = null, unsubscribe = null, queued = 0, targetsKey = "";
+
+  const t = (label) => ctx && typeof ctx.t === "function" ? ctx.t(label) : label;
+  const freeView = () => scene && scene.freeView ? scene.freeView : null;
+  const modeSelect = () => global.document.getElementById("mv-camera-mode");
+
+  // Text, title and aria-label that follow a language switch (app.js data-i18n, and the host's
+  // translateAria for the attributes).
+  function make(tag, { text, title, aria, ...attrs } = {}) {
+    const element = ctx.make(tag, text == null ? null : t(text), attrs);
+    if (text != null) element.dataset.i18n = text;
+    if (title) { element.title = t(title); element.dataset.i18nTitle = title; }
+    if (aria) { element.setAttribute("aria-label", t(aria)); element.dataset.i18nAriaLabel = aria; }
+    return element;
+  }
+
+  function build() {
+    const controls = global.document.getElementById("mv-preview-controls");
+    if (!controls || global.document.getElementById("mv-free-camera")) return null;
+    const bar = make("div", { id: "mv-free-camera", class: "mv-freecam", role: "toolbar", aria: "Free camera views" });
+    bar.hidden = true;
+    const box = {};
+
+    const target = make("label", { class: "mv-freecam-field", title: "The free camera looks at this point and turns around it." });
+    box.target = make("select", { id: "mv-freecam-target" });
+    box.target.append(make("option", { text: "Stage centre", value: "stage" }));
+    target.append(make("span", { text: "Target" }), box.target);
+    box.target.addEventListener("change", () => chooseTarget(box.target.value));
+    // Members finish loading after the project opens: list them again before the list opens.
+    box.target.addEventListener("pointerdown", refreshTargets);
+    box.target.addEventListener("focus", refreshTargets);
+
+    const views = make("div", { class: "mv-freecam-views", role: "group", aria: "View direction" });
+    for (const [id, label, title] of VIEWS) {
+      const control = make("button", { text: label, title, type: "button", "data-mv-freecam-view": id });
+      control.addEventListener("click", () => orbit(id));
+      views.append(control);
+    }
+
+    box.distance = range("distance", "Distance", "Distance from the target (m). The mouse wheel also moves the camera forward and back.",
+      { min: 0, max: DISTANCE.steps, step: 1 }, { min: DISTANCE.min, max: DISTANCE.max, step: .05 }, "m",
+      (value) => metresOf(value), (metres) => freeView()?.setDistance(metres));
+    box.fov = range("fov", "FOV", "Vertical field of view (°). Shift+mouse wheel also changes it.",
+      { min: FOV.min, max: FOV.max, step: 1 }, { min: FOV.min, max: FOV.max, step: .5 }, "°",
+      (value) => value, (degrees) => freeView()?.setFov(degrees));
+
+    const follow = make("label", { class: "mv-check mv-freecam-follow",
+      title: "While a member is the target, the free camera moves with that member as the MV plays or the playhead moves. Preview only." });
+    box.follow = ctx.make("input", null, { type: "checkbox", id: "mv-freecam-follow" });
+    box.follow.addEventListener("change", () => { freeView()?.setFollow(box.follow.checked); sync(); });
+    follow.append(box.follow, make("span", { text: "Follow member" }));
+
+    bar.append(target, views, box.distance.wrap, box.fov.wrap, follow);
+    controls.after(bar);
+    box.bar = bar;
+    return box;
+  }
+
+  // A slider and a number box for one value; the slider previews while it moves, and every
+  // finished change (slider release, number entry) counts as a finished camera move.
+  function range(id, label, title, sliderRange, numberRange, unit, fromSlider, apply) {
+    const wrap = make("div", { class: "mv-freecam-field mv-freecam-range", role: "group", title, aria: label });
+    const slider = ctx.make("input", null, { type: "range", id: `mv-freecam-${id}-slider`, ...stringValues(sliderRange) });
+    slider.dataset.i18nAriaLabel = label;
+    slider.setAttribute("aria-label", t(label));
+    const number = ctx.make("input", null, { type: "number", id: `mv-freecam-${id}`, ...stringValues(numberRange) });
+    number.dataset.i18nAriaLabel = label;
+    number.setAttribute("aria-label", t(label));
+    slider.addEventListener("input", () => { apply(fromSlider(slider.valueAsNumber)); });
+    slider.addEventListener("change", () => { apply(fromSlider(slider.valueAsNumber)); commit(); });
+    number.addEventListener("change", () => {
+      if (number.value !== "" && finite(number.valueAsNumber)) {
+        apply(clamp(number.valueAsNumber, numberRange.min, numberRange.max));
+        commit();
+      }
+      sync();
+    });
+    wrap.append(make("span", { text: label }), slider, number, ctx.make("span", unit, { class: "mv-freecam-unit", "aria-hidden": "true" }));
+    return { wrap, slider, number };
+  }
+
+  const stringValues = (values) => Object.fromEntries(Object.entries(values).map(([key, value]) => [key, String(value)]));
+
+  function commit() { freeView()?.commit(); }
+
+  function orbit(view) {
+    const api = freeView();
+    if (!api) return;
+    // A member that is no longer loaded leaves the stage centre as the target.
+    if (!api.targetPoint()) api.setTarget("stage", { recentre: false });
+    if (api.orbit(view)) commit();
+    sync();
+  }
+
+  function chooseTarget(id) {
+    const api = freeView();
+    if (!api) return;
+    if (!api.setTarget(id)) api.setTarget("stage");
+    commit();
+    sync();
+  }
+
+  // The scene is created with the first project; hook its change notices once per scene.
+  function hookScene() {
+    const next = ctx && typeof ctx.scene === "function" ? ctx.scene() : null;
+    if (next === scene) return;
+    if (unsubscribe) unsubscribe();
+    unsubscribe = null;
+    scene = next;
+    if (scene && scene.freeView) unsubscribe = scene.freeView.onChange(queueSync);
+  }
+
+  function queueSync() {
+    if (!queued) queued = global.requestAnimationFrame(() => { queued = 0; sync(); });
+  }
+
+  function refreshTargets() {
+    const api = freeView();
+    if (!refs || !api) return;
+    const targets = api.targets();
+    const performers = new Map(((ctx.project() || {}).performers || []).map((item) => [item.position, item]));
+    const key = targets.map((item) => item.id + ":" + (performers.get(item.slot)?.label || "")).join("|");
+    if (key !== targetsKey) {
+      targetsKey = key;
+      const stage = refs.target.querySelector('option[value="stage"]');
+      refs.target.replaceChildren(stage, ...targets.filter((item) => item.kind === "member").map((item) => {
+        const name = performers.get(item.slot)?.label;
+        return new Option(name ? `${item.slot} · ${name}` : String(item.slot), item.id);
+      }));
+    }
+    const state = api.state();
+    if (!targets.some((item) => item.id === state.target)) api.setTarget("stage", { recentre: false });
+    refs.target.value = api.state().target;
+  }
+
+  // The bar shows only while the preview draws the free camera; its values follow the camera.
+  function sync() {
+    if (!refs) return;
+    hookScene();
+    const mode = modeSelect();
+    const api = freeView();
+    refs.bar.hidden = !api || !mode || mode.value !== "orbit";
+    if (refs.bar.hidden) return;
+    refreshTargets();
+    const state = api.state();
+    const active = global.document.activeElement;
+    if (active !== refs.distance.number) refs.distance.number.value = String(round(state.distance, state.distance < 10 ? 2 : 1));
+    if (active !== refs.fov.number) refs.fov.number.value = String(round(state.fov, 1));
+    if (active !== refs.distance.slider) refs.distance.slider.value = String(sliderOf(state.distance));
+    if (active !== refs.fov.slider) refs.fov.slider.value = String(round(clamp(state.fov, FOV.min, FOV.max), 0));
+    refs.follow.checked = state.follow;
+    refs.follow.disabled = state.target === "stage";
+  }
+
+  // Shift+wheel over the free camera changes its FOV (the plain wheel dollies, OrbitControls).
+  // Chromium reports a Shift+wheel as a horizontal scroll, so either axis counts.
+  function wheel(event) {
+    if (!event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+    const api = freeView(), mode = modeSelect();
+    if (!api || !mode || mode.value !== "orbit") return;
+    const delta = (event.deltaY || event.deltaX) * (event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? 400 : 1);
+    if (!delta) return;
+    event.preventDefault();
+    event.stopPropagation();
+    api.setFov(clamp(api.state().fov * Math.exp(clamp(delta, -400, 400) * .0012), FOV.min, FOV.max));
+    commit();
+  }
+
+  const plugin = Object.freeze({
+    id: "free-camera",
+    order: 5,
+    attach(context) {
+      ctx = context;
+      refs = build();
+      if (!refs) return;
+      modeSelect()?.addEventListener("change", sync);
+      // "Frame scene" switches the select to the free camera without a change event.
+      global.document.getElementById("mv-frame-scene")?.addEventListener("click", () => global.requestAnimationFrame(sync));
+      global.document.getElementById("mv-scene")?.addEventListener("wheel", wheel, { capture: true, passive: false });
+      sync();
+    },
+    projectChanged() { sync(); },
+  });
+
+  (global.MVStudioPlugins ||= []).push(plugin);
+  global.MVStudioFreeCamera = Object.freeze({ plugin, VIEWS, DISTANCE, FOV, STRINGS, sliderOf, metresOf });
+}(window));
