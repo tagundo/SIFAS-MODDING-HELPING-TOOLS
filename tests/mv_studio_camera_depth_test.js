@@ -227,3 +227,46 @@ function testRigidFace() {
 }
 
 testRigidFace();
+
+// The prepass restores the scissor box, depth clear value and depth write mask without reading
+// them back from GL: it keeps the values the context's setters were last given (getParameter
+// is read once, when the context is first seen) and restores exactly those.
+function testRasterStateWithoutQueries() {
+  const renderer = rendererStub(), gl = renderer.getContext();
+  const calls = { scissor: [], clearDepth: [], depthMask: [] };
+  let reads = 0;
+  gl.getParameter = (key) => { reads++; return key === gl.SCISSOR_BOX ? new Int32Array([0, 0, 640, 360]) : key === gl.DEPTH_CLEAR_VALUE ? 1 : true; };
+  gl.scissor = (...args) => calls.scissor.push(args);
+  gl.clearDepth = (value) => calls.clearDepth.push(value);
+  gl.depthMask = (value) => calls.depthMask.push(value);
+  const restored = { clear: [], mask: [], scissor: [] };
+  renderer.state.buffers.depth.setClear = (value) => restored.clear.push(value);
+  renderer.state.buffers.depth.setMask = (value) => restored.mask.push(value);
+  renderer.state.scissor = (value) => restored.scissor.push(value.toArray());
+  const source = new T.Scene(), camera = new T.PerspectiveCamera(50, 16 / 9, .1, 1000);
+  const stage = new T.Mesh(new T.PlaneGeometry(), new T.MeshBasicMaterial());
+  stage.geometry.userData.mvStageCameraDepth = {kind: "opaque"};
+  source.add(stage);
+  const depth = MVStudioCameraDepth.create(T, renderer);
+  assert.equal(reads, 3, "the three values are read once, when the context is first seen");
+  assert.ok(depth.capture(source, camera));
+  assert.deepEqual(restored, { clear: [1, 1], mask: [true, true], scissor: [[0, 0, 640, 360]] });
+  // The wrapped setters still reach GL, with the WebGL IDL conversions kept for the restore.
+  gl.scissor(10.7, -3.2, 300.9, 200);
+  gl.scissor(1, 2, -5, 4);
+  gl.clearDepth(1.7);
+  gl.clearDepth(0.3);
+  gl.depthMask(0);
+  assert.deepEqual(calls, { scissor: [[10.7, -3.2, 300.9, 200], [1, 2, -5, 4]], clearDepth: [1.7, 0.3], depthMask: [0] });
+  restored.clear.length = restored.mask.length = restored.scissor.length = 0;
+  assert.ok(depth.capture(source, camera));
+  assert.deepEqual(restored, { clear: [1, Math.fround(0.3)], mask: [true, false], scissor: [[10, -3, 300, 200]] });
+  const again = MVStudioCameraDepth.create(T, renderer);
+  assert.equal(reads, 3, "a second prepass on the same context keeps the same record");
+  again.dispose();
+  depth.dispose();
+  assert.equal(reads, 3, "capture never reads GL state back");
+  console.log("The depth prepass restores the scissor box, depth clear value and depth mask from the setters' record.");
+}
+
+testRasterStateWithoutQueries();
