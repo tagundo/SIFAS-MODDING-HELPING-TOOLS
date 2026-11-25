@@ -1,8 +1,8 @@
 "use strict";
 
 // The stage display screen programs (AS/General/Opaque and Transparent, AS/Blend/AdditiveOpaque,
-// so1005/so2030 DisplayWaveTexture) and LiveCoreStageDisplay's rules for the renderer's own
-// materials and material2DReference.
+// so1005/so2030 DisplayWaveTexture), the per-variant tolerance and LiveCoreStageDisplay's
+// rules for the renderer's own materials and material2DReference.
 const assert = require("node:assert/strict");
 const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 global.window = global;
@@ -114,28 +114,39 @@ async function kinds() {
   assert.equal(node.material, original);
 }
 
-async function rules() {
-  // 12030/3: no material2DReference, so the client keeps the display enabled whatever the quality.
-  const fields = { fallback: null, initial: { background: general(1), logo: logo(3) },
-    variants: [{ background: general(2), logo: logo(3) }] };
+async function tolerance() {
+  // 12030/3: no material2DReference, so the display stays enabled; variant 0 cannot be drawn here.
+  const fields = {
+    fallback: null, initial: { background: general(1), logo: logo(3) },
+    variants: [{ unsupported: "_MainTex could not be decoded" }, { background: general(2), logo: logo(3) }]
+  };
   const { node, original, controller } = await build(fields);
   const [logoMesh] = node.children;
-  const track = { nativeClass: "LiveDisplayTrack", binding: effect, events: [clip(0, 1, 0)] };
-  controller.update(.5, { tracks: [track], quality: { values: { stage_display: false } } });
-  assert.equal(node.material.uniforms.uTexture.value.name, "2", "forced on: the track still switches");
-  // Without a LiveDisplayTrack, nothing changes the renderer's own materials.
-  controller.update(.5, { tracks: [], quality: { values: { stage_display: true } } });
-  assert.equal(node.material.uniforms.uTexture.value.name, "1");
+  const track = { nativeClass: "LiveDisplayTrack", binding: effect, events: [clip(0, 1, 0), clip(1, 1, 1)] };
+  const project = { tracks: [track], quality: { values: { stage_display: false } } };
+  controller.update(.5, project);
+  assert.equal(node.material.uniforms.uTexture.value.name, "1", "the renderer's own materials, not the variant");
   assert.equal(logoMesh.visible, true, "its own second material is drawn over the submesh");
+  assert.deepEqual(node.material.uniforms.uAmbient.value.toArray(), [1, 1, 1, 0], "the mixer writes the variant, not them");
+  controller.update(1.5, project);
+  assert.equal(node.material.uniforms.uTexture.value.name, "2", "the other variants still switch");
+  // Without a LiveDisplayTrack, nothing changes the renderer's own materials.
+  controller.update(1.5, { tracks: [], quality: { values: { stage_display: true } } });
+  assert.equal(node.material.uniforms.uTexture.value.name, "1");
   controller.dispose();
-  assert.equal(node.material, original);
 
-  const bare = await build({ fallback: general(1), initial: null, variants: [{ background: general(2), logo: null }] });
-  bare.controller.update(.5, { tracks: [], quality: { values: { stage_display: true } } });
-  assert.equal(bare.node.material, bare.original, "own materials the editor cannot draw: the glTF material");
-  bare.controller.update(.5, { tracks: [], quality: { values: { stage_display: false } } });
+  const bare = await build({ fallback: general(1), initial: { unsupported: "the renderer has 3 materials" },
+    variants: [{ unsupported: "shader AS/Unknown has no display reader" }, { background: general(2), logo: null }] });
+  bare.controller.update(.5, project);
   assert.equal(bare.node.material.uniforms.uTexture.value.name, "1", "disabled: material2DReference");
+  project.quality.values.stage_display = true;
+  bare.controller.update(.5, project);
+  assert.equal(bare.node.material, bare.original, "nothing native to draw: the glTF material");
+  assert.equal(bare.node.renderOrder, 7);
+  bare.controller.update(1.5, project);
+  assert.equal(bare.node.material.uniforms.uTexture.value.name, "2");
   bare.controller.dispose();
+  assert.equal(original.isMeshBasicMaterial, true);
 }
 
 async function shared() {
@@ -179,9 +190,9 @@ async function shared() {
 
 (async () => {
   await kinds();
-  await rules();
+  await tolerance();
   await shared();
-  console.log("Stage display kinds: additive feed, wave layers on _Time.y, transparent and opaque logos, unswitched screens, shared materials.");
+  console.log("Stage display kinds: additive feed, wave layers on _Time.y, transparent and opaque logos, variant tolerance, shared materials.");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

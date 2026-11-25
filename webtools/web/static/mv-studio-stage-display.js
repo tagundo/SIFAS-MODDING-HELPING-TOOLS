@@ -111,7 +111,7 @@
   // GLBs exported before the display kinds carry the AS/General/Opaque background
   // (stencil pass Replace) and the AS/General/Transparent alpha-blended logo.
   function normalize(fields, logo) {
-    if (!fields || fields.kind) return fields;
+    if (!fields || fields.unsupported || fields.kind) return fields;
     return logo ? { ...fields, kind: "transparent", blend: [5, 10], zTest: 4, zWrite: false, stencilPass: 0 }
       : { ...fields, kind: "general", stencilPass: 2 };
   }
@@ -242,7 +242,7 @@
     }
     async function load(fields, logo) {
       fields = normalize(fields, logo);
-      if (!fields) return fields;
+      if (!fields || fields.unsupported) return fields;
       const loaded = { ...fields, image: await texture(fields.texture) };
       if (fields.kind === "blendAdditive") {
         loaded.secondImage = fields.displayCamera ? cleared : await texture(fields.additive.texture);
@@ -250,7 +250,7 @@
       return loaded;
     }
     async function loadVariant(variant) {
-      if (!variant) return null;
+      if (!variant || variant.unsupported) return variant || null;
       return { background: await load(variant.background, false), logo: await load(variant.logo, true) };
     }
     function dispose() {
@@ -284,8 +284,9 @@
     // _AmbientColor and _MainTex_ST into the shared Material asset, so every screen drawing that
     // material shows the last write; the mixers run in timeline track order).
     function show(screen, pass, writes, own, shaderTime) {
-      if (!pass || !pass.background) {
-        // Nothing native to draw: the screen keeps its own (glTF) material.
+      if (!pass || pass.unsupported || !pass.background) {
+        // Nothing the editor can draw natively (a variant or own materials it cannot read):
+        // the screen keeps its glTF material.
         screen.node.material = screen.original;
         screen.node.renderOrder = screen.renderOrder;
         screen.logo.visible = false;
@@ -324,16 +325,20 @@
           // A disabled stage display shows material2DReference; one without it is forced on.
           const enabled = !screen.fallback || project?.quality?.values?.stage_display !== false;
           if (!enabled) {
-            passes.set(screen, { background: screen.fallback, logo: null });
+            passes.set(screen, screen.fallback.unsupported ? screen.fallback : { background: screen.fallback, logo: null });
           } else if (!screen.track) {
             // Without a LiveDisplayTrack nothing switches the renderer's own materials.
             passes.set(screen, screen.initial);
           } else {
             const state = sample(screen.track, time);
             const selected = screen.variants[Math.max(0, Math.min(screen.variants.length - 1, state.material))];
-            passes.set(screen, selected);
-            screen.state = state;
-            if (selected.background.material !== undefined) writes.set(selected.background.material, state);
+            if (selected?.unsupported) {
+              passes.set(screen, screen.initial?.unsupported ? selected : screen.initial);
+            } else {
+              passes.set(screen, selected);
+              screen.state = state;
+              if (selected.background.material !== undefined) writes.set(selected.background.material, state);
+            }
           }
         }
         for (const screen of screens) {

@@ -6,7 +6,9 @@ ApplyMaterialIndex with the last processed clip's materialIndex (0 when no clip
 is active), which sets renderer.sharedMaterials = [bgMaterial, logoMaterial] of
 materialReferences[clamp(index, 0, count - 1)] and nothing else; then it writes
 _AmbientColor and _MainTex_ST (the variant's scale, scroll speed x director time
-as the offset) into that bg material.
+as the offset) into that bg material. A variant's materials therefore matter
+only while it is selected, so each variant is exported on its own: one the
+editor cannot draw is reported (``unsupported``) and the others still switch.
 
 Initialize(enabled) leaves the renderer's own materials in place while the stage
 display is enabled; only a disabled display shows material2DReference (and a
@@ -192,23 +194,42 @@ def read(scene, materials, material):
 
 
 def _variant(scene, materials, background, logo):
-    return {"background": read(scene, materials, background),
-            "logo": read(scene, materials, logo) if logo is not None else None}
+    try:
+        return {"background": read(scene, materials, background),
+                "logo": read(scene, materials, logo) if logo is not None else None}
+    except Unsupported as error:
+        return {"unsupported": str(error)}
+
+
+def _report(scene, target, variants):
+    """One conversion warning per display naming its variants the editor cannot draw (import coverage reads it)."""
+    missing = [[index, variant["unsupported"]] for index, variant in enumerate(variants) if "unsupported" in variant]
+    warnings = getattr(scene, "warnings", None)
+    if not missing or not isinstance(warnings, list):
+        return
+    warning = {"code": "stage_display_variant_unsupported", "name": target[:160],
+               "message": "Some stage display variants could not be drawn; the screen keeps its own material "
+                          "while one of them is selected.",
+               "target": target, "variants": len(variants), "unsupported": missing}
+    if warning not in warnings:
+        warnings.append(warning)
 
 
 def export(scene, materials, binding):
-    """The display's variants, its own materials (``initial``) and material2DReference (``fallback``).
-
-    None when one of them cannot be drawn: the renderer then keeps its own glTF material.
-    """
+    """The display's variants, its own materials (``initial``) and material2DReference (``fallback``)."""
     target, original, references, renderer = binding
+    variants = [_variant(scene, materials, background, logo) for background, logo in references]
     own = [viewer._ref(renderer, pointer) for pointer in scene.tree(renderer).get("m_Materials") or ()]
-    try:
-        variants = [_variant(scene, materials, background, logo) for background, logo in references]
-        # Unity draws every material of a one-submesh renderer over that submesh, in order.
-        initial = (_variant(scene, materials, own[0], own[1] if len(own) == 2 else None)
-                   if 0 < len(own) <= 2 else None)
-        fallback = read(scene, materials, original) if original is not None else None
-    except Unsupported:
+    # Unity draws every material of a one-submesh renderer over that submesh, in order.
+    initial = (_variant(scene, materials, own[0], own[1] if len(own) == 2 else None) if 0 < len(own) <= 2
+               else {"unsupported": f"the renderer has {len(own)} materials"})
+    fallback = None
+    if original is not None:
+        try:
+            fallback = read(scene, materials, original)
+        except Unsupported as error:
+            fallback = {"unsupported": str(error)}
+    _report(scene, target, variants)
+    if all("unsupported" in variant for variant in variants) and "unsupported" in initial:
         return None
     return {"target": target, "fallback": fallback, "initial": initial, "variants": variants}

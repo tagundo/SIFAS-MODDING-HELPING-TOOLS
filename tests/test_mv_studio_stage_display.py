@@ -1,4 +1,4 @@
-"""Stage display screens: each variant by its own shader program and the client's switching rules."""
+"""Stage display screens: each variant by its own shader program, the client's switching rules, coverage."""
 import os
 from pathlib import Path
 import time
@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from webtools.core import model_viewer
+from webtools.core import model_viewer, mv_studio_import_coverage as coverage
 from webtools.core import mv_studio_stage_display as displays
 
 
@@ -112,6 +112,18 @@ class DisplayExportTests(unittest.TestCase):
                 patch.object(model_viewer, "_ref", side_effect=lambda owner, pointer: pointers.get(pointer["m_PathID"])):
             return displays.export(scene, None, binding), scene.warnings
 
+    def test_one_unsupported_variant_keeps_the_display(self):
+        exported, warnings = self.export([("opaque", "logo"), ("smoke", "logo"), ("opaque", None)], ["opaque", "logo"])
+        self.assertEqual([sorted(variant) for variant in exported["variants"]],
+                         [["background", "logo"], ["unsupported"], ["background", "logo"]])
+        self.assertEqual(exported["variants"][1]["unsupported"], "shader AS/Smoke has no display reader")
+        self.assertEqual((exported["initial"]["background"]["kind"], exported["initial"]["logo"]["kind"]),
+                         ("general", "transparent"), "the renderer's own two materials over its one submesh")
+        self.assertEqual(warnings, [{
+            "code": "stage_display_variant_unsupported", "name": "/EntryPoint/Live/Stages/MainStage/Effect/dis_01/main",
+            "message": warnings[0]["message"], "target": "/EntryPoint/Live/Stages/MainStage/Effect/dis_01/main",
+            "variants": 3, "unsupported": [[1, "shader AS/Smoke has no display reader"]]}])
+
     def test_a_logo_that_is_the_background_material_shares_the_mixer_writes(self):
         exported, _ = self.export([("opaque", "opaque")], ["opaque"], fallback=None)
         self.assertIsNone(exported["fallback"], "no material2DReference: the client keeps the display enabled")
@@ -121,10 +133,30 @@ class DisplayExportTests(unittest.TestCase):
         self.assertEqual(exported["initial"]["background"]["material"], variant["background"]["material"])
         self.assertIsNone(exported["initial"]["logo"])
 
-    def test_a_variant_that_cannot_be_drawn_drops_the_display(self):
-        exported, warnings = self.export([("opaque", "logo"), ("smoke", "logo")], ["opaque", "logo"])
+    def test_a_display_with_nothing_to_draw_is_left_to_its_renderer(self):
+        exported, warnings = self.export([("smoke", "logo")], ["smoke"])
         self.assertIsNone(exported)
-        self.assertEqual(warnings, [])
+        self.assertEqual(warnings[0]["unsupported"], [[0, "shader AS/Smoke has no display reader"]])
+
+
+class DisplayCoverageTests(unittest.TestCase):
+    def test_clips_selecting_an_unsupported_variant_are_not_rendered(self):
+        target = "/EntryPoint/Live/Stages/MainStage/Effect/dis_01/main"
+        events = [{"id": f"d:{index}", "start": index, "duration": 1, "values": {"materialIndex": material}}
+                  for index, material in enumerate((0, 1, 7, -2))]
+        project = {"tracks": [{"id": "d", "nativeClass": "LiveDisplayTrack", "binding": target, "events": events}],
+                   "warnings": []}
+        gap = {"code": coverage.DISPLAY_VARIANTS_UNSUPPORTED, "target": target, "variants": 2,
+               "unsupported": [[1, "_MainTex could not be decoded"]]}
+        report = coverage.apply(project, display_gaps=[gap])
+        rows = {(row["status"], row["note"]): row["clips"] for row in report["tracks"]}
+        # materialIndex 7 clamps to the last variant (1), -2 to the first (0).
+        self.assertEqual(rows, {
+            (coverage.RENDERED, "Stage display screens."): 2,
+            (coverage.NOT_RENDERED, "Display clips selecting a variant MV Studio cannot draw (_MainTex could not be "
+                                    "decoded); the screen keeps its own material."): 2})
+        self.assertIn("LiveDisplayTrack x1 (2 clips: Display clips selecting a variant", project["warnings"][0])
+        self.assertEqual(coverage.report(project)["gaps"], [], "without the preview's warning the track is rendered")
 
 
 class ActualDisplayVariantTests(unittest.TestCase):
