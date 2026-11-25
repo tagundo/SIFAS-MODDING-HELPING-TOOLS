@@ -1,8 +1,9 @@
 /* MV Studio free camera views in the real workbench (Korean UI).
 
-   Synthetic game project (stage fixture model; one performer built from the same fixture whose
-   head focus part is the animated Tip bone (node 3), so the member target moves with time; a
-   MainCamera AnimationTrack with one dense 60 Hz shot):
+   Synthetic game project (stage fixture model; two performers built from the same fixture: the
+   first one's head focus part is the animated Tip bone (node 3), so that member target moves
+   with time, the second has head, neck and hips points; a MainCamera AnimationTrack with one
+   dense 60 Hz shot):
    - the bar shows only with the free camera, in Korean, with the 3D model tab's view labels;
    - for the stage centre and for the member, each view button puts the free camera on that side
      of the target: the target projects to the screen centre and the camera's direction from the
@@ -10,8 +11,12 @@
      side; right +X, the members' right), at the same distance, height angle and FOV;
    - Distance (number box, slider) and FOV (number box, Shift+wheel) change only the distance or
      only the FOV; the plain wheel still dollies;
-   - after Enter, the distance and FOV boxes show the value applied (clamped to the bar's range);
-   - a member target carries the camera along only while Follow member is on;
+   - a member's point is its chest (between the neck and hips points);
+   - out-of-range distance and FOV entries are clamped to the bar's ranges, and the box shows the
+     value applied; Shift+wheel with Ctrl, Alt or Meta, or over the game camera, keeps the FOV;
+   - a member target carries the camera along only while Follow member is on, from where the
+     member is when it is turned on;
+   - with Auto key, every finished change on the bar keys the view once;
    - nothing reaches the project, its history or the game camera;
    - Key current view after a view preset keys the shown view (the game camera then shows it);
    - every string has Korean and Japanese copy, and the bar follows a language switch;
@@ -90,7 +95,11 @@ function gameProject(local) {
   return {
     version: 1, name: 'Free camera MV', duration: 8, nativeTimeline: false, assets: local.assets, stage: local.stage, warnings: [], quality: {},
     performers: [{ id: 'actor-1', label: 'Actor 1', position: 1, glb: local.stage.glb, transform: { position: [0, 0, 0] },
-      rig: { focusParts: { 0: 3 } } }],
+      rig: { focusParts: { 0: 3 } } },
+    // Head, neck and hips focus points in Unity space: the member's point is the chest between
+    // the neck and the hips, (-1.5, 1.15, 0.2) in three space.
+    { id: 'actor-2', label: 'Actor 2', position: 2, glb: local.stage.glb, transform: { position: [1.5, 0, 0] },
+      rig: { focusParts: { 0: { world: [1.5, 1.7, .3] }, 3: { world: [1.5, .9, .1] }, 4: { world: [1.5, 1.4, .3] } } } }],
     source: { kind: 'game', region: 'gl', platform: 'android', liveId: 79, assetId: 1 },
     tracks: [{ id: 'cam', kind: 'camera', label: 'CameraMotion/Camera1', nativeClass: 'AnimationTrack', binding: '/EntryPoint/Live/Cameras/MainCamera',
       events: [shot] }],
@@ -193,7 +202,7 @@ async function openSynthetic(page, url) {
   assert(local.stage && local.stage.glb, 'the stage fixture opens');
   const project = gameProject(local);
   await importGame(page, project);
-  await page.waitForFunction(() => window.probeCtx.scene()?.freeView.targets().some((item) => item.id === 'member:1'));
+  await page.waitForFunction(() => ['member:1', 'member:2'].every((id) => window.probeCtx.scene()?.freeView.targets().some((item) => item.id === id)));
   return project;
 }
 
@@ -312,7 +321,10 @@ async function synthetic(browser, url) {
   assert.equal(await bar.getAttribute('aria-label'), '자유 카메라 시점');
   assert.deepEqual(await page.locator('[data-mv-freecam-view]').allTextContents(), LABELS_KO);
   assert.equal(await page.locator('[data-mv-freecam-view="front"]').getAttribute('title'), '관객석 쪽(멤버가 바라보는 쪽)에서 봅니다.');
-  assert.deepEqual(await page.locator('#mv-freecam-target option').allTextContents(), ['무대 중앙', '1 · Actor 1']);
+  assert.deepEqual(await page.locator('#mv-freecam-target option').allTextContents(), ['무대 중앙', '1 · Actor 1', '2 · Actor 2']);
+  // A member's point is its chest, halfway between its neck and hips.
+  const chest = await page.evaluate(() => window.probeCtx.scene().freeView.targetPoint('member:2'));
+  assert(distance(chest, [-1.5, 1.15, .2]) < 1e-9, `the member's point is between its neck and hips (${chest})`);
   assert.equal(await page.locator('#mv-freecam-target').inputValue(), 'stage');
   assert.equal(await page.locator('#mv-freecam-follow').isDisabled(), true, 'Follow member needs a member target');
   assert.equal(await page.locator('#mv-free-camera button', { hasText: '화면에 맞춤' }).count(), 0, 'no fit-to-screen');
@@ -384,11 +396,27 @@ async function synthetic(browser, url) {
   after = await measure(page);
   assert.equal(after.fov, widened, 'the plain wheel keeps the FOV');
   assert(angleBetween(after.quaternion, lens.quaternion) < 1e-6, 'and dollies along the view');
-  // After Enter the box shows the value applied (clamped to the bar's range) while it keeps
-  // focus; an empty entry gets the current value back; a box that was focused while the wheel
-  // moved the camera shows the new value once left.
-  for (const [box, typed, key, applied, shown] of [[distanceBox, '0.1', 'distance', .3, '0.3'], [fovBox, '200', 'fov', 120, '120'],
-    [fovBox, '', 'fov', 120, '120']]) {
+  // Shift+wheel changes the FOV only over the free camera and without Ctrl, Alt or Meta.
+  for (const keys of [['Control', 'Shift'], ['Alt', 'Shift'], ['Meta', 'Shift']]) {
+    for (const key of keys) await page.keyboard.down(key);
+    await page.mouse.wheel(0, 200);
+    for (const key of keys.reverse()) await page.keyboard.up(key);
+    await frames(page);
+    assert.equal((await freeState(page)).fov, widened, `${keys.join('+')}+wheel keeps the FOV`);
+  }
+  await setMode(page, 'live');
+  await page.keyboard.down('Shift');
+  await page.mouse.wheel(0, 200);
+  await page.keyboard.up('Shift');
+  await frames(page);
+  assert.equal((await freeState(page)).fov, widened, 'Shift+wheel over the game camera keeps the free FOV');
+  await setMode(page, 'orbit');
+
+  // Out-of-range entries are clamped to the bar's ranges, and after Enter the box shows the
+  // value applied while it keeps focus; an empty entry gets the current value back; a box
+  // that was focused while the wheel moved the camera shows the new value once left.
+  for (const [box, typed, key, applied, shown] of [[distanceBox, '0.1', 'distance', .3, '0.3'], [distanceBox, '1000', 'distance', 300, '300'],
+    [fovBox, '1', 'fov', 5, '5'], [fovBox, '200', 'fov', 120, '120'], [fovBox, '', 'fov', 120, '120']]) {
     await box.fill(typed);
     await box.press('Enter');
     near((await freeState(page))[key], applied, 1e-9, `${key} ${JSON.stringify(typed)} applies ${applied}`);
@@ -421,14 +449,21 @@ async function synthetic(browser, url) {
   assert(moved > .3, `the member target moves (${moved} m)`);
   assert.deepEqual((await measure(page)).position, still.position, 'Follow member off: the view stays where it was put');
   assert.equal(await page.locator('#mv-freecam-follow').isChecked(), false, 'off by default');
-  await seek(page, 0);
+  // A view put at 0.75 s, Follow member turned on at 0.25 s (the member elsewhere): the camera
+  // then moves only by what the member moves from 0.25 s, with no jump.
+  await seek(page, .75);
+  await page.locator('[data-mv-freecam-view="front"]').click();
+  const pointAt75 = await page.evaluate(() => window.probeCtx.scene().freeView.targetPoint());
+  await seek(page, .25);
+  const pointAt25 = await page.evaluate(() => window.probeCtx.scene().freeView.targetPoint());
+  assert(distance(pointAt25, pointAt75) > .2, `the member is elsewhere at 0.25 s (${distance(pointAt25, pointAt75)} m)`);
   await page.locator('#mv-freecam-follow').check();
   assert.equal((await freeState(page)).follow, true);
   const followed0 = await measure(page);
   await seek(page, .5);
   const followedHalf = await measure(page);
   const shift = followedHalf.position.map((value, axis) => value - followed0.position[axis]);
-  const memberShift = pointAtHalf.map((value, axis) => value - pointAt0[axis]);
+  const memberShift = pointAtHalf.map((value, axis) => value - pointAt25[axis]);
   assert(distance(shift, memberShift) < 1e-6, `Follow member on: the camera moves with the member (${shift} vs ${memberShift})`);
   assert(angleBetween(followedHalf.quaternion, followed0.quaternion) < 1e-9, 'and keeps its direction');
   assert(Math.abs(followedHalf.ndc[0] - followed0.ndc[0]) < 1e-6 && Math.abs(followedHalf.ndc[1] - followed0.ndc[1]) < 1e-6, 'the member stays put on screen');
@@ -475,6 +510,40 @@ async function synthetic(browser, url) {
   await page.locator('#mv-timeline-label').click();
   await page.keyboard.press('Control+z');
   assert.deepEqual(await camera(page), gameBefore[1], 'Ctrl+Z gives the shot back');
+
+  // With the camera editor's Auto key, a preset, a distance entry, an FOV entry, a target pick
+  // and one Shift+wheel step each key the view once, like a finished drag.
+  await setMode(page, 'orbit');
+  await seek(page, 1.25);
+  await page.locator('#mv-cam-autokey').check();
+  const keyed1 = async (label, action) => {
+    const count = (await state(page)).history.undo;
+    await action();
+    await page.waitForFunction((value) => MVStudio.getState().history.undo > value, count);
+    await frames(page);
+    current = await state(page);
+    assert.equal(current.history.undo, count + 1, `${label}: one step`);
+    assert.equal(current.history.undoLabel, 'Key current view', `${label}: keys the view`);
+  };
+  await keyed1('a preset', () => page.locator('[data-mv-freecam-view="back"]').click());
+  await keyed1('a distance entry', async () => { await distanceBox.fill('3'); await distanceBox.press('Enter'); });
+  await keyed1('an FOV entry', async () => { await fovBox.fill('42'); await fovBox.press('Enter'); });
+  await keyed1('a target pick', () => page.locator('#mv-freecam-target').selectOption('member:2'));
+  await keyed1('a Shift+wheel step', async () => {
+    await page.mouse.move(canvas.x + canvas.width / 2, canvas.y + canvas.height / 3);
+    await page.keyboard.down('Shift');
+    await page.mouse.wheel(0, 100);
+    await page.keyboard.up('Shift');
+  });
+  await page.locator('#mv-timeline-label').click();
+  await frames(page);
+  assert.equal((await state(page)).history.undo, current.history.undo, 'nothing more is keyed');
+  await page.locator('#mv-cam-autokey').uncheck();
+  for (let count = 0; count < 5; count++) await page.keyboard.press('Control+z');
+  assert.equal((await state(page)).history.undo, 0);
+  await setMode(page, 'live');
+  await seek(page, 1.25);
+  assert.deepEqual(await camera(page), gameBefore[1], 'undone, the shot is back');
 
   // Every string has Korean and Japanese copy; the bar follows a language switch.
   await setMode(page, 'orbit');
