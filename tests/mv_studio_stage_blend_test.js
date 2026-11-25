@@ -7,6 +7,7 @@ const assert = require("node:assert/strict");
 const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 require("../webtools/web/static/mv-studio-lighting.js");
 require("../webtools/web/static/mv-studio-stage-material.js");
+require("../webtools/web/static/mv-studio-asset-dump.js");
 
 const binding = "/EntryPoint/Live/Stages/MainStage/Effect/fx_stg_so0120_01/root";
 const SKY = 769206466;  // crc32("sky_01")
@@ -50,6 +51,8 @@ async function materialTest() {
   const missing = dome(root, blendMeta({mainTexture: "0"}));
   const noColor = dome(root, blendMeta({vertexColorAbsent: true}));
   noColor.geometry.deleteAttribute("_stage_color");
+  // The exporter always sets vertexColor for AS/Blend/Opaque: its only program reads COLOR.
+  const unread = dome(root, blendMeta({vertexColor: false}));
   const {made, parser} = textures();
   const controller = await MVStudioStageMaterial.apply(T, root, parser);
   assert.ok(controller);
@@ -75,6 +78,22 @@ async function materialTest() {
   assert.equal(missing.material.isMeshBasicMaterial, true, "an invalid texture reference keeps the glTF material");
   assert.deepEqual(noColor.material.defaultAttributeValues._stage_color, [1, 1, 1, 1],
     "a mesh without COLOR reads opaque white");
+  assert.equal(unread.material.isMeshBasicMaterial, true, "a descriptor that does not read COLOR is not AS/Blend/Opaque's");
+
+  // The runtime value dump names the BLEND uniforms by their Unity properties.
+  sky.material.uniforms.blendRate.value = .25;
+  const dumped = MVStudioAssetDump.materialProperties(sky.material);
+  assert.equal(dumped.kind, "stage");
+  assert.deepEqual(dumped.unmapped, []);
+  assert.deepEqual(dumped.properties._BlendRate, {from: "blendRate", t: "float", v: .25});
+  assert.deepEqual(dumped.properties._TintColor, {from: "tint", t: "color", v: [1, 1, 1, 1]});
+  assert.deepEqual(dumped.properties._AmbientColor, {from: "ambient", t: "color", v: [1, 1, 1, 0]});
+  for (const [name, map, st] of [["_MainTexA", "mainMap", [1, 1, 0, 0]], ["_MainTexB", "blendMap", [2, 1, .5, 0]]]) {
+    assert.equal(dumped.properties[name].from, map, name);
+    assert.equal(dumped.properties[name].t, "tex", name);
+    assert.deepEqual(dumped.properties[name].st, st, name);
+  }
+  sky.material.uniforms.blendRate.value = 0;
 
   assert.equal(MVStudioStageMaterial.materialChannel(owner, "overlayUV"), undefined,
     "_MainTex_ST is not an AS/Blend/Opaque property");
