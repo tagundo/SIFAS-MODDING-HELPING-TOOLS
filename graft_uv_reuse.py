@@ -283,6 +283,16 @@ def _overlap_counts(used, shape):
 # so small textures keep the ordinary bottom-left first-fit search.
 _PREFERRED_GRIDS = (64, 32, 16, 8, 4, 2, 1)
 _MIN_GRID_POSITIONS = 16
+# Coarse authored Main levels whose footprints are checked when choosing among
+# free positions: an island is first placed where its level-L footprint (an
+# exact shift for offsets on a 2**L grid) also misses used texels, so the
+# donor's coarse mips do not cover a neighbour's. This only picks a position.
+_COARSE_LEVELS = 6
+
+
+def _grid_level(grid):
+    """Mip levels shifted exactly by any offset on this grid (2**L divides it)."""
+    return min((value & -value).bit_length() - 1 for value in grid)
 
 
 def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_decoder,
@@ -296,6 +306,8 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
     Level 0 copies are exact native texels; coarse authored mips use their own
     images at the nearest texel, which is exact when the offset is a multiple
     of 2**level. Free space is the receiver's group 0 plus ``reserved``.
+    Among free positions, those whose exactly shifted coarse Main footprints
+    (up to _COARSE_LEVELS) also miss used texels are tried first.
     """
     import numpy as np
     from PIL import Image
@@ -398,6 +410,18 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
             if reserved:
                 used[slot] |= _reserved_texels(reserved, tw, th, sampler[0] != 0, sampler[-2:], budget)
             mask_bytes[0] += tw * th
+        # Used texels of the coarse authored Main levels, kept up to date as
+        # islands are placed (placement preference only).
+        main_sampler = keys[main][0][5]
+        coarse_used = {}
+        for level in range(1, min(_COARSE_LEVELS, keys[main][0][3] - 1) + 1):
+            if target_width % (1 << level) or target_height % (1 << level):
+                break
+            w, h = target_width >> level, target_height >> level
+            coarse_used[level] = coverage(uv, 0, w, h, main_sampler)
+            if reserved:
+                coarse_used[level] |= _reserved_texels(reserved, w, h, main_sampler[0] != 0, main_sampler[-2:], budget)
+            mask_bytes[0] += w * h
         transforms = [UVTransform()] + [None] * (len(sources) - 1)
         placements = [None] * len(sources)
         footprints = {}
@@ -440,13 +464,61 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                 raise _CoverageLimit("the free-area search exceeds the memory budget")
             occupied = _overlap_counts(used[main], shape)
             vertices = np.unique(groups[index])
+            # The island's own coarse Main footprints, for the same overlap
+            # test at each level where an aligned offset shifts them exactly.
+            coarse = []
+            for level, used_level in coarse_used.items():
+                if dw % (1 << level) or dh % (1 << level):
+                    break
+                level_rows, level_columns = np.nonzero(
+                    coverage(uv, index, dw >> level, dh >> level, keys[main][index][5]))
+                if not len(level_rows):
+                    break
+                level_left, level_top_row = int(level_columns.min()), int(level_rows.min())
+                level_shape = np.zeros((int(level_rows.max()) - level_top_row + 1,
+                                        int(level_columns.max()) - level_left + 1), dtype=bool)
+                level_shape[level_rows - level_top_row, level_columns - level_left] = True
+                if level_shape.shape[0] > used_level.shape[0] or level_shape.shape[1] > used_level.shape[1]:
+                    break
+                level_bottom = (dh >> level) - int(level_rows.max()) - 1
+                coarse.append((level, _overlap_counts(used_level, level_shape), level_left, level_bottom,
+                               level_shape.shape[0]))
+
+            def clean_levels(xs, ys):
+                """Consecutive coarse levels whose shifted footprint misses used texels."""
+                xs, ys = np.asarray(xs, dtype=np.int64), np.asarray(ys, dtype=np.int64)
+                dx, dy = xs - left, ys - bottom
+                running = np.ones(xs.shape, dtype=bool)
+                score = np.zeros(xs.shape, dtype=np.int64)
+                for level, level_occupied, level_left, level_bottom, level_height in coarse:
+                    running &= (dx % (1 << level) == 0) & (dy % (1 << level) == 0)
+                    column = level_left + (dx >> level)
+                    row = level_occupied.shape[0] - 1 - (level_bottom + (dy >> level))
+                    inside = ((row >= 0) & (row < level_occupied.shape[0])
+                              & (column >= 0) & (column < level_occupied.shape[1]))
+                    free = np.zeros(xs.shape, dtype=bool)
+                    free[inside] = ~level_occupied[row[inside], column[inside]]
+                    running &= free
+                    score += running
+                return score
+
             chosen, tested, exhausted, rejected = None, set(), False, {}
+            # Coarser grids first (more exact authored mips). On each grid the
+            # free positions are tried in order of how many of their exactly
+            # shifted coarse levels also miss used texels, then bottom-left
+            # first; exactness is never traded for that preference.
             for grid in grids:
                 if chosen is not None or exhausted:
                     break
+                if coarse and _grid_level(grid):
+                    xs, ys = _candidate_arrays(occupied, shape.shape, (left, bottom), grid)
+                    order = np.argsort(-clean_levels(xs, ys), kind="stable")
+                    positions = zip(xs[order].tolist(), ys[order].tolist())
+                else:
+                    positions = _candidate_positions(occupied, shape.shape, (left, bottom), grid)
                 # Main-texture footprint prefilter; every candidate is still
                 # rasterized and checked for each UV-driven slot below.
-                for x, y in _candidate_positions(occupied, shape.shape, (left, bottom), grid):
+                for x, y in positions:
                     if (x, y) in tested:
                         continue
                     if len(tested) >= max_candidates:
@@ -501,9 +573,16 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                 mask_bytes[0] += ys.nbytes + xs.nbytes
             dx = round(transform.offset[0] * target_width)
             dy = round(transform.offset[1] * target_height)
+            clean = int(clean_levels([left + dx], [bottom + dy])[0]) if coarse else 0
+            if coarse_used:
+                moved = uv.copy()
+                moved[vertices] = transform.remap_uv(moved[vertices])
+                for level, used_level in coarse_used.items():
+                    used_level |= coverage(moved, index, used_level.shape[1], used_level.shape[0], main_sampler)
             exact = max(level for level in range(13) if dx % (1 << level) == 0 and dy % (1 << level) == 0)
             messages.append(f"{sources[index].name}: {label} moved by pixel offset ({dx}, {dy}) at native pixel detail; "
-                            f"authored mip levels 0–{exact} are exact copies.")
+                            f"authored mip levels 0–{exact} are exact copies"
+                            + (f"; coarse levels 1–{clean} keep clear of used texels." if clean else "."))
         decoder = image_decoder or _decode_default
         chain_cache = {}
         def chain(obj):
@@ -519,6 +598,8 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
                 w, h = max(1, tw >> level), max(1, th >> level)
                 result = np.asarray(chains[0][level]).copy()
                 receiver_mask = coverage(uv, 0, w, h, sampler)
+                if reserved and level:
+                    receiver_mask |= _reserved_texels(reserved, w, h, sampler[0] != 0, sampler[-2:], budget)
                 for index, transform in enumerate(transforms[1:], 1):
                     source_image = chains[index][min(level, len(chains[index]) - 1)]
                     sw, sh = source_image.size
@@ -550,10 +631,23 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
             textures[slot] = AtlasTexture(tree, template, tw, th, count)
         messages.append("Relocated selected donor UVs into unused receiver texture areas; native source pixels copied directly, original texture dimensions retained, no padding.")
         if shared_coarse:
-            messages.append(f"Relocated authored coarse mip footprints share {shared_coarse} receiver texels; selected donor mip pixels are applied in material order.")
+            messages.append(f"Relocated authored coarse mip footprints share {shared_coarse} texels used by the receiver or "
+                            "other surfaces; selected donor mip pixels are applied in material order.")
         return AtlasBake(tuple(transforms), textures, tuple(messages), False, len(sources))
     except (AtlasCompatibilityError, _CoverageLimit, NotImplementedError) as error:
         return decline(error)
+
+
+def _candidate_arrays(occupied, shape_size, residue, grid):
+    """All positions of _candidate_positions as arrays, in the same order."""
+    import numpy as np
+    h, _ = shape_size
+    rows, columns = occupied.shape
+    xs = np.arange(residue[0] % grid[0], columns, grid[0], dtype="int64")
+    ys = np.arange(residue[1] % grid[1], rows, grid[1], dtype="int64")
+    free = ~occupied[np.ix_(rows + h - 1 - ys - h, xs)]
+    y_index, x_index = np.nonzero(free)
+    return xs[x_index], ys[y_index]
 
 
 def _candidate_positions(occupied, shape_size, residue, grid):

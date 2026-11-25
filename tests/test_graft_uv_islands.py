@@ -202,5 +202,53 @@ class LimitingMapTests(unittest.TestCase):
         self.assertEqual((failure.details["island"], failure.details["islands"]), (1, 1))
         self.assertIn("every position free in _MainTex was used in _RimlightTex", failure)
 
+def inset(x, y, size, texture=32):
+    """Two triangles strictly inside texels x..x+size-1, y..y+size-1 (nearest footprint is exact)."""
+    u0, v0, u1, v1 = (x + .25) / texture, (y + .25) / texture, (x + size - .25) / texture, (y + size - .25) / texture
+    return [((u0, v0), (u1, v0), (u0, v1)), ((u1, v0), (u1, v1), (u0, v1))]
+
+
+class CoarseMipPlacementTests(unittest.TestCase):
+    """Free level-0 positions are preferred where the coarse mips also stay clear.
+
+    Receiver and donor have full 32-pixel mip chains with nearest sampling. The
+    island (4x4 texels, original columns 21-24) must move into the free columns
+    5-12. First fit on the 2-pixel grid is column 5, whose level-1 footprint
+    shares level-1 column 2 with the reserved left block; column 7 is clean.
+    """
+
+    def sources(self):
+        receiver = [image((32 >> level, 32 >> level), (9, 9, 9, 255)) for level in range(6)]
+        donor = [image((32 >> level, 32 >> level), (200, 10 + level, 10, 255)) for level in range(6)]
+        target, part_source = source("receiver", receiver), source("donor", donor)
+        for value in (target, part_source):
+            value.objects[2].texture.m_TextureSettings.m_FilterMode = 0
+            value.objects[2].tree["m_TextureSettings"]["m_FilterMode"] = 0
+        return target, part_source
+
+    def place(self, free_columns):
+        target, donor = self.sources()
+        first, last = free_columns
+        reserved = {"rects": [(0., 0., (first - .5) / 32, 1.), ((last + 1.5) / 32, 0., 1., 1.)]}
+        geometry = grouped_mesh([[((.01, .01), (.02, .01), (.01, .02))], inset(21, 10, 4)])
+        return prepare_uv_reuse([target, donor], geometry, 1, uv_placement="move_to_empty", reserved=reserved)
+
+    def test_a_position_whose_coarse_mips_miss_used_texels_is_preferred(self):
+        result = self.place((5, 12))
+        self.assertIsNotNone(result)
+        dx = round(result.transforms[1].offset[0] * 32)
+        self.assertEqual(21 + dx, 7, "column 5 is free at level 0 but not at level 1")
+        level1 = levels(result.textures["_MainTex"])[1]
+        np.testing.assert_array_equal(level1[:, 0:3], np.full((16, 3, 4), (9, 9, 9, 255), np.uint8),
+                                      "the reserved block keeps its level-1 texels")
+        self.assertTrue(any("coarse levels 1–1 keep clear of used texels" in message
+                            for message in result.diagnostics), result.diagnostics)
+
+    def test_without_a_clean_position_the_first_free_one_is_still_used(self):
+        result = self.place((5, 8))
+        self.assertIsNotNone(result, "coarse texels only steer placement; they never refuse it")
+        self.assertEqual(21 + round(result.transforms[1].offset[0] * 32), 5)
+        self.assertTrue(any("share" in message and "other surfaces" in message for message in result.diagnostics))
+
 if __name__ == "__main__":
     unittest.main()
