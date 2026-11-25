@@ -1587,6 +1587,7 @@
   function render() {
     translateAria();
     inspectorResizer.sync();
+    foldAssets();
     byId("mv-project-title").textContent = project && project.name || t("3D MV");
     renderPreviewStatus();
     renderWarnings();
@@ -2272,6 +2273,40 @@
     }
   }
 
+  // Which inspector panels are open is remembered: only what the user toggles (a panel a
+  // plugin opens itself is not a preference). MV assets folds away once an MV is open,
+  // unless the user chose otherwise.
+  const panelOpenKey = "elichika.mv.panelOpen.v1";
+  let panelOpen = {}, assetsFolded = false;
+  function mountPanelMemory() {
+    try {
+      const saved = JSON.parse(global.localStorage.getItem(panelOpenKey));
+      if (saved && typeof saved === "object" && !Array.isArray(saved)) panelOpen = saved;
+    } catch (_) {}
+    const inspector = byId("mv-inspector"), pressed = new Set();
+    const panel = (node) => node && node.parentElement === inspector && node.dataset.mvPanel ? node : null;
+    for (const details of inspector.querySelectorAll(":scope > details[data-mv-panel]")) {
+      if (typeof panelOpen[details.dataset.mvPanel] === "boolean") details.open = panelOpen[details.dataset.mvPanel];
+    }
+    inspector.addEventListener("click", (event) => {
+      const details = panel(event.target.closest?.("summary")?.parentElement);
+      if (details) pressed.add(details);
+    });
+    // toggle does not bubble: listen while it is captured.
+    inspector.addEventListener("toggle", (event) => {
+      const details = panel(event.target);
+      if (!details || !pressed.delete(details)) return;
+      panelOpen[details.dataset.mvPanel] = details.open;
+      try { global.localStorage.setItem(panelOpenKey, JSON.stringify(panelOpen)); } catch (_) {}
+    }, true);
+  }
+
+  function foldAssets() {
+    if (!project || assetsFolded) return;
+    assetsFolded = true;
+    if (typeof panelOpen.assets !== "boolean") byId("mv-assets").open = false;
+  }
+
   // Timeline tabs, member chips and the name search (tab and filters are remembered per session).
   function mountTimelineNav() {
     const stored = session(tabKey);
@@ -2315,6 +2350,7 @@
     watchGestures();
     ctx = createContext();
     mountPlugins();
+    mountPanelMemory();
     const timelineScroll = byId("mv-timeline-scroll");
     timelineResizer = setupTimelineResizer(timelineScroll);
     inspectorResizer = setupInspectorResizer();
