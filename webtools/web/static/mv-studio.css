@@ -203,6 +203,8 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
 }
 /* An open panel keeps its name in view while its fields scroll. */
 .mv-inspector > details[open] > summary { position: sticky; top: 0; z-index: 1; border-radius: 8px 8px 0 0; background: var(--panel); }
+/* The panel list scrolls: a ring outside a panel name would be clipped at its edges. */
+#tab-mv .mv-inspector > details > summary:focus-visible { outline-offset: -2px; }
 .mv-panel-content { display: grid; gap: 4px; padding: 0 8px 8px; font-size: .75rem; overflow-wrap: anywhere; }
 /* Panel fields (built-in and plugin panels) use the secondary control size. */
 #tab-mv .mv-inspector :is(select, button), #tab-mv .mv-inspector input:not([type=checkbox], [type=range], [type=color]) {
