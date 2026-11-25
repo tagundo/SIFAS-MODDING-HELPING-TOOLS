@@ -103,6 +103,9 @@ class HeadRendererRuleTests(unittest.TestCase):
         boned_face = renderers["Face"]
         boned_face.tree["m_Bones"] = list(renderers["Hair"].tree["m_Bones"])
         self.assertTrue(face_combined_renderer(objects, boned_face), "mesh_face is merged even with bones")
+        renderers["Hair"].tree["m_Bones"] = []
+        self.assertTrue(face_combined_renderer(objects, renderers["Hair"]),
+                        "a bone-less piece is only placed rigidly, wherever it sits")
 
     def test_cheek_window_is_the_uv0_area_the_cheek_formula_maps_into_the_array(self):
         u0, v0, u1, v1 = CHEEK_WINDOW
