@@ -646,17 +646,49 @@ class Comparison:
         return roots
 
     def _culling_masks(self):
-        """(directorTime, seq, main camera cullingMask, other enabled cameras' masks) per game frame record."""
-        masks = []
+        """(directorTime, seq, main camera cullingMask, other enabled cameras' masks) per game frame record.
+
+        A frame record over its time budget keeps only a summary of the cameras past the main one
+        (cost.truncatedSections 'cameras.detail', camera summaryOnly: no cullingMask). An enabled camera without a
+        mask there takes the mask the nearest frame record read for it (by director time): the masks are set when
+        the scene loads (LiveCoreCameraManager.overlayCamera: layer 20 at qualities with StageOverlayEffect, 0
+        otherwise), and a missing value is not an empty mask."""
+        rows = []
         for record in self.game["records"]:
             if record.get("kind") != "frame" or not number((record.get("clock") or {}).get("directorTime")):
                 continue
             camera = main_camera(record) or {}
-            others = {item.get("key"): item.get("cullingMask") for item in record.get("cameras") or []
-                      if isinstance(item, dict) and item.get("key") != "camera:main" and item.get("isActiveAndEnabled", item.get("enabled")) is True
-                      and isinstance(item.get("cullingMask"), int)}
-            masks.append((record["clock"]["directorTime"], record.get("seq") or 0, camera.get("cullingMask"), others))
-        return sorted(masks, key=lambda item: (item[0], item[1]))
+            enabled = {item.get("key"): item.get("cullingMask") for item in record.get("cameras") or []
+                       if isinstance(item, dict) and item.get("key") != "camera:main" and item.get("isActiveAndEnabled", item.get("enabled")) is True}
+            rows.append((record["clock"]["directorTime"], record.get("seq") or 0, camera.get("cullingMask"), enabled))
+        rows.sort(key=lambda item: (item[0], item[1]))
+        known = {}
+        for t, _, main, enabled in rows:
+            if isinstance(main, int):
+                known.setdefault("camera:main", []).append((t, main))
+            for key, mask in enabled.items():
+                if isinstance(mask, int):
+                    known.setdefault(key, []).append((t, mask))
+
+        def nearest(key, t):
+            values = known.get(key)
+            return min(values, key=lambda item: abs(item[0] - t))[1] if values else None
+
+        masks = []
+        for t, seq, main, enabled in rows:
+            if not isinstance(main, int) and nearest("camera:main", t) is not None:
+                main = nearest("camera:main", t)
+                self.notes["visibility.maskFromNearestFrame"].append(f"camera:main at {t}")
+            others = {}
+            for key, mask in enabled.items():
+                if not isinstance(mask, int):
+                    mask = nearest(key, t)
+                    if mask is None:
+                        continue
+                    self.notes["visibility.maskFromNearestFrame"].append(f"{key} at {t}")
+                others[key] = mask
+            masks.append((t, seq, main, others))
+        return masks
 
     def culling_mask(self, record):
         """The main camera culling mask of the game frame record nearest in director time."""
@@ -982,6 +1014,13 @@ class Comparison:
             ge = project(editor_camera["projection"], editor_camera["worldToCamera"], self.pos(game_anchor["position"]))
             if gg is None or ee is None or ge is None:
                 continue
+            if not -1 <= gg[2] <= 1:
+                # Nearer than the near plane or beyond the far plane (Camera.projectionMatrix is OpenGL-style,
+                # depth -1..1): the point is clipped from the picture, and x/y divide by a clip w near 0
+                # (12023 dump5 f0166, 94.692 s: the stage origin 1.8 cm in front of the camera, NDC (-402, -366)).
+                if key not in self.notes["camera.anchorClipped"]:
+                    self.notes["camera.anchorClipped"].append(key)
+                continue
             pose = max(abs(gg[0] - ee[0]), abs(gg[1] - ee[1]))
             cam = max(abs(gg[0] - ge[0]), abs(gg[1] - ge[1]))
             if worst_pose is None or pose > worst_pose[0]:
@@ -1179,7 +1218,11 @@ class Comparison:
                 # AxisBillboard turns a node only while a camera renders it: an off-screen game cone keeps the
                 # rotation of the last frame it was drawn in, while the editor reports the live camera's turn.
                 self.notes["transforms.offscreenAxisBillboard"].append(match)
-            if not self.identity and self.editor_catalog.get(match, {}).get("path") is None:
+            if not self.identity and game_renderer.get("activeInHierarchy") is False:
+                # Not drawn (see compare_stage_nodes): an inactive renderer's transform is not compared.
+                if match not in self.notes["transforms.inactiveRenderer"]:
+                    self.notes["transforms.inactiveRenderer"].append(match)
+            elif not self.identity and self.editor_catalog.get(match, {}).get("path") is None:
                 # The server baked this renderer's node transform into its vertices: the editor transform is identity.
                 self.notes["transforms.flattenedEditor"].append(match)
             else:
@@ -1429,6 +1472,15 @@ class Comparison:
             if isinstance(game_visible, bool) and isinstance(editor_node.get("visible"), bool):
                 self.add("visibility", "stageNodeVisible", key, record, game_visible, editor_node["visible"],
                          int(game_visible != editor_node["visible"]), 0, exact=True, near_cut=near)
+            if not self.identity and node.get("activeInHierarchy") is False:
+                # An inactive node is not drawn, so only its visibility (above) reaches the picture. Its transform
+                # need not follow the clip either: an Animator on an inactive GameObject (the AnimationTrack
+                # binding, or the CustomControl prefab above the node) does not evaluate and the game holds the
+                # transform of the last frame the hierarchy was active (12023 dump5: litC_All activeSelf false at
+                # 74.258 s, litC_01_Yrot_Ani held at -145 deg while the editor's clip has it at -88 deg).
+                if key not in self.notes["transforms.inactiveStageNode"]:
+                    self.notes["transforms.inactiveStageNode"].append(key)
+                continue
             role = None
             if not self.identity:
                 binding, rel = node.get("binding"), node.get("relPath")

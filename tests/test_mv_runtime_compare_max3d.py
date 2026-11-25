@@ -69,6 +69,37 @@ class OverlayCameraTest(unittest.TestCase):
                                                          {"clock": {"directorTime": 5.0}})
         self.assertFalse(drawn)
 
+    def test_truncated_frame_takes_the_overlay_mask_of_the_nearest_frame(self):
+        # dump5 12035 f0069 (31.641 s): over its time budget the sampler kept only a summary of the cameras past
+        # the main one (cost.truncatedSections 'cameras.detail', summaryOnly, no cullingMask). A layer 20 renderer
+        # the game drew (isVisible true) at 31.806 s, nearest that frame, must still count as drawn.
+        truncated = frame(31.641, 0.165, ident="f0069")
+        truncated["cameras"][1] = {"key": "camera:overlay", "isActiveAndEnabled": True, "summaryOnly": True}
+        for overlay_mask, expected in ((1 << 20, True), (0, False)):
+            records = [frame(31.0, 0.2, overlay_mask=overlay_mask, ident="f0068"), truncated,
+                       frame(31.978, 0.172, overlay_mask=overlay_mask, ident="f0070")]
+            game, editor = documents(records)
+            result = C.Comparison(game, editor)
+            drawn, why = result.game_drawn({"enabled": True, "activeInHierarchy": True, "layer": 20},
+                                           {"id": "p1-renderers-02", "clock": {"directorTime": 31.806}})
+            self.assertIs(drawn, expected, overlay_mask)
+            self.assertEqual("overlayCamera=1" in why, expected)
+            self.assertIn("camera:overlay at 31.641", result.notes["visibility.maskFromNearestFrame"])
+
+    def test_disabled_or_never_read_cameras_add_no_mask(self):
+        never = frame(5.0, 0.2)
+        never["cameras"][1] = {"key": "camera:overlay", "isActiveAndEnabled": True, "summaryOnly": True}
+        disabled = frame(6.0, 0.2, ident="f6")
+        disabled["cameras"][1]["isActiveAndEnabled"] = False
+        game, editor = documents([never])
+        drawn, _ = C.Comparison(game, editor).game_drawn({"enabled": True, "activeInHierarchy": True, "layer": 20},
+                                                         {"clock": {"directorTime": 5.0}})
+        self.assertFalse(drawn)
+        game, editor = documents([disabled])
+        drawn, _ = C.Comparison(game, editor).game_drawn({"enabled": True, "activeInHierarchy": True, "layer": 20},
+                                                         {"clock": {"directorTime": 6.0}})
+        self.assertFalse(drawn)
+
 
 class ClampedDeltaTest(unittest.TestCase):
     def test_clamped_delta_time_is_timing_uncertain_once(self):
@@ -147,6 +178,73 @@ class StageNodeBillboardTest(unittest.TestCase):
         result.items.clear()
         result.compare_stage_nodes(record, {"stageNodes": [dict(node, axisBillboard=None)]}, False)
         self.assertIn("stageNodeRotationDeg", [item["metric"] for item in result.items])
+
+
+class ClippedAnchorTest(unittest.TestCase):
+    @staticmethod
+    def camera(fov=30.0, near=0.1, far=100.0):
+        f = 1 / math.tan(math.radians(fov) / 2)
+        projection = [f / (16 / 9), 0, 0, 0, 0, f, 0, 0, 0, 0, -(far + near) / (far - near), -1, 0, 0, -2 * far * near / (far - near), 0]
+        return {"projection": projection, "worldToCamera": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]}
+
+    def run_anchor(self, z, editor_shift=0.001):
+        game, editor = documents([frame(94.692, 0.2)])
+        result = C.Comparison(game, editor)
+        result.pos = lambda position: position          # the frame of this test is already the editor's
+        record = {"id": "f0166", "clock": {"directorTime": 94.692},
+                  "anchors": [{"key": "anchor:stageOrigin", "position": [0.02, 0.02, z]}]}
+        partner = {"anchors": [{"key": "anchor:stageOrigin", "position": [0.02 + editor_shift, 0.02, z]}]}
+        result.compare_anchors(record, partner, self.camera(), self.camera(), False)
+        return result
+
+    def test_anchor_nearer_than_the_near_plane_is_not_compared(self):
+        # 12023 dump5 f0166: the stage origin 1.8 cm in front of the camera projects to NDC (-402, -366), depth -9.8.
+        result = self.run_anchor(-0.018)
+        self.assertEqual([item for item in result.items if item["metric"].startswith("anchorNdc")], [])
+        self.assertEqual(result.notes["camera.anchorClipped"], ["anchor:stageOrigin"])
+
+    def test_anchor_in_the_view_volume_is_compared(self):
+        result = self.run_anchor(-5.0)
+        metrics = sorted(item["metric"] for item in result.items)
+        self.assertEqual(metrics, ["anchorNdcCameraOnly", "anchorNdcMax"])
+        self.assertNotIn("camera.anchorClipped", result.notes)
+
+
+class InactiveStageNodeTest(unittest.TestCase):
+    # 12023 dump5 p2-stageNodes-03 (74.258 s): lit_01/litC_All is inactive (activeSelf false), so the Animator the
+    # AnimationTrack binds there does not evaluate and litC_01_Yrot_Ani keeps -145 deg while the clip is at -88 deg.
+    BINDING = "/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litC_All"
+    REL = "litC_01_All/litC_01_Yrot_Ani"
+
+    def run_nodes(self, active, editor_visible=False):
+        key = C.Conventions.stage_node_key(self.BINDING, self.REL)
+        game, editor = documents([frame(74.258, 0.2)])
+        result = C.Comparison(game, editor)
+        record = {"id": "p2-stageNodes-03", "clock": {"directorTime": 74.258}, "stageNodes": [
+            {"binding": self.BINDING, "relPath": self.REL, "activeSelf": True, "activeInHierarchy": active,
+             "position": [4.2588, -0.016, -8.8602], "rotation": [0, -0.953982055, 0, 0.299863994], "lossyScale": [1, 1, 1]}]}
+        node = {"key": key, "name": "litC_01_Yrot_Ani", "visible": editor_visible, "position": [-4.2588, -0.016, -8.8602],
+                "rotation": [0, 0.696590542, 0, 0.717468896], "lossyScale": [1, 1, 1]}
+        result.compare_stage_nodes(record, {"stageNodes": [node]}, False)
+        return result, key
+
+    def test_inactive_node_compares_visibility_only(self):
+        result, key = self.run_nodes(False)
+        self.assertEqual([(item["type"], item["metric"]) for item in result.items], [("visibility", "stageNodeVisible")])
+        self.assertEqual(result.items[0]["score"], 0)
+        self.assertEqual(result.notes["transforms.inactiveStageNode"], [key])
+
+    def test_inactive_node_drawn_by_the_editor_is_a_visibility_error(self):
+        result, _ = self.run_nodes(False, editor_visible=True)
+        self.assertEqual([item["metric"] for item in result.items], ["stageNodeVisible"])
+        self.assertGreater(result.items[0]["score"], 1)
+
+    def test_active_node_transform_is_compared(self):
+        result, _ = self.run_nodes(True, editor_visible=True)
+        rotation = [item for item in result.items if item["metric"] == "stageNodeRotationDeg"]
+        self.assertEqual(len(rotation), 1)
+        self.assertGreater(rotation[0]["score"], 1)
+        self.assertNotIn("transforms.inactiveStageNode", result.notes)
 
 
 class ParticleTest(unittest.TestCase):
@@ -397,6 +495,25 @@ class BillboardTest(unittest.TestCase):
         result.items.clear()
         result.compare_renderers(record, partner, False)
         self.assertIn("rendererRotationDeg", [item["metric"] for item in result.items])
+
+    def test_inactive_renderer_compares_visibility_not_transform(self):
+        game, editor = documents([frame(5.0, 0.2)], [{"id": "r", "sourceRecord": "x", "phase": 0, "renderers": [
+            {"key": "renderer:effect:body", "scope": "effect", "mesh": "body", "path": "Effect/lit/body"}]}])
+        result = C.Comparison(game, editor)
+        result.joins["renderer:body"] = ("renderer:effect:body", "path")
+        record = {"id": "g", "clock": {"directorTime": 5.0}, "renderers": [
+            {"key": "renderer:body", "scope": "effect", "path": "/EntryPoint/Live/Stages/MainStage/Effect/lit/body", "layer": 0,
+             "enabled": True, "activeInHierarchy": False, "transform": {"position": [1, 2, 3], "rotation": [0, 0, 0, 1]}}]}
+        partner = {"renderers": [{"key": "renderer:effect:body", "visible": False,
+                                  "transform": {"position": [-1, 5, 3], "rotation": [0, 0.7071068, 0, 0.7071068]}}]}
+        result.compare_renderers(record, partner, False)
+        self.assertEqual([(item["type"], item["metric"], item["score"]) for item in result.items], [("visibility", "rendererVisible", 0)])
+        self.assertEqual(result.notes["transforms.inactiveRenderer"], ["renderer:effect:body"])
+        record["renderers"][0]["activeInHierarchy"] = True
+        partner["renderers"][0]["visible"] = True
+        result.items.clear()
+        result.compare_renderers(record, partner, False)
+        self.assertIn("rendererPositionM", [item["metric"] for item in result.items])
 
 
 class AxisBillboardUpAxisTest(unittest.TestCase):
