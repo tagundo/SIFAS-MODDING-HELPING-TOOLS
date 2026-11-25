@@ -3965,3 +3965,18 @@ _MV_EDITOR_B_TRANSLATIONS = {
 for _source, (_korean, _japanese) in _MV_EDITOR_B_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
+
+# MV Studio layout: the stage / side panel splitter and the side panel toggle (mv-studio.js
+# setupInspectorResizer). "Hidden" is the splitter's value text while the panel is folded.
+_MV_LAYOUT_TRANSLATIONS = {
+    "Side panel": ("사이드 패널", "サイドパネル"),
+    "Panel width": ("패널 너비", "パネルの幅"),
+    "Panel height": ("패널 높이", "パネルの高さ"),
+    "Drag, or use the arrow keys, to share the room between the stage and the panel. Home restores the default, End gives the panel its largest size, Enter hides or shows the panel.": (
+        "드래그하거나 화살표 키로 무대와 패널의 크기를 조절합니다. Home 키는 기본 크기로, End 키는 패널을 최대 크기로 바꾸며, Enter 키는 패널을 숨기거나 다시 표시합니다.",
+        "ドラッグするか矢印キーで、ステージとパネルの大きさを調整します。Homeキーで標準の大きさに戻し、Endキーでパネルを最大にし、Enterキーでパネルを隠す・再表示します。",
+    ),
+}
+for _source, (_korean, _japanese) in _MV_LAYOUT_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese

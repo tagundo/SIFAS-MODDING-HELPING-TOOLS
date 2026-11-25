@@ -220,7 +220,10 @@ async function pluginContract(browser, url) {
   assert.equal(await page.locator('[data-mv-panel-option=probe]').count(), 1, 'plugin panels are listed in the panel menu');
   await page.locator('#mv-panel-menu summary').click();
   assert.equal(Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent()), 2, 'editedCount adds to the Edit tab');
-  assert.equal(await page.locator('.mv-lane[data-track=camera]').getAttribute('data-probe'), '2:30:0', 'laneDecorate gets the layout');
+  // The clip row height is the lane's --mv-clip-row-height: 24 px with a fine pointer.
+  const rowHeight = await page.locator('.mv-lane[data-track=camera]').evaluate((lane) => parseFloat(getComputedStyle(lane).getPropertyValue('--mv-clip-row-height')));
+  assert.equal(rowHeight, 24);
+  assert.equal(await page.locator('.mv-lane[data-track=camera]').getAttribute('data-probe'), `2:${rowHeight}:0`, 'laneDecorate gets the layout');
 
   // Extra lane after its track, in the Camera, Edit and All tabs only.
   const rows = () => page.evaluate(() => [...document.querySelectorAll('#mv-timeline-grid > .mv-lane')].map((lane) => lane.dataset.track || lane.dataset.extra));

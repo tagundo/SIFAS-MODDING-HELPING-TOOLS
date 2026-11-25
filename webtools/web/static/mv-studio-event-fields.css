@@ -25,7 +25,7 @@
   flex: 0 0 auto;
   width: 52px;
   min-width: 44px;
-  height: 36px;
+  height: var(--mv-control-h-sm);
   padding: 2px;
   cursor: pointer;
 }

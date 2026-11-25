@@ -448,12 +448,13 @@
       <div class="mv-toolbar">
         <h2 id="mv-project-title" data-i18n="3D MV">3D MV</h2>
         <div class="mv-controls">
-          <button id="mv-import-game" type="button" data-i18n="Load MV from game">Load MV from game</button>
-          <button id="mv-open" type="button" data-i18n="Open mod or project">Open mod or project</button>
-          <button id="mv-save" type="button" data-i18n="Save MV project" disabled>Save MV project</button>
-          <button id="mv-export-timeline" type="button" data-i18n="Export native timeline" hidden>Export native timeline</button>
+          <button id="mv-import-game" class="mv-icon-btn mv-icon-text" type="button" title="Load MV from game" data-i18n-title="Load MV from game"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4-4m4 4 4-4"/><path d="M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/></svg><span class="mv-label" data-i18n="Load MV from game">Load MV from game</span></button>
+          <button id="mv-open" class="mv-icon-btn" type="button" title="Open mod or project" data-i18n-title="Open mod or project"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg><span class="mv-label" data-i18n="Open mod or project">Open mod or project</span></button>
+          <button id="mv-save" class="mv-icon-btn" type="button" title="Save MV project" data-i18n-title="Save MV project" disabled><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11l3 3v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/></svg><span class="mv-label" data-i18n="Save MV project">Save MV project</span></button>
+          <button id="mv-export-timeline" class="mv-icon-btn" type="button" title="Export native timeline" data-i18n-title="Export native timeline" hidden><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/></svg><span class="mv-label" data-i18n="Export native timeline">Export native timeline</span></button>
+          <button id="mv-inspector-toggle" class="mv-icon-btn" type="button" title="Side panel" data-i18n-title="Side panel" aria-controls="mv-inspector" aria-expanded="true"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg><span class="mv-label" data-i18n="Side panel">Side panel</span></button>
           <details class="mv-panel-menu" id="mv-panel-menu">
-            <summary data-i18n="Panel settings">Panel settings</summary>
+            <summary title="Panel settings" data-i18n-title="Panel settings"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg><span class="mv-label" data-i18n="Panel settings">Panel settings</span></summary>
             <div id="mv-panel-options"></div>
           </details>
         </div>
@@ -481,9 +482,18 @@
               <option value="orbit" data-i18n="Free camera">Free camera</option>
             </select></label>
             <label class="mv-check"><input id="mv-screen-fade" type="checkbox" checked><span data-i18n="Start and end fade">Start and end fade</span></label>
-            <button id="mv-frame-scene" type="button" data-i18n="Frame scene">Frame scene</button>
+            <button id="mv-frame-scene" class="mv-icon-btn" type="button" title="Frame scene" data-i18n-title="Frame scene"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg><span class="mv-label" data-i18n="Frame scene">Frame scene</span></button>
           </div>
         </div>
+        <div id="mv-inspector-resizer" class="mv-inspector-resizer" role="separator" tabindex="0"
+             aria-orientation="vertical" aria-controls="mv-inspector"
+             aria-labelledby="mv-inspector-width-label" aria-describedby="mv-inspector-resize-help">
+          <span class="mv-split-grip" aria-hidden="true"></span>
+          <span class="mv-inspector-reopen" aria-hidden="true"><span>▴</span><span data-i18n="Side panel">Side panel</span></span>
+        </div>
+        <span id="mv-inspector-width-label" class="sr-only" data-i18n="Panel width">Panel width</span>
+        <span id="mv-inspector-height-label" class="sr-only" data-i18n="Panel height">Panel height</span>
+        <span id="mv-inspector-resize-help" class="sr-only" data-i18n="Drag, or use the arrow keys, to share the room between the stage and the panel. Home restores the default, End gives the panel its largest size, Enter hides or shows the panel.">Drag, or use the arrow keys, to share the room between the stage and the panel. Home restores the default, End gives the panel its largest size, Enter hides or shows the panel.</span>
         <aside class="mv-inspector" id="mv-inspector">
           <details open id="mv-assets" data-mv-panel="assets">
             <summary data-i18n="MV assets">MV assets</summary>
@@ -526,7 +536,7 @@
           <div class="mv-timeline-toolbar">
             <h3 id="mv-timeline-label" data-i18n="MV timeline">MV timeline</h3>
             <div class="mv-controls">
-              <button id="mv-rewind" type="button" data-i18n="Go to start" disabled>Go to start</button>
+              <button id="mv-rewind" class="mv-icon-btn" type="button" title="Go to start" data-i18n-title="Go to start" disabled><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 5v14"/><path d="M18 6v12l-9-6z" fill="currentColor"/></svg><span class="mv-label" data-i18n="Go to start">Go to start</span></button>
               <button id="mv-play" type="button" data-i18n="Play" disabled>Play</button>
               <output id="mv-time">0:00.00 / 0:00.00</output>
             </div>
