@@ -403,12 +403,16 @@ function testEmissionRateAtStepEnd() {
   const row = system({main: {duration: 1, lifetime: constant(5), maxParticles: 4000}, emission: {rate: ramp, bursts: []}});
   // Two 1/60 steps: 6000 t over [0, 1/60] and [1/60, 2/60] sampled at their ends gives 1.67 + 3.33.
   assert.equal(P.create(row, 5).sample(1, 30).length, 5, "rate at each step's end");
-  // The step that wraps emits (1 - from) at the rate at 1 and `to` at the rate at to / duration.
-  const looped = P.create(row, 5);
-  const before = looped.frames([f32(.98)], 1).length;
-  const after = looped.frames([f32(.98), f32(.02)], 2).length;
-  const from = f32(.98), to = f32(f32(from + f32(.02)) - 1);
+  // A step that wraps (.99 -> 1.01 on a 1 s loop) emits (1 - from) at the rate at 1 and `to` at the
+  // rate at to / duration: .01 * 6000 + .01 * 60 = 60.6, where the rate at the step start gives
+  // .02 * 5940 = 118.8 and the rate at to / duration for both stretches .02 * 60 = 1.2.
+  const looped = P.create(row, 5), updates = [f32(.99), f32(.02)];
+  const before = looped.frames(updates, 1).length;
+  const after = looped.frames(updates, 2).length;
+  const from = f32(.99), to = f32(f32(from + f32(.02)) - 1);
+  assert.ok(to > 0, "the step crosses the loop end");
   const wrapped = f32(f32(to * f32(6000 * f32(to / 1))) + f32(f32(1 - from) * 6000));
+  assert.ok(Math.abs(wrapped - 60.6) < 1e-3, `${wrapped}`);
   assert.ok(Math.abs(after - before - wrapped) <= 1, `wrapping step: ${after - before} vs ${wrapped}`);
   // The prewarm's bounds scan calls the same 0x65b770 (0x1d2120): a rate that is 0 near the loop end
   // leaves its carry at 0, so the prewarm's extra particle (carry 1 - 0 + 1e-4) is born. 12023 dump5
