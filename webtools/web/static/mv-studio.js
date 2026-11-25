@@ -31,7 +31,7 @@
   const basename = (path) => text(path).split(/[\\/]/).pop();
   let settings, scene, project, selected, pending, gameImport, catalogRequest, catalogIndex = [], songs = [];
   let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
-  let previewLoading = false, playheadNode, seekInput, timeOutput, lastReadout = -Infinity;
+  let previewLoading = false, playheadNode, playheadTransform = "", seekInput, timeOutput, lastReadout = -Infinity;
   let hidden = [], assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
   let lastGamePayload = null;
   // Runtime notes from the 3D preview of the open project (for example a
@@ -221,7 +221,10 @@
   }
 
   function syncPosition(now) {
-    if (playheadNode) playheadNode.style.transform = `translateX(${time * pixelsPerSecond}px)`;
+    if (playheadNode) {
+      const transform = `translateX(${time * pixelsPerSecond}px)`;
+      if (transform !== playheadTransform) playheadNode.style.transform = playheadTransform = transform;
+    }
     if (now !== undefined && now - lastReadout < 100) return;
     lastReadout = now ?? performance.now();
     seekInput.value = time;
@@ -1279,7 +1282,9 @@
     }
     for (const [track, lane] of decorate) decorateLane(track, lane);
     renderMemberFilter(plan);
-    playheadNode = make("div", null, { class: "mv-playhead", "aria-hidden": "true" });
+    // Its own compositing layer: moving it every frame then repaints neither the clips nor the lanes.
+    playheadNode = make("div", null, { class: "mv-playhead", "aria-hidden": "true", style: "will-change: transform" });
+    playheadTransform = "";
     grid.append(playheadNode);
     scroll.setAttribute("role", "tabpanel");
     scroll.setAttribute("aria-labelledby", "mv-tab-" + activeTab);
