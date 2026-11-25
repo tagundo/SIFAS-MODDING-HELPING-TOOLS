@@ -180,8 +180,10 @@
     // The OUTLINE pass stencil comparison (LiveCoreMemberRimlight.ApplyEnable).
     const stencil = material.userData?.sifasRuntime?.outlineStencilComp;
     if (Number.isInteger(stencil)) properties._OutlineStencilComp = { t: "float", v: stencil, from: "outline stencilFunc" };
+    // The AS/MemberProp main pass (SifasMaterial memberProp) always evaluates its rim.
+    const prop = material.userData?.sifas?.shader === "AS/MemberProp";
     return { kind: "member", properties, unmapped: unmapped.sort(), editorOnly: editorOnly.sort(), globals,
-      keywords: memberKeywords(material), rimlightEvaluated: !!material.defines?.SIFAS_RIMLIGHT };
+      keywords: memberKeywords(material), rimlightEvaluated: prop || !!material.defines?.SIFAS_RIMLIGHT };
   }
 
   function stageUniforms(material) {
