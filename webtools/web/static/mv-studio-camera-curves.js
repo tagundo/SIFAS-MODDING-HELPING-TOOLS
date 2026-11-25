@@ -34,7 +34,18 @@
     const t = typeof handlers.t === "function" ? handlers.t : (label) => label;
     svg.setAttribute("aria-label", t("Camera curves"));
     container.replaceChildren(svg);
-    let model = null, layout = null, drag = null, frozen = null;
+    let model = null, layout = null, drag = null, frozen = null, drawn = null, playheadLine = null;
+    // The container's width, kept by a ResizeObserver (read after layout, where it costs
+    // nothing): reading clientWidth on every playhead update forced a style and layout pass.
+    let width = null;
+    const resizing = global.ResizeObserver ? new global.ResizeObserver(() => {
+      if (!container.isConnected) return;
+      const next = container.clientWidth;
+      if (next === width) return;
+      width = next;
+      if (model) draw();
+    }) : null;
+    resizing?.observe(container);
 
     function range(current) {
       if (frozen) return frozen;
@@ -52,8 +63,12 @@
       return { low: low - pad, high: high + pad };
     }
 
+    function graphWidth() {
+      return Math.max(160, Math.round((resizing && width !== null ? width : container.clientWidth) || 320));
+    }
+
     function geometry(current) {
-      const width = Math.max(160, Math.round(container.clientWidth || 320));
+      const width = graphWidth();
       const { low, high } = range(current);
       const plot = { left: LEFT, top: TOP, width: width - LEFT - RIGHT, height: HEIGHT - TOP - BOTTOM };
       const last = Math.max(1, current.count - 1);
@@ -112,9 +127,11 @@
         }
       }
       // The playhead under the handles and keys, so they stay grabbable on it.
+      playheadLine = null;
       if (finite(model.playhead)) {
         const px = x(Math.max(0, Math.min(layout.last, model.playhead)));
-        parts.push(node("line", { class: "mv-cam-playhead", x1: px, x2: px, y1: plot.top, y2: plot.top + plot.height }));
+        playheadLine = node("line", { class: "mv-cam-playhead", x1: px, x2: px, y1: plot.top, y2: plot.top + plot.height });
+        parts.push(playheadLine);
       }
       // Handles of the selected key (bezier segments only).
       const index = model.keys.findIndex((key) => key.frame === model.selected);
@@ -145,6 +162,31 @@
         }
       }
       svg.replaceChildren(...parts);
+      drawn = { model, width: layout.width };
+    }
+
+    // The graph drawn for `previous` also shows `next` when only the playhead differs.
+    function samePlot(previous, next) {
+      if (!previous || previous.count !== next.count || previous.mode !== next.mode || previous.selected !== next.selected ||
+          finite(previous.playhead) !== finite(next.playhead) || previous.channels.join(",") !== next.channels.join(",") ||
+          JSON.stringify(previous.keys) !== JSON.stringify(next.keys) || JSON.stringify(previous.labels) !== JSON.stringify(next.labels)) return false;
+      for (const channel of next.channels) {
+        const a = previous.dense && previous.dense[channel], b = next.dense && next.dense[channel];
+        if (a === b) continue;
+        if (!a || !b || a.length !== b.length) return false;
+        for (let index = 0; index < a.length; index++) if (!Object.is(a[index], b[index])) return false;
+      }
+      return true;
+    }
+
+    // Moves the playhead of the drawn graph (the same attributes draw() would write).
+    function movePlayhead() {
+      if (!playheadLine || !layout || graphWidth() !== drawn.width) return false;
+      const px = layout.x(Math.max(0, Math.min(layout.last, model.playhead)));
+      playheadLine.setAttribute("x1", String(px));
+      playheadLine.setAttribute("x2", String(px));
+      drawn = { model, width: layout.width };
+      return true;
     }
 
     svg.addEventListener("pointerdown", (event) => {
@@ -211,6 +253,8 @@
       element: svg,
       update(next) {
         model = { ...next, keys: M.sortedKeys(next.keys), channels: (next.channels || []).filter((channel) => COLORS[channel]) };
+        // While the MV plays only the playhead moves: the graph is not rebuilt.
+        if (!drag && samePlot(drawn && drawn.model, model) && movePlayhead()) return;
         const focused = document.activeElement && svg.contains(document.activeElement)
           ? { frame: document.activeElement.dataset.frame, channel: document.activeElement.dataset.channel } : null;
         draw();
