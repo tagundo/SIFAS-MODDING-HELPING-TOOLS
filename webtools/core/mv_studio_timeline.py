@@ -1124,24 +1124,157 @@ def restore_legacy_camera_keyframes(raw, name, tracks, originals):
     return restored
 
 
+def prepare_tracks(raw: bytes, name: str, tracks, original_tracks):
+    """Bring saved tracks up to the current parse rules of their source bytes, keeping every edit.
+
+    The steps every native export runs first: emissive track metadata, the current editableValues
+    lists, legacy (ZXY) camera rotations of unedited points, and the derived shaftSlot. Without
+    them a project saved by an older version would differ from its own source where nothing was
+    edited."""
+    if not isinstance(tracks, list):
+        return tracks
+    tracks = restore_emissive_track_metadata(tracks, original_tracks)
+    tracks = sync_editable_values(tracks, original_tracks)
+    tracks = restore_legacy_camera_keyframes(raw, name, tracks, original_tracks)
+    # Shaft targets are derived preview metadata, independent of any clip's
+    # member color selector. The original track identity remains read-only.
+    return [
+        {key: value for key, value in track.items() if key != "shaftSlot"}
+        if (isinstance(track, dict) and type(track.get("shaftSlot")) is int
+            and _shaft_slot(track) == track["shaftSlot"]) else track
+        for track in tracks
+    ]
+
+
 def export_timeline(raw: bytes, name: str, tracks: list) -> bytes:
     """Derive the base from these source bytes and export the submitted tracks."""
     original = parse_timeline(raw, name)
-    if isinstance(tracks, list):
-        tracks = restore_emissive_track_metadata(tracks, original["tracks"])
-        tracks = sync_editable_values(tracks, original["tracks"])
-        tracks = restore_legacy_camera_keyframes(raw, name, tracks, original["tracks"])
-        # Shaft targets are derived preview metadata, independent of any clip's
-        # member color selector. The original track identity remains read-only.
-        tracks = [
-            {key: value for key, value in track.items() if key != "shaftSlot"}
-            if (isinstance(track, dict) and type(track.get("shaftSlot")) is int
-                and _shaft_slot(track) == track["shaftSlot"]) else track
-            for track in tracks
-        ]
+    tracks = prepare_tracks(raw, name, tracks, original["tracks"])
     if original["tracks"] == tracks:
         return raw
     return _rewrite_timeline(raw, original, {**original, "tracks": tracks})
+
+
+MERGE_LAYOUT = "The MV in the game has a different track layout. Use Apply all."
+_CLIP_FIELDS = ("start", "duration", "label")
+
+
+def _float32(value):
+    """``value`` with every float rounded to float32, the precision a native timeline stores."""
+    import struct
+
+    if type(value) is float:
+        try:
+            return struct.unpack("<f", struct.pack("<f", value))[0]
+        except (OverflowError, struct.error):
+            return value
+    if isinstance(value, dict):
+        return {key: _float32(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_float32(item) for item in value]
+    return value
+
+
+def field_digest(value):
+    """A short digest of a merged field's value once stored (floats as float32): equal digests are the
+    same value in the game, so an edit typed again (0.7) equals what the game holds (0.699999988)."""
+    import hashlib
+
+    return hashlib.sha256(_value_key(_float32(value)).encode()).hexdigest()[:16]
+
+
+def _merge_value(event, field):
+    return event[field] if field in _CLIP_FIELDS else event["values"][field]
+
+
+def _merge_label(value):
+    """A short display form of a merged field's value for the conflict list."""
+    import json
+
+    if isinstance(value, list) and value and all(isinstance(item, dict) and "time" in item for item in value):
+        return f"{len(value)} keys"
+    if type(value) is float:
+        return f"{value:.6g}"
+    if isinstance(value, dict) and all(type(item) in (int, float) for item in value.values()):
+        return "(" + ", ".join(f"{item:.4g}" for item in value.values()) + ")"
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return text if len(text) <= 48 else text[:47] + "…"
+
+
+def _merge_fields(before, mine):
+    for field in (*_CLIP_FIELDS, *before["values"]):
+        if field in _CLIP_FIELDS or field in mine["values"]:
+            yield field
+
+
+def merge_changes(base, ours, theirs, synced=None):
+    """Three-way merge of clip fields: put the edits ``ours`` made onto ``theirs``.
+
+    ``base`` is the parse of the timeline a project was loaded from, ``ours`` the project's
+    tracks normalized against it (mv_studio_register.normalize: same tracks, clips and value
+    keys), ``theirs`` the parse of the timeline the game plays now. ``synced`` ({event id:
+    {field: field_digest}}, from ``synced_fields`` after an earlier apply of this project) holds
+    the values the project and the game last agreed on where they are not the base's. Every
+    clip's start, duration, label and each of its values (camera keyframes as one field) is
+    merged on its own, against its last agreed value:
+
+    - unchanged in ours: theirs stays (also a change the game made since);
+    - changed in ours, and theirs still has the agreed value or already ours: ours is taken;
+    - changed differently in both: a conflict, and nothing is taken silently.
+
+    Values compare as stored (``field_digest``). Returns ``(merged tracks, conflicts, taken,
+    theirs_only)``: merged is theirs with the taken fields; ``theirs_only`` counts the fields the
+    game changed that the project does not hold. Raises ValueError(MERGE_LAYOUT) when theirs has
+    other tracks, clips or value keys."""
+    import copy
+
+    if (not isinstance(theirs, list) or len(theirs) != len(base) or len(ours) != len(base)
+            or any(track["id"] != other["id"] or [event["id"] for event in track["events"]]
+                   != [event["id"] for event in other["events"]] for track, other in zip(base, theirs))):
+        raise ValueError(MERGE_LAYOUT)
+    synced = synced if isinstance(synced, dict) else {}
+    merged = copy.deepcopy(theirs)
+    conflicts, taken, theirs_only = [], 0, 0
+    for base_track, our_track, merged_track in zip(base, ours, merged):
+        for before, mine, game in zip(base_track["events"], our_track["events"], merged_track["events"]):
+            if not isinstance(game.get("values"), dict) or before["values"].keys() - game["values"].keys():
+                raise ValueError(MERGE_LAYOUT)
+            agreed = synced.get(before["id"]) if isinstance(synced.get(before["id"]), dict) else {}
+            for field in _merge_fields(before, mine):
+                old, new, now = _merge_value(before, field), _merge_value(mine, field), _merge_value(game, field)
+                old_digest = agreed.get(field) if isinstance(agreed.get(field), str) else field_digest(old)
+                new_digest, now_digest = field_digest(new), field_digest(now)
+                if new_digest == old_digest:
+                    if now_digest != old_digest:
+                        theirs_only += 1
+                    continue
+                if now_digest == new_digest:
+                    continue
+                if now_digest == old_digest:
+                    if field in _CLIP_FIELDS:
+                        game[field] = new
+                    else:
+                        game["values"][field] = new
+                    taken += 1
+                    continue
+                conflicts.append({"track": str(base_track.get("label") or base_track["id"]), "trackId": base_track["id"],
+                                  "clip": str(before.get("label") or before["id"]), "eventId": before["id"],
+                                  "start": before["start"], "field": field, "loaded": _merge_label(old),
+                                  "project": _merge_label(new), "game": _merge_label(now)})
+    return merged, conflicts, taken, theirs_only
+
+
+def synced_fields(base, ours):
+    """What a project and the game agree on after a successful apply: {event id: {field: digest}} of
+    every field where ours is not the base (the base holds for every other field)."""
+    result = {}
+    for base_track, our_track in zip(base, ours):
+        for before, mine in zip(base_track["events"], our_track["events"]):
+            for field in _merge_fields(before, mine):
+                digest = field_digest(_merge_value(mine, field))
+                if digest != field_digest(_merge_value(before, field)):
+                    result.setdefault(before["id"], {})[field] = digest
+    return result
 
 
 def _rewrite_timeline(raw, original, revised):
