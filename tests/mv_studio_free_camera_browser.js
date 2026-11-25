@@ -109,13 +109,16 @@ function gameProject(local) {
   };
 }
 
-async function importGame(page, project) {
+// Imports `project` through the editor's game import. `held` (a promise) holds the project's
+// reply back until it settles; `routes(page)` adds routes after the import's own.
+async function importGame(page, project, { held = null, routes = null } = {}) {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
   await page.route('**/api/mv-studio/catalog?*', (route) => route.fulfill({ json: { region: 'gl', platform: 'android',
     regions: [{ id: 'gl', label: 'GL' }], platforms: [{ id: 'android', label: 'Android' }],
     songs: [{ id: 79, title: project.name, variants: [{ id: 1, label: 'MV' }] }] } }));
   await page.route('**/api/mv-studio/game-stream?*', (route) => route.fulfill({ status: 404 }));
-  await page.route('**/api/mv-studio/game?*', (route) => route.fulfill({ json: project }));
+  await page.route('**/api/mv-studio/game?*', async (route) => { await held; await route.fulfill({ json: project }); });
+  if (routes) await routes(page);
   await page.locator('#mv-import-game').click();
   await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
   await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled);
@@ -237,6 +240,22 @@ function layoutProbe(swipe = false) {
   return result;
 }
 
+// How compact the bar is (0: not, 1: no sliders, 2: no captions either), whether its row fits,
+// and whether it would fit one level less compact.
+function compactProbe() {
+  const bar = document.getElementById('mv-free-camera');
+  const levels = ['mv-freecam-compact', 'mv-freecam-tight'];
+  const level = levels.filter((name) => bar.classList.contains(name)).length;
+  const fits = (node) => node.scrollWidth <= node.clientWidth;
+  const result = { level, fits: fits(bar), looserFits: null };
+  if (level) {
+    bar.classList.remove(levels[level - 1]);
+    result.looserFits = fits(bar);
+    bar.classList.add(levels[level - 1]);
+  }
+  return result;
+}
+
 const apart = (a, b) => a.left >= b.right - .5 || a.right <= b.left + .5 || a.top >= b.bottom - .5 || a.bottom <= b.top + .5;
 const inside = (a, b) => a.left >= b.left - .5 && a.right <= b.right + .5 && a.top >= b.top - .5 && a.bottom <= b.bottom + .5;
 
@@ -333,6 +352,18 @@ async function layouts(browser, url) {
     if (layout.touch) await left.tap(); else await left.click();
     const view = await measure(page);
     assert(sideError(view.unity, SIDES.left) < 1 && Math.abs(view.ndc[0]) < 1e-4 && Math.abs(view.ndc[1]) < 1e-4, `${label}: the Left view`);
+    // After each language switch the bar is as compact as it needs to be and no more; back in
+    // Korean the target list and the view buttons are where a tap lands again.
+    for (const [lang, front] of [['en', 'Front'], ['ja', '正面'], ['ko', '정면']]) {
+      await page.locator('#lang-select').selectOption(lang, { force: true });
+      await page.waitForFunction((text) => document.querySelector('[data-mv-freecam-view="front"]')?.textContent === text, front);
+      await frames(page);
+      const fit = await page.evaluate(compactProbe);
+      assert((fit.fits || fit.level === 2) && (fit.level === 0 || !fit.looserFits), `${label} ${lang}: as compact as the row needs (${JSON.stringify(fit)})`);
+    }
+    const again = await page.evaluate(layoutProbe, placement.place === 'beside');
+    const lost = Object.entries(again.hits).filter(([, reached]) => !reached).map(([name]) => name);
+    assert.deepEqual(lost, [], `${label}: after the language switches, every view button is where a tap lands`);
     await setMode(page, 'live');
     await page.locator('#mv-free-camera').waitFor({ state: 'hidden' });
     assert.equal(await page.evaluate(() => document.getElementById('mv-workspace').style.getPropertyValue('--mv-preview-min')), '',
@@ -361,6 +392,17 @@ async function synthetic(browser, url) {
 
   // Shown only with the free camera, in Korean, with the 3D model tab's view labels.
   assert.equal(await bar.isHidden(), true, 'hidden with the game camera');
+  // 무대 전체 보기 from the game camera switches the preview to the free camera without a change
+  // event: the bar shows. The second time the view is already framed, so the camera reports no move.
+  for (const turn of ['first', 'second']) {
+    await page.locator('#mv-frame-scene').click();
+    await frames(page);
+    assert.equal(await page.locator('#mv-camera-mode').inputValue(), 'orbit');
+    assert.equal(await bar.isVisible(), true, `무대 전체 보기 from the game camera shows the bar (${turn} time)`);
+    await setMode(page, 'live');
+    await frames(page);
+    assert.equal(await bar.isHidden(), true, 'hidden again with the game camera');
+  }
   await setMode(page, 'orbit');
   await bar.waitFor({ state: 'visible' });
   assert.equal(await bar.getAttribute('aria-label'), '자유 카메라 시점');
@@ -435,7 +477,7 @@ async function synthetic(browser, url) {
   assert.deepEqual(after.position, lens.position, 'Shift+wheel does not dolly');
   near(after.distance, lens.distance, 1e-9, 'Shift+wheel keeps the distance');
   await page.waitForFunction((fov) => document.getElementById('mv-freecam-fov').value === String(Number(fov.toFixed(1))), after.fov);
-  const widened = after.fov;
+  let widened = after.fov;
   await page.mouse.wheel(0, -200);
   await page.waitForFunction((value) => window.probeCtx.scene().freeView.state().distance < value - 1e-6, after.distance);
   after = await measure(page);
@@ -449,6 +491,16 @@ async function synthetic(browser, url) {
     await frames(page);
     assert.equal((await freeState(page)).fov, widened, `${keys.join('+')}+wheel keeps the FOV`);
   }
+  // The FOV takes Shift+wheel over the free camera: its default (a sideways scroll) is prevented.
+  const unprevented = await page.evaluate(() => {
+    const view = document.querySelector('#mv-scene canvas'), rect = view.getBoundingClientRect();
+    return view.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, shiftKey: true, bubbles: true, cancelable: true,
+      clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 3 }));
+  });
+  assert.equal(unprevented, false, 'Shift+wheel over the free camera is prevented');
+  after = await freeState(page);
+  assert(after.fov > widened, `and widens the lens (${after.fov})`);
+  widened = after.fov;
   await setMode(page, 'live');
   await page.keyboard.down('Shift');
   await page.mouse.wheel(0, 200);
@@ -556,9 +608,23 @@ async function synthetic(browser, url) {
   await page.keyboard.press('Control+z');
   assert.deepEqual(await camera(page), gameBefore[1], 'Ctrl+Z gives the shot back');
 
-  // With the camera editor's Auto key, a preset, a distance entry, an FOV entry, a target pick
-  // and one Shift+wheel step each key the view once, like a finished drag.
+  // Align view to game camera (camera editor) puts the free camera where the game camera is:
+  // the distance and FOV boxes show it, and nothing is keyed.
   await setMode(page, 'orbit');
+  await fovBox.fill('60');
+  await fovBox.press('Tab');
+  await page.locator('#mv-timeline-label').click();
+  const undone = (await state(page)).history.undo;
+  await page.locator('#mv-cam-align').click();
+  await frames(page);
+  const aligned = await freeState(page);
+  near(aligned.fov, gameBefore[1].fov, 1e-6, 'aligned to the game camera FOV');
+  assert.equal(await fovBox.inputValue(), String(Number(aligned.fov.toFixed(1))), 'the FOV box follows Align view to game camera');
+  assert.equal(await distanceBox.inputValue(), String(Number(aligned.distance.toFixed(aligned.distance < 10 ? 2 : 1))), 'the distance box follows it');
+  assert.equal((await state(page)).history.undo, undone, 'aligning keys nothing');
+
+  // With the camera editor's Auto key, a preset, a distance entry, a distance slider drag, an
+  // FOV entry, a target pick and one Shift+wheel step each key the view once, like a finished drag.
   await seek(page, 1.25);
   await page.locator('#mv-cam-autokey').check();
   const keyed1 = async (label, action) => {
@@ -572,6 +638,13 @@ async function synthetic(browser, url) {
   };
   await keyed1('a preset', () => page.locator('[data-mv-freecam-view="back"]').click());
   await keyed1('a distance entry', async () => { await distanceBox.fill('3'); await distanceBox.press('Enter'); });
+  await keyed1('a distance slider drag', async () => {
+    const track = await page.locator('#mv-freecam-distance-slider').boundingBox();
+    await page.mouse.move(track.x + track.width * .3, track.y + track.height / 2);
+    await page.mouse.down();
+    for (const share of [.4, .5, .6]) await page.mouse.move(track.x + track.width * share, track.y + track.height / 2);
+    await page.mouse.up();
+  });
   await keyed1('an FOV entry', async () => { await fovBox.fill('42'); await fovBox.press('Enter'); });
   await keyed1('a target pick', () => page.locator('#mv-freecam-target').selectOption('member:2'));
   await keyed1('a Shift+wheel step', async () => {
@@ -584,7 +657,7 @@ async function synthetic(browser, url) {
   await frames(page);
   assert.equal((await state(page)).history.undo, current.history.undo, 'nothing more is keyed');
   await page.locator('#mv-cam-autokey').uncheck();
-  for (let count = 0; count < 5; count++) await page.keyboard.press('Control+z');
+  for (let count = 0; count < 6; count++) await page.keyboard.press('Control+z');
   assert.equal((await state(page)).history.undo, 0);
   await setMode(page, 'live');
   await seek(page, 1.25);
@@ -612,6 +685,43 @@ async function synthetic(browser, url) {
   assert.equal(await bar.getAttribute('aria-label'), japanese.strings['Free camera views']);
   await page.locator('#lang-select').selectOption('ko');
   await page.waitForFunction(() => document.querySelector('[data-mv-freecam-view="front"]')?.textContent === '정면');
+
+  // A re-import without member 2 while it is the target. The bar hides with the preview controls
+  // while the project loads; then the target is the stage centre again, a listed option.
+  await page.locator('#mv-freecam-target').selectOption('member:2');
+  let release;
+  const reply = new Promise((resolve) => { release = resolve; });
+  const reimport = importGame(page, { ...project, name: 'Free camera MV (one member)', performers: project.performers.slice(0, 1) }, { held: reply });
+  await page.waitForFunction(() => document.getElementById('mv-preview-controls').hidden && document.getElementById('mv-camera-mode').value === 'orbit');
+  assert.equal(await bar.isVisible(), false, 'the bar hides while the preview controls are hidden');
+  release();
+  await reimport;
+  await page.waitForFunction(() => window.probeCtx.scene().freeView.targets().some((item) => item.id === 'member:1'));
+  await bar.waitFor({ state: 'visible' });
+  const targetBox = page.locator('#mv-freecam-target');
+  await targetBox.focus();
+  assert.equal(await targetBox.inputValue(), 'stage', 'the target falls back to the stage centre');
+  assert.deepEqual(await page.locator('#mv-freecam-target option').allTextContents(), ['무대 중앙', '1 · Honoka Kousaka']);
+  assert.equal((await freeState(page)).target, 'stage');
+  await page.locator('#mv-timeline-label').click();
+
+  // A member whose model does not load is not a target: the view buttons turn around the stage
+  // centre meanwhile.
+  await targetBox.selectOption('member:1');
+  const failing = (url) => url.searchParams.get('freecam') === 'missing';
+  const missing = project.performers[0].glb + (project.performers[0].glb.includes('?') ? '&' : '?') + 'freecam=missing';
+  await importGame(page, { ...project, name: 'Free camera MV (member 1 missing)', performers: [{ ...project.performers[0], glb: missing }, project.performers[1]] },
+    { routes: (target) => target.route(failing, (route) => route.fulfill({ status: 404 })) });
+  await page.waitForFunction(() => window.probeCtx.scene().freeView.targets().some((item) => item.id === 'member:2'));
+  await bar.waitFor({ state: 'visible' });
+  assert.equal(await page.evaluate(() => window.probeCtx.scene().freeView.targetPoint('member:1')), null, 'member 1 is not loaded');
+  await page.locator('[data-mv-freecam-view="front"]').click();
+  const stageFront = await measure(page);
+  assert.deepEqual(stageFront.target, [0, 1, 0], 'the view turns around the stage centre');
+  assert(sideError(stageFront.unity, SIDES.front) < 1 && Math.abs(stageFront.ndc[0]) < 1e-4 && Math.abs(stageFront.ndc[1]) < 1e-4, 'the Front view of the stage centre');
+  assert.equal(await targetBox.inputValue(), 'stage');
+  await targetBox.focus();
+  assert.deepEqual(await page.locator('#mv-freecam-target option').allTextContents(), ['무대 중앙', '2 · Kotori Minami']);
   assert.deepEqual(errors, []);
   await page.context().close();
   return { stageViews, memberViews, memberMoved: moved };
