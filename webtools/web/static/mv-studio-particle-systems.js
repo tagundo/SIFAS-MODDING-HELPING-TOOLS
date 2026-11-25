@@ -1937,14 +1937,19 @@
           const {cue, track, systems} = entry;
           const event = track && !track.muted && quality?.[cue.quality] !== false &&
             track.events.find(row => row.id === cue.eventId);
-          // On the device frames: the clip's activation frame and the frame `time` shows.
-          let activated = -1, last = null;
-          if (event && frames && activeFrames(event, time, fps) > 0) {
+          // On the device frames: the frame `time` shows (-1 before the first one), and the clip's
+          // activation frame when the clip is active at that frame's own director time, which a time
+          // between frames (after the clip's end, say) does not decide. Past the last frame the
+          // clock's display frames apply.
+          const shown = event && frames ? frames.shown(time) : null;
+          const device = shown !== null;
+          let activated = -1, last = -1;
+          if (device && shown >= 0 && activeFrames(event, frames.times[shown], fps) > 0) {
             activated = frames.activation(event.start);
-            last = activated >= 0 ? frames.shown(time) : null;
+            last = shown;
           }
-          const device = last !== null;
-          const clone = device ? Math.max(0, last - activated + 1) : event ? activeFrames(event, time, fps, clock) : 0;
+          const clone = device ? (activated >= 0 ? Math.max(0, last - activated + 1) : 0) :
+            event ? activeFrames(event, time, fps, clock) : 0;
           if (clone) animate(entry, device ? frames.elapsed(activated, last) : clone / fps);
           else entry.animated = null;
           for (const item of systems) {

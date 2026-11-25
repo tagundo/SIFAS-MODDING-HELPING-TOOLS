@@ -990,11 +990,13 @@ async function testDeviceFramesInApply() {
   const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
     templates: [{name: "fx", nodes, systems: [culled, kept, slow]}],
     cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1},
-      {trackId: "track", eventId: "track:1", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 2}]};
+      {trackId: "track", eventId: "track:1", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 2},
+      {trackId: "track", eventId: "track:2", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 3}]};
   const root = new T.Group();
   const controller = await P.apply(T, root, descriptor);
-  const project = {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 10}, {id: "track:1", start: .5, duration: 10}]}],
-    quality: {values: {stage_display: true}}};
+  const ending = {id: "track:2", start: 1, duration: 10};
+  const project = {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 10}, {id: "track:1", start: .5, duration: 10},
+    ending]}], quality: {values: {stage_display: true}}};
   // A slow device: director steps of .19 .. .27 s, a different Time.deltaTime in every frame (clamped
   // to 1/3 on a long frame), and a song-end hold of three frames at 6.5 s. Distinct deltas make a
   // culled window shifted by one frame sum to another time.
@@ -1065,6 +1067,18 @@ async function testDeviceFramesInApply() {
   const early = row["track:1/fx/kept"];
   assert.equal(early.device, true);
   assert.equal(early.frames, last + 1);
+  // A clip that ends between two frames: a time after its end still shows the frame before it, in
+  // which the clip was active; the next frame no longer has it.
+  const before = grid.shown(3.5);
+  ending.duration = (rows[before][0] + rows[before + 1][0]) / 2 - ending.start;
+  const between = (ending.start + ending.duration + rows[before + 1][0]) / 2;
+  controller.update(between, project, view, null, grid);
+  const shownEnd = state()["track:2/fx/kept"];
+  assert.equal(shownEnd?.device, true, "drawn on the frame shown");
+  assert.equal(shownEnd.frames, before - grid.activation(1) + 1);
+  controller.update(rows[before + 1][0], project, view, null, grid);
+  assert.equal(state()["track:2/fx/kept"], undefined, "the first frame after the end");
+  ending.duration = 10;
   // Seeking back: the earlier frame's state again.
   controller.update(1.5, project, view, null, grid);
   row = state();
