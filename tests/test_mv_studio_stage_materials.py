@@ -714,3 +714,66 @@ class StageEmissiveOwnershipTests(unittest.TestCase):
             self.assertFalse(stage.emissive_materials(scene, model, {**model_data, "emissives": [ref(12)]}))
             root_data["m_Component"].append({"component": ref(13)})
             self.assertFalse(stage.emissive_materials(scene, model, model_data))
+
+
+class ActualStageFloorTests(unittest.TestCase):
+    """Set SIFAS_TEST_STAGE_10001, SIFAS_TEST_STAGE_12035_1, SIFAS_TEST_STAGE_12035_2,
+    SIFAS_TEST_STAGE_EFFECT_12026 and SIFAS_TEST_STAGE_EFFECT_10008 to the original Android bundles
+    (stage-e274af832d, stage-048468c62c, stage-d7eb918585, stage_effect-65e5b9311b, stage_effect-108cc2d4fe)."""
+
+    def descriptors(self, variable, effect=False):
+        import os
+        import struct
+        from pathlib import Path
+        raw = os.environ.get(variable)
+        if not raw or not Path(raw).is_file():
+            self.skipTest(f"Set {variable} to the original bundle")
+        prepared = model_viewer.prepare([raw], face_context={
+            "enabled": False, "allow_download": False, "_mv_stage": True, "_mv_native_stage_effect": effect})
+        payload = model_viewer.get_model(prepared["id"])
+        size = struct.unpack_from("<I", payload, 12)[0]
+        doc = json.loads(payload[20:20 + size])
+        result = {}
+        for mesh in doc["meshes"]:
+            for primitive in mesh["primitives"]:
+                name = doc["materials"][primitive["material"]].get("name")
+                result.setdefault(name, []).append(primitive.get("extras", {}))
+        return result
+
+    def test_10001_emissive_floors_keep_their_fresnel_reflection(self):
+        found = self.descriptors("SIFAS_TEST_STAGE_10001")
+        for index in range(1, 5):
+            extras, = found[f"bg0001_01_stageB{index}_opa_emi_ref_mt"]
+            descriptor = extras["mvStageMaterial"]
+            self.assertEqual(descriptor["shader"], "stage")
+            self.assertIn("lightmap", descriptor)
+            self.assertEqual({key: descriptor["reflection"][key] for key in ("mode", "parallax", "op", "reflectivity", "fresnel")},
+                             {"mode": "fragment", "parallax": True, "op": "alpha-blend", "reflectivity": "vertex", "fresnel": True})
+            self.assertEqual(descriptor["emissive"]["intensity"], 1)
+        plain, = found["bg0001_01_stageB_opa_ref_mt"]
+        self.assertFalse(plain["mvStageMaterial"]["reflection"]["fresnel"])
+        self.assertIn("emissive", plain["mvStageMaterial"])
+
+    def test_12035_position_1_and_2_floor_reflections(self):
+        first, = self.descriptors("SIFAS_TEST_STAGE_12035_1")["bg0007_02_stageA_opa_ref_mt"]
+        reflection = first["mvStageMaterial"]["reflection"]
+        self.assertEqual((reflection["mode"], reflection["parallax"], reflection["reflectivity"]), ("fragment", False, "vertex"))
+        self.assertNotIn("boxMin", reflection)
+        second, = self.descriptors("SIFAS_TEST_STAGE_12035_2")["bg0008_01_stageA_opa_ref_mt"]
+        reflection = second["mvStageMaterial"]["reflection"]
+        self.assertEqual((reflection["mode"], reflection["parallax"], reflection["op"], reflection["reflectivity"]),
+                         ("fragment", True, "alpha-blend", "texture"))
+
+    def test_12026_moon_chair_is_a_cutout_lit_by_its_prop(self):
+        chair, = self.descriptors("SIFAS_TEST_STAGE_EFFECT_12026", effect=True)["mat_stg_so2026_oth_02"]
+        self.assertEqual({key: chair["mvStageMaterial"].get(key) for key in ("shader", "cull", "queue", "alphaCutoff", "vertexColor")},
+                         {"shader": "cutout", "cull": 2, "queue": 3000, "alphaCutoff": .5, "vertexColor": True})
+        self.assertTrue(chair["mvPropLight"]["ambient"])
+
+    def test_10008_light_bodies_use_the_coloring_kind(self):
+        bodies = self.descriptors("SIFAS_TEST_STAGE_EFFECT_10008", effect=True)["cmn_mat_lit_02"]
+        self.assertEqual(len(bodies), 18)
+        for extras in bodies:
+            self.assertEqual({key: extras["mvStageMaterial"].get(key) for key in ("shader", "cull", "vertexColor")},
+                             {"shader": "coloring", "cull": 0, "vertexColor": True})
+            self.assertEqual(extras["mvStageCameraDepth"], {"kind": "opaque"})
