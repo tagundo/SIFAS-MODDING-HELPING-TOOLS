@@ -13,7 +13,9 @@
    - a member target carries the camera along only while Follow member is on;
    - nothing reaches the project, its history or the game camera;
    - Key current view after a view preset keys the shown view (the game camera then shows it);
-   - every string has Korean and Japanese copy, and the bar follows a language switch.
+   - every string has Korean and Japanese copy, and the bar follows a language switch;
+   - on a phone, a tablet, a phone in landscape and a laptop screen the bar never covers the
+     preview controls, stays one row, and every control is where a tap lands.
 
    Real 12035 MV (skipped unless MV_FREECAM_SERVER_ROOT is an Elichika server root that imports
    GL Android 12035 with its member; no game data in Git): the four views around the member pass
@@ -170,8 +172,9 @@ async function checkViews(page, label, screenshot) {
   return results;
 }
 
-async function newPage(browser, errors, viewport = { width: 1400, height: 1000 }) {
-  const page = await browser.newPage({ locale: 'ko', viewport });
+async function newPage(browser, errors, viewport = { width: 1400, height: 1000 }, device = {}) {
+  const context = await browser.newContext({ locale: 'ko', viewport, ...device });
+  const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('dialog', (dialog) => dialog.accept());
   // A probe plugin hands the test the editor context (seek, scene) the plugins get.
@@ -181,9 +184,8 @@ async function newPage(browser, errors, viewport = { width: 1400, height: 1000 }
   return page;
 }
 
-async function synthetic(browser, url) {
-  const errors = [];
-  const page = await newPage(browser, errors);
+// Opens the workbench and imports the synthetic game project; returns the project.
+async function openSynthetic(page, url) {
   await page.goto(url + '/#mv');
   await page.waitForFunction(() => MVStudio.getState().visible);
   const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
@@ -191,6 +193,108 @@ async function synthetic(browser, url) {
   const project = gameProject(local);
   await importGame(page, project);
   await page.waitForFunction(() => window.probeCtx.scene()?.freeView.targets().some((item) => item.id === 'member:1'));
+  return project;
+}
+
+const frames = (page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+// Where the preview, the view, the preview controls and the bar are, and whether a tap at the
+// centre of each control reaches it (the bar's controls after a sideways scroll, a swipe).
+function layoutProbe() {
+  const box = (element) => {
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
+  };
+  const hit = (element, scroll = false) => {
+    if (scroll) element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const rect = element.getBoundingClientRect();
+    const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return !!top && (top === element || element.contains(top));
+  };
+  const bar = document.getElementById('mv-free-camera');
+  const controls = ['mv-camera-mode', 'mv-screen-fade', 'mv-frame-scene', 'mv-freecam-target'].map((id) => [id, document.getElementById(id)]);
+  const views = [...bar.querySelectorAll('[data-mv-freecam-view]')].map((element) => [element.dataset.mvFreecamView, element]);
+  const result = { preview: box(document.querySelector('.mv-preview')), scene: box(document.getElementById('mv-scene')),
+    controls: box(document.getElementById('mv-preview-controls')), bar: box(bar), classes: [...bar.classList],
+    rows: [...bar.children].filter((child) => child.getClientRects().length).map(box),
+    hits: Object.fromEntries([...controls, ...views].map(([name, element]) => [name, hit(element, bar.contains(element))])) };
+  result.scrolled = Object.fromEntries(['mv-freecam-distance', 'mv-freecam-fov', 'mv-freecam-follow'].map((id) => [id, hit(document.getElementById(id), true)]));
+  bar.scrollLeft = 0;
+  return result;
+}
+
+const apart = (a, b) => a.left >= b.right - .5 || a.right <= b.left + .5 || a.top >= b.bottom - .5 || a.bottom <= b.top + .5;
+const inside = (a, b) => a.left >= b.left - .5 && a.right <= b.right + .5 && a.top >= b.top - .5 && a.bottom <= b.bottom + .5;
+
+// Phones and a tablet (touch) and a laptop screen, each with the export note above the
+// workspace (a shorter preview, as after an export). The bar never covers the preview controls:
+// it is one row at the bottom of the view, or, in a preview too short for both, beside the
+// controls. The view keeps the whole preview (the game camera's canvas). The preview controls,
+// the target list and every view button are where a tap lands (the bar's controls after a
+// sideways swipe), and a tap on a view button turns the free camera to that side.
+const LAYOUTS = [
+  { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, place: 'bottom' },
+  { name: 'tablet', viewport: { width: 768, height: 1024 }, touch: true, place: 'bottom' },
+  { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true, place: 'beside' },
+  { name: 'laptop', viewport: { width: 1280, height: 720 }, touch: false, place: 'bottom' },
+];
+
+async function layouts(browser, url) {
+  const results = {};
+  for (const layout of LAYOUTS) {
+    const errors = [];
+    const page = await newPage(browser, errors, layout.viewport, layout.touch ? { isMobile: true, hasTouch: true, deviceScaleFactor: 2 } : {});
+    const label = `${layout.name} ${layout.viewport.width}x${layout.viewport.height}`;
+    await openSynthetic(page, url);
+    await page.evaluate(() => {
+      const status = document.getElementById('mv-status');
+      status.hidden = false;
+      status.textContent = '게임용 타임라인을 내보냈습니다.';
+      const note = document.getElementById('mv-save-result');
+      note.hidden = false;
+      note.replaceChildren(Object.assign(document.createElement('a'), { href: '#', textContent: 'A song for You- You- You-6c3fc246.unity' }));
+    });
+    await setMode(page, 'orbit');
+    await page.locator('#mv-free-camera').waitFor({ state: 'visible' });
+    await frames(page);
+    const shown = await page.evaluate(layoutProbe);
+    assert(apart(shown.bar, shown.controls), `${label}: the bar does not cover the preview controls (${JSON.stringify([shown.bar, shown.controls])})`);
+    assert(inside(shown.bar, shown.preview), `${label}: the bar stays inside the preview`);
+    if (layout.place === 'bottom') {
+      assert(!shown.classes.includes('mv-freecam-beside'), `${label}: at the bottom of the view`);
+      assert(Math.abs(shown.bar.bottom - (shown.preview.bottom - 8)) < .5 && Math.abs(shown.bar.left - (shown.preview.left + 8)) < .5, `${label}: bottom left`);
+      assert(shown.bar.top >= shown.controls.bottom, `${label}: below the preview controls`);
+    } else {
+      assert(shown.classes.includes('mv-freecam-beside'), `${label}: beside the preview controls`);
+      assert(shown.bar.left >= shown.controls.right, `${label}: right of the preview controls`);
+    }
+    assert.deepEqual(shown.scene, shown.preview, `${label}: the view keeps the whole preview`);
+    const missed = Object.entries({ ...shown.hits, ...shown.scrolled }).filter(([, reached]) => !reached).map(([name]) => name);
+    assert.deepEqual(missed, [], `${label}: every control is where a tap lands`);
+    const row = shown.rows[0];
+    assert(shown.rows.every((item) => item.top < row.bottom && item.bottom > row.top), `${label}: one row`);
+    await page.screenshot({ path: path.join(evidence, `freecam-layout-${layout.name}-ko.png`) });
+    // A tap on a view button turns the view; the preview controls still switch the camera.
+    const left = page.locator('[data-mv-freecam-view="left"]');
+    if (layout.touch) await left.tap(); else await left.click();
+    const view = await measure(page);
+    assert(sideError(view.unity, SIDES.left) < 1 && Math.abs(view.ndc[0]) < 1e-4 && Math.abs(view.ndc[1]) < 1e-4, `${label}: the Left view`);
+    await setMode(page, 'live');
+    await page.locator('#mv-free-camera').waitFor({ state: 'hidden' });
+    assert.equal(await page.evaluate(() => document.elementFromPoint(...(({ left, top, width, height }) => [left + width / 2, top + height / 2])(
+      document.getElementById('mv-camera-mode').getBoundingClientRect())) === document.getElementById('mv-camera-mode')), true, `${label}: back to the game camera`);
+    assert.deepEqual(errors, []);
+    results[layout.name] = { place: shown.classes.includes('mv-freecam-beside') ? 'beside' : 'bottom',
+      preview: [shown.preview.width, shown.preview.height], bar: [shown.bar.left - shown.preview.left, shown.bar.top - shown.preview.top, shown.bar.width, shown.bar.height] };
+    await page.context().close();
+  }
+  return results;
+}
+
+async function synthetic(browser, url) {
+  const errors = [];
+  const page = await newPage(browser, errors);
+  const project = await openSynthetic(page, url);
   const bar = page.locator('#mv-free-camera');
 
   // The game camera and the project before any free camera use.
@@ -367,7 +471,7 @@ async function synthetic(browser, url) {
   await page.locator('#lang-select').selectOption('ko');
   await page.waitForFunction(() => document.querySelector('[data-mv-freecam-view="front"]')?.textContent === '정면');
   assert.deepEqual(errors, []);
-  await page.close();
+  await page.context().close();
   return { stageViews, memberViews, memberMoved: moved };
 }
 
@@ -434,7 +538,7 @@ async function real(browser) {
     const exportedAfter = await exportTimeline();
     assert(exportedAfter.equals(exportedBefore), '12035: the native timeline export is byte-identical');
     assert.deepEqual(errors, []);
-    await page.close();
+    await page.context().close();
     return { member: label, views, exportBytes: exportedAfter.length };
   } finally {
     server.child.kill();
@@ -448,8 +552,9 @@ async function run() {
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const result = await synthetic(browser, server.url);
+    const layout = await layouts(browser, server.url);
     const realResult = await real(browser);
-    console.log(JSON.stringify({ status: 'PASS', evidence, synthetic: result, real: realResult }));
+    console.log(JSON.stringify({ status: 'PASS', evidence, synthetic: result, layout, real: realResult }));
   } finally {
     if (browser) await browser.close();
     if (server) server.processHandle.kill();

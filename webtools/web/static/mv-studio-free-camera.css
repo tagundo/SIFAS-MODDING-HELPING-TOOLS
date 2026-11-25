@@ -1,22 +1,33 @@
-/* MV Studio free camera views (mv-studio-free-camera.js): a compact bar at the bottom of the
-   preview, shown while the preview draws the free camera. The view buttons are a segmented
-   group like the 3D model tab's camera buttons. */
+/* MV Studio free camera views (mv-studio-free-camera.js): a compact bar over the bottom of
+   the preview, shown while the preview draws the free camera. It never covers the preview
+   controls: in a preview too short for both it sits beside them (.mv-freecam-beside, placed
+   by the script). One row: a bar that does not fit scrolls sideways. The view buttons are a
+   segmented group like the 3D model tab's camera buttons. */
 
 .mv-freecam {
   position: absolute;
   inset: auto auto 8px 8px;
   max-width: calc(100% - 16px);
+  box-sizing: border-box;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px 10px;
-  padding: 4px 8px;
+  padding: 3px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel) 90%, transparent);
   color: var(--text);
   font-size: .78rem;
+  overflow: auto hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
 }
+.mv-freecam.mv-freecam-beside {
+  inset: var(--mv-freecam-top, 8px) auto auto var(--mv-freecam-start, 8px);
+  max-width: calc(100% - var(--mv-freecam-start, 8px) - 8px);
+}
+.mv-freecam > * { flex: none; }
 .mv-freecam[hidden], .mv-preview-controls[hidden] ~ .mv-freecam { display: none; }
 .mv-freecam-field { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .mv-freecam-field > span:first-child { color: var(--muted); }
@@ -24,7 +35,8 @@
 #mv-free-camera .mv-freecam-views button { border: 0; border-radius: 0; }
 #mv-free-camera .mv-freecam-views button + button { border-inline-start: 1px solid var(--line); }
 #mv-free-camera .mv-freecam-views button:hover { background: color-mix(in srgb, var(--accent) 16%, var(--panel2)); }
-#mv-free-camera .mv-freecam-views button:focus-visible { outline-offset: -3px; }
+/* The bar clips its overflow: focus rings stay inside the controls. */
+#tab-mv #mv-free-camera :focus-visible { outline-offset: -2px; }
 .mv-freecam-range input[type=range] { width: 88px; margin: 0; }
 #mv-free-camera .mv-freecam-range input[type=number] { width: 4.6em; padding-inline: 5px; font-variant-numeric: tabular-nums; }
 .mv-freecam-unit { color: var(--muted); }

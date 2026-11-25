@@ -41,7 +41,10 @@
     "Follow member", "While a member is the target, the free camera moves with that member as the MV plays or the playhead moves. Preview only.",
   ]);
 
-  let ctx = null, refs = null, scene = null, unsubscribe = null, queued = 0, targetsKey = "";
+  // Gap (px) between the bar and the preview controls, and the narrowest bar placed beside them.
+  const GAP = 6, MIN_BESIDE = 160;
+
+  let ctx = null, refs = null, scene = null, unsubscribe = null, queued = 0, targetsKey = "", placed = 0, wasHidden = true;
 
   const t = (label) => ctx && typeof ctx.t === "function" ? ctx.t(label) : label;
   const freeView = () => scene && scene.freeView ? scene.freeView : null;
@@ -183,6 +186,11 @@
     const mode = modeSelect();
     const api = freeView();
     refs.bar.hidden = !api || !mode || mode.value !== "orbit";
+    // Place the bar when it appears or goes (size changes reach place() through the observer).
+    if (wasHidden !== refs.bar.hidden) {
+      wasHidden = refs.bar.hidden;
+      place();
+    }
     if (refs.bar.hidden) return;
     refreshTargets();
     const state = api.state();
@@ -193,6 +201,30 @@
     if (active !== refs.fov.slider) refs.fov.slider.value = String(round(clamp(state.fov, FOV.min, FOV.max), 0));
     refs.follow.checked = state.follow;
     refs.follow.disabled = state.target === "stage";
+  }
+
+  // The bar never covers the preview controls, and the view keeps the game camera's canvas, so
+  // "Key current view" keys the lens as shown. The bar is one row at the bottom of the view,
+  // below the controls; a preview too short for both (a phone in landscape) gets the bar
+  // beside the controls instead.
+  function place() {
+    placed = 0;
+    if (!refs) return;
+    const bar = refs.bar, preview = bar.parentElement, controls = global.document.getElementById("mv-preview-controls");
+    bar.classList.remove("mv-freecam-beside");
+    if (bar.offsetParent === null || !preview || !controls || controls.offsetParent !== preview) return;
+    const below = controls.offsetTop + controls.offsetHeight + GAP;
+    const start = controls.offsetLeft + controls.offsetWidth + GAP;
+    if (bar.offsetTop < below && preview.clientWidth - start - GAP >= MIN_BESIDE) {
+      bar.style.setProperty("--mv-freecam-top", `${controls.offsetTop}px`);
+      bar.style.setProperty("--mv-freecam-start", `${start}px`);
+      bar.classList.add("mv-freecam-beside");
+    }
+  }
+
+  // Resize observer notices: placed on the next frame, outside the observer callback.
+  function queuePlace() {
+    if (!placed) placed = global.requestAnimationFrame(place);
   }
 
   // Shift+wheel over the free camera changes its FOV (the plain wheel dollies, OrbitControls).
@@ -220,6 +252,12 @@
       // "Frame scene" switches the select to the free camera without a change event.
       global.document.getElementById("mv-frame-scene")?.addEventListener("click", () => global.requestAnimationFrame(sync));
       global.document.getElementById("mv-scene")?.addEventListener("wheel", wheel, { capture: true, passive: false });
+      if (global.ResizeObserver) {
+        const observer = new global.ResizeObserver(queuePlace);
+        for (const element of [refs.bar.parentElement, global.document.getElementById("mv-preview-controls"), refs.bar]) {
+          if (element) observer.observe(element);
+        }
+      }
       sync();
     },
     projectChanged() { sync(); },
