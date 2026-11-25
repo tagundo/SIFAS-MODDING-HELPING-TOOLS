@@ -7,8 +7,9 @@
    folding the panel away and back, the toolbar toggle, the values kept across a reload,
    and the stacked phone layout where the splitter sets the panel height. Where taps land on
    touch screens: each splitter's target spans 32 px, and controls beside it (stage overlay
-   controls at their 8 px inset, the side panel's fields) keep their whole box. Korean UI,
-   with screenshots in EVIDENCE_DIR. */
+   controls at their 8 px inset, the side panel's fields) keep their whole box. Also a short
+   phone where folding and Home come back to the layout it loaded with. Korean UI, with
+   screenshots in EVIDENCE_DIR. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -581,6 +582,56 @@ async function phonePortrait(browser, url) {
   await context.close();
 }
 
+// A short portrait phone, where the stage sits at its least height and the side panel and the
+// timeline share the rest: folding the panel away and back, the toolbar toggle, Home, End,
+// and a step down and up all come back to the layout the page loaded with (the timeline gives
+// the panel its default height back).
+async function phoneShort(browser, url) {
+  const context = await browser.newContext({ locale: 'ko', viewport: { width: 360, height: 640 }, isMobile: true, hasTouch: true });
+  await context.addInitScript(probe);
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await openProject(page, url, true);
+  const load = await read(page);
+  near(load.stage.height, 108, 'the stage at its least height');
+  assert.equal(load.grip.orientation, 'horizontal');
+  assert.equal(load.grip.now, load.inspector.height);
+  const layout = (state) => ({ panel: state.inspector && state.inspector.height, max: state.grip.max, now: state.grip.now,
+    stage: state.stage.height, timeline: Math.round(state.timeline.height) });
+  const expected = layout(load);
+  const grip = page.getByRole('separator', { name: '패널 높이' });
+  await grip.press('Enter');
+  let state = await read(page);
+  assert.equal(state.folded, true);
+  assert(state.stage.height > load.stage.height, 'folded: the stage grows');
+  assert.equal(state.grip.max, load.grip.max, 'the range does not change while folded');
+  await grip.press('Enter');
+  assert.deepEqual(layout(await read(page)), expected, 'unfolded: the layout it loaded with');
+  await grip.press('Home');
+  assert.deepEqual(layout(await read(page)), expected, 'Home: the layout it loaded with');
+  const toggle = page.getByRole('button', { name: '사이드 패널' });
+  await toggle.tap();
+  assert.equal((await read(page)).folded, true);
+  await toggle.tap();
+  assert.deepEqual(layout(await read(page)), expected, 'the toolbar toggle: the layout it loaded with');
+  await grip.press('ArrowDown');
+  state = await read(page);
+  assert.equal(state.inspector.height, load.inspector.height - 16, 'Down: 16 px shorter');
+  await grip.press('ArrowUp');
+  assert.deepEqual(layout(await read(page)), expected, 'Down then Up: the layout it loaded with');
+  await grip.press('End');
+  state = await read(page);
+  assert.equal(state.inspector.height, load.grip.max, 'End: the largest panel the page loaded with');
+  near(state.stage.height, 108, 'End: the stage keeps its least height');
+  near(state.timeline.bottom, state.viewportBottom, 'the timeline still fits');
+  assertRenderer(state, 'short phone, End');
+  assert.equal(state.pageOverflow, 0);
+  await page.screenshot({ path: path.join(evidence, 'layout-phone-short-ko.png') });
+  assert.deepEqual(errors, []);
+  await context.close();
+}
+
 // A touch tablet held upright (820x1180, side by side): 32 px splitter targets that leave the
 // stage's overlay controls and the panel's fields whole, and the folded rail.
 async function tablet(browser, url) {
@@ -659,6 +710,7 @@ async function run() {
     await desktop(browser, server.url);
     await tablet(browser, server.url);
     await phonePortrait(browser, server.url);
+    await phoneShort(browser, server.url);
     await phoneLandscape(browser, server.url);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {

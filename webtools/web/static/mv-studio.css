@@ -122,6 +122,8 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
    size variables are not inherited, so a drag restyles the grid, not every clip in it. */
 @property --mv-inspector-width { syntax: "*"; inherits: false; }
 @property --mv-inspector-height { syntax: "*"; inherits: false; }
+/* The stacked panel's default height, read back in px by the splitter. */
+@property --mv-inspector-default { syntax: "<length>"; inherits: false; initial-value: 0px; }
 .mv-workspace {
   --mv-preview-min: 144px;
   --mv-timeline-default: clamp(96px, 30dvh, 320px);
@@ -373,7 +375,8 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
   .mv-workspace {
     --mv-preview-min: 108px;
     --mv-timeline-default: clamp(96px, 28dvh, 260px);
-    grid-template: "preview" minmax(var(--mv-preview-min), 1fr) "split" auto "inspector" var(--mv-inspector-height, clamp(64px, 20dvh, 200px))
+    --mv-inspector-default: clamp(64px, 20dvh, 200px);
+    grid-template: "preview" minmax(var(--mv-preview-min), 1fr) "split" auto "inspector" var(--mv-inspector-height, var(--mv-inspector-default))
       "timeline" auto / minmax(0, 1fr);
     row-gap: 0;
   }

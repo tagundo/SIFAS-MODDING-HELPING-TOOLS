@@ -2062,6 +2062,7 @@
   function setupInspectorResizer() {
     const grip = byId("mv-inspector-resizer"), workspace = byId("mv-workspace"), inspector = byId("mv-inspector");
     const timeline = workspace.querySelector(".mv-timeline"), toggle = byId("mv-inspector-toggle");
+    const scroll = byId("mv-timeline-scroll");
     const portrait = global.matchMedia("(max-width: 640px) and (orientation: portrait)");
     const coarse = global.matchMedia("(pointer: coarse)");
     const keys = { width: "elichika.mv.inspectorWidth.v1", height: "elichika.mv.inspectorHeight.v1" };
@@ -2090,14 +2091,23 @@
     }
 
     function limits() {
-      const style = global.getComputedStyle(workspace);
+      const style = global.getComputedStyle(workspace), band = parseFloat(style.getPropertyValue("--mv-split")) || 0;
       if (portrait.matches) {
+        // The room under the stage's least height, beside the band (not the taller folded
+        // bar) and the timeline. The timeline gives way, down to its least height, for the
+        // panel's default height, as it does when the page loads; beyond that the panel
+        // only takes the stage's spare room. (Measured against the timeline's height alone,
+        // the panel came back smaller after being folded away: the timeline grows into the
+        // room while the panel is folded.)
         const previewMinimum = parseFloat(style.getPropertyValue("--mv-preview-min")) || 0;
         const margin = parseFloat(global.getComputedStyle(timeline).marginTop) || 0;
-        const room = Math.floor(workspace.clientHeight - previewMinimum - grip.offsetHeight - margin - timeline.offsetHeight);
-        return { axis: "height", min: stackedMinimum, max: Math.max(stackedMinimum, room), usable: true };
+        const room = workspace.clientHeight - previewMinimum - band - margin;
+        const least = timeline.offsetHeight - scroll.offsetHeight + (parseFloat(global.getComputedStyle(scroll).minHeight) || 0);
+        const standard = Math.round(parseFloat(style.getPropertyValue("--mv-inspector-default")) || 0);
+        const max = Math.floor(Math.min(room - least, Math.max(standard, room - timeline.offsetHeight)));
+        return { axis: "height", min: stackedMinimum, max: Math.max(stackedMinimum, max), usable: true };
       }
-      const width = workspace.clientWidth, band = parseFloat(style.getPropertyValue("--mv-split")) || 0;
+      const width = workspace.clientWidth;
       const min = coarse.matches ? 240 : 220;
       const max = Math.min(Math.round(width * wideShare), Math.floor(width - band - stageMinimum));
       return { axis: "width", min, max: Math.max(min, max), usable: max >= min };
@@ -2118,9 +2128,9 @@
 
     function apply() {
       if (!workspace.clientWidth || inspector.hidden) return;
+      workspace.classList.toggle("mv-inspector-collapsed", collapsed);
       const bounds = limits(), name = `--mv-inspector-${bounds.axis}`;
       write(bounds.axis === "width" ? "--mv-inspector-height" : "--mv-inspector-width", null);
-      workspace.classList.toggle("mv-inspector-collapsed", collapsed);
       grip.hidden = !bounds.usable && !collapsed;
       const value = preferred[bounds.axis];
       write(name, collapsed ? 0 : value === null || !bounds.usable ? null : clamp(value, bounds.min, bounds.max));
