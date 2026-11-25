@@ -397,6 +397,45 @@ function testDeviceFrameSteps() {
   assert.deepEqual(stream.frames(first, 3), [], "a count past the updates");
 }
 
+// 0x65b770 samples the rate at the end of the step's stretch of the loop clock (to / duration).
+function testEmissionRateAtStepEnd() {
+  const ramp = {mode: 1, scalar: 6000, min: 6000, maxKeys: [[0, 0, 1, 1], [1, 1, 1, 1]]};
+  const row = system({main: {duration: 1, lifetime: constant(5), maxParticles: 4000}, emission: {rate: ramp, bursts: []}});
+  // Two 1/60 steps: 6000 t over [0, 1/60] and [1/60, 2/60] sampled at their ends gives 1.67 + 3.33.
+  assert.equal(P.create(row, 5).sample(1, 30).length, 5, "rate at each step's end");
+  // The step that wraps emits (1 - from) at the rate at 1 and `to` at the rate at to / duration.
+  const looped = P.create(row, 5);
+  const before = looped.frames([f32(.98)], 1).length;
+  const after = looped.frames([f32(.98), f32(.02)], 2).length;
+  const from = f32(.98), to = f32(f32(from + f32(.02)) - 1);
+  const wrapped = f32(f32(to * f32(6000 * f32(to / 1))) + f32(f32(1 - from) * 6000));
+  assert.ok(Math.abs(after - before - wrapped) <= 1, `wrapping step: ${after - before} vs ${wrapped}`);
+  // The prewarm's bounds scan calls the same 0x65b770 (0x1d2120): a rate that is 0 near the loop end
+  // leaves its carry at 0, so the prewarm's extra particle (carry 1 - 0 + 1e-4) is born. 12023 dump5
+  // fx_dis_par_so2023_04 glitter_add (rate 7.29 until .15 of its 10.3 s loop, 0 from .26): 10 particles
+  // 1.31 s after the activation, as here after 39 frames; the rate at 0 left 9.
+  const glitter = system({main: {duration: 10.3, prewarm: true, lifetime: constant(1.5), maxParticles: 100},
+    emission: {enabled: true, rate: {mode: 1, scalar: 7.29, min: 7.29, maxKeys: [[.15, 1, 0, 0], [.26, 0, 0, 0]]}, bursts: []}});
+  const warm = P.create(glitter, 5);
+  assert.equal(warm.sample(0, 30).length, 1, "the scan's zero rate leaves the prewarm its extra particle");
+  assert.equal(warm.sample(39, 30).length, 10);
+}
+
+// 0x65bd78 fires each burst at most once per emission call, however many repeats the step spans.
+function testBurstsOncePerWindow() {
+  const row = (cycles, interval = .01) => system({main: {looping: false, duration: 10, lifetime: constant(10)},
+    emission: {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles, interval, probability: 1}]}});
+  // One .2 s device frame runs 7 sub-steps: the first fires the burst, each later one a repeat.
+  assert.equal(P.create(row(0), 1).frames([.2], 1).length, 7);
+  // cycles 3: two repeats after the first (.05 s apart, every repeat in its own window) ...
+  assert.equal(P.create(row(3, .05), 1).frames([.2], 1).length, 3);
+  // ... but a step that spans repeats fires once, and none after (from - time) / interval reaches cycles - 1.
+  assert.equal(P.create(row(3), 1).frames([.2], 1).length, 1);
+  assert.equal(P.create(row(1), 1).frames([.2], 1).length, 1, "cycles 1 never repeats");
+  // A repeat fires in the step whose end reaches it: 1/60 steps cross a .01 s repeat once each.
+  assert.equal(P.create(row(0), 1).sample(1, 30).length, 2);
+}
+
 // The device frames of a game run: activation, the frame a time shows, the song-end hold.
 function testFrameGrid() {
   assert.equal(P.frameGrid(null), null);
@@ -990,6 +1029,8 @@ async function testDeviceFramesInApply() {
   testPrewarmRemainderAtSimulationSpeed();
   testBurstsCyclesAndExpiry();
   testDeviceFrameSteps();
+  testEmissionRateAtStepEnd();
+  testBurstsOncePerWindow();
   testFrameGrid();
   testCurvesAndColorsOverLifetime();
   testOrbitalRadialAndBurstSpread();

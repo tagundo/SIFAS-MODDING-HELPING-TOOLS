@@ -64,6 +64,10 @@
   //    which are this rule at a steady frame rate and simulationSpeed 1 (two
   //    1/60 sub-steps per 1/30 s frame; at another speed the client scales
   //    the frame before it divides it, which the display frames do not).
+  //  * EmissionModule (0x65b770): the rate is sampled at the end of the
+  //    step's stretch of the loop clock, in live steps and in the prewarm's
+  //    bounds scan, and each burst fires at most once per step (0x65bd78;
+  //    emitted(), burstsIn()).
   //
   //  * Billboard quads with 3D start rotation turn by the negated X/Y/Z angles
   //    in Unity's Euler order (Z, then X, then Y) on the alignment's axes, as
@@ -783,27 +787,56 @@
       for (let i = 0; i < count; i++) active.push(births[(pivot + i) % count]);
     }
 
-    // Bursts whose loop time falls in [previous, end) on the unwrapped clock.
-    function burstsBetween(state, previous, end) {
-      const found = [];
-      for (let index = 0; index < bursts.length; index++) {
-        const burst = bursts[index];
-        const repeats = burst.cycles > 0 ? burst.cycles : Math.ceil(cycle / Math.max(burst.interval, 1e-3));
-        for (let k = 0; k < Math.min(repeats, 100000); k++) {
-          const at = f32(burst.time + k * burst.interval);
-          if (at >= cycle) break;
-          for (const base of main.looping ? [0, cycle] : [0]) {
-            const time = at + base;
-            if (time < previous || time >= end) continue;
-            const loop = state.loop + (base ? 1 : 0);
-            const draw = salt => nativeUnit(nativeRandom((seed + salts.burst + salt + loop * 977 + index * 131 + k) >>> 0)());
-            if (burst.probability < 1 && draw(0) > burst.probability) continue;
-            const count = Math.round(burst.count.sample(f32(at / cycle), draw(1)));
-            if (count > 0) found.push({count, elapsed: f32(end - time)});
-          }
+    // 0x65bd78: the bursts of one call over the loop clock window [from, to). Each burst
+    // fires at most once per call: when its time lies in the window, or, in a call that
+    // checks repeats, when its time is before the window, it has repeats left
+    // ((from - time) / interval below cycles - 1; cycles 0 repeats without end, 1 never) and
+    // a repeat boundary falls inside (trunc((to - time) / interval) above
+    // trunc((from - time) / interval)). The count is sampled at the call's end over the
+    // duration (0x65bdac, passed to 0x65b444). `end` is the step end on the same clock as
+    // the window, `loop` the loop the window belongs to (stand-in draws).
+    function burstsIn(from, to, repeats, end, loop) {
+      const found = [], scaled = f32(to / cycle);
+      bursts.forEach((burst, index) => {
+        const time = f32(burst.time);
+        let at = null, k = 0;
+        if (time >= from && time < to) at = time;
+        else if (repeats && burst.cycles !== 1 && time < from) {
+          const interval = f32(burst.interval);
+          const before = f32(f32(from - time) / interval);
+          if (burst.cycles !== 0 && before >= burst.cycles - 1) return;
+          const after = f32(f32(to - time) / interval);
+          if (!(Math.trunc(after) > Math.trunc(before))) return;
+          k = Math.trunc(after);
+          at = f32(time + f32(k * interval));
         }
-      }
+        if (at === null) return;
+        const draw = salt => nativeUnit(nativeRandom((seed + salts.burst + salt + loop * 977 + index * 131 + k) >>> 0)());
+        if (burst.probability < 1 && draw(0) > burst.probability) return;
+        const count = Math.round(burst.count.sample(scaled, draw(1)));
+        if (count > 0) found.push({count, elapsed: f32(end - at)});
+      });
       return found;
+    }
+
+    // 0x65b770: particles a step emits over the loop clock from `from` to `to` (0x1d77dc
+    // passes the system time before and after the step), sampling the rate at the end of
+    // its stretch over the duration, never below 0: a step that wraps (to below from) adds
+    // to * rate(to / duration) and (duration - from) * rate(1). One weight per call for
+    // rates between constants or curves (stand-in stream). The bursts of a wrapping step
+    // come from [0, to), checking repeats, then [from, duration + 1e-4), not checking them
+    // (0x65bcc8-0x65bd10); otherwise from [from, to) checking repeats.
+    function emitted(state, from, to, wrapped, next) {
+      const weight = nativeUnit(nativeRandom((seed + state.loop * 7919 + Math.trunc(from * 1e4)) >>> 0)());
+      const rateAt = time => Math.max(0, rate.sample(time, weight));
+      const atEnd = rateAt(f32(to / cycle));
+      if (!wrapped) {
+        return {amount: f32(f32(Math.max(0, f32(to - from))) * atEnd), pulses: burstsIn(from, to, true, next, state.loop)};
+      }
+      const amount = f32(f32(to * atEnd) + f32(f32(cycle - from) * rateAt(f32(cycle / cycle))));
+      const pulses = [...burstsIn(0, to, true, to, state.loop + 1),
+        ...burstsIn(from, f32(cycle + clockBias), false, next, state.loop)];
+      return {amount, pulses};
     }
 
     // Particles the emission cap counts: the live ones, or during a
@@ -831,14 +864,11 @@
       const previous = state.clock, next = f32(previous + dt);
       const wrapped = main.looping && next > cycle;
       const clock = wrapped ? f32(next - cycle) : next;
-      const end = main.looping ? next : Math.min(next, cycle);
+      const end = main.looping ? clock : Math.min(next, cycle);
       const systemTime = f32(previous / cycle);
-      const perSecond = rate.sample(systemTime, nativeUnit(nativeRandom((seed + state.loop * 7919 + Math.trunc(previous * 1e4)) >>> 0)()));
-      const amount = wrapped ? f32(f32(f32(cycle - previous) * perSecond) + f32(clock * perSecond)) :
-        f32(f32(Math.max(0, f32(end - previous))) * perSecond);
+      const {amount, pulses} = emitted(state, previous, end, wrapped, next);
       const total = f32(amount + state.carry), requested = Math.max(0, Math.trunc(total));
       state.carry = total > 0 ? f32(total - requested) : 0;
-      const pulses = burstsBetween(state, previous, next);
       state.clock = clock;
       if (wrapped) state.loop++;
       if (!main.looping && next >= cycle) state.stopped = true;
@@ -980,13 +1010,17 @@
       // feeds its rate carry into the actual prewarm.
       const horizon = f32(Math.max(f32(1e-3), maxCurve(main.lifetime)));
       const start = f32(f32(Math.ceil(f32(horizon / cycle)) * cycle) - horizon);
+      // Each scan step calls the same 0x65b770 (0x1d2120: from and to the scan
+      // times modulo the duration), so the rate is sampled at the end of the
+      // step's stretch, never below 0 (weight .5 stands in for the scan's own
+      // random stream).
       let time = start, phase = f32(start % cycle), carry = 0;
-      const perSecond = rate.sample(0, .5);
+      const perSecond = to => Math.max(0, rate.sample(f32(to / cycle), .5));
       while (f32(time + clockBias) < f32(start + horizon)) {
         time = f32(time + fixedStep);
         const next = f32(time % cycle);
-        const amount = next < phase ? f32(f32(f32(cycle - phase) * perSecond) + f32(next * perSecond)) :
-          f32(f32(next - phase) * perSecond);
+        const amount = next < phase ? f32(f32(next * perSecond(next)) + f32(f32(cycle - phase) * perSecond(cycle))) :
+          f32(f32(next - phase) * perSecond(next));
         const combined = f32(amount + carry);
         carry = f32(combined - Math.trunc(combined));
         phase = next;
