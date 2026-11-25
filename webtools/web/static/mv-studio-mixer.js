@@ -140,7 +140,10 @@
     return {
       update(value, time, frames) {
         const mode = value?.mixerBaseMode === 1 ? 1 : 2;
-        if (value !== project) {
+        // The editor edits clips in place (MVStudioEditHistory) and then seeks with the same
+        // project object, so a frame that is not advancing reads the live tracks and their input
+        // order again, as a newly built graph does (TrackAsset.SortClips).
+        if (value !== project || !frames?.advancing) {
           project = value;
           tracks = liveTracks(project);
           clipsOf = new Map(tracks.map((track) => [track, inputs(track)]));

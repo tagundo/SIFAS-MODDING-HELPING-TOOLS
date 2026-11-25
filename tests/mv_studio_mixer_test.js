@@ -98,4 +98,16 @@ MVStudioMixer.release({});
 assert.equal(nativeWeight(panel[4], 47.328), 0, "release only drops its own controller");
 MVStudioMixer.release(mixers);
 assert(nativeWeight(panel[4], 47.328) > .6);
-console.log("LiveMixerBase ProcessWithoutSeek input walk, live track rule and frame-clock replay passed");
+// The editor moves clips in place and then seeks with the same project object.
+const edited = { tracks: [{ label: "StageEffect", nativeClass: "GroupTrack", events: [] },
+  { label: "StageEffect/x", nativeClass: "LiveColoringTrack", events: [clip(0, .5), clip(.5, .5), clip(1, .5), clip(1.5, .5), clip(2, .5)] }] };
+const live = controller((event, time) => clipWeight(event, time));
+live.update(edited, 0, { advancing: false, history: [] });
+const moved = edited.tracks[1].events[4];
+moved.start = .1;
+live.update(edited, 0, { advancing: false, history: [] });
+for (const time of [.2, .4, .6, .8, 1, 1.2, 1.4, 1.6, 1.8, 2, 2.2, 2.4]) {
+  live.update(edited, time, { advancing: true, history: [] });
+  assert(!live.skipped(moved, time), "a clip moved in place is walked at its new place at " + time + " s");
+}
+console.log("LiveMixerBase ProcessWithoutSeek input walk, live track rule, frame-clock replay and in-place edits passed");

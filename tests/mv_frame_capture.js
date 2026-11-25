@@ -464,11 +464,6 @@ function frameHistory(grid, mode = 'game') {
   return mode === 'game' && grid?.times?.length ? grid.times : null;
 }
 
-// The quality the frames are drawn at. With a runtime dump of the same run (readGameDump) it is the
-// quality the game ran (header.quality through mv_runtime_capture.applyGameQuality: the mode and every
-// value with an editor control, the manifest quality only when the game recorded none or it cannot be
-// applied), so the spring rule rate (frame_rate_60fps) and the render height follow the game run.
-// Otherwise it is the manifest quality.
 // The MV dark filter (LiveMvDarkFilterField) and the live-end blur. The device screen shows
 // them: LiveMvManager.StartAct (0x20f9f7c) broadcasts the initialize message after
 // LiveMvScene.OnPlayLiveMv (0x223feb0) has called LiveMusicMachine.PlayMusic, and
@@ -481,6 +476,11 @@ function screenFadeFor(manifest, gameDump = null) {
   return typeof manifest.screenFade === 'boolean' ? manifest.screenFade : Boolean(gameDump);
 }
 
+// The quality the frames are drawn at. With a runtime dump of the same run (readGameDump) it is the
+// quality the game ran (header.quality through mv_runtime_capture.applyGameQuality: the mode and every
+// value with an editor control, the manifest quality only when the game recorded none or it cannot be
+// applied), so the spring rule rate (frame_rate_60fps) and the render height follow the game run.
+// Otherwise it is the manifest quality.
 async function captureQuality(page, manifest, gameDump = null) {
   if (gameDump) return require('./mv_runtime_capture').applyGameQuality(page, gameDump.doc.header?.quality, manifest.quality);
   const applied = await applyQuality(page, manifest.quality);
