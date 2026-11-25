@@ -6,9 +6,9 @@
    on every frame), the keyboard (arrows, Shift, Home, End, Enter, Escape), double click,
    folding the panel away and back, the toolbar toggle, the values kept across a reload,
    and the stacked phone layout where the splitter sets the panel height. Where taps land on
-   touch screens: controls beside the splitter (stage overlay controls at their 8 px inset,
-   the side panel's fields) keep their whole box. Korean UI, with screenshots in
-   EVIDENCE_DIR. */
+   touch screens: each splitter's target spans 32 px, and controls beside it (stage overlay
+   controls at their 8 px inset, the side panel's fields) keep their whole box. Korean UI,
+   with screenshots in EVIDENCE_DIR. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -272,11 +272,14 @@ async function desktop(browser, url) {
   assert.equal(state.timeline.left, state.preview.left);
   assertRenderer(state, 'default');
   const initial = state;
-  // The stage's overlay controls and the panel's fields beside the splitter stay whole.
+  // A mouse: both splitters are 16 px targets; the stage's overlay controls, the panel's
+  // fields and the bottom edges of the stage and the panel stay where they are.
   let taps = await page.evaluate(targets);
+  assert(taps.split >= 15.5 && taps.timeline >= 15.5, `16 px splitter targets (${taps.split}, ${taps.timeline})`);
   assert.deepEqual(taps.overlay, { 'top: 8px; right: 8px': [], 'bottom: 8px; right: 8px': [] }, 'stage overlay controls beside the splitter');
   assert(taps.fields > 0, 'panel fields beside the splitter');
   assert.deepEqual(taps.fieldsMissed, [], 'panel fields beside the splitter');
+  assert.deepEqual(taps.bottoms, { stage: 'CANVAS', panel: 'mv-inspector' }, 'the timeline resizer stays below the stage and the panel');
 
   // ---- Pointer drag: the panel follows; one redraw per frame at most; no stretched frame --
   const box = await grip.boundingBox();
@@ -385,6 +388,7 @@ async function desktop(browser, url) {
   near(state.stage.width, state.workspace.width - state.grip.width, 'the stage spans the row beside the rail');
   assertRenderer(state, 'folded');
   taps = await page.evaluate(targets);
+  assert(taps.split >= 15.5, `the folded rail is a 16 px target (${taps.split})`);
   assert.deepEqual(taps.overlay, { 'top: 8px; right: 8px': [], 'bottom: 8px; right: 8px': [] }, 'stage overlay controls beside the rail');
   await page.screenshot({ path: path.join(evidence, 'layout-1366-folded-ko.png') });
   await grip.press('ArrowRight');
@@ -508,9 +512,12 @@ async function phonePortrait(browser, url) {
     .map((node) => { const box = node.getBoundingClientRect(); return `${node.id || node.className || node.tagName} ${Math.round(box.width)}x${Math.round(box.height)}`; })
     .filter((text) => text.split(' ').pop().split('x').some((size) => Number(size) < 32)));
   assert.deepEqual(small, [], 'no touch target under 32 px');
-  // The stage's overlay controls along its bottom edge (above the splitter) stay whole.
+  // Both splitters are 32 px targets; the stage's overlay controls along its bottom edge
+  // (above the splitter) and the panel's bottom edge (above the timeline resizer) stay put.
   const taps = await page.evaluate(targets);
+  assert(taps.split >= 31.5 && taps.timeline >= 31.5, `32 px splitter targets (${taps.split}, ${taps.timeline})`);
   assert.deepEqual(taps.overlay, { 'bottom: 8px; left: 8px': [], 'bottom: 8px; right: 8px': [] }, 'stage overlay controls above the splitter');
+  assert.notEqual(taps.bottoms.panel, 'timeline resizer', 'the panel\'s bottom edge');
 
   // The panel sits under the stage; the same splitter, now horizontal, sets its height.
   const grip = page.getByRole('separator', { name: '패널 높이' });
@@ -574,7 +581,7 @@ async function phonePortrait(browser, url) {
   await context.close();
 }
 
-// A touch tablet held upright (820x1180, side by side): the splitter's target leaves the
+// A touch tablet held upright (820x1180, side by side): 32 px splitter targets that leave the
 // stage's overlay controls and the panel's fields whole, and the folded rail.
 async function tablet(browser, url) {
   const context = await browser.newContext({ locale: 'ko', viewport: { width: 820, height: 1180 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
@@ -589,9 +596,12 @@ async function tablet(browser, url) {
   assert.equal(state.pageOverflow, 0);
   const band = state.grip.width;
   let taps = await page.evaluate(targets);
+  assert(taps.split >= 31.5 && taps.timeline >= 31.5, `32 px splitter targets (${taps.split}, ${taps.timeline})`);
   assert.deepEqual(taps.overlay, { 'top: 8px; right: 8px': [], 'bottom: 8px; right: 8px': [] }, 'stage overlay controls beside the splitter');
   assert(taps.fields > 0, 'panel fields beside the splitter');
   assert.deepEqual(taps.fieldsMissed, [], 'panel fields beside the splitter');
+  assert.equal(taps.bottoms.stage, 'CANVAS', 'the stage\'s bottom edge');
+  assert.notEqual(taps.bottoms.panel, 'timeline resizer', 'the panel\'s bottom edge');
   await page.screenshot({ path: path.join(evidence, 'layout-tablet-ko.png') });
 
   const grip = page.getByRole('separator', { name: '패널 너비' });
@@ -601,6 +611,7 @@ async function tablet(browser, url) {
   near(state.stage.width, state.workspace.width - state.grip.width, 'folded: the stage spans the row beside the rail');
   assert.equal(state.pageOverflow, 0, 'the folded rail stays inside the page');
   taps = await page.evaluate(targets);
+  assert(taps.split >= 31.5, `the folded rail is a 32 px target (${taps.split})`);
   assert.deepEqual(taps.overlay, { 'top: 8px; right: 8px': [], 'bottom: 8px; right: 8px': [] }, 'overlay controls beside the rail');
   await page.screenshot({ path: path.join(evidence, 'layout-tablet-folded-ko.png') });
   await grip.press('Enter');
@@ -626,8 +637,11 @@ async function phoneLandscape(browser, url) {
   assert.equal(state.inspector.width, 240, 'the touch minimum width');
   assertRenderer(state, 'landscape');
   const taps = await page.evaluate(targets);
+  assert(taps.split >= 31.5 && taps.timeline >= 31.5, `32 px splitter targets (${taps.split}, ${taps.timeline})`);
   assert.deepEqual(taps.overlay, { 'top: 8px; right: 8px': [], 'bottom: 8px; right: 8px': [] }, 'stage overlay controls beside the splitter');
   assert.deepEqual(taps.fieldsMissed, [], 'panel fields beside the splitter');
+  assert.equal(taps.bottoms.stage, 'CANVAS', 'the stage\'s bottom edge');
+  assert.notEqual(taps.bottoms.panel, 'timeline resizer', 'the panel\'s bottom edge');
   const grip = page.getByRole('separator', { name: '패널 너비' });
   await grip.press('Shift+ArrowLeft');
   assert.equal((await read(page)).inspector.width, Math.min(240 + 64, state.grip.max));

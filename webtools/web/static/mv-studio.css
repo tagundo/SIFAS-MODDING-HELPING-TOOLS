@@ -14,8 +14,8 @@
   --mv-ruler-h: 28px;
   --mv-group-h: 20px;
   --mv-icon: 18px;
-  --mv-split: 10px;         /* visible band of a splitter */
-  --mv-split-hit: 28px;     /* its pointer target, measured across the band */
+  --mv-split: 12px;         /* visible band of a splitter */
+  --mv-split-hit: 32px;     /* its pointer target, measured across the band */
   --mv-split-reach: 7px;    /* how far that target reaches over the stage: inside the 8 px
                                inset that stage overlay controls keep from its edges */
   --mv-track-label: clamp(6rem, 12vw, 12rem);
@@ -261,13 +261,14 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
   height: var(--mv-timeline-height, auto);
   max-height: min(var(--mv-timeline-height, var(--mv-timeline-default)), var(--mv-timeline-limit, var(--mv-timeline-default)));
 }
-/* A thin band; its pointer target reaches up into the gap above (and a little into the
-   toolbar padding below), not over the transport controls. */
+/* A band whose pointer target reaches up over the gap above (not over the stage or the
+   side panel) and down over the toolbar padding (not over the transport controls); on
+   touch the band is tall enough for a --mv-split-hit target. */
 .mv-timeline-resizer {
   position: relative;
   display: grid;
   place-items: center;
-  min-height: var(--mv-split);
+  min-height: max(var(--mv-split), calc(var(--mv-split-hit) - var(--mv-gap) - 5px));
   border-block-end: 1px solid var(--line);
   border-radius: 7px 7px 0 0;
   background: var(--panel2);
@@ -276,7 +277,9 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
   user-select: none;
   -webkit-user-select: none;
 }
-.mv-timeline-resizer::before { content: ""; position: absolute; inset-inline: 0; inset-block: calc(var(--mv-split) + 3px - var(--mv-split-hit)) -3px; }
+/* Up: the timeline's border and the row gap (--mv-gap; a top margin on portrait phones).
+   Down: the band's border and the toolbar's 3 px padding. */
+.mv-timeline-resizer::before { content: ""; position: absolute; inset-inline: 0; inset-block: calc(-1px - var(--mv-gap)) -4px; }
 .mv-timeline-resizer > span { width: 32px; height: 3px; border-radius: 2px; background: var(--muted); }
 .mv-timeline-resizer:is(:hover, :focus-visible, .mv-dragging) > span { background: var(--accent); }
 .mv-timeline-grid {
