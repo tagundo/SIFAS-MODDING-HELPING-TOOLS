@@ -317,6 +317,11 @@
     } else if (target.kind === "stock") {
       wrap.append(make("p", t("The song's 3D live plays this MV too."), { class: "mv-field-note" }));
     }
+    if (target.kind === "stock") {
+      // A stock MV override is region-local: the JP to GL content merge leaves it out.
+      wrap.append(make("p", format("Only the {region} game changes. The other region keeps its MV.",
+        { region: text(target.region).toUpperCase() }), { class: "mv-field-note", id: "mv-apply-region" }));
+    }
     return wrap;
   }
 
@@ -564,6 +569,7 @@
     "In the game: MV Studio version {revision} ({date})", "In the game: the original MV", "Loaded from: the registered song",
     "Loaded from: MV Studio version {revision}", "Loaded from: an MV Studio version", "Loaded from: the original MV",
     "This MV also plays in the 3D live of {count} songs: {titles}", "The song's 3D live plays this MV too.",
+    "Only the {region} game changes. The other region keeps its MV.",
     "The game's MV changed after this project was loaded. Apply only the edits keeps those changes; Apply all replaces them.",
     "Edits: none since the last apply", "Edits: none since loading",
     "Edits since the last apply: {clips} clips (camera {camera} · values {values} · timing {timing})",

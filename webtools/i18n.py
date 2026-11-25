@@ -3427,6 +3427,8 @@ _MV_APPLY_TRANSLATIONS = {
         "이 MV는 곡 {count}개의 3D 라이브에서도 재생됩니다: {titles}", "このMVは{count}曲の3Dライブでも再生されます: {titles}"),
     "The song's 3D live plays this MV too.": (
         "이 곡의 3D 라이브에서도 이 MV가 재생됩니다.", "この曲の3DライブでもこのMVが再生されます。"),
+    "Only the {region} game changes. The other region keeps its MV.": (
+        "{region} 게임만 바뀝니다. 다른 지역은 지금의 MV를 그대로 둡니다.", "{region}のゲームだけが変わります。ほかの地域は今のMVのままです。"),
     "The game's MV changed after this project was loaded. Apply only the edits keeps those changes; Apply all replaces them.": (
         "이 프로젝트를 불러온 뒤 게임의 MV가 바뀌었습니다. '수정 사항만 적용'은 그 변경을 유지하고, '전체 적용'은 덮어씁니다.",
         "このプロジェクトを読み込んだ後にゲームのMVが変わりました。「修正だけを適用」はその変更を残し、「全体を適用」は置き換えます。"),

@@ -125,6 +125,7 @@ async function run() {
     await checked(page, '수정 사항: 불러온 뒤 없음');
     assert.equal(await page.locator('#mv-apply-target').textContent(), '게임 MV: Base song (21) · Star stage');
     assert.equal(await page.locator('#mv-apply-game').textContent(), '게임: 원본 MV · 불러온 것: 원본 MV');
+    assert.equal(await page.locator('#mv-apply-region').textContent(), 'GL 게임만 바뀝니다. 다른 지역은 지금의 MV를 그대로 둡니다.');
     assert.match(await page.locator('#mv-apply-plan').textContent(), /전체 적용: 게임이 이미 이 프로젝트대로 재생합니다\./);
     assert(await page.locator('#mv-apply-edits').isDisabled(), 'Nothing to apply');
     assert(await page.locator('#mv-apply-all').isDisabled(), 'The game already plays the project');
