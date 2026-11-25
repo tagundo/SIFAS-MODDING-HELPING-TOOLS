@@ -40,6 +40,9 @@ _MV_REGISTRATION_ROUTES = {
     "/api/mv-studio/apply-plan": "apply-plan",
     "/api/mv-studio/apply-job": "apply-job",
     "/api/mv-studio/restore-job": "restore-job",
+    # MV timeline packs (webtools/core/mv_studio_pack.py, Elichika's mv_timeline_pack).
+    "/api/mv-studio/pack-export": "pack-export",
+    "/api/mv-studio/pack-open": "pack-open",
 }
 
 
@@ -323,10 +326,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if action in {"game", "game-stream"}:
                 data = self._viewer_feature_request({"region", "platform", "liveId", "assetId"}, token=False,
-                                                    optional_fields={"download", "costumes", "deck"})
+                                                    optional_fields={"download", "costumes", "deck", "pack"})
                 options = {"language": self._lang(), "region": data["region"], "platform": data["platform"],
                            "live_id": data["liveId"], "asset_id": data["assetId"], "download": data.get("download", False),
-                           **{field: data[field] for field in ("costumes", "deck") if field in data}}
+                           **{field: data[field] for field in ("costumes", "deck", "pack") if field in data}}
                 if action == "game-stream":
                     # ?progress=1 adds plan/progress records. Older servers ignore the
                     # query, so a newer page still works with them (without progress).
@@ -543,11 +546,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(apply.list_timelines(root, region=query.get("region", ["gl"])[0]))
             if route == "apply-plan":
                 data = self._viewer_feature_request({"project"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 65536,
-                                                    optional_fields={"unbaked"})
+                                                    optional_fields={"unbaked", "target"})
                 unbaked = data.get("unbaked", [])
                 if not isinstance(unbaked, list) or len(unbaked) > 4096:
                     raise ValueError(apply.REQUEST)
-                return self._send_json(apply.plan(root, data["project"], unbaked=unbaked, language=self._lang()))
+                return self._send_json(apply.plan(root, data["project"], unbaked=unbaked, language=self._lang(),
+                                                  target=data.get("target")))
+            if route == "pack-open":
+                from webtools.core import mv_studio_pack
+                data = self._viewer_feature_request({"path"}, token=False, max_bytes=8192,
+                                                    optional_fields={"region", "platform"})
+                return self._send_json(mv_studio_pack.open_pack(root, data["path"], region=data.get("region"),
+                                                                platform=data.get("platform")))
+            if route == "pack-export":
+                from webtools.core import mv_studio_pack
+                data = self._viewer_feature_request({"project", "name"}, token=False,
+                                                    max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                                                    optional_fields={"note", "target", "platforms", "download"})
+                request = mv_studio_pack.validate_export(data)
+                return self._send_json(mv_studio_pack.export_pack(root, request, language=self._lang()))
             if route == "pcm":
                 return self._send_json(register.store_pcm(self._mv_raw_body(register.PCM_BYTES)))
             if route == "jacket-preview":
@@ -577,12 +594,13 @@ class Handler(BaseHTTPRequestHandler):
             elif route == "apply-job":
                 data = self._viewer_feature_request({"mode", "project", "platforms", "expected"}, token=False,
                                                     max_bytes=mv_studio.PROJECT_BYTES + 65536,
-                                                    optional_fields={"download", "unbaked"})
+                                                    optional_fields={"download", "unbaked", "target"})
                 request = apply.validate_apply(root, data)
                 language = self._lang()
                 body, tool = (lambda job: apply.run_apply(job, root, request, language=language)), "mv_apply"
             elif route == "restore-job":
-                data = self._viewer_feature_request({"region", "assetId", "expected"}, token=False, max_bytes=4096)
+                data = self._viewer_feature_request({"assetId"}, token=False, max_bytes=4096,
+                                                    optional_fields={"region", "expected", "regions"})
                 request = apply.validate_restore(data)
                 language = self._lang()
                 body, tool = (lambda job: apply.run_restore(job, root, request, language=language)), "mv_restore"

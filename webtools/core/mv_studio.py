@@ -513,7 +513,7 @@ def _progress_plan(selected):
 
 
 def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None, costumes=None,
-              deck=None, on_progress=None, later=None):
+              deck=None, on_progress=None, later=None, pack=None):
     """Import the complete project, optionally publishing its renderable stage first.
 
     Performers follow the client's MV deck chain (mv_studio_suits); `deck` gives the
@@ -526,7 +526,10 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
     written after the project is complete: given a list `later`, as a callable
     appended to it for the caller to run once the project has been delivered,
     otherwise before this returns. An import that fails or is cancelled
-    writes none of them."""
+    writes none of them.
+
+    `pack` (a token from mv_studio_pack.open_pack) loads the MV with an opened MV timeline
+    pack's timeline instead of the catalogued one; the project records it in source.pack."""
     from . import (mv_studio_actor_cache, mv_studio_game, mv_studio_import_cache, mv_studio_progress, mv_studio_quality,
                    mv_studio_suits)
 
@@ -538,6 +541,10 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         raise TypeError("The progress callback must be callable.")
     if later is not None and type(later) is not list:
         raise TypeError("Deferred receipt writes need a list.")
+    pack_raw = pack_info = None
+    if pack is not None:
+        from . import mv_studio_pack
+        pack_raw, pack_info = mv_studio_pack.staged(pack, platform)
     progress = mv_studio_progress.Progress(on_progress) if on_progress is not None else mv_studio_progress.SILENT
     # An import whose client left stops at its next cancellation point (normally within a
     # fraction of a second). A new import, usually the same person choosing again, waits
@@ -564,6 +571,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                   # applied a timeline to this MV: "Apply only the edits" merges relative to that version.
                   **({"timelineKey": selected["timelineKey"]} if isinstance(selected.get("timelineKey"), str) else {}),
                   **({"timelineOverride": selected["timelineOverride"]} if selected.get("timelineOverride") else {}),
+                  # An opened MV timeline pack: its timeline replaces the catalogued one (a "mod" of this MV).
+                  **({"timelineKey": "pack:" + pack, "pack": pack_info} if pack_info is not None else {}),
                   # The deck tab / local player and every position's suit source, so a saved
                   # project or a frame capture says which player state dressed the members.
                   **mv_studio_suits.provenance(selected.get("deck"), selected.get("performers"))}
@@ -613,7 +622,11 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 return row, local[row["id"]]
 
             progress.state("timeline", "start")
-            timeline_row, timeline = load(selected.get("timeline"), "timeline", "Live timeline")
+            if pack_raw is not None:
+                timeline = directory / "pack-timeline.unity"
+                timeline.write_bytes(pack_raw)
+            else:
+                timeline_row, timeline = load(selected.get("timeline"), "timeline", "Live timeline")
             if timeline is None:
                 raise ValueError("The original MV timeline pack is missing. Download its missing assets or choose a local mod file.")
             timeline_reused = []
