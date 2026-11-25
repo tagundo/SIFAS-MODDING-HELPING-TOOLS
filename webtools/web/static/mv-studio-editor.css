@@ -3,14 +3,18 @@
    .mv-form-grid, .mv-field-note). */
 
 /* The tabs take a full row; the member chips (when the tab has member tracks) and the
-   name search share the next one, so the layout does not jump between tabs. */
+   name search share the next one, so the layout does not jump between tabs. Wide
+   timelines put all four in one row (below). */
 .mv-timeline-toolbar > .mv-timeline-nav { flex-basis: 100%; }
 .mv-timeline-nav {
   display: grid;
   grid-template: "history tabs tabs" auto "members members search" auto / max-content minmax(0, 1fr) minmax(6.5rem, 15rem);
   align-items: center;
-  gap: 4px 10px;
+  gap: 4px 8px;
   min-width: 0;
+}
+@media (min-width: 1024px) {
+  .mv-timeline-nav { grid-template: "history tabs members search" auto / max-content minmax(0, 1fr) fit-content(30%) minmax(6.5rem, 12rem); }
 }
 .mv-timeline-nav[hidden] { display: none; }
 .mv-timeline-tabs, .mv-member-filter {
@@ -21,8 +25,10 @@
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
-  padding: 2px;
+  padding: 1px;
 }
+/* Inside these scrolling strips an outside ring would be clipped: draw it inside. */
+#tab-mv :is(.mv-timeline-tabs, .mv-member-filter) :focus-visible { outline-offset: -2px; }
 .mv-timeline-tabs { grid-area: tabs; }
 .mv-member-filter { grid-area: members; }
 .mv-member-filter[hidden] { display: none; }
@@ -30,10 +36,11 @@
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 3px 11px;
+  gap: 4px;
+  min-height: var(--mv-control-h-sm);
+  padding: 1px 8px;
   border-radius: 999px;
+  font-size: .72rem;
   white-space: nowrap;
 }
 #tab-mv .mv-tab[aria-selected=true], #tab-mv .mv-chip[aria-checked=true] {
@@ -43,32 +50,31 @@
 }
 .mv-tab-count {
   min-width: 1.6em;
-  padding: 0 6px;
+  padding: 0 4px;
   border-radius: 999px;
   background: color-mix(in srgb, currentColor 16%, transparent);
-  font-size: .72rem;
+  font-size: .64rem;
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
-#tab-mv .mv-chip { min-height: 28px; padding: 2px 10px; font-size: .78rem; }
-.mv-chip-dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 1px #0005; flex: none; }
+.mv-chip-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px #0005; flex: none; }
 .mv-timeline-toolbar .mv-track-search { grid-area: search; min-width: 0; }
 .mv-track-search input { flex: 1 1 auto; min-width: 0; width: 100%; }
 
 /* Undo / redo, next to the tabs (the Edit tab lists what they change). */
 .mv-history-controls { grid-area: history; display: flex; gap: 4px; padding-inline-end: 6px; border-inline-end: 1px solid var(--line); }
-#tab-mv .mv-history-button { min-width: 34px; min-height: 32px; padding: 2px 6px; font-size: 1.05rem; line-height: 1; }
+#tab-mv .mv-history-button { min-width: var(--mv-control-h-sm); min-height: var(--mv-control-h-sm); padding: 0 4px; font-size: .9rem; line-height: 1; }
 
 /* Rows that are not tracks. */
-.mv-lane-label.mv-lane-group { min-height: 22px; padding-block: 2px; background: var(--panel2); color: var(--muted); font-size: .72rem; font-weight: 600; }
-.mv-lane-group-lane { min-height: 22px; border-block-end: 1px solid var(--line); background: var(--panel2); }
+.mv-lane-label.mv-lane-group { min-height: var(--mv-group-h); padding-block: 0; background: var(--panel2); color: var(--muted); font-size: .68rem; font-weight: 600; }
+.mv-lane-group-lane { min-height: var(--mv-group-h); border-block-end: 1px solid var(--line); background: var(--panel2); }
 .mv-lane-separator, .mv-lane-hint {
   grid-column: 1 / -1;
   margin: 0;
   border-block-end: 1px solid var(--line);
-  font-size: .74rem;
+  font-size: .7rem;
 }
-.mv-lane-separator > span, .mv-lane-hint > span { position: sticky; left: 0; display: inline-block; padding: 4px 8px; }
+.mv-lane-separator > span, .mv-lane-hint > span { position: sticky; left: 0; display: inline-block; padding: 2px 6px; }
 .mv-lane-separator { background: var(--panel2); color: var(--muted); font-weight: 600; text-transform: none; }
 .mv-lane-hint { color: var(--muted); }
 .mv-lane-text { min-width: 0; }
@@ -165,5 +171,4 @@
   .mv-timeline-toolbar > :is(h3, .mv-controls, .mv-seek-label, .mv-zoom-label) { grid-area: auto; }
   .mv-timeline-toolbar > .mv-timeline-nav { grid-area: auto; grid-column: 1 / -1; }
   .mv-timeline-nav { grid-template: "history tabs search members" auto / max-content minmax(min(40%, 26rem), 1fr) minmax(7rem, 10rem) fit-content(30%); }
-  #tab-mv .mv-tab, #tab-mv .mv-chip { min-height: 28px; padding-block: 1px; }
 }

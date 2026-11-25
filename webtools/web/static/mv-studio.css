@@ -1,8 +1,40 @@
+/* Density tokens. The base values keep touch targets usable (coarse pointers, and any
+   pointer the browser cannot classify); a fine pointer gets the denser set. Editor plugins
+   (panels, lanes, overlays) size their controls with the same variables. */
 #tab-mv {
-  --mv-track-label: clamp(8.5rem, 14vw, 13rem);
-  --mv-workspace-gap: 12px;
+  --mv-gap: 6px;
+  --mv-workspace-gap: var(--mv-gap);
+  --mv-control-h: 36px;     /* primary: file actions, transport, selects, panel menu */
+  --mv-control-h-sm: 32px;  /* secondary: tabs, chips, history, inspector fields, plugin tools */
+  --mv-control-pad: 4px 10px;
+  --mv-control-font: .8125rem;
+  --mv-radius: 6px;
+  --mv-row-h: 34px;         /* one clip row of a timeline lane */
+  --mv-clip-h: 32px;
+  --mv-ruler-h: 28px;
+  --mv-group-h: 20px;
+  --mv-icon: 18px;
+  --mv-split: 10px;         /* visible band of a splitter */
+  --mv-split-hit: 28px;     /* its pointer target */
+  --mv-track-label: clamp(6rem, 12vw, 12rem);
   color: var(--text);
   min-width: 0;
+}
+@media (pointer: fine) {
+  #tab-mv {
+    --mv-control-h: 28px;
+    --mv-control-h-sm: 24px;
+    --mv-control-pad: 2px 8px;
+    --mv-control-font: .75rem;
+    --mv-row-h: 24px;
+    --mv-clip-h: 20px;
+    --mv-ruler-h: 22px;
+    --mv-group-h: 18px;
+    --mv-icon: 16px;
+    --mv-split: 6px;
+    --mv-split-hit: 16px;
+    --mv-track-label: clamp(7.5rem, 12vw, 12rem);
+  }
 }
 body:has(#tab-mv.active) {
   display: flex;
@@ -23,23 +55,25 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 4px 8px;
 }
-.mv-toolbar { justify-content: space-between; margin-bottom: 10px; }
+.mv-toolbar { justify-content: space-between; margin-bottom: var(--mv-gap); }
 .mv-toolbar h2, .mv-timeline-toolbar h3 { margin: 0; overflow-wrap: anywhere; }
-.mv-toolbar h2 { font-size: 1.15rem; font-weight: 650; }
-.mv-timeline-toolbar h3 { font-size: .875rem; }
-.mv-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.mv-toolbar h2 { font-size: .95rem; font-weight: 650; }
+.mv-timeline-toolbar h3 { font-size: .75rem; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.mv-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 #tab-mv button, #tab-mv select, #tab-mv input:not([type=checkbox]):not([type=range]), .mv-panel-menu > summary {
-  min-height: 36px;
-  padding: 5px 9px;
+  min-height: var(--mv-control-h);
+  padding: var(--mv-control-pad);
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--mv-radius);
   background: var(--panel2);
   color: var(--text);
   font: inherit;
-  font-size: .82rem;
+  font-size: var(--mv-control-font);
+  line-height: 1.2;
 }
+#tab-mv input[type=checkbox] { width: 16px; height: 16px; margin: 0; flex: none; }
 #tab-mv button, .mv-panel-menu > summary { cursor: pointer; }
 #tab-mv button:disabled, .mv-dialog button:disabled { cursor: default; opacity: .5; }
 #tab-mv :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -58,7 +92,7 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
   background: var(--panel);
   box-shadow: 0 5px 24px #1118;
 }
-.mv-panel-menu label, .mv-check { display: flex; align-items: center; gap: 7px; min-height: 34px; }
+.mv-panel-menu label, .mv-check { display: flex; align-items: center; gap: 6px; min-height: var(--mv-control-h-sm); }
 .mv-workspace {
   --mv-preview-min: 144px;
   --mv-timeline-default: 44dvh;
@@ -78,7 +112,7 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
   width: 100%;
   isolation: isolate;
   overflow: hidden;
-  border-radius: 10px;
+  border-radius: 8px;
   background: #151925;
   color: #f1f4ff;
 }
@@ -94,26 +128,44 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
   padding-inline: 2px;
 }
 .mv-inspector details, .mv-timeline { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-.mv-inspector details + details { margin-top: 6px; }
-.mv-inspector summary { font-size: .85rem; font-weight: 600; padding: 10px; cursor: pointer; }
-.mv-panel-content { display: grid; gap: 7px; padding: 2px 10px 10px; font-size: .82rem; overflow-wrap: anywhere; }
+.mv-inspector details + details { margin-top: 4px; }
+.mv-inspector summary {
+  box-sizing: border-box;
+  min-height: var(--mv-control-h-sm);
+  padding: calc((var(--mv-control-h-sm) - 1.2em) / 2) 8px;
+  font-size: .78rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+/* An open panel keeps its name in view while its fields scroll. */
+.mv-inspector > details[open] > summary { position: sticky; top: 0; z-index: 1; border-radius: 8px 8px 0 0; background: var(--panel); }
+.mv-panel-content { display: grid; gap: 4px; padding: 0 8px 8px; font-size: .75rem; overflow-wrap: anywhere; }
+/* Panel fields (built-in and plugin panels) use the secondary control size. */
+#tab-mv .mv-inspector :is(select, button), #tab-mv .mv-inspector input:not([type=checkbox], [type=range], [type=color]) {
+  min-height: var(--mv-control-h-sm);
+  padding: 1px 6px;
+}
 .mv-panel-content :is(p, ul, fieldset) { margin: 0; }
 .mv-panel-content ul, #mv-warning-list { padding-inline-start: 1.25em; }
 .mv-panel-content fieldset { display: grid; gap: 6px; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
-.mv-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(5.5em, 40%); gap: 8px; align-items: center; min-width: 0; }
+.mv-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(5.5em, 40%); gap: 6px; align-items: center; min-width: 0; }
 .mv-field input, .mv-field select { min-width: 0; width: 100%; }
 .mv-field input[type=checkbox] { width: auto; justify-self: start; }
 .mv-field output { overflow-wrap: anywhere; color: var(--muted); }
 .mv-asset-list { list-style: none; padding: 0 !important; }
-.mv-asset-list li { padding: 5px 0; border-bottom: 1px solid var(--line); }
+.mv-asset-list li { padding: 2px 0; border-bottom: 1px solid var(--line); }
 .mv-asset-list small { margin-inline-start: 5px; color: var(--muted); }
-.mv-status { margin: 0 0 10px; color: var(--muted); font-size: .84rem; overflow-wrap: anywhere; }
+.mv-status { margin: 0 0 var(--mv-gap); color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
 .mv-status.mv-error { color: var(--err, #a22); }
-.mv-save-result { margin-bottom: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.mv-save-result { margin-bottom: var(--mv-gap); display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: .78rem; }
 .mv-save-result a { color: var(--accent); overflow-wrap: anywhere; }
 .mv-timeline { grid-area: timeline; min-width: 0; }
-.mv-timeline-toolbar { padding: 7px 10px; justify-content: space-between; border-bottom: 1px solid var(--line); font-size: .8rem; }
+.mv-timeline-toolbar { padding: 3px 6px; justify-content: space-between; border-bottom: 1px solid var(--line); font-size: .75rem; }
 .mv-timeline-toolbar label { display: flex; align-items: center; gap: 6px; }
+/* The playhead slider and the scale menu explain themselves: their names stay for
+   assistive technology only. */
+.mv-timeline-toolbar > label > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .mv-seek-label { flex: 1 1 12em; max-width: 45rem; }
 .mv-seek-label input { flex: 1 1 0; min-width: 0; }
 .mv-timeline-toolbar output { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -125,18 +177,23 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
   height: var(--mv-timeline-height, auto);
   max-height: min(var(--mv-timeline-height, var(--mv-timeline-default)), var(--mv-timeline-limit, var(--mv-timeline-default)));
 }
+/* A thin band; its pointer target reaches up into the gap above (and a little into the
+   toolbar padding below), not over the transport controls. */
 .mv-timeline-resizer {
+  position: relative;
   display: grid;
   place-items: center;
-  min-height: 24px;
+  min-height: var(--mv-split);
   border-block-end: 1px solid var(--line);
   border-radius: 7px 7px 0 0;
   background: var(--panel2);
   cursor: ns-resize;
   touch-action: none;
   user-select: none;
+  -webkit-user-select: none;
 }
-.mv-timeline-resizer > span { width: 40px; height: 4px; border-radius: 2px; background: var(--muted); }
+.mv-timeline-resizer::before { content: ""; position: absolute; inset-inline: 0; inset-block: calc(var(--mv-split) + 3px - var(--mv-split-hit)) -3px; }
+.mv-timeline-resizer > span { width: 32px; height: 3px; border-radius: 2px; background: var(--muted); }
 .mv-timeline-resizer:is(:hover, :focus-visible, .mv-dragging) > span { background: var(--accent); }
 .mv-timeline-grid {
   position: relative;
@@ -155,27 +212,33 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
   margin: 0;
   display: flex;
   align-items: center;
-  padding: 5px 8px;
+  padding: 1px 6px;
   border-inline-end: 1px solid var(--line);
   border-block-end: 1px solid var(--line);
   background: var(--panel);
-  font-size: .78rem;
+  font-size: .72rem;
+  line-height: 1.2;
   overflow-wrap: anywhere;
 }
-.mv-ruler, .mv-lane { position: relative; border-block-end: 1px solid var(--line); min-height: 34px; }
-.mv-ruler { min-height: 30px; cursor: crosshair; touch-action: pan-x; }
-.mv-ruler span { position: absolute; padding: 2px 4px; color: var(--muted); font-size: .69rem; pointer-events: none; }
+.mv-ruler, .mv-lane { position: relative; border-block-end: 1px solid var(--line); min-height: calc(var(--mv-row-h) + 2px); }
+.mv-ruler { min-height: var(--mv-ruler-h); cursor: crosshair; touch-action: pan-x; }
+.mv-ruler span { position: absolute; padding: 1px 3px; color: var(--muted); font-size: .64rem; pointer-events: none; }
 .mv-lane { background: repeating-linear-gradient(to right, transparent 0, transparent calc(var(--mv-tick-width, 60px) - 1px), var(--line) calc(var(--mv-tick-width, 60px) - 1px), var(--line) var(--mv-tick-width, 60px)); }
-.mv-lane { --mv-clip-row-height: 30px; min-height: calc(var(--mv-lane-rows, 1) * var(--mv-clip-row-height) + 4px); }
+/* --mv-clip-row-height is the name plugins read (key diamonds, laneLayout().rowHeight). */
+.mv-lane { --mv-clip-row-height: var(--mv-row-h); min-height: calc(var(--mv-lane-rows, 1) * var(--mv-clip-row-height) + 2px); }
 #tab-mv .mv-clip, #tab-mv .mv-rig-clip {
   position: absolute;
-  top: calc(4px + var(--mv-clip-row, 0) * var(--mv-clip-row-height));
-  min-height: 27px;
+  top: calc(2px + var(--mv-clip-row, 0) * var(--mv-clip-row-height));
+  box-sizing: border-box;
+  height: var(--mv-clip-h);
+  min-height: var(--mv-clip-h);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: .68rem;
-  padding: 3px 6px;
+  font-size: .66rem;
+  line-height: calc(var(--mv-clip-h) - 2px);
+  padding: 0 5px;
+  border-radius: 4px;
   background: var(--mv-clip-color, #29486b);
   color: #fff;
   border-color: #ffffff3a;
@@ -187,18 +250,34 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
 .mv-lane[data-kind=lighting], .mv-lane[data-kind=display], .mv-lane[data-kind=bloom], .mv-lane[data-kind=dof], .mv-lane[data-kind=effects] { --mv-clip-color: #9b523b; }
 .mv-playhead { position: absolute; z-index: 1; inset-block: 0; left: var(--mv-track-label); width: 2px; background: #f18b52; pointer-events: none; }
 .mv-dialog .mv-check { margin-block: 8px; }
+/* Stage overlay controls: compact pills over the canvas. No backdrop-filter: it would
+   composite the WebGL canvas again on every frame. */
+.mv-workspace .mv-preview-controls { gap: 4px; inset: 6px auto auto 6px; max-width: calc(100% - 12px); flex-wrap: wrap; }
+#tab-mv .mv-preview-controls :is(button, select) { min-height: var(--mv-control-h-sm); padding: 1px 6px; font-size: .72rem; background: color-mix(in srgb, var(--panel) 85%, transparent); }
+.mv-preview-controls .mv-check {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--mv-radius);
+  background: color-mix(in srgb, var(--panel) 85%, transparent);
+  color: var(--text);
+  font-size: .72rem;
+}
 @media (max-width: 720px) {
   .mv-timeline-toolbar {
     display: grid;
     grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto;
     gap: 4px 8px;
-    padding: 4px 8px;
+    padding: 3px 6px;
   }
   .mv-timeline-toolbar h3 { grid-area: 1 / 1; }
   .mv-timeline-toolbar .mv-controls { grid-area: 1 / 2 / 2 / 4; }
   .mv-seek-label { grid-area: 2 / 1 / 3 / 3; }
   .mv-timeline-toolbar > .mv-zoom-label { grid-area: 2 / 3; }
   .mv-timeline-toolbar > .mv-timeline-nav { grid-area: 3 / 1 / 4 / 4; }
+}
+@media (max-width: 480px) {
+  /* The full binding stays in the label's tooltip. */
+  .mv-lane-path { display: none; }
 }
 @media (max-width: 640px) and (orientation: portrait) {
   .mv-workspace {
@@ -209,17 +288,18 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
   .mv-panel-menu > div { position: static; }
 }
 @media (max-height: 480px) {
-  .mv-workspace { --mv-preview-min: 84px; --mv-workspace-gap: 8px; }
+  .mv-workspace { --mv-preview-min: 84px; }
 }
 @media (min-width: 540px) and (max-height: 480px) {
-  .mv-timeline-toolbar { display: flex; flex-wrap: nowrap; gap: 4px 8px; padding: 4px 8px; }
+  .mv-timeline-toolbar { display: flex; flex-wrap: nowrap; gap: 4px 8px; padding: 3px 6px; }
   .mv-timeline-toolbar .mv-controls { flex-wrap: nowrap; }
-  .mv-timeline-toolbar > label > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
   .mv-seek-label { flex: 1 1 4em; }
 }
+/* Touch: the token values above already keep targets at 32 px or more (36 px for the
+   primary controls); boxes get a larger tick. */
 @media (pointer: coarse) {
-  #tab-mv button:not(.mv-clip), #tab-mv select, .mv-panel-menu > summary { min-height: 44px; }
-  .mv-timeline-resizer { min-height: 36px; }
-  .mv-lane { --mv-clip-row-height: 46px; }
-  #tab-mv .mv-clip { min-height: 42px; }
+  #tab-mv input[type=checkbox] { width: 20px; height: 20px; }
+}
+@media (pointer: fine) {
+  .mv-timeline-scroll, .mv-inspector, .mv-timeline-tabs, .mv-member-filter { scrollbar-width: thin; }
 }

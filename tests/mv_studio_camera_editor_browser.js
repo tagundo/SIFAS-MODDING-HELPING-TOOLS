@@ -353,7 +353,9 @@ async function synthetic(browser, url) {
   assert((await page.locator('#mv-cam-curves .mv-cam-handle').count()) >= 1, 'handles of the selected key');
   // Drag a key's value in the curve view: one undo step.
   const undoBefore = (await state(page)).history.undo;
-  const point = await page.locator('#mv-cam-curves .mv-cam-curve-key.mv-selected[data-channel="y"]').boundingBox();
+  const selectedKey = page.locator('#mv-cam-curves .mv-cam-curve-key.mv-selected[data-channel="y"]');
+  await selectedKey.scrollIntoViewIfNeeded();
+  const point = await selectedKey.boundingBox();
   await page.mouse.move(point.x + point.width / 2, point.y + point.height / 2);
   await page.mouse.down();
   await page.mouse.move(point.x + point.width / 2, point.y + point.height / 2 - 12, { steps: 5 });
