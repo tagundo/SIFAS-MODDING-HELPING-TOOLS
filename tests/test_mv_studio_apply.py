@@ -708,7 +708,14 @@ class RequestTests(unittest.TestCase):
                 apply.validate_apply(None, {**good, **change})
         with self.assertRaisesRegex(ValueError, re.escape(apply.REQUEST)):
             apply.validate_restore({"region": "gl", "assetId": 0, "expected": {"key": "a"}})
-        self.assertEqual(apply.validate_restore({"region": "jp", "assetId": 5, "expected": {"key": "a"}})["region"], "jp")
+        self.assertEqual(apply.validate_restore({"region": "jp", "assetId": 5, "expected": {"key": "a"}}),
+                         {"assetId": 5, "regions": {"jp": "a"}})
+        self.assertEqual(apply.validate_restore({"assetId": 5, "regions": {"jp": {"key": "b"}, "gl": {"key": "a"}}}),
+                         {"assetId": 5, "regions": {"gl": "a", "jp": "b"}})
+        for bad in ({"assetId": 5, "regions": {}}, {"assetId": 5, "regions": {"kr": {"key": "a"}}},
+                    {"assetId": 5, "regions": {"gl": {"key": ""}}}):
+            with self.assertRaisesRegex(ValueError, re.escape(apply.REQUEST)):
+                apply.validate_restore(bad)
 
 
 class MessageTests(unittest.TestCase):

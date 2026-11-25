@@ -3839,6 +3839,200 @@ for _source, (_korean, _japanese) in _MV_APPLY_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 
+# Another MV slot, MV timeline packs and the MV timeline platform conversion
+# (mv-studio-apply.js, core/mv_studio_apply.py, core/mv_studio_pack.py, core/mv_timeline_platform.py,
+# tools/mv_timeline.py). Format names: "MV 타임라인 팩" / "MVタイムラインパック" (.sifasmv).
+_MV_CROSS_SLOT_TRANSLATIONS = {
+    # Panel: the slot
+    "The MV this project was loaded from ({label})": ("지금 불러온 MV ({label})", "読み込んだMV（{label}）"),
+    "Another 3D asset ID…": ("다른 3D 에셋 ID…", "別の3DアセットID…"),
+    "Apply to MV slot": ("적용할 MV 슬롯", "適用するMVスロット"),
+    "3D asset ID": ("3D 에셋 ID", "3DアセットID"),
+    "Change the stage too": ("무대도 함께 바꾸기", "ステージも一緒に変える"),
+    "The stage, stage effects, props, quality set and shader variant of 3D {asset} go with the timeline.": (
+        "3D {asset}의 무대, 무대 효과, 소품, 품질 세트, 셰이더 변형이 타임라인과 함께 들어갑니다.",
+        "3D {asset}のステージ、ステージ効果、小道具、品質セット、シェーダーバリアントがタイムラインと一緒に入ります。"),
+    "This region only ({region})": ("이 지역만 ({region})", "この地域のみ（{region}）"),
+    "Both GL and JP": ("GL과 JP 모두", "GLとJPの両方"),
+    "Regions": ("지역", "地域"),
+    "Target: {label}": ("적용 대상: {label}", "適用先：{label}"),
+    "From: {title} · 3D {asset}": ("가져오는 MV: {title} · 3D {asset}", "元のMV：{title} · 3D {asset}"),
+    "Another slot takes this project's whole timeline. Apply only the edits works only on the slot the project was loaded from.": (
+        "다른 슬롯에는 이 프로젝트의 타임라인 전체가 들어갑니다. '수정 사항만 적용'은 프로젝트를 불러온 슬롯에서만 쓸 수 있습니다.",
+        "別のスロットにはこのプロジェクトのタイムライン全体が入ります。「修正だけを適用」はプロジェクトを読み込んだスロットでのみ使えます。"),
+    "Lives that play 3D {asset} ({count}): {titles}. Their rhythm-game 3D lives change too.": (
+        "3D {asset}을(를) 쓰는 라이브 ({count}): {titles}. 리듬 게임의 3D 라이브도 함께 바뀝니다.",
+        "3D {asset}を使うライブ（{count}）：{titles}。リズムゲームの3Dライブも一緒に変わります。"),
+    "The GL and JP games both change.": ("GL과 JP 게임이 모두 바뀝니다.", "GLとJPの両方のゲームが変わります。"),
+    "The source MV's stage goes with the timeline, so its stage tracks find their objects.": (
+        "원래 MV의 무대가 타임라인과 함께 들어가므로 무대 트랙이 대상 오브젝트를 찾을 수 있습니다.",
+        "元のMVのステージがタイムラインと一緒に入るので、ステージのトラックは対象のオブジェクトを見つけられます。"),
+    "Without its stage, {count} stage tracks of this timeline address objects of the source stage that the target stage may not have. Effects can be missing, or the MV may fail to load in the game.": (
+        "무대를 함께 바꾸지 않으면 이 타임라인의 무대 트랙 {count}개가 원래 무대의 오브젝트를 가리키는데, 대상 무대에는 그 오브젝트가 없을 수 있습니다. 효과가 빠지거나 게임에서 MV를 불러오지 못할 수 있습니다.",
+        "ステージを一緒に変えないと、このタイムラインのステージトラック{count}個が元のステージのオブジェクトを指しますが、適用先のステージにはそのオブジェクトがないことがあります。効果が欠けたり、ゲームでMVを読み込めなかったりすることがあります。"),
+    "No {platform} timeline yet: it is converted from {from} when you apply.": (
+        "{platform} 타임라인이 아직 없습니다: 적용할 때 {from}에서 변환합니다.",
+        "{platform}のタイムラインはまだありません。適用するときに{from}から変換します。"),
+    "Apply to 3D {asset}": ("3D {asset}에 적용", "3D {asset}に適用"),
+    "Restore the original MV of 3D {asset}": ("3D {asset} 원래대로 되돌리기", "3D {asset}を元のMVに戻す"),
+    "Restore the original MV of 3D {asset}? Its timeline and stage go back to the game's own.": (
+        "3D {asset}을(를) 원래 MV로 되돌릴까요? 타임라인과 무대가 게임 원래의 것으로 돌아갑니다.",
+        "3D {asset}を元のMVに戻しますか？タイムラインとステージがゲーム本来のものに戻ります。"),
+    "Put this project's whole timeline and its stage into 3D {asset}? A backup is made first.": (
+        "이 프로젝트의 타임라인 전체와 무대를 3D {asset}에 넣을까요? 먼저 백업을 만듭니다.",
+        "このプロジェクトのタイムライン全体とステージを3D {asset}に入れますか？先にバックアップを作ります。"),
+    "Put this project's whole timeline into 3D {asset}? Its stage stays. A backup is made first.": (
+        "이 프로젝트의 타임라인 전체를 3D {asset}에 넣을까요? 무대는 그대로 둡니다. 먼저 백업을 만듭니다.",
+        "このプロジェクトのタイムライン全体を3D {asset}に入れますか？ステージはそのままです。先にバックアップを作ります。"),
+    "The game has no {platform} original of 3D {asset}, so no {platform} timeline can be made.": (
+        "게임에 3D {asset}의 {platform} 원본이 없어서 {platform} 타임라인을 만들 수 없습니다.",
+        "ゲームに3D {asset}の{platform}の元データがないため、{platform}のタイムラインを作れません。"),
+    "No {platform} timeline is ready for this slot. It can be converted from {from} with the {platform} original of 3D {asset} (about {size} MB to download).": (
+        "이 슬롯에 넣을 {platform} 타임라인이 없습니다. 3D {asset}의 {platform} 원본(약 {size} MB 다운로드)으로 {from}에서 변환할 수 있습니다.",
+        "このスロットに入れる{platform}のタイムラインがありません。3D {asset}の{platform}の元データ（約{size} MBのダウンロード）を使って{from}から変換できます。"),
+    "The stage changes for both platforms.": ("무대는 두 플랫폼 모두 바뀝니다.", "ステージは両方のプラットフォームで変わります。"),
+    "Convert from {from}": ("{from}에서 변환", "{from}から変換"),
+    "Apply to {from} only": ("{from}에만 적용", "{from}だけに適用"),
+    # Panel: MV timeline packs
+    "MV timeline pack": ("MV 타임라인 팩", "MVタイムラインパック"),
+    "Opened from the MV timeline pack “{name}”": ("MV 타임라인 팩 “{name}”에서 열었습니다",
+                                                            "MVタイムラインパック「{name}」から開きました"),
+    "Export MV timeline pack…": ("MV 타임라인 팩 내보내기…", "MVタイムラインパックを書き出す…"),
+    "Open MV timeline pack…": ("MV 타임라인 팩 열기…", "MVタイムラインパックを開く…"),
+    "Open MV timeline pack": ("MV 타임라인 팩 열기", "MVタイムラインパックを開く"),
+    "Pack name": ("팩 이름", "パック名"),
+    "Note": ("메모", "メモ"),
+    "Target slot: 3D {asset}, with the stage.": ("적용 슬롯: 3D {asset}, 무대 포함.", "適用スロット：3D {asset}、ステージ込み。"),
+    "Target slot: 3D {asset}, without the stage.": ("적용 슬롯: 3D {asset}, 무대 제외.", "適用スロット：3D {asset}、ステージなし。"),
+    "Target slot: 3D {asset} (the loaded MV).": ("적용 슬롯: 3D {asset} (지금 불러온 MV).", "適用スロット：3D {asset}（読み込んだMV）。"),
+    "Export": ("내보내기", "書き出す"),
+    "Writing the MV timeline pack…": ("MV 타임라인 팩을 쓰는 중…", "MVタイムラインパックを書き出し中…"),
+    "Not in the pack: {platforms} (its original is not available).": (
+        "팩에 넣지 못함: {platforms} (원본을 구할 수 없음).", "パックに入っていません：{platforms}（元データがありません）。"),
+    # core/mv_studio_apply.py
+    "This Elichika version cannot put an MV into another slot. Update the Elichika server app to apply it to another 3D MV.": (
+        "이 Elichika 버전은 MV를 다른 슬롯에 넣을 수 없습니다. 다른 3D MV에 적용하려면 Elichika 서버 앱을 업데이트하세요.",
+        "このElichikaのバージョンはMVを別のスロットに入れられません。別の3D MVに適用するにはElichikaサーバーアプリを更新してください。"),
+    "Choose the MV slot to apply to.": ("적용할 MV 슬롯을 선택하세요.", "適用するMVスロットを選んでください。"),
+    "3D MV {asset} is not in the {region} game.": ("3D MV {asset}이(가) {region} 게임에 없습니다.", "3D MV {asset}は{region}のゲームにありません。"),
+    "3D MV {asset} belongs to an MV-only song. Choose a stock 3D MV.": (
+        "3D MV {asset}은(는) MV 전용 곡의 것입니다. 게임 원래의 3D MV를 선택하세요.",
+        "3D MV {asset}はMV専用曲のものです。ゲーム本来の3D MVを選んでください。"),
+    "3D MV {asset} this project was loaded from is not in the {region} game.": (
+        "이 프로젝트를 불러온 3D MV {asset}이(가) {region} 게임에 없습니다.",
+        "このプロジェクトを読み込んだ3D MV {asset}は{region}のゲームにありません。"),
+    "A project opened from an MV-only song can only update that song. Load a stock MV to apply it to another slot.": (
+        "MV 전용 곡에서 연 프로젝트는 그 곡만 업데이트할 수 있습니다. 다른 슬롯에 적용하려면 게임 원래의 MV를 불러오세요.",
+        "MV専用曲から開いたプロジェクトはその曲だけを更新できます。別のスロットに適用するにはゲーム本来のMVを読み込んでください。"),
+    "Only Apply all can put a timeline into another MV slot.": (
+        "다른 MV 슬롯에는 '전체 적용'으로만 타임라인을 넣을 수 있습니다.",
+        "別のMVスロットには「全体を適用」でのみタイムラインを入れられます。"),
+    "No Android timeline can be made for the chosen slot. Apply to iOS only, or cancel.": (
+        "선택한 슬롯에 넣을 Android 타임라인을 만들 수 없습니다. iOS에만 적용하거나 취소하세요.",
+        "選んだスロットに入れるAndroidのタイムラインを作れません。iOSだけに適用するか、キャンセルしてください。"),
+    "No iOS timeline can be made for the chosen slot. Apply to Android only, or cancel.": (
+        "선택한 슬롯에 넣을 iOS 타임라인을 만들 수 없습니다. Android에만 적용하거나 취소하세요.",
+        "選んだスロットに入れるiOSのタイムラインを作れません。Androidだけに適用するか、キャンセルしてください。"),
+    "Only the GL game was changed. The JP game could not be changed; see the job log.": (
+        "GL 게임만 바뀌었습니다. JP 게임은 바꾸지 못했습니다. 작업 로그를 확인하세요.",
+        "GLのゲームだけが変わりました。JPのゲームは変えられませんでした。ジョブのログを確認してください。"),
+    "Only the JP game was changed. The GL game could not be changed; see the job log.": (
+        "JP 게임만 바뀌었습니다. GL 게임은 바꾸지 못했습니다. 작업 로그를 확인하세요.",
+        "JPのゲームだけが変わりました。GLのゲームは変えられませんでした。ジョブのログを確認してください。"),
+    # core/mv_studio_pack.py
+    "This Elichika version cannot read or write MV timeline packs. Update the Elichika server app.": (
+        "이 Elichika 버전은 MV 타임라인 팩을 읽거나 쓸 수 없습니다. Elichika 서버 앱을 업데이트하세요.",
+        "このElichikaのバージョンはMVタイムラインパックを読み書きできません。Elichikaサーバーアプリを更新してください。"),
+    "This file is not an MV timeline pack.": ("이 파일은 MV 타임라인 팩이 아닙니다.", "このファイルはMVタイムラインパックではありません。"),
+    "Enter a pack name between 1 and 80 characters.": ("팩 이름을 1~80자로 입력하세요.", "パック名を1〜80文字で入力してください。"),
+    "Enter a note of at most 500 characters.": ("메모는 500자 이하로 입력하세요.", "メモは500文字以内で入力してください。"),
+    "The pack has no timeline this MV Studio can open.": ("이 팩에는 MV 스튜디오가 열 수 있는 타임라인이 없습니다.",
+                                                         "このパックにはMVスタジオで開けるタイムラインがありません。"),
+    "The opened pack is no longer available. Open it again.": ("열었던 팩을 더 이상 쓸 수 없습니다. 다시 여세요.",
+                                                              "開いたパックはもう使えません。もう一度開いてください。"),
+    "The game has no song that plays this pack's 3D MV.": ("이 팩의 3D MV를 재생하는 곡이 게임에 없습니다.",
+                                                          "このパックの3D MVを再生する曲がゲームにありません。"),
+    "The MV timeline pack request is invalid.": ("MV 타임라인 팩 요청이 올바르지 않습니다.", "MVタイムラインパックのリクエストが正しくありません。"),
+    # core/mv_timeline_platform.py and the tool
+    "MV timeline platform conversion": ("MV 타임라인 플랫폼 변환", "MVタイムラインのプラットフォーム変換"),
+    "Convert an MV timeline (.unity) or an MV timeline pack (.sifasmv) for Android (APK) or iOS using the same 3D MV's original timeline from the output platform.": (
+        "변환할 플랫폼에 있는 같은 3D MV의 원본 타임라인을 사용해 MV 타임라인(.unity)이나 MV 타임라인 팩(.sifasmv)을 Android (APK) 또는 iOS용으로 변환합니다.",
+        "変換先のプラットフォームにある同じ3D MVの元のタイムラインを使って、MVタイムライン（.unity）またはMVタイムラインパック（.sifasmv）をAndroid (APK) またはiOS用に変換します。"),
+    "MV timeline (.unity) or MV timeline pack (.sifasmv)": ("MV 타임라인(.unity) 또는 MV 타임라인 팩(.sifasmv)",
+                                                            "MVタイムライン（.unity）またはMVタイムラインパック（.sifasmv）"),
+    "A pack names its own region and 3D MV; the platform it lacks is added.": (
+        "팩에는 지역과 3D MV가 적혀 있어서, 팩에 없는 플랫폼이 추가됩니다.",
+        "パックには地域と3D MVが書かれているので、パックにないプラットフォームが追加されます。"),
+    "3D asset ID of the timeline's MV": ("타임라인의 3D 에셋 ID", "タイムラインの3DアセットID"),
+    "For a .unity timeline: the 3D MV it was made from (MV Studio shows it, e.g. 3D 1012003).": (
+        ".unity 타임라인일 때: 그 타임라인을 만든 3D MV (MV 스튜디오에 표시됨, 예: 3D 1012003).",
+        ".unityのタイムラインの場合：作成元の3D MV（MVスタジオに表示されます。例：3D 1012003）。"),
+    "Download the original timeline for the output platform if missing": (
+        "변환할 플랫폼의 원본 타임라인이 없으면 다운로드", "変換先のプラットフォームの元のタイムラインがなければダウンロード"),
+    "Choose Android or iOS.": ("Android 또는 iOS를 선택하세요.", "AndroidかiOSを選んでください。"),
+    "Enter the 3D asset ID of the MV this timeline belongs to.": ("이 타임라인이 속한 MV의 3D 에셋 ID를 입력하세요.",
+                                                                 "このタイムラインのMVの3DアセットIDを入力してください。"),
+    "The timeline is already for the output platform.": ("이미 변환할 플랫폼용 타임라인입니다.", "すでに変換先のプラットフォーム用のタイムラインです。"),
+    "The timeline is not for the chosen source platform.": ("선택한 원래 플랫폼용 타임라인이 아닙니다.", "選んだ変換元のプラットフォーム用のタイムラインではありません。"),
+    "This file is not a native live timeline.": ("이 파일은 게임의 라이브 타임라인이 아닙니다.", "このファイルはゲームのライブタイムラインではありません。"),
+    "This 3D MV is not in the game catalog of this region.": ("이 3D MV는 이 지역의 게임 카탈로그에 없습니다.", "この3D MVはこの地域のゲームカタログにありません。"),
+    "The game catalog has no original timeline of this 3D MV for the output platform.": (
+        "게임 카탈로그에 이 3D MV의 변환할 플랫폼용 원본 타임라인이 없습니다.",
+        "ゲームカタログにこの3D MVの変換先プラットフォーム用の元のタイムラインがありません。"),
+    "The original timeline of this 3D MV for the output platform is not available locally. Allow the download.": (
+        "이 3D MV의 변환할 플랫폼용 원본 타임라인이 로컬에 없습니다. 다운로드를 허용하세요.",
+        "この3D MVの変換先プラットフォーム用の元のタイムラインがローカルにありません。ダウンロードを許可してください。"),
+    "The timeline does not belong to this 3D MV:": ("이 3D MV의 타임라인이 아닙니다:", "この3D MVのタイムラインではありません："),
+    "The converted timeline would differ from the source, so nothing was converted:": (
+        "변환 결과가 원래 타임라인과 달라지므로 변환하지 않았습니다:", "変換結果が元のタイムラインと異なるため、変換しませんでした："),
+    "Choose the conversion direction.": ("변환 방향을 선택하세요.", "変換の方向を選んでください。"),
+    "Choose a native MV timeline (.unity) or an MV timeline pack (.sifasmv).": (
+        "MV 타임라인(.unity)이나 MV 타임라인 팩(.sifasmv)을 선택하세요.", "MVタイムライン（.unity）かMVタイムラインパック（.sifasmv）を選んでください。"),
+    "Choose the output folder.": ("출력 폴더를 선택하세요.", "出力フォルダを選んでください。"),
+    "The pack already has Android and iOS timelines.": ("이 팩에는 이미 Android와 iOS 타임라인이 모두 있습니다.",
+                                                       "このパックにはすでにAndroidとiOSの両方のタイムラインがあります。"),
+    "Choose whether to download the missing original timeline.": ("없는 원본 타임라인을 다운로드할지 선택하세요.",
+                                                                 "ない元のタイムラインをダウンロードするか選んでください。"),
+    "Left out, {platform} plays the original timeline of 3D {asset}.": (
+        "제외하면 {platform}은(는) 3D {asset}의 원본 타임라인을 재생합니다.",
+        "外すと、{platform}は3D {asset}の元のタイムラインを再生します。"),
+    "An old live timeline zip does not name the MV it was made from. Open it in MV Studio and export an MV timeline pack.": (
+        "예전 라이브 타임라인 zip에는 어느 MV로 만들었는지 적혀 있지 않습니다. MV 스튜디오에서 열어 MV 타임라인 팩으로 내보내세요.",
+        "古いライブタイムラインzipには作成元のMVが書かれていません。MVスタジオで開いてMVタイムラインパックとして書き出してください。"),
+    # Elichika's mv_studio_stock (another slot, stage) and mv_timeline_pack messages, shown in this panel.
+    "Choose the 3D MV of this region that the timeline was made from.": (
+        "이 타임라인을 만든 이 지역의 3D MV를 선택하세요.", "このタイムラインの作成元となったこの地域の3D MVを選んでください。"),
+    "The timeline's source MV belongs to an MV-only song. Choose a stock game MV.": (
+        "타임라인을 만든 MV가 MV 전용 곡의 것입니다. 게임 원래의 MV를 선택하세요.",
+        "タイムラインの作成元のMVはMV専用曲のものです。ゲーム本来のMVを選んでください。"),
+    "The MV's source changes, so every platform needs its timeline again (or none, to play the source's original).": (
+        "MV의 원본이 바뀌므로 모든 플랫폼에 타임라인을 다시 넣어야 합니다 (넣지 않으면 원본 MV의 타임라인을 재생합니다).",
+        "MVの作成元が変わるので、すべてのプラットフォームにタイムラインを入れ直す必要があります（入れないと作成元の元のタイムラインを再生します）。"),
+    "Choose the stage explicitly: a stage id, a stage effect and a quality set, with an optional prop skeleton and shader variant.": (
+        "무대를 정확히 선택하세요: 무대 ID, 무대 효과, 품질 세트와 필요하면 소품 스켈레톤, 셰이더 변형.",
+        "ステージを明示してください：ステージID、ステージ効果、品質セットと、必要なら小道具スケルトン、シェーダーバリアント。"),
+    "The chosen stage, stage effect, prop skeleton or shader variant is not in this region's game catalogs.": (
+        "선택한 무대, 무대 효과, 소품 스켈레톤 또는 셰이더 변형이 이 지역의 게임 카탈로그에 없습니다.",
+        "選んだステージ、ステージ効果、小道具スケルトン、シェーダーバリアントのいずれかがこの地域のゲームカタログにありません。"),
+    "The file is not a valid MV timeline pack.": ("올바른 MV 타임라인 팩 파일이 아닙니다.", "正しいMVタイムラインパックのファイルではありません。"),
+    "The MV timeline pack is too large or has too many files.": ("MV 타임라인 팩이 너무 크거나 파일이 너무 많습니다.",
+                                                                "MVタイムラインパックが大きすぎるか、ファイルが多すぎます。"),
+    "The MV timeline pack contains a file name it may not use.": ("MV 타임라인 팩에 쓸 수 없는 파일 이름이 있습니다.",
+                                                                 "MVタイムラインパックに使えないファイル名があります。"),
+    "A timeline in the MV timeline pack is damaged or is not a UnityFS bundle.": (
+        "MV 타임라인 팩의 타임라인이 손상되었거나 UnityFS 번들이 아닙니다.",
+        "MVタイムラインパックのタイムラインが壊れているか、UnityFSバンドルではありません。"),
+    "The MV timeline pack has no timeline.": ("MV 타임라인 팩에 타임라인이 없습니다.", "MVタイムラインパックにタイムラインがありません。"),
+    "This MV timeline pack needs a newer Elichika.": ("이 MV 타임라인 팩은 더 새로운 Elichika가 필요합니다.",
+                                                     "このMVタイムラインパックにはより新しいElichikaが必要です。"),
+    "The live timeline zip has no readable livetimeline.txt or timeline file.": (
+        "라이브 타임라인 zip에 읽을 수 있는 livetimeline.txt나 타임라인 파일이 없습니다.",
+        "ライブタイムラインzipに読めるlivetimeline.txtかタイムラインファイルがありません。"),
+}
+for _source, (_korean, _japanese) in _MV_CROSS_SLOT_TRANSLATIONS.items():
+    _TABLES["ko"].setdefault(_source, _korean)
+    _TABLES["ja"].setdefault(_source, _japanese)
+
 # Texture authoring labels shared with the viewer save form.
 _TABLES["ko"].update({
     "Open texture editor": "텍스쳐 편집기 열기",

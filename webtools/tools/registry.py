@@ -19,6 +19,7 @@ from webtools.tools.costume import (
     run_costume_recolour, run_costume_transplant, run_iosapk_import,
     run_lower_body_swap,
 )
+from webtools.tools.mv_timeline import run_mv_timeline_platform
 from webtools.tools.mesh import inspect_body_parts, inspect_bones, run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
 from webtools.tools.skintone import SRC_TONES, TONES, run_skintone
@@ -531,6 +532,29 @@ TOOLS = [
              "options": [{"value": "target", "label": "Use swing settings from the output platform’s original costume"},
                          {"value": "donor", "label": "Bring over the modified costume’s swing settings"}],
              "help": "Both options keep new objects and physics added by a costume transplant."},
+        ],
+    },
+    {
+        "id": "mv_timeline_platform",
+        "label": "MV timeline platform conversion",
+        "description": "Convert an MV timeline (.unity) or an MV timeline pack (.sifasmv) for Android (APK) or iOS "
+                       "using the same 3D MV's original timeline from the output platform.",
+        "modes": ["single"],
+        "run": run_mv_timeline_platform,
+        "fields": [
+            {"name": "direction", "label": "Conversion direction", "type": "select", "default": "android_to_ios",
+             "options": [{"value": "android_to_ios", "label": "Android (APK) → iOS"},
+                         {"value": "ios_to_android", "label": "iOS → Android (APK)"}]},
+            {"name": "source", "label": "MV timeline (.unity) or MV timeline pack (.sifasmv)", "type": "path",
+             "required": True, "root": "modded",
+             "help": "A pack names its own region and 3D MV; the platform it lacks is added."},
+            {"name": "region", "label": "Game region", "type": "select", "default": "gl",
+             "options": [{"value": "gl", "label": "Global (GL)"}, {"value": "jp", "label": "Japan (JP)"}]},
+            {"name": "asset_id", "label": "3D asset ID of the timeline's MV", "type": "text", "default": "",
+             "help": "For a .unity timeline: the 3D MV it was made from (MV Studio shows it, e.g. 3D 1012003)."},
+            {"name": "download_missing", "label": "Download the original timeline for the output platform if missing",
+             "type": "checkbox", "default": False},
+            {"name": "out_dir", "label": "Output folder", "type": "dir", "required": True, "root": "modded"},
         ],
     },
     {
