@@ -2804,6 +2804,43 @@ _MV_STUDIO_TRANSLATIONS = {
     "Cancel import": ("불러오기 취소", "読み込みをキャンセル"),
     "Cancelling…": ("취소하는 중…", "キャンセル中…"),
     "MV import cancelled.": ("MV 불러오기를 취소했습니다.", "MVの読み込みをキャンセルしました。"),
+    # Game import errors (mv_studio.load_game and mv_studio_game) a person can meet.
+    "An MV is already being prepared. Try again when it finishes.": (
+        "다른 MV를 준비하는 중입니다. 끝난 뒤 다시 시도하세요.", "別のMVを準備中です。終わってからもう一度お試しください。"),
+    "The original MV timeline pack is missing. Download its missing assets or choose a local mod file.": (
+        "원본 MV 타임라인 팩이 없습니다. 누락된 에셋을 다운로드하거나 로컬 모드 파일을 선택하세요.",
+        "元のMVタイムラインパックがありません。不足しているアセットをダウンロードするか、ローカルのMODファイルを選んでください。"),
+    "This file does not contain an original live timeline.": (
+        "이 파일에는 원본 라이브 타임라인이 없습니다.", "このファイルには元のライブタイムラインが含まれていません。"),
+    "The original MV timeline exceeds the supported size.": (
+        "원본 MV 타임라인이 지원하는 크기를 넘습니다.", "元のMVタイムラインが対応サイズを超えています。"),
+    "The stage preview or soundtrack exceeds the supported size.": (
+        "무대 미리보기나 음원이 지원하는 크기를 넘습니다.", "ステージプレビューまたは楽曲が対応サイズを超えています。"),
+    "The 3D preview expired. Reopen the asset.": (
+        "3D 미리보기가 만료되었습니다. 에셋을 다시 여세요.", "3Dプレビューの有効期限が切れました。アセットを開き直してください。"),
+    "Reading the selected MV assets took too long. Try again.": (
+        "선택한 MV 에셋을 읽는 데 시간이 너무 오래 걸렸습니다. 다시 시도하세요.",
+        "選択したMVアセットの読み込みに時間がかかりすぎました。もう一度お試しください。"),
+    "The selected game MV and stage are no longer available. Refresh the list.": (
+        "선택한 게임 MV와 무대를 더 이상 사용할 수 없습니다. 목록을 새로 고치세요.",
+        "選択したゲームのMVとステージは利用できなくなりました。リストを更新してください。"),
+    "The selected game pack changed during import. Try again.": (
+        "불러오는 동안 선택한 게임 팩이 바뀌었습니다. 다시 시도하세요.", "読み込み中に選択したゲームパックが変更されました。もう一度お試しください。"),
+    "The selected game pack section is incomplete.": (
+        "선택한 게임 팩 섹션이 불완전합니다.", "選択したゲームパックのセクションが不完全です。"),
+    "The selected MV stage has no game stage model reference.": (
+        "선택한 MV 무대에 게임 무대 모델 참조가 없습니다.", "選択したMVステージにはゲームのステージモデル参照がありません。"),
+    "The selected sound pack has an invalid CRI header.": (
+        "선택한 사운드 팩의 CRI 헤더가 올바르지 않습니다.", "選択したサウンドパックのCRIヘッダーが無効です。"),
+    "A requested costume has no member at its position in this MV.": (
+        "요청한 의상의 위치에 이 MV의 멤버가 없습니다.", "指定した衣装の位置に、このMVのメンバーがいません。"),
+    "Choose a valid game MV and stage.": ("올바른 게임 MV와 무대를 선택하세요.", "有効なゲームのMVとステージを選んでください。"),
+    "Choose valid costumes for the MV members.": ("MV 멤버에게 올바른 의상을 선택하세요.", "MVメンバーに有効な衣装を選んでください。"),
+    "Choose a supported game region and asset platform.": (
+        "지원하는 게임 지역과 에셋 플랫폼을 선택하세요.", "対応しているゲーム地域とアセットプラットフォームを選んでください。"),
+    "This MV has too many linked game assets.": ("이 MV에 연결된 게임 에셋이 너무 많습니다.", "このMVにリンクされたゲームアセットが多すぎます。"),
+    "The game contains too many 3D MV catalog rows.": (
+        "게임의 3D MV 카탈로그 항목이 너무 많습니다.", "ゲームの3D MVカタログ行が多すぎます。"),
 }
 for _source, (_korean, _japanese) in _MV_STUDIO_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean

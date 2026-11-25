@@ -83,6 +83,23 @@ class ProgressTests(unittest.TestCase):
                 model_viewer._remaining(time.monotonic() + 10)
 
 
+class GameImportErrorTextTests(unittest.TestCase):
+    def test_errors_a_person_can_meet_have_korean_and_japanese_text(self):
+        from webtools import i18n
+        sources = "".join(Path(module.__file__).read_text(encoding="utf-8") for module in (mv_studio, mv_studio_game))
+        for message in ("An MV is already being prepared. Try again when it finishes.",
+                        "The original MV timeline pack is missing. Download its missing assets or choose a local mod file.",
+                        "This file does not contain an original live timeline.",
+                        "Reading the selected MV assets took too long. Try again.",
+                        "The selected game MV and stage are no longer available. Refresh the list.",
+                        "The selected game pack changed during import. Try again.",
+                        "A requested costume has no member at its position in this MV."):
+            with self.subTest(message=message):
+                self.assertIn(json.dumps(message), sources, "the text the import raises")
+                for language in ("ko", "ja"):
+                    self.assertNotEqual(i18n.tr(message, language), message, language)
+
+
 class TimelineParseProgressTests(unittest.TestCase):
     """The timeline step reports its bundle, tracks and effect readers, and stops inside the parse."""
 
