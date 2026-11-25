@@ -57,11 +57,13 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
   flex-wrap: wrap;
   gap: 4px 8px;
 }
-.mv-toolbar { justify-content: space-between; margin-bottom: var(--mv-gap); }
+/* One row: the title shrinks (ellipsis), the actions are icons with their names kept. */
+.mv-toolbar { flex-wrap: nowrap; justify-content: space-between; gap: 6px; margin-bottom: var(--mv-gap); }
 .mv-toolbar h2, .mv-timeline-toolbar h3 { margin: 0; overflow-wrap: anywhere; }
-.mv-toolbar h2 { font-size: .95rem; font-weight: 650; }
+.mv-toolbar h2 { flex: 1 1 6rem; min-width: 0; font-size: .95rem; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mv-timeline-toolbar h3 { font-size: .75rem; font-weight: 600; color: var(--muted); white-space: nowrap; }
 .mv-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.mv-toolbar .mv-controls { flex-wrap: nowrap; }
 #tab-mv button, #tab-mv select, #tab-mv input:not([type=checkbox]):not([type=range]), .mv-panel-menu > summary {
   min-height: var(--mv-control-h);
   padding: var(--mv-control-pad);
@@ -74,19 +76,37 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
   line-height: 1.2;
 }
 #tab-mv input[type=checkbox] { width: 16px; height: 16px; margin: 0; flex: none; }
+/* Icon buttons: a square of the control height; the name stays in a visually hidden
+   label (the button's accessible name) and in the tooltip. */
+#tab-mv .mv-icon-btn { display: inline-grid; place-items: center; min-width: var(--mv-control-h); padding-inline: 0; }
+#tab-mv .mv-icon-btn[hidden] { display: none; }
+.mv-icon { display: block; width: var(--mv-icon); height: var(--mv-icon); flex: none; }
+.mv-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+@media (min-width: 900px) {
+  /* The primary action keeps its text where there is room. */
+  #tab-mv .mv-icon-btn.mv-icon-text:not([hidden]) { display: inline-flex; align-items: center; gap: 5px; padding-inline: 7px 10px; }
+  .mv-icon-text > .mv-label { position: static; width: auto; height: auto; overflow: visible; clip: auto; }
+}
 #tab-mv button, .mv-panel-menu > summary { cursor: pointer; }
 #tab-mv button:disabled, .mv-dialog button:disabled { cursor: default; opacity: .5; }
 #tab-mv :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #tab-mv #mv-import-game, #tab-mv #mv-play:not(:disabled) { background: var(--accent2); color: white; border-color: var(--accent2); }
 .mv-panel-menu { position: relative; }
+.mv-panel-menu > summary { display: inline-grid; place-items: center; min-width: var(--mv-control-h); padding-inline: 0; list-style: none; }
+.mv-panel-menu > summary::-webkit-details-marker { display: none; }
+.mv-panel-menu[open] > summary { border-color: var(--accent); }
+/* The menu always overlays the page, so opening it never moves the stage. */
 .mv-panel-menu > div {
   position: absolute;
   z-index: 3;
-  inset-block-start: calc(100% + 6px);
+  inset-block-start: calc(100% + 4px);
   inset-inline-end: 0;
   width: max-content;
-  max-width: 85vw;
-  padding: 8px 12px;
+  max-width: min(85vw, 22rem);
+  max-height: 70dvh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
@@ -254,6 +274,7 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
    composite the WebGL canvas again on every frame. */
 .mv-workspace .mv-preview-controls { gap: 4px; inset: 6px auto auto 6px; max-width: calc(100% - 12px); flex-wrap: wrap; }
 #tab-mv .mv-preview-controls :is(button, select) { min-height: var(--mv-control-h-sm); padding: 1px 6px; font-size: .72rem; background: color-mix(in srgb, var(--panel) 85%, transparent); }
+#tab-mv .mv-preview-controls .mv-icon-btn { min-width: var(--mv-control-h-sm); padding: 0; }
 .mv-preview-controls .mv-check {
   padding: 0 6px;
   border: 1px solid var(--line);
@@ -285,7 +306,6 @@ body:has(#tab-mv.active) > .tools-console-layout > main,
     --mv-timeline-default: 40dvh;
     grid-template: "preview" minmax(var(--mv-preview-min), 1fr) "inspector" clamp(48px, 10dvh, 100px) "timeline" auto / minmax(0, 1fr);
   }
-  .mv-panel-menu > div { position: static; }
 }
 @media (max-height: 480px) {
   .mv-workspace { --mv-preview-min: 84px; }
