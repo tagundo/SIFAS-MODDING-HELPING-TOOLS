@@ -32,7 +32,7 @@
   let settings, scene, project, selected, pending, gameImport, catalogRequest, catalogIndex = [], songs = [];
   let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
   let previewLoading = false, playheadNode, seekInput, timeOutput, lastReadout = -Infinity;
-  let hidden = [], assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
+  let hidden = [], assetKind = "stage", performerId = "", resizeObserver, timelineResizer, inspectorResizer;
   let lastGamePayload = null;
   // Runtime notes from the 3D preview of the open project (for example a
   // depth-of-field clip whose focus target the preview cannot find). They are
@@ -313,10 +313,11 @@
     for (const { key } of panelList) panelNode(key).hidden = !active.includes(key) || hidden.includes(key);
     const allHidden = active.every((key) => hidden.includes(key));
     byId("mv-inspector").hidden = allHidden;
+    byId("mv-inspector-toggle").hidden = allHidden;
     const workspace = byId("mv-workspace");
     const changed = workspace.classList.contains("mv-hide-inspector") !== allHidden;
     workspace.classList.toggle("mv-hide-inspector", allHidden);
-    if (changed) timelineResizer?.syncBounds();
+    if (changed) { inspectorResizer?.sync(); timelineResizer?.syncBounds(); }
     if (visible && scene) scene.resize();
   }
 
@@ -1585,6 +1586,7 @@
 
   function render() {
     translateAria();
+    inspectorResizer.sync();
     byId("mv-project-title").textContent = project && project.name || t("3D MV");
     renderPreviewStatus();
     renderWarnings();
@@ -1933,7 +1935,7 @@
   function setupTimelineResizer(scroll) {
     const grip = byId("mv-timeline-resizer"), key = "elichika.mv.timelineHeight.v1", minimum = 62;
     const workspace = byId("mv-workspace"), inspector = byId("mv-inspector"), timeline = scroll.parentElement;
-    const toolbar = timeline.querySelector(".mv-timeline-toolbar");
+    const toolbar = timeline.querySelector(".mv-timeline-toolbar"), splitter = byId("mv-inspector-resizer");
     const portrait = global.matchMedia("(max-width: 640px) and (orientation: portrait)");
     let preferred = null, drag = null, resizeFrame = 0, nextHeight, maximum = minimum;
     try {
@@ -1962,9 +1964,12 @@
       const style = global.getComputedStyle(workspace);
       const gap = parseFloat(style.rowGap);
       const previewMinimum = parseFloat(style.getPropertyValue("--mv-preview-min"));
-      const inspectorHeight = portrait.matches && !inspector.hidden ? inspector.offsetHeight + gap : 0;
+      // Portrait phones stack the side panel and its splitter between the stage and the
+      // timeline (no row gap there; the timeline keeps a top margin instead).
+      const stacked = portrait.matches ? inspector.offsetHeight + splitter.offsetHeight : 0;
+      const margin = parseFloat(global.getComputedStyle(timeline).marginTop) || 0;
       const borders = timeline.offsetHeight - timeline.clientHeight;
-      maximum = Math.max(minimum, Math.floor(available - gap - previewMinimum - inspectorHeight -
+      maximum = Math.max(minimum, Math.floor(available - gap - margin - previewMinimum - stacked -
         toolbar.offsetHeight - grip.offsetHeight - borders));
       const limit = `${maximum}px`;
       if (scroll.style.getPropertyValue("--mv-timeline-limit") !== limit) scroll.style.setProperty("--mv-timeline-limit", limit);
@@ -2025,11 +2030,202 @@
     });
     if (global.ResizeObserver) {
       const boundsObserver = new ResizeObserver(syncBounds);
-      for (const element of [workspace, toolbar, grip]) boundsObserver.observe(element);
+      for (const element of [workspace, toolbar, grip, inspector, splitter]) boundsObserver.observe(element);
     }
     global.addEventListener("resize", syncBounds);
     syncBounds();
     return { syncBounds, syncValue };
+  }
+
+  // The stage / side panel splitter (a WAI-ARIA window splitter whose value is the side
+  // panel's size). Side by side it sets the panel width; on portrait phones, where the
+  // panel sits under the stage, its height. Each preference is in px (null: the CSS
+  // default) and is clamped to the room there is, without being overwritten. Enter, a
+  // drag below half the minimum, or the toolbar toggle folds the panel away.
+  // Only CSS variables change: the scene's ResizeObserver on #mv-scene sets the renderer
+  // size and the camera aspect after layout and draws before that frame is painted, so a
+  // drag redraws at most once per animation frame and never shows a stretched frame.
+  function setupInspectorResizer() {
+    const grip = byId("mv-inspector-resizer"), workspace = byId("mv-workspace"), inspector = byId("mv-inspector");
+    const timeline = workspace.querySelector(".mv-timeline"), toggle = byId("mv-inspector-toggle");
+    const portrait = global.matchMedia("(max-width: 640px) and (orientation: portrait)");
+    const coarse = global.matchMedia("(pointer: coarse)");
+    const keys = { width: "elichika.mv.inspectorWidth.v1", height: "elichika.mv.inspectorHeight.v1" };
+    const collapsedKey = "elichika.mv.inspectorCollapsed.v1";
+    // The stage keeps at least this width beside the panel; the panel at most 60 % of the row.
+    const stageMinimum = 320, stackedMinimum = 64, wideShare = .6;
+    const preferred = { width: null, height: null };
+    let collapsed = false, drag = null, resizeFrame = 0, next = 0;
+    try {
+      for (const axis of ["width", "height"]) {
+        const saved = global.localStorage.getItem(keys[axis]);
+        if (/^\d{1,4}$/.test(saved || "")) preferred[axis] = Number(saved);
+      }
+      collapsed = global.localStorage.getItem(collapsedKey) === "1";
+    } catch (_) {}
+
+    function save() {
+      try {
+        for (const axis of ["width", "height"]) {
+          if (preferred[axis] === null) global.localStorage.removeItem(keys[axis]);
+          else global.localStorage.setItem(keys[axis], String(preferred[axis]));
+        }
+        if (collapsed) global.localStorage.setItem(collapsedKey, "1");
+        else global.localStorage.removeItem(collapsedKey);
+      } catch (_) {}
+    }
+
+    function limits() {
+      const style = global.getComputedStyle(workspace);
+      if (portrait.matches) {
+        const previewMinimum = parseFloat(style.getPropertyValue("--mv-preview-min")) || 0;
+        const margin = parseFloat(global.getComputedStyle(timeline).marginTop) || 0;
+        const room = Math.floor(workspace.clientHeight - previewMinimum - grip.offsetHeight - margin - timeline.offsetHeight);
+        return { axis: "height", min: stackedMinimum, max: Math.max(stackedMinimum, room), usable: true };
+      }
+      const width = workspace.clientWidth, band = parseFloat(style.getPropertyValue("--mv-split")) || 0;
+      const min = coarse.matches ? 240 : 220;
+      const max = Math.min(Math.round(width * wideShare), Math.floor(width - band - stageMinimum));
+      return { axis: "width", min, max: Math.max(min, max), usable: max >= min };
+    }
+
+    function size(axis) {
+      if (collapsed || inspector.hidden) return 0;
+      const box = inspector.getBoundingClientRect();
+      return Math.round(axis === "height" ? box.height : box.width);
+    }
+
+    function write(name, value) {
+      const text = value === null ? "" : `${value}px`;
+      if (workspace.style.getPropertyValue(name) === text) return;
+      if (text) workspace.style.setProperty(name, text);
+      else workspace.style.removeProperty(name);
+    }
+
+    function apply() {
+      if (!workspace.clientWidth || inspector.hidden) return;
+      const bounds = limits(), name = `--mv-inspector-${bounds.axis}`;
+      write(bounds.axis === "width" ? "--mv-inspector-height" : "--mv-inspector-width", null);
+      workspace.classList.toggle("mv-inspector-collapsed", collapsed);
+      grip.hidden = !bounds.usable && !collapsed;
+      const value = preferred[bounds.axis];
+      write(name, collapsed ? 0 : value === null || !bounds.usable ? null : clamp(value, bounds.min, bounds.max));
+      // The CSS default has to fit as well.
+      if (!collapsed && value === null && bounds.usable && size(bounds.axis) > bounds.max) write(name, bounds.max);
+      const now = size(bounds.axis);
+      grip.setAttribute("aria-orientation", bounds.axis === "height" ? "horizontal" : "vertical");
+      grip.setAttribute("aria-labelledby", `mv-inspector-${bounds.axis}-label`);
+      grip.setAttribute("aria-valuemin", "0");
+      grip.setAttribute("aria-valuemax", String(bounds.max));
+      grip.setAttribute("aria-valuenow", String(now));
+      grip.setAttribute("aria-valuetext", collapsed ? t("Hidden") : `${now} px`);
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+    }
+
+    function setCollapsed(value) {
+      collapsed = value;
+      apply();
+      save();
+      // Focus inside the panel that just folded away moves to the splitter.
+      if (collapsed && inspector.contains(document.activeElement)) grip.focus({ preventScroll: true });
+    }
+
+    function applyDrag() {
+      resizeFrame = 0;
+      if (!drag) return;
+      const bounds = limits();
+      if (next < bounds.min / 2) collapsed = true;
+      else {
+        collapsed = false;
+        preferred[bounds.axis] = clamp(Math.round(next), bounds.min, bounds.max);
+      }
+      apply();
+    }
+
+    function endDrag() {
+      drag = null;
+      grip.classList.remove("mv-dragging");
+    }
+
+    grip.addEventListener("pointerdown", (event) => {
+      if (drag || event.button !== 0 || event.isPrimary === false) return;
+      event.preventDefault();
+      grip.focus({ preventScroll: true });
+      const axis = limits().axis;
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, axis, start: size(axis), moved: false,
+        before: { collapsed, value: preferred[axis] } };
+      try { grip.setPointerCapture(event.pointerId); } catch (_) {}
+      grip.classList.add("mv-dragging");
+    });
+    grip.addEventListener("pointermove", (event) => {
+      if (drag?.id !== event.pointerId) return;
+      // Left (side by side) or up (stacked) gives the panel more room.
+      const delta = drag.axis === "height" ? drag.y - event.clientY : drag.x - event.clientX;
+      drag.moved ||= Math.abs(delta) >= 2;
+      next = drag.start + delta;
+      if (drag.moved && !resizeFrame) resizeFrame = requestAnimationFrame(applyDrag);
+    });
+    function finishDrag(event) {
+      if (drag?.id !== event.pointerId) return;
+      if (resizeFrame) {
+        cancelAnimationFrame(resizeFrame);
+        applyDrag();
+      }
+      const moved = drag.moved;
+      endDrag();
+      // A tap on the folded bar brings the panel back.
+      if (!moved && event.type === "pointerup" && collapsed) setCollapsed(false);
+      else if (moved) save();
+    }
+    for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) grip.addEventListener(type, finishDrag);
+    grip.addEventListener("keydown", (event) => {
+      if (drag) {
+        // Escape puts the panel back where the drag started.
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        if (resizeFrame) { cancelAnimationFrame(resizeFrame); resizeFrame = 0; }
+        collapsed = drag.before.collapsed;
+        preferred[drag.axis] = drag.before.value;
+        const id = drag.id;
+        endDrag();
+        try { grip.releasePointerCapture(id); } catch (_) {}
+        apply();
+        return;
+      }
+      const bounds = limits(), axis = bounds.axis, step = event.shiftKey ? 64 : 16;
+      const grow = axis === "height" ? "ArrowUp" : "ArrowLeft", shrink = axis === "height" ? "ArrowDown" : "ArrowRight";
+      if (event.key === "Enter") {
+        event.preventDefault();
+        setCollapsed(!collapsed);
+        return;
+      }
+      if (event.key === "Home") { preferred[axis] = null; collapsed = false; }
+      else if (event.key === "End") { preferred[axis] = bounds.max; collapsed = false; }
+      else if (event.key === grow || event.key === shrink) {
+        // From the folded state only the growing arrow acts: it brings the panel back.
+        if (collapsed && event.key === shrink) { event.preventDefault(); return; }
+        if (collapsed) collapsed = false;
+        else preferred[axis] = clamp(size(axis) + (event.key === grow ? step : -step), bounds.min, bounds.max);
+      } else return;
+      event.preventDefault();
+      // Each step starts from the laid-out size, so it applies now (a step left to the
+      // next frame would be repeated by a further press before that frame).
+      if (resizeFrame) { cancelAnimationFrame(resizeFrame); resizeFrame = 0; }
+      apply();
+      save();
+    });
+    grip.addEventListener("dblclick", () => {
+      preferred[limits().axis] = null;
+      collapsed = false;
+      apply();
+      save();
+    });
+    grip.addEventListener("focus", apply);
+    toggle.addEventListener("click", () => setCollapsed(!collapsed));
+    if (global.ResizeObserver) new ResizeObserver(apply).observe(workspace);
+    portrait.addEventListener?.("change", apply);
+    apply();
+    return { sync: apply };
   }
 
   function setVisible(value) {
@@ -2041,6 +2237,7 @@
       if (byId("mv-game-picker").open) byId("mv-game-picker").close();
     }
     if (visible) {
+      inspectorResizer.sync();
       timelineResizer.syncBounds();
       renderTimeline();
     }
@@ -2120,6 +2317,7 @@
     mountPlugins();
     const timelineScroll = byId("mv-timeline-scroll");
     timelineResizer = setupTimelineResizer(timelineScroll);
+    inspectorResizer = setupInspectorResizer();
     try { hidden = (JSON.parse(localStorage.getItem("elichika.mv.panels.v1")) || []).filter((key) => panelList.some((panel) => panel.key === key)); } catch (_) {}
     mountTimelineNav();
     byId("mv-import-game").addEventListener("click", showCatalog);

@@ -115,14 +115,20 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
   box-shadow: 0 5px 24px #1118;
 }
 .mv-panel-menu label, .mv-check { display: flex; align-items: center; gap: 6px; min-height: var(--mv-control-h-sm); }
+/* Stage | splitter | side panel, the timeline below. The side panel width is the
+   splitter's preference (--mv-inspector-width, set by setupInspectorResizer). The two
+   size variables are not inherited, so a drag restyles the grid, not every clip in it. */
+@property --mv-inspector-width { syntax: "*"; inherits: false; }
+@property --mv-inspector-height { syntax: "*"; inherits: false; }
 .mv-workspace {
   --mv-preview-min: 144px;
   --mv-timeline-default: clamp(96px, 30dvh, 320px);
   flex: 1 1 0;
   min-height: 0;
   display: grid;
-  grid-template: "preview inspector" minmax(var(--mv-preview-min), 1fr) "timeline timeline" auto / minmax(0, 1fr) minmax(14rem, 27%);
-  gap: var(--mv-workspace-gap);
+  grid-template: "preview split inspector" minmax(var(--mv-preview-min), 1fr) "timeline timeline timeline" auto
+    / minmax(0, 1fr) var(--mv-split) var(--mv-inspector-width, clamp(15rem, 24vw, 22.5rem));
+  gap: var(--mv-workspace-gap) 0;
 }
 .mv-workspace.mv-hide-inspector {
   grid-template: "preview" minmax(var(--mv-preview-min), 1fr) "timeline" auto / minmax(0, 1fr);
@@ -149,6 +155,41 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
   overflow: auto;
   padding-inline: 2px;
 }
+/* Stage / side panel splitter (setupInspectorResizer in mv-studio.js). The band is narrow;
+   its pointer target reaches into the stage side only, so the panel's own controls keep
+   their edge. Only CSS variables change while it moves: the scene's ResizeObserver sizes
+   the renderer and the camera aspect after layout, before the frame is painted. */
+.mv-inspector-resizer {
+  grid-area: split;
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  min-height: 0;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.mv-inspector-resizer[hidden], .mv-hide-inspector > .mv-inspector-resizer { display: none; }
+.mv-inspector-resizer::before { content: ""; position: absolute; inset-block: 0; inset-inline: calc(var(--mv-split) - var(--mv-split-hit)) 0; }
+.mv-inspector-resizer > .mv-split-grip {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  width: 3px;
+  height: 40px;
+  translate: -50% -50%;
+  border-radius: 2px;
+  background: var(--line);
+  pointer-events: none;
+}
+.mv-inspector-collapsed > .mv-inspector-resizer > .mv-split-grip { background: var(--muted); }
+.mv-inspector-resizer:is(:hover, :focus-visible, .mv-dragging) > .mv-split-grip { background: var(--accent); }
+#tab-mv .mv-inspector-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-radius: 3px; }
+.mv-inspector-resizer > .mv-inspector-reopen { display: none; }
+.mv-workspace.mv-inspector-collapsed > .mv-inspector { display: none; }
+@media (forced-colors: active) { .mv-inspector-resizer > .mv-split-grip { background: CanvasText; } }
 .mv-inspector details, .mv-timeline { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .mv-inspector details + details { margin-top: 4px; }
 .mv-inspector summary {
@@ -302,11 +343,35 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
   /* The full binding stays in the label's tooltip. */
   .mv-lane-path { display: none; }
 }
+/* Portrait phones: the side panel sits under the stage; the same splitter, now
+   horizontal, sets its height (--mv-inspector-height). */
 @media (max-width: 640px) and (orientation: portrait) {
   .mv-workspace {
     --mv-preview-min: 108px;
     --mv-timeline-default: clamp(96px, 28dvh, 260px);
-    grid-template: "preview" minmax(var(--mv-preview-min), 1fr) "inspector" clamp(48px, 10dvh, 100px) "timeline" auto / minmax(0, 1fr);
+    grid-template: "preview" minmax(var(--mv-preview-min), 1fr) "split" auto "inspector" var(--mv-inspector-height, clamp(64px, 20dvh, 200px))
+      "timeline" auto / minmax(0, 1fr);
+    row-gap: 0;
+  }
+  .mv-workspace > .mv-timeline { margin-top: var(--mv-gap); }
+  .mv-inspector-resizer { height: var(--mv-split); cursor: row-resize; }
+  .mv-inspector-resizer::before { inset-inline: 0; inset-block: calc(var(--mv-split) - var(--mv-split-hit)) 0; }
+  .mv-inspector-resizer > .mv-split-grip { width: 32px; height: 3px; }
+  /* Folded away: a labelled bar brings the panel back (a tap, or a drag upward). */
+  .mv-inspector-collapsed > .mv-inspector-resizer { height: auto; cursor: pointer; }
+  .mv-inspector-collapsed > .mv-inspector-resizer > .mv-split-grip { display: none; }
+  .mv-inspector-collapsed > .mv-inspector-resizer > .mv-inspector-reopen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: var(--mv-control-h-sm);
+    margin-top: var(--mv-gap);
+    border: 1px dashed var(--line);
+    border-radius: var(--mv-radius);
+    background: var(--panel);
+    color: var(--muted);
+    font-size: .75rem;
   }
 }
 @media (max-height: 480px) {
