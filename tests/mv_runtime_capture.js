@@ -435,6 +435,7 @@ function planRequests(doc, phases, { readPoint = 'update' } = {}) {
       const t = neighbour ?? (milliseconds && phase !== 0 ? Math.round(estimate * 1000) / 1000 : estimate);
       if (t < 0) continue;
       requests.push({ id: `${record.id}@${phase}`, source: record, phase, phaseSource, t, deltaTime, sections,
+        frame: Number.isInteger(frame) && (phase === 0 || neighbour !== undefined) ? frame + phase : null,
         physics: PHYSICS_PARTS.has(part), readPoint: PHYSICS_PARTS.has(part) && readPoint === 'update',
         unknownPart: part !== null && !KNOWN_PARTS.has(part), filter: filterFor(record, renderers) });
     }
@@ -493,8 +494,39 @@ function gameClockSamples(doc) {
   }
   let lagMax = 0;
   for (const [time, unity] of samples) lagMax = Math.max(lagMax, (time - samples[0][0]) - (unity - samples[0][1]));
+  const frames = deviceFrames(doc);
   return { source: fromClock ? (fromClock === points.size ? 'frameClock' : 'frameClock+records') : 'records', samples,
-    lagMax: samples.length ? lagMax : null };
+    lagMax: samples.length ? lagMax : null, frames };
+}
+
+// Every frame the game rendered while its director played, in frame order, as [directorTime,
+// Time.deltaTime, frameCount] (MVStudioParticleSystems.frameGrid): the frame clock's rows from the
+// first one whose director time the agent's own per-frame tick read (source 0: the director
+// LiveTimeSynchronizer drives answered), when they hold every frame from there to the last one,
+// each with a director time (frameClocks: else from the music time) and a deltaTime in (0, 10],
+// and the director never goes back; else null. Earlier rows (the tick not running yet, or no
+// director to read) come before the timeline's first evaluation: 12023 dump5 rows 13000 (a
+// record's clock, director 0) and 13001 (director not read) precede the first read at 13002, and
+// fx_par_so2023_02, a clip from 0 s, has ParticleSystem.time = the deltaTime sum from frame 13002
+// in all six records (within 5e-6 s; from 13000 it misses by 0.27 s). The original particle
+// systems step each frame's own Time.deltaTime (libunity.so 0x1ce1f4 / 0x1d7490), a clip from the
+// first frame whose director time reaches its start (12035 dump5: ParticleSystem.time is the
+// deltaTime sum of the frames from that one to the frame before the record's, within 6e-5 s).
+function deviceFrames(doc) {
+  const all = [...frameClocks(doc)];
+  const first = all.findIndex(([, clock]) => clock.source === 0 && clock.directorFrom === undefined && Number.isFinite(clock.directorTime));
+  const clocks = first < 0 ? [] : all.slice(first);
+  if (clocks.length < 2 || !Array.isArray(doc.trailer?.frameClocks?.rows)) return null;
+  const rows = [];
+  let expected = null;
+  for (const [frame, clock] of clocks) {
+    if (expected !== null && frame !== expected) return null;
+    expected = frame + 1;
+    const { directorTime: time, deltaTime } = clock;
+    if (!Number.isFinite(time) || time < 0 || !(deltaTime > 0) || deltaTime > 10 || (rows.length && time < rows.at(-1)[0])) return null;
+    rows.push([time, deltaTime, frame]);
+  }
+  return rows;
 }
 
 // ------------------------------------------------------------- browser side
@@ -504,13 +536,21 @@ async function setFrameHistory(page, times) {
   await page.evaluate((times) => { mvFrameProbe.frameHistory = times; }, times || null);
 }
 
-// The game's clock for the original particle systems (gameClockSamples), or null for the director's.
-async function setGameClock(page, samples) {
-  return page.evaluate((samples) => {
+// The game's clock for the original particle systems (gameClockSamples), or null for the director's,
+// and the run's own device frames (deviceFrames) or null. Returns the number of samples the scene
+// took (gameFrames: how many device frames).
+async function setGameClock(page, samples, frames = null) {
+  return page.evaluate(({ samples, frames }) => {
     const scene = mvFrameProbe.scene;
     if (typeof scene.setGameClock !== 'function') throw new Error('This editor build has no MVStudioScene.setGameClock()');
-    return scene.setGameClock(samples);
-  }, samples || null);
+    if (frames && typeof scene.gameFrames !== 'function') throw new Error('This editor build has no MVStudioScene.gameFrames()');
+    return frames ? scene.setGameClock(samples, frames) : scene.setGameClock(samples);
+  }, { samples: samples || null, frames: frames || null });
+}
+
+// The number of device frames the scene's original particle systems step on (0: none).
+async function gameFrameCount(page) {
+  return page.evaluate(() => typeof mvFrameProbe.scene.gameFrames === 'function' ? mvFrameProbe.scene.gameFrames() : 0);
 }
 
 async function evaluatePure(page, batch, keys) {
@@ -519,12 +559,14 @@ async function evaluatePure(page, batch, keys) {
     const now = () => performance.now();
     return batch.map((request) => {
       const start = now();
+      // The game frame a record's phase is (several frames can show one director time).
+      if (typeof scene.setGameFrame === 'function') scene.setGameFrame(request.frame ?? null);
       scene.seek(request.t, undefined, true, mvFrameProbe.frameHistory || null);
       const seeked = now();
       const values = scene.assetDump({ sections: request.sections, filter: request.filter || undefined, keys: keys || undefined });
       return { id: request.id, values, seekMs: seeked - start, dumpMs: now() - seeked };
     });
-  }, { batch: batch.map(({ id, t, sections, filter }) => ({ id, t, sections, filter })), keys });
+  }, { batch: batch.map(({ id, t, sections, filter, frame }) => ({ id, t, sections, filter, frame: frame ?? null })), keys });
 }
 
 // Unity Time.maximumDeltaTime (default 1/3 s): a clamped deltaTime does not
@@ -611,6 +653,7 @@ async function evaluatePhysics(page, request, preroll, rate, keys, grid = null, 
     const scene = mvFrameProbe.scene;
     const begin = performance.now(), time = request.t;
     const start = times.length ? times[0] : time;
+    if (typeof scene.setGameFrame === 'function') scene.setGameFrame(request.frame ?? null);
     if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / stampRate, undefined, true);
     scene.seek(start, undefined, true, mvFrameProbe.frameHistory || null);
     scene.setPlaying(true);
@@ -625,7 +668,8 @@ async function evaluatePhysics(page, request, preroll, rate, keys, grid = null, 
     } finally {
       scene.setPlaying(false);
     }
-  }, { request: { id: request.id, t: request.t, sections: request.sections, filter: request.filter, readPoint: request.readPoint === true },
+  }, { request: { id: request.id, t: request.t, sections: request.sections, filter: request.filter, readPoint: request.readPoint === true,
+    frame: request.frame ?? null },
     times: plan.times, stampRate, keys });
   return { ...result, prerollSource: plan.source };
 }
@@ -942,9 +986,9 @@ async function run() {
     physics.frameHistory = history ? history.length : null;
     physics.readPoint = readPoint;
     const clockPlan = particleClock === 'game' ? gameClockSamples(game) : null;
-    const clockSamples = await setGameClock(page, clockPlan?.samples ?? null);
+    const clockSamples = await setGameClock(page, clockPlan?.samples ?? null, clockPlan?.frames ?? null);
     physics.particleClock = { mode: particleClock, source: clockPlan?.source ?? 'director', samples: clockSamples,
-      lagMax: clockPlan?.lagMax ?? null };
+      deviceFrames: await gameFrameCount(page), lagMax: clockPlan?.lagMax ?? null };
     physics.frameClock = { frames: frameClocks(game).size, phaseSources: null };
     const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target,
       history, readPoint });
@@ -985,5 +1029,5 @@ module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planReq
   gameSuits, suitPlan, pinCostumes, checkCostumes,
   qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
   gameFrames, gameFrameTimes, recordedFrameTimes, setFrameHistory, prerollTimes, memberMeshAlias, PHYSICS_READ_POINTS,
-  FRAME_CLOCK_FIELDS, frameClocks, gameClockSamples, setGameClock,
+  FRAME_CLOCK_FIELDS, frameClocks, gameClockSamples, deviceFrames, setGameClock, gameFrameCount,
   prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };

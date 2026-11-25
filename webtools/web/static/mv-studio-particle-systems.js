@@ -51,6 +51,23 @@
   //    ParticleSystem.time - (Time.time since its clip start) within -0.12 ..
   //    -0.07 s across the clamped frames at 48.9-53.3 s, while the same
   //    difference on director time moved from -0.24 to -0.63 s.
+  //  * Given the run's own device frames (update's `grid`, frameGrid(): every
+  //    rendered frame's director time and Time.deltaTime, from a runtime
+  //    dump's frame clock), a clip activates in the first frame whose
+  //    director time reaches its start and that frame updates its systems by
+  //    its own Time.deltaTime; every later frame by its own (stream.frames:
+  //    the client's per-frame sub-steps, deviceFrame()); a culled system only
+  //    in frames whose previous frame showed its box, on that frame's
+  //    cameras. 12035 dump5: ParticleSystem.time and particleCount of all 213
+  //    playing-system samples, culled ones included, match the game. The
+  //    editor's own playback keeps the 30 / 60 fps display frames above,
+  //    which are this rule at a steady frame rate and simulationSpeed 1 (two
+  //    1/60 sub-steps per 1/30 s frame; at another speed the client scales
+  //    the frame before it divides it, which the display frames do not).
+  //  * EmissionModule (0x65b770): the rate is sampled at the end of the
+  //    step's stretch of the loop clock, in live steps and in the prewarm's
+  //    bounds scan, and each burst fires at most once per step (0x65bd78;
+  //    emitted(), burstsIn()).
   //
   //  * Billboard quads with 3D start rotation turn by the negated X/Y/Z angles
   //    in Unity's Euler order (Z, then X, then Y) on the alignment's axes, as
@@ -87,6 +104,9 @@
   const f32 = Math.fround;
   const gravityMagnitude = f32(9.81), ageScale = f32(.01);
   const fixedStep = f32(.02), catchUpStep = f32(.2), clockBias = f32(.0001), birthBias = f32(1e-6);
+  // Device frames (deviceFrame): Time.maximumParticleDeltaTime of the APK's TimeManager, the
+  // smallest sub-step that updates (0xb35ef0) and the accumulator floor of the step loop (0xb35ee8).
+  const maxParticleStep = f32(.03), smallestSubStep = f32(1e-5), leftoverStep = f32(1e-6);
   // InitialModule +0x1e8 outside sub-emitter emission (see birth()).
   const inheritedLifetime = 1;
   const maxElapsed = 1200;
@@ -375,7 +395,11 @@
   // ago: it plays its default state on the player clock from the activation (clipIn
   // does not reach it), wrapped by m_LoopTime or held at the clip end.
   function animatorTime(clip, frames, fps) {
-    const elapsed = frames / fps;
+    return animatorTimeAfter(clip, frames / fps);
+  }
+
+  // The same after `elapsed` game seconds of clone frames (a game run's device frames).
+  function animatorTimeAfter(clip, elapsed) {
     const local = clip.loop && clip.duration > 0 ? elapsed % clip.duration : Math.min(elapsed, clip.duration);
     return clip.start + local;
   }
@@ -763,27 +787,56 @@
       for (let i = 0; i < count; i++) active.push(births[(pivot + i) % count]);
     }
 
-    // Bursts whose loop time falls in [previous, end) on the unwrapped clock.
-    function burstsBetween(state, previous, end) {
-      const found = [];
-      for (let index = 0; index < bursts.length; index++) {
-        const burst = bursts[index];
-        const repeats = burst.cycles > 0 ? burst.cycles : Math.ceil(cycle / Math.max(burst.interval, 1e-3));
-        for (let k = 0; k < Math.min(repeats, 100000); k++) {
-          const at = f32(burst.time + k * burst.interval);
-          if (at >= cycle) break;
-          for (const base of main.looping ? [0, cycle] : [0]) {
-            const time = at + base;
-            if (time < previous || time >= end) continue;
-            const loop = state.loop + (base ? 1 : 0);
-            const draw = salt => nativeUnit(nativeRandom((seed + salts.burst + salt + loop * 977 + index * 131 + k) >>> 0)());
-            if (burst.probability < 1 && draw(0) > burst.probability) continue;
-            const count = Math.round(burst.count.sample(f32(at / cycle), draw(1)));
-            if (count > 0) found.push({count, elapsed: f32(end - time)});
-          }
+    // 0x65bd78: the bursts of one call over the loop clock window [from, to). Each burst
+    // fires at most once per call: when its time lies in the window, or, in a call that
+    // checks repeats, when its time is before the window, it has repeats left
+    // ((from - time) / interval below cycles - 1; cycles 0 repeats without end, 1 never) and
+    // a repeat boundary falls inside (trunc((to - time) / interval) above
+    // trunc((from - time) / interval)). The count is sampled at the call's end over the
+    // duration (0x65bdac, passed to 0x65b444). `end` is the step end on the same clock as
+    // the window, `loop` the loop the window belongs to (stand-in draws).
+    function burstsIn(from, to, repeats, end, loop) {
+      const found = [], scaled = f32(to / cycle);
+      bursts.forEach((burst, index) => {
+        const time = f32(burst.time);
+        let at = null, k = 0;
+        if (time >= from && time < to) at = time;
+        else if (repeats && burst.cycles !== 1 && time < from) {
+          const interval = f32(burst.interval);
+          const before = f32(f32(from - time) / interval);
+          if (burst.cycles !== 0 && before >= burst.cycles - 1) return;
+          const after = f32(f32(to - time) / interval);
+          if (!(Math.trunc(after) > Math.trunc(before))) return;
+          k = Math.trunc(after);
+          at = f32(time + f32(k * interval));
         }
-      }
+        if (at === null) return;
+        const draw = salt => nativeUnit(nativeRandom((seed + salts.burst + salt + loop * 977 + index * 131 + k) >>> 0)());
+        if (burst.probability < 1 && draw(0) > burst.probability) return;
+        const count = Math.round(burst.count.sample(scaled, draw(1)));
+        if (count > 0) found.push({count, elapsed: f32(end - at)});
+      });
       return found;
+    }
+
+    // 0x65b770: particles a step emits over the loop clock from `from` to `to` (0x1d77dc
+    // passes the system time before and after the step), sampling the rate at the end of
+    // its stretch over the duration, never below 0: a step that wraps (to below from) adds
+    // to * rate(to / duration) and (duration - from) * rate(1). One weight per call for
+    // rates between constants or curves (stand-in stream). The bursts of a wrapping step
+    // come from [0, to), checking repeats, then [from, duration + 1e-4), not checking them
+    // (0x65bcc8-0x65bd10); otherwise from [from, to) checking repeats.
+    function emitted(state, from, to, wrapped, next) {
+      const weight = nativeUnit(nativeRandom((seed + state.loop * 7919 + Math.trunc(from * 1e4)) >>> 0)());
+      const rateAt = time => Math.max(0, rate.sample(time, weight));
+      const atEnd = rateAt(f32(to / cycle));
+      if (!wrapped) {
+        return {amount: f32(f32(Math.max(0, f32(to - from))) * atEnd), pulses: burstsIn(from, to, true, next, state.loop)};
+      }
+      const amount = f32(f32(to * atEnd) + f32(f32(cycle - from) * rateAt(f32(cycle / cycle))));
+      const pulses = [...burstsIn(0, to, true, to, state.loop + 1),
+        ...burstsIn(from, f32(cycle + clockBias), false, next, state.loop)];
+      return {amount, pulses};
     }
 
     // Particles the emission cap counts: the live ones, or during a
@@ -811,14 +864,11 @@
       const previous = state.clock, next = f32(previous + dt);
       const wrapped = main.looping && next > cycle;
       const clock = wrapped ? f32(next - cycle) : next;
-      const end = main.looping ? next : Math.min(next, cycle);
+      const end = main.looping ? clock : Math.min(next, cycle);
       const systemTime = f32(previous / cycle);
-      const perSecond = rate.sample(systemTime, nativeUnit(nativeRandom((seed + state.loop * 7919 + Math.trunc(previous * 1e4)) >>> 0)()));
-      const amount = wrapped ? f32(f32(f32(cycle - previous) * perSecond) + f32(clock * perSecond)) :
-        f32(f32(Math.max(0, f32(end - previous))) * perSecond);
+      const {amount, pulses} = emitted(state, previous, end, wrapped, next);
       const total = f32(amount + state.carry), requested = Math.max(0, Math.trunc(total));
       state.carry = total > 0 ? f32(total - requested) : 0;
-      const pulses = burstsBetween(state, previous, next);
       state.clock = clock;
       if (wrapped) state.loop++;
       if (!main.looping && next >= cycle) state.stopped = true;
@@ -960,13 +1010,17 @@
       // feeds its rate carry into the actual prewarm.
       const horizon = f32(Math.max(f32(1e-3), maxCurve(main.lifetime)));
       const start = f32(f32(Math.ceil(f32(horizon / cycle)) * cycle) - horizon);
+      // Each scan step calls the same 0x65b770 (0x1d2120: from and to the scan
+      // times modulo the duration), so the rate is sampled at the end of the
+      // step's stretch, never below 0 (weight .5 stands in for the scan's own
+      // random stream).
       let time = start, phase = f32(start % cycle), carry = 0;
-      const perSecond = rate.sample(0, .5);
+      const perSecond = to => Math.max(0, rate.sample(f32(to / cycle), .5));
       while (f32(time + clockBias) < f32(start + horizon)) {
         time = f32(time + fixedStep);
         const next = f32(time % cycle);
-        const amount = next < phase ? f32(f32(f32(cycle - phase) * perSecond) + f32(next * perSecond)) :
-          f32(f32(next - phase) * perSecond);
+        const amount = next < phase ? f32(f32(next * perSecond(next)) + f32(f32(cycle - phase) * perSecond(cycle))) :
+          f32(f32(next - phase) * perSecond(next));
         const combined = f32(amount + carry);
         carry = f32(combined - Math.trunc(combined));
         phase = next;
@@ -1006,6 +1060,38 @@
       return entry;
     }
 
+    // One device frame's update of `rawDt` seconds of Time.deltaTime (a game run's own frame
+    // clock; libunity.so GL 3.12.0). The update job 0x1ce1f4 scales it by
+    // max(simulationSpeed, 0) (0x1ce354) and asks 0x1cfbd4 for the sub-step: the scaled time,
+    // or when it exceeds Time.maximumParticleDeltaTime (TimeManager +0x104, the APK's
+    // "Maximum Particle Timestep" .03) the scaled time / ceil(scaled time / .03). A sub-step
+    // below 1e-5 skips the update (0x1ce370). Otherwise the scaled time joins the update
+    // accumulator (state +0, where a prewarm left its remainder) and 0x1d7490 runs the
+    // accumulator down in steps of min(accumulator, sub-step) (.2 s steps above 5 s left, 1 s
+    // above 10 s, at most the duration, as in the prewarm) until less than 1e-6 is left
+    // (0x1d7970); a step of the remainder ends the frame.
+    function deviceFrame(state, rawDt) {
+      const dt = f32(f32(rawDt) * Math.max(speedScale, 0));
+      const sub = maxParticleStep < dt ? f32(dt / Math.ceil(f32(dt / maxParticleStep))) : dt;
+      if (sub < smallestSubStep) return;
+      let left = f32(state.accumulator + dt), last = sub;
+      while (left >= leftoverStep) {
+        let dtStep;
+        if (left > 10) dtStep = last > 1 ? last : f32(Math.min(cycle, 1));
+        else {
+          dtStep = left < sub ? left : sub;
+          if (left > 5) dtStep = last > catchUpStep ? last : f32(Math.min(cycle, catchUpStep));
+        }
+        simulate(state, dtStep);
+        left = f32(left - dtStep);
+        last = dtStep;
+      }
+      state.accumulator = left;
+    }
+
+    let run = null;
+    const runInterval = 32;
+
     return {
       // The emission batches a procedural prewarm built its particles from
       // (time, age, carry, spacing, count, rate, step), or null.
@@ -1024,6 +1110,28 @@
           state.frame++;
           if (state.frame === grouped && residue >= birthBias) step(state, residue);
           if (state.frame === checkpoints.length * checkpointInterval) checkpoints.push(clone(state));
+        }
+        return state.active;
+      },
+      // A game run's own device frames: `updates` lists the raw Time.deltaTime of every frame
+      // the system updated since its activation, the activation frame first (deviceFrame);
+      // the particles after the first `count` of them. The array is the run's identity: the
+      // stream continues from its last state while the same array grows.
+      frames(updates, count) {
+        if (!Array.isArray(updates) || !Number.isInteger(count) || count < 0 || count > updates.length) return [];
+        if (!run || run.updates !== updates) {
+          const start = {...clone(warm), applied: 0, accumulator: main.prewarm && main.looping ? f32(remainder) : 0};
+          run = {updates, state: clone(start), checkpoints: [start]};
+        }
+        const saved = Math.min(run.checkpoints.length - 1, Math.floor(count / runInterval));
+        if (count < run.state.applied || run.checkpoints[saved].applied > run.state.applied) run.state = clone(run.checkpoints[saved]);
+        const {state} = run;
+        while (state.applied < count) {
+          const rawDt = updates[state.applied];
+          if (!finite(rawDt) || rawDt < 0 || rawDt > 10) break;
+          deviceFrame(state, rawDt);
+          state.applied++;
+          if (state.applied === run.checkpoints.length * runInterval) run.checkpoints.push(clone(state));
         }
         return state.active;
       },
@@ -1142,6 +1250,67 @@
     };
     clock.samples = rows.length;
     return clock;
+  }
+
+  // A game run's own device frames, every rendered frame in frame order: [director time,
+  // Time.deltaTime, frameCount (optional)] (a runtime dump's frame clock rows). Null unless
+  // there are two frames at least, every Time.deltaTime is in (0, 10] and the director time
+  // never goes back. On these frames a clip activates in the first frame whose director time
+  // reaches its start and that frame steps its own Time.deltaTime; a time shows the last
+  // frame whose director time is not after it, unless `pin` names one of several frames at
+  // that time (the song-end hold).
+  //   12035 dump5 / 12023: ParticleSystem.time of every looping system that culling never
+  //   paused is the sum of the Time.deltaTime of frames A .. N-1 (A the activation frame, N
+  //   the record's frame, read before frame N's update) within 6e-5 s in all 40 / 19
+  //   records, while A+1 .. N-1 or A .. N miss by 0.19 / 0.2 s on average.
+  function frameGrid(rows) {
+    if (!Array.isArray(rows) || rows.length < 2 || rows.length > 1000000) return null;
+    const times = new Float64Array(rows.length), deltas = new Array(rows.length), counts = new Map();
+    const sums = new Float64Array(rows.length + 1);
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index];
+      if (!Array.isArray(row) || row.length < 2 || !finite(row[0]) || !finite(row[1]) || row[0] < 0 ||
+          (index && row[0] < times[index - 1]) || !(row[1] > 0) || row[1] > 10) return null;
+      times[index] = row[0];
+      deltas[index] = f32(row[1]);
+      sums[index + 1] = sums[index] + deltas[index];
+      if (Number.isInteger(row[2]) && !counts.has(row[2])) counts.set(row[2], index);
+    }
+    const ticks = Array.from(times, timelineTick);
+    // The first frame index whose tick is above (strict) or at least `tick`.
+    const search = (tick, strict) => {
+      let low = 0, high = ticks.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        if (strict ? ticks[middle] > tick : ticks[middle] >= tick) high = middle; else low = middle + 1;
+      }
+      return low;
+    };
+    const grid = {
+      length: rows.length, times, deltas,
+      // The activation frame of a clip starting at `start`: the first frame whose director time
+      // reaches it, -1 when none does. A clip the first frame already shows is taken from the
+      // first frame: when the frames start with the timeline's first evaluation (as
+      // mv_runtime_capture.deviceFrames gives them) that is its activation frame (12023 dump5:
+      // fx_par_so2023_02, a clip from 0 s, matches ParticleSystem.time in all six records);
+      // otherwise its time misses the frames the run did not record.
+      activation(start) {
+        const index = search(timelineTick(start), false);
+        return index < ticks.length ? index : -1;
+      },
+      // The frame a director time shows, -1 before the first frame, null after the last one.
+      shown(time) {
+        const tick = timelineTick(time);
+        if (tick > ticks[ticks.length - 1]) return null;
+        const pinned = grid.pin === null ? -1 : counts.get(grid.pin) ?? -1;
+        return pinned >= 0 && ticks[pinned] === tick ? pinned : search(tick, true) - 1;
+      },
+      // Game seconds from the start of frame `from` to the end of frame `to`.
+      elapsed: (from, to) => to < from ? 0 : sums[to + 1] - sums[from],
+      // frameCount of the frame to show among several at one director time (null: the last).
+      pin: null,
+    };
+    return grid;
   }
 
   // ---------------------------------------------------------------- culling
@@ -1477,13 +1646,13 @@
         // belongs to the overlay camera, which this module does not drive.
         const drawn = ((mainCameraMask >>> system.layer) & 1) === 1 && system.layer < 32 && reproducible(system, pose);
         return {system, systemIndex, pose, restPose: pose, box: cullingBox(system), history: null, updates: 0,
-          drawn, packet: null, stream: null, frame: -1, fps: 0, count: 0,
+          drawn, packet: null, stream: null, frame: -1, fps: 0, count: 0, mode: null, device: null, elapsed: 0, culledNow: false,
           seed: system.main.autoRandomSeed ?
             // The game draws a fresh auto seed per activation; keep a stable stand-in per clip.
             (Math.imul((cue.clipSeed >>> 0) ^ 0x9e3779b9, 0x85ebca6b) + Math.imul(systemIndex + 1, 0xc2b2ae35) + cueIndex) >>> 0 :
             system.main.randomSeed >>> 0};
       });
-      return {cue, cueIndex, template, systems, frames: -1};
+      return {cue, cueIndex, template, systems, animated: null};
     });
     const local = new T.Vector3(), center = new T.Vector3();
     let tracks, disposed = false;
@@ -1491,7 +1660,7 @@
     // index, for the visibility pass (Unity counts a renderer visible when
     // any camera drawing its layer sees it).
     const frusta = new Map();
-    let cullKey = null, cullFps = 0, cullClock = null;
+    let cullKey = null, cullFps = 0, cullClock = null, cullGrid = null;
 
     function frustaAt(index, fps, view) {
       if (frusta.has(index)) return frusta.get(index);
@@ -1502,21 +1671,32 @@
       return planes;
     }
 
-    // Node poses at a clone frame when the prefab Animator moves nodes, else null.
-    function posesAt(entry, frames, fps) {
+    // Culling planes at a device frame's director time (frustaAt for a game run's own frames).
+    const frustaByTime = new Map();
+    function frustaAtTime(time, view) {
+      if (frustaByTime.has(time)) return frustaByTime.get(time);
+      const cameras = typeof view.camerasAt === "function" ? view.camerasAt(time) : [view.cameraAt(time)];
+      const planes = (cameras || []).filter(Boolean).map(cameraPlanes).filter(Boolean);
+      frustaByTime.set(time, planes);
+      return planes;
+    }
+
+    // Node poses `elapsed` clone seconds after the activation when the prefab Animator moves
+    // nodes, else null.
+    function posesAt(entry, elapsed) {
       const animation = entry.template.animation;
       if (!animation?.channels.some(row => row.kind === "translation")) return null;
-      if (entry.poseCache?.fps !== fps) entry.poseCache = {fps, frames: new Map()};
-      let poses = entry.poseCache.frames.get(frames);
+      if (!entry.poseCache) entry.poseCache = new Map();
+      let poses = entry.poseCache.get(elapsed);
       if (!poses) {
         const evaluate = global.MVStudioStageMotion.evaluate;
-        const times = animation.clips.map(clip => animatorTime(clip, frames, fps));
+        const times = animation.clips.map(clip => animatorTimeAfter(clip, elapsed));
         const moved = entry.template.nodes.map(node => ({...node}));
         for (const row of animation.channels) {
           if (row.kind === "translation") moved[row.node].position = row.curves.map(curve => evaluate(curve, times[row.clip]));
         }
         poses = nodePoses(moved, entry.cue.offset);
-        entry.poseCache.frames.set(frames, poses);
+        entry.poseCache.set(elapsed, poses);
       }
       return poses;
     }
@@ -1539,7 +1719,7 @@
         const plain = activated + index - 1, at = cullClock ? cullClock.inverse(from + (index - 1) / fps) * fps : plain;
         const display = Math.abs(at - plain) < 1e-6 ? plain : Math.floor(at + 1e-9);
         const planes = frustaAt(display, fps, view);
-        const poses = planes.length ? posesAt(entry, index, fps) : null;
+        const poses = planes.length ? posesAt(entry, index / fps) : null;
         const pose = poses ? poses[item.system.node] : item.restPose;
         const box = planes.length ? worldBox(item.box, item.system, pose) : null;
         const seen = planes.some(sides => boxVisible(box, sides));
@@ -1547,6 +1727,44 @@
         history.count.push(history.count[index - 1] + (seen ? 1 : 0));
       }
       return 1 + history.count[frames - 1];
+    }
+
+    // The same on a game run's own device frames (frameGrid): the activation frame
+    // `activated` always updates, and frame k after it only when frame k - 1's culling showed
+    // the box to a camera drawing it (its cameras at frame k - 1's director time, the prefab
+    // Animator after the clone seconds up to frame k - 1). Each update steps its own frame's
+    // Time.deltaTime (stream.frames), so a frame the culling skipped adds none. Returns the
+    // number of updated frames up to frame `last`; item.device keeps the frames and their
+    // Time.deltaTime in order.
+    function deviceUpdates(item, entry, grid, activated, last, view) {
+      let history = item.device;
+      if (!history || history.grid !== grid || history.activated !== activated) {
+        history = item.device = {grid, activated, checked: activated, frames: [activated], updates: [grid.deltas[activated]],
+          visible: [true]};
+      }
+      const culled = !!(item.box && view);
+      for (let index = history.checked + 1; index <= last; index++) {
+        let seen = true;
+        if (culled) {
+          const planes = frustaAtTime(grid.times[index - 1], view);
+          const poses = planes.length ? posesAt(entry, grid.elapsed(activated, index - 1)) : null;
+          const pose = poses ? poses[item.system.node] : item.restPose;
+          const box = planes.length ? worldBox(item.box, item.system, pose) : null;
+          seen = planes.some(sides => boxVisible(box, sides));
+        }
+        history.visible.push(seen);
+        if (seen) {
+          history.frames.push(index);
+          history.updates.push(grid.deltas[index]);
+        }
+        history.checked = index;
+      }
+      let low = 0, high = history.frames.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        if (history.frames[middle] <= last) low = middle + 1; else high = middle;
+      }
+      return low;
     }
 
     function simulationOf(entry) {
@@ -1593,12 +1811,12 @@
 
     // Sample the prefab Animator curves at the clone's state time: moved nodes give
     // the systems below them a new pose; renderer curves replace tint and _MainTex_ST.
-    function animate(entry, frames, fps) {
+    function animate(entry, elapsed) {
       const {template, cue, systems} = entry, animation = template.animation;
-      if (!animation || entry.frames === frames) return;
-      entry.frames = frames;
+      if (!animation || entry.animated === elapsed) return;
+      entry.animated = elapsed;
       const evaluate = global.MVStudioStageMotion.evaluate;
-      const times = animation.clips.map(clip => animatorTime(clip, frames, fps));
+      const times = animation.clips.map(clip => animatorTimeAfter(clip, elapsed));
       const moved = template.nodes.map(node => ({...node}));
       let posed = false;
       for (const item of systems) item.tint = item.st = null;
@@ -1627,10 +1845,12 @@
       entry.frame = -1;
     }
 
-    function write(entry, cue, frames, fps) {
+    // sample(stream) -> the particles to draw (stream.sample on display frames, stream.frames on
+    // a game run's device frames).
+    function write(entry, cue, sample) {
       const stream = simulationOf(entry);
       if (!stream) return hide(entry);
-      const active = stream.sample(frames, fps);
+      const active = sample(stream);
       const packet = packetOf(entry, cue), {buffers, mesh} = packet, {system, pose} = entry;
       const uniforms = mesh.material.uniforms;
       uniforms.uTint.value.fromArray(entry.tint || system.material.tint);
@@ -1685,7 +1905,11 @@
       // the visibility pass.
       // Without a view, culled systems simulate as if always visible.
       // clock: the game's clock (gameClock()) or null for the director's.
-      update(time, project, view = null, clock = null) {
+      // grid: a game run's own device frames (frameGrid()) or null. A clip whose activation
+      // frame and the frame a time shows are on the grid steps each of its frames' own
+      // Time.deltaTime (stream.frames, deviceUpdates); any other clip keeps the clock's
+      // 30 / 60 fps display frames.
+      update(time, project, view = null, clock = null, grid = null) {
         if (disposed) return;
         if (tracks !== project?.tracks) {
           tracks = project?.tracks;
@@ -1696,34 +1920,68 @@
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
         const camera = typeof view?.camerasAt === "function" || typeof view?.cameraAt === "function" ? view : null;
         const gameClock = typeof clock === "function" ? clock : null;
-        if ((camera?.key ?? null) !== cullKey || fps !== cullFps || gameClock !== cullClock) {
+        const frames = typeof grid?.shown === "function" && typeof grid.activation === "function" ? grid : null;
+        if ((camera?.key ?? null) !== cullKey || fps !== cullFps || gameClock !== cullClock || frames !== cullGrid) {
           cullKey = camera?.key ?? null;
           cullFps = fps;
           cullClock = gameClock;
+          cullGrid = frames;
           frusta.clear();
+          frustaByTime.clear();
           for (const entry of cues) {
             entry.poseCache = null;
-            for (const item of entry.systems) item.history = null;
+            for (const item of entry.systems) item.history = item.device = null;
           }
         }
         for (const entry of cues) {
           const {cue, track, systems} = entry;
           const event = track && !track.muted && quality?.[cue.quality] !== false &&
             track.events.find(row => row.id === cue.eventId);
-          const frames = event ? activeFrames(event, time, fps, clock) : 0;
-          if (frames) animate(entry, frames, fps);
-          else entry.frames = -1;
+          // On the device frames: the frame `time` shows (-1 before the first one), and the clip's
+          // activation frame when the clip is active at that frame's own director time, which a time
+          // between frames (after the clip's end, say) does not decide. Past the last frame the
+          // clock's display frames apply.
+          const shown = event && frames ? frames.shown(time) : null;
+          const device = shown !== null;
+          let activated = -1, last = -1;
+          if (device && shown >= 0 && activeFrames(event, frames.times[shown], fps) > 0) {
+            activated = frames.activation(event.start);
+            last = shown;
+          }
+          const clone = device ? (activated >= 0 ? Math.max(0, last - activated + 1) : 0) :
+            event ? activeFrames(event, time, fps, clock) : 0;
+          if (clone) animate(entry, device ? frames.elapsed(activated, last) : clone / fps);
+          else entry.animated = null;
           for (const item of systems) {
-            if (!frames || !item.drawn) {
+            if (!clone || !item.drawn) {
               hide(item);
               continue;
             }
-            const updates = item.box && camera ? advanced(item, entry, event, frames, fps, camera) : frames;
-            if (item.frame === frames && item.fps === fps && item.updates === updates) continue;
-            item.frame = frames;
+            if (device) {
+              const updates = deviceUpdates(item, entry, frames, activated, last, camera);
+              const history = item.device;
+              if (item.mode === history && item.frame === clone && item.updates === updates) continue;
+              item.mode = history;
+              item.frame = clone;
+              item.fps = fps;
+              item.updates = updates;
+              // ParticleSystem.time: the scaled Time.deltaTime of the frames it updated.
+              let elapsed = 0;
+              for (let index = 0; index < updates; index++) elapsed += f32(f32(history.updates[index]) * Math.max(0, f32(item.system.main.simulationSpeed)));
+              item.elapsed = elapsed;
+              item.culledNow = !history.visible[last - activated];
+              write(item, entry, stream => stream.frames(history.updates, updates));
+              continue;
+            }
+            const updates = item.box && camera ? advanced(item, entry, event, clone, fps, camera) : clone;
+            if (item.mode === "display" && item.frame === clone && item.fps === fps && item.updates === updates) continue;
+            item.mode = "display";
+            item.frame = clone;
             item.fps = fps;
             item.updates = updates;
-            write(item, entry, updates, fps);
+            item.elapsed = updates / fps * item.system.main.simulationSpeed;
+            item.culledNow = !!item.box && !!item.history && clone > 1 && !item.history.visible[clone - 1];
+            write(item, entry, stream => stream.sample(updates, fps));
           }
         }
       },
@@ -1731,12 +1989,14 @@
         const result = [];
         for (const entry of cues) for (const item of entry.systems) {
           if (item.frame <= 0) continue;
-          const {main} = item.system, elapsed = item.updates / item.fps * main.simulationSpeed;
+          const {main} = item.system, elapsed = item.elapsed;
           result.push({cue: entry.cue.eventId, track: entry.cue.trackId, template: entry.template.name,
             path: item.system.path, layer: item.system.layer, seed: item.seed, frames: item.frame,
-            // Frames the system updated (fewer than frames while culling froze it) and its clock.
+            // Frames the system updated (fewer than frames while culling froze it) and its clock;
+            // device: on a game run's own frames (frameGrid), each stepping its Time.deltaTime.
             updates: item.updates, time: main.looping ? elapsed % main.duration : Math.min(elapsed, main.duration),
-            culled: !!item.box && !!item.history && item.frame > 1 && !item.history.visible[item.frame - 1],
+            looping: !!main.looping,
+            device: item.mode !== "display", culled: !!item.culledNow,
             alive: item.stream ? (item.rows?.length ?? 0) : 0, drawn: item.count,
             positions: (item.rows || []).slice(0, limit).map(row => row.world.map(value => Math.round(value * 1e4) / 1e4))});
         }
@@ -1757,7 +2017,7 @@
   }
 
   global.MVStudioParticleSystems = {
-    apply, create, activeFrames, gameClock, animatorTime, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
+    apply, create, activeFrames, gameClock, frameGrid, animatorTime, animatorTimeAfter, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
     nodePoses, eulerQuaternion, blendFactor, depthFunction, renderState, loadTexture, mainCameraMask, salts,
     activationFrame, worldBox, cameraPlanes, boxVisible, prewarmSteps,
   };

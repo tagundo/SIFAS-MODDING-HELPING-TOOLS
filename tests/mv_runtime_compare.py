@@ -1651,12 +1651,14 @@ class Comparison:
                          abs(game_count - editor_count), tol, near_cut=near,
                          field=f"seed game {item.get('randomSeed')} editor {match.get('seed')}")
             # ParticleSystem.time against the editor's system clock: both wrap at the duration when looping, so
-            # the distance is taken around it. The game's time moves in whole game frames, so one frame
-            # (the record's deltaTime) is the tolerance. Diagnostic: the editor steps a fixed 30 fps grid.
+            # the distance is taken around it (a non-looping system holds its duration: the editor row says
+            # looping false; rows without the flag wrap). The game's time moves in whole game frames, so one
+            # frame (the record's deltaTime) is the tolerance. Diagnostic: the editor steps a fixed 30 fps grid
+            # unless it was given the run's own frames.
             game_time, editor_time, duration = item.get("time"), match.get("time"), item.get("duration")
             if number(game_time) and number(editor_time):
                 error = abs(game_time - editor_time)
-                if number(duration) and duration > 0:
+                if number(duration) and duration > 0 and match.get("looping") is not False:
                     error = min(error % duration, duration - error % duration)
                 dt = (record.get("clock") or {}).get("deltaTime")
                 self.add("particles", "particleTimeS", f"particles:{key}", record, game_time, editor_time, error,

@@ -397,8 +397,9 @@
     // `history`) or, without them, uses exact values. One frame clock serves all.
     let pendingHistory = null, frameClock = { advancing: false, history: [] }, historyLighting = new Map();
     // The game's Time.time as a function of director time (setGameClock; null: the director's clock).
-    // Original particle systems advance on it (MVStudioParticleSystems.gameClock).
-    let particleClock = null;
+    // Original particle systems advance on it (MVStudioParticleSystems.gameClock), or on the run's
+    // own device frames where it gave them (particleFrames, MVStudioParticleSystems.frameGrid).
+    let particleClock = null, particleFrames = null;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
     let antiAliasing = options?.antiAliasing === true;
@@ -2130,7 +2131,7 @@
       stageSparksA?.update(currentTime, project);
       stageSparksB?.update(currentTime, project);
       stageSparksRoop?.update(currentTime, project);
-      stageParticleSystems?.update(currentTime, project, particleCullingView(), particleClock);
+      stageParticleSystems?.update(currentTime, project, particleCullingView(), particleClock, particleFrames);
       stageControlPrefabs?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
@@ -2734,11 +2735,26 @@
       },
       // A game run's clock for the original particle systems: [directorTime, Time.time] of its
       // rendered frames (a runtime dump's frame clock or record clocks), or null for the
-      // director's clock. Returns the number of samples used (0: director's clock).
-      setGameClock(samples) {
-        particleClock = Array.isArray(samples) ? global.MVStudioParticleSystems?.gameClock?.(samples) ?? null : null;
+      // director's clock, and optionally every rendered frame of the run in frame order,
+      // [directorTime, Time.deltaTime, frameCount] (a runtime dump's complete frame clock): the
+      // systems then step each of the run's own frames (MVStudioParticleSystems.frameGrid).
+      // Returns the number of samples used (0: director's clock).
+      setGameClock(samples, frames = null) {
+        const particles = global.MVStudioParticleSystems;
+        particleClock = Array.isArray(samples) ? particles?.gameClock?.(samples) ?? null : null;
+        particleFrames = Array.isArray(frames) ? particles?.frameGrid?.(frames) ?? null : null;
         requestDraw();
         return particleClock ? particleClock.samples : 0;
+      },
+      // The number of device frames the original particle systems step on (setGameClock), 0 without.
+      gameFrames() {
+        return particleFrames ? particleFrames.length : 0;
+      },
+      // Which of several game frames at one director time a seek shows (frameCount, the
+      // song-end hold), or null for the last one (MVStudioParticleSystems.frameGrid pin).
+      setGameFrame(frameCount = null) {
+        if (particleFrames) particleFrames.pin = Number.isInteger(frameCount) ? frameCount : null;
+        return particleFrames ? particleFrames.pin : null;
       },
       // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
       setPhysicsTiming(value) {

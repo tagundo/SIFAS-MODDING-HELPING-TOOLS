@@ -360,6 +360,153 @@ function testBurstsCyclesAndExpiry() {
   assert.equal(looping.sample(91, 30).length, 4, "a time-zero burst fires once per loop");
 }
 
+// A game run's own device frames (stream.frames, libunity.so 0x1ce1f4 / 0x1cfbd4 / 0x1d7490): each
+// frame's Time.deltaTime, scaled by simulationSpeed, runs in sub-steps of dt / ceil(dt / .03) when it
+// exceeds Time.maximumParticleDeltaTime (.03), the last step taking the accumulator's rest.
+function testDeviceFrameSteps() {
+  // Frames of exactly 1/30 s are the display path: two 1/60 steps, the prewarm remainder after them.
+  for (const main of [{}, {prewarm: true}]) {
+    const row = system({main: {speed: constant(1), gravity: constant(.3), ...main}});
+    const display = P.create(row, 7), device = P.create(row, 7);
+    const updates = Array(200).fill(f32(1 / 30));
+    for (const count of [1, 2, 5, 77, 200]) {
+      assert.deepEqual(snapshot(device, device.frames(updates, count)), snapshot(display, display.sample(count, 30)),
+        `${JSON.stringify(main)} after ${count} frames`);
+    }
+    assert.deepEqual(snapshot(device, device.frames(updates, 33)), snapshot(display, display.sample(33, 30)), "back to a checkpoint");
+  }
+  // Sub-steps from the fall of one burst particle: n equal Euler steps of h fall g h^2 n (n + 1) / 2.
+  const falling = speed => system({main: {looping: false, duration: 10, lifetime: constant(10), gravity: constant(1),
+    simulationSpeed: speed}, shape: null, emission: {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0,
+    probability: 1}]}});
+  const fall = (rawDt, speed = 1) => {
+    const [atom] = P.create(falling(speed), 3).frames([rawDt], 1);
+    return -atom.y;
+  };
+  const expected = (total, steps) => 9.81 * (total / steps) ** 2 * steps * (steps + 1) / 2;
+  for (const [rawDt, steps] of [[.2, 7], [.03, 1], [.031, 2], [1 / 3, 12], [.0166, 1]]) {
+    assert.ok(Math.abs(fall(rawDt) - expected(rawDt, steps)) < 2e-5, `${rawDt} s in ${steps} steps: ${fall(rawDt)}`);
+  }
+  // The speed scales the frame before it is divided: .04 s at speed .5 is one .02 s step.
+  assert.ok(Math.abs(fall(.04, .5) - expected(.02, 1)) < 1e-6, `speed .5: ${fall(.04, .5)}`);
+  // A frame whose sub-step is below 1e-5 runs no update and adds no time (0x1ce370): the burst waits
+  // for the next frame, and the particle then falls as after that frame alone.
+  assert.equal(P.create(falling(1), 3).frames([5e-6], 1).length, 0, "a sub-1e-5 frame runs no update");
+  assert.equal(P.create(falling(.5), 3).frames([1.5e-5], 1).length, 0, "the scaled frame is tested");
+  assert.deepEqual(snapshot(P.create(falling(1), 3), P.create(falling(1), 3).frames([5e-6, .02], 2)),
+    snapshot(P.create(falling(1), 3), P.create(falling(1), 3).frames([.02], 1)));
+  // Steps counted by a burst that repeats every millisecond: each step crosses a repeat and fires it
+  // once (0x65bd78), so the particles are the steps.
+  const counter = speed => system({main: {looping: false, duration: 100, lifetime: constant(100), simulationSpeed: speed},
+    shape: null, emission: {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 0, interval: .001, probability: 1}]}});
+  const steps = (updates, count = updates.length, speed = 1) => P.create(counter(speed), 1).frames(updates, count).length;
+  assert.equal(steps([.2]), 7);
+  // Above 5 s left, 0x1d7490 steps .2 s (the last step when that was longer): a 5.5 s frame takes 3 .2 s
+  // steps down to 4.9 s and then 164 of 5.5 / 184 s, not 184.
+  assert.equal(steps([5.5]), 3 + 164);
+  // Above 10 s it steps 1 s, and keeps the 1 s step while more than 5 s are left: 5.5 s at speed 2 is
+  // 11 s, 6 steps of 1 s down to 5 s and 167 of 11 / 367 s.
+  assert.equal(steps([5.5], 1, 2), 6 + 167);
+  // The accumulator runs down until less than 1e-6 is left: three sub-steps of a .0622 s frame leave
+  // 2^-28 s, which waits for the next frame. A burst at the clock after those three steps fires in the
+  // next frame's first step, not in a fourth step of this one.
+  const frame = f32(.0622), sub = f32(frame / 3), clock = f32(f32(sub + sub) + sub);
+  assert.equal(f32(f32(f32(frame - sub) - sub) - sub), 2 ** -28);
+  const waiting = system({main: {looping: false, duration: 10, lifetime: constant(10)}, shape: null,
+    emission: {rate: constant(0), bursts: [{time: clock, count: constant(1), cycles: 1, interval: 0, probability: 1}]}});
+  const tiny = [frame, .02];
+  const kept = P.create(waiting, 1);
+  assert.equal(kept.frames(tiny, 1).length, 0, "no step for a remainder below 1e-6");
+  assert.equal(kept.frames(tiny, 2).length, 1);
+  // A device run's identity is its update array; a new array starts again from the activation.
+  const stream = P.create(falling(1), 3), first = [.2, .2];
+  const one = snapshot(stream, stream.frames(first, 2));
+  stream.frames([.1], 1);
+  assert.deepEqual(snapshot(stream, stream.frames(first, 2)), one);
+  assert.deepEqual(stream.frames(first, 3), [], "a count past the updates");
+}
+
+// 0x65b770 samples the rate at the end of the step's stretch of the loop clock (to / duration).
+function testEmissionRateAtStepEnd() {
+  const ramp = {mode: 1, scalar: 6000, min: 6000, maxKeys: [[0, 0, 1, 1], [1, 1, 1, 1]]};
+  const row = system({main: {duration: 1, lifetime: constant(5), maxParticles: 4000}, emission: {rate: ramp, bursts: []}});
+  // Two 1/60 steps: 6000 t over [0, 1/60] and [1/60, 2/60] sampled at their ends gives 1.67 + 3.33.
+  assert.equal(P.create(row, 5).sample(1, 30).length, 5, "rate at each step's end");
+  // A step that wraps (.99 -> 1.01 on a 1 s loop) emits (1 - from) at the rate at 1 and `to` at the
+  // rate at to / duration: .01 * 6000 + .01 * 60 = 60.6, where the rate at the step start gives
+  // .02 * 5940 = 118.8 and the rate at to / duration for both stretches .02 * 60 = 1.2.
+  const looped = P.create(row, 5), updates = [f32(.99), f32(.02)];
+  const before = looped.frames(updates, 1).length;
+  const after = looped.frames(updates, 2).length;
+  const from = f32(.99), to = f32(f32(from + f32(.02)) - 1);
+  assert.ok(to > 0, "the step crosses the loop end");
+  const wrapped = f32(f32(to * f32(6000 * f32(to / 1))) + f32(f32(1 - from) * 6000));
+  assert.ok(Math.abs(wrapped - 60.6) < 1e-3, `${wrapped}`);
+  assert.ok(Math.abs(after - before - wrapped) <= 1, `wrapping step: ${after - before} vs ${wrapped}`);
+  // The prewarm's bounds scan calls the same 0x65b770 (0x1d2120): a rate that is 0 near the loop end
+  // leaves its carry at 0, so the prewarm's extra particle (carry 1 - 0 + 1e-4) is born. 12023 dump5
+  // fx_dis_par_so2023_04 glitter_add (rate 7.29 until .15 of its 10.3 s loop, 0 from .26): 10 particles
+  // 1.31 s after the activation, as here after 39 frames; the rate at 0 left 9.
+  const glitter = system({main: {duration: 10.3, prewarm: true, lifetime: constant(1.5), maxParticles: 100},
+    emission: {enabled: true, rate: {mode: 1, scalar: 7.29, min: 7.29, maxKeys: [[.15, 1, 0, 0], [.26, 0, 0, 0]]}, bursts: []}});
+  const warm = P.create(glitter, 5);
+  assert.equal(warm.sample(0, 30).length, 1, "the scan's zero rate leaves the prewarm its extra particle");
+  assert.equal(warm.sample(39, 30).length, 10);
+}
+
+// 0x65bd78 fires each burst at most once per emission call, however many repeats the step spans.
+function testBurstsOncePerWindow() {
+  const row = (cycles, interval = .01) => system({main: {looping: false, duration: 10, lifetime: constant(10)},
+    emission: {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles, interval, probability: 1}]}});
+  // One .2 s device frame runs 7 sub-steps: the first fires the burst, each later one a repeat.
+  assert.equal(P.create(row(0), 1).frames([.2], 1).length, 7);
+  // cycles 3: two repeats after the first (.05 s apart, every repeat in its own window) ...
+  assert.equal(P.create(row(3, .05), 1).frames([.2], 1).length, 3);
+  // ... but a step that spans repeats fires once, and none after (from - time) / interval reaches cycles - 1.
+  assert.equal(P.create(row(3), 1).frames([.2], 1).length, 1);
+  assert.equal(P.create(row(1), 1).frames([.2], 1).length, 1, "cycles 1 never repeats");
+  // A repeat fires in the step whose end reaches it: 1/60 steps cross a .01 s repeat once each.
+  assert.equal(P.create(row(0), 1).sample(1, 30).length, 2);
+  // The window is [from, to): a burst at the step's end fires in the next step.
+  const at = (time, main = {looping: false, duration: 10}) => system({main: {lifetime: constant(10), ...main}, shape: null,
+    emission: {rate: constant(0), bursts: [{time, count: constant(1), cycles: 1, interval: 0, probability: 1}]}});
+  const edge = P.create(at(f32(.025)), 1), steps = [f32(.025), f32(.025)];
+  assert.equal(edge.frames(steps, 1).length, 0, "a burst at the step end waits");
+  assert.equal(edge.frames(steps, 2).length, 1);
+  // A step that wraps checks repeats only in [0, to), not in [from, duration + 1e-4) (0x65bcc8-0x65bd10):
+  // the repeat of a .5 s burst at .995 s on a 1 s loop falls in the wrapping step .99 -> 1.01 and never fires.
+  const late = system({main: {looping: true, duration: 1, lifetime: constant(10)}, shape: null,
+    emission: {rate: constant(0), bursts: [{time: .5, count: constant(1), cycles: 0, interval: .495, probability: 1}]}});
+  const wrap = P.create(late, 1), frames = [f32(.99), f32(.02)];
+  assert.equal(wrap.frames(frames, 1).length, 1, "the burst at .5 s");
+  assert.equal(wrap.frames(frames, 2).length, 1, "no repeat from the wrap's end part");
+}
+
+// The device frames of a game run: activation, the frame a time shows, the song-end hold.
+function testFrameGrid() {
+  assert.equal(P.frameGrid(null), null);
+  assert.equal(P.frameGrid([[0, .2]]), null, "two frames at least");
+  assert.equal(P.frameGrid([[1, .2], [.9, .2]]), null, "the director never goes back");
+  assert.equal(P.frameGrid([[1, .2], [1.2, 0]]), null, "every frame has a deltaTime");
+  const grid = P.frameGrid([[0, .1, 10], [0, .2, 11], [.4, .25, 12], [.65, .3, 13], [.9, .2, 14], [.9, .15, 15], [.9, .1, 16]]);
+  assert.equal(grid.length, 7);
+  assert.equal(grid.activation(.4), 2, "the first frame reaching the clip start");
+  assert.equal(grid.activation(.5), 3);
+  assert.equal(grid.activation(0), 0, "a clip the first frame already shows: taken from the first frame");
+  assert.equal(grid.activation(1), -1, "no frame reaches the start");
+  assert.equal(grid.shown(.4), 2);
+  assert.equal(grid.shown(.6), 2, "between frames: the last one before");
+  assert.equal(grid.shown(.9), 6, "the song-end hold shows its last frame");
+  assert.equal(grid.shown(-.1), -1);
+  assert.equal(grid.shown(1), null, "past the last frame");
+  grid.pin = 15;
+  assert.equal(grid.shown(.9), 5, "a pinned frame among the frames at its time");
+  assert.equal(grid.shown(.65), 3, "a pin elsewhere does not apply");
+  grid.pin = null;
+  assert.ok(Math.abs(grid.elapsed(2, 4) - (f32(.25) + f32(.3) + f32(.2))) < 1e-12);
+  assert.equal(grid.elapsed(4, 3), 0);
+}
+
 function testCurvesAndColorsOverLifetime() {
   const row = system({main: {looping: false, duration: 1, lifetime: constant(2), size: constant(2)},
     emission: {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]},
@@ -825,6 +972,185 @@ async function testCullingFreezesTheClockOffScreen() {
   controller.dispose();
 }
 
+// update's grid (a game run's own device frames, frameGrid): the clip activates in the first frame
+// whose director time reaches its start and steps that frame's Time.deltaTime; every later frame steps
+// its own, and a culled system only the frames whose previous frame showed its box, on that frame's
+// cameras. 12035 dump5: ParticleSystem.time = sum of deltaTime over frames A .. N-1.
+async function testDeviceFramesInApply() {
+  const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]},
+    {parent: 0, path: "fx/cloud", layer: 1, position: [0, 0, 10], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
+  const once = {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]};
+  const main = {duration: 100, lifetime: constant(100), size: constant(1), cullingMode: 0, looping: true};
+  const culled = system({path: "fx/culled", node: 1, shape: null, emission: once,
+    culling: {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true}, main});
+  const kept = system({path: "fx/kept", node: 1, shape: null, emission: {rate: constant(30), bursts: []},
+    culling: {pauses: false, bounds: null, uniform: true}, main});
+  const slow = system({path: "fx/slow", node: 1, shape: null, emission: once,
+    culling: {pauses: false, bounds: null, uniform: true}, main: {...main, simulationSpeed: .5}});
+  const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
+    templates: [{name: "fx", nodes, systems: [culled, kept, slow]}],
+    cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1},
+      {trackId: "track", eventId: "track:1", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 2},
+      {trackId: "track", eventId: "track:2", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 3}]};
+  const root = new T.Group();
+  const controller = await P.apply(T, root, descriptor);
+  const ending = {id: "track:2", start: 1, duration: 10};
+  const project = {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 10}, {id: "track:1", start: .5, duration: 10},
+    ending]}], quality: {values: {stage_display: true}}};
+  // A slow device: director steps of .19 .. .27 s, a different Time.deltaTime in every frame (clamped
+  // to 1/3 on a long frame), and a song-end hold of three frames at 6.5 s. Distinct deltas make a
+  // culled window shifted by one frame sum to another time.
+  const rows = [];
+  for (let time = .5, k = 0; time < 6.4; k++) {
+    const step = [.19, .23, .27, .21][k % 4] + (k === 9 ? .25 : 0);
+    rows.push([Math.round(time * 1000) / 1000, Math.min(1 / 3, .17 + .0037 * k + (k === 9 ? .25 : 0)), 100 + k]);
+    time += step;
+  }
+  rows.push([6.5, .2, 100 + rows.length], [6.5, .21, 101 + rows.length], [6.5, .22, 102 + rows.length]);
+  const grid = P.frameGrid(rows);
+  assert.ok(grid, "a valid device grid");
+  const camera = new T.PerspectiveCamera(30, 16 / 9, .1, 1000);
+  const asked = [];
+  const view = {key: {}, cameraAt(time) {
+    asked.push(time);
+    camera.position.set(0, 0, 0);
+    camera.lookAt(0, 0, time >= 2 && time < 3 ? -10 : 10);
+    camera.updateMatrixWorld();
+    return camera;
+  }};
+  const state = () => Object.fromEntries(controller.inspect().map(row => [`${row.cue}/${row.path}`, row]));
+  const activated = grid.activation(1), last = grid.shown(4);
+  controller.update(4, project, view, null, grid);
+  let row = state();
+  const kept0 = row["track:0/fx/kept"], culled0 = row["track:0/fx/culled"];
+  assert.equal(kept0.device, true);
+  assert.equal(kept0.frames, last - activated + 1);
+  assert.equal(kept0.updates, last - activated + 1);
+  let sum = 0;
+  for (let k = activated; k <= last; k++) sum += f32(rows[k][1]);
+  assert.ok(Math.abs(kept0.time - sum) < 1e-9, `time ${kept0.time} = deltaTime of frames A .. j ${sum}`);
+  // ParticleSystem.time is the frames' Time.deltaTime scaled by simulationSpeed (0x1ce354).
+  let slowSum = 0;
+  for (let k = activated; k <= last; k++) slowSum += f32(f32(rows[k][1]) * .5);
+  assert.ok(Math.abs(row["track:0/fx/slow"].time - slowSum) < 1e-9, `speed .5: ${row["track:0/fx/slow"].time} = ${slowSum}`);
+  // The culled system steps a frame only when the frame before it saw the box.
+  const lookedAway = k => rows[k][0] >= 2 && rows[k][0] < 3;
+  let culledSum = f32(rows[activated][1]), culledUpdates = 1, ownSum = f32(rows[activated][1]);
+  for (let k = activated + 1; k <= last; k++) {
+    if (!lookedAway(k)) ownSum += f32(rows[k][1]);
+    if (lookedAway(k - 1)) continue;
+    culledSum += f32(rows[k][1]);
+    culledUpdates++;
+  }
+  assert.ok(culledUpdates < kept0.updates);
+  assert.equal(culled0.updates, culledUpdates);
+  assert.ok(Math.abs(culled0.time - culledSum) < 1e-9, `culled time ${culled0.time} = ${culledSum}`);
+  assert.ok(Math.abs(ownSum - culledSum) > 1e-3, "each frame's own cameras would give another time");
+  for (let k = activated; k < last; k++) assert.ok(asked.includes(rows[k][0]), `cameras at frame ${k}'s director time`);
+  assert.ok(!asked.includes(rows[last][0]), "the frame shown updated on the frame before it: its own cameras are not asked");
+  // Frame by frame, the updates so far: frame k adds one exactly when frame k - 1's cameras saw the box.
+  const counts = [], expected = [];
+  for (let k = activated, n = 0; k <= last; k++) {
+    if (k === activated || !lookedAway(k - 1)) n++;
+    expected.push(n);
+    controller.update(rows[k][0], project, view, null, grid);
+    counts.push(state()["track:0/fx/culled"].updates);
+  }
+  assert.deepEqual(counts, expected);
+  controller.update(4, project, view, null, grid);
+  row = state();
+  // The same particles as the stream on the same updates.
+  const stream = P.create(kept, 1234);
+  const updates = rows.slice(activated, last + 1).map(entry => f32(entry[1]));
+  assert.equal(kept0.alive, stream.frames(updates, updates.length).length);
+  // A clip the first frame already shows runs from the first frame (its earlier frames are not known).
+  const early = row["track:1/fx/kept"];
+  assert.equal(early.device, true);
+  assert.equal(early.frames, last + 1);
+  // A clip that ends between two frames: a time after its end still shows the frame before it, in
+  // which the clip was active; the next frame no longer has it.
+  const before = grid.shown(3.5);
+  ending.duration = (rows[before][0] + rows[before + 1][0]) / 2 - ending.start;
+  const between = (ending.start + ending.duration + rows[before + 1][0]) / 2;
+  controller.update(between, project, view, null, grid);
+  const shownEnd = state()["track:2/fx/kept"];
+  assert.equal(shownEnd?.device, true, "drawn on the frame shown");
+  assert.equal(shownEnd.frames, before - grid.activation(1) + 1);
+  controller.update(rows[before + 1][0], project, view, null, grid);
+  assert.equal(state()["track:2/fx/kept"], undefined, "the first frame after the end");
+  ending.duration = 10;
+  // Seeking back: the earlier frame's state again.
+  controller.update(1.5, project, view, null, grid);
+  row = state();
+  assert.equal(row["track:0/fx/kept"].frames, grid.shown(1.5) - activated + 1);
+  // A director time between frames shows the last frame before it; before the activation frame the clone is not drawn.
+  controller.update(rows[activated][0] - 1e-3, project, view, null, grid);
+  assert.equal(state()["track:0/fx/kept"], undefined, "inside the clip window but before its first game frame");
+  // The song-end hold: the last frame at its time, or the pinned one.
+  controller.update(6.5, project, view, null, grid);
+  const held = state()["track:0/fx/kept"].frames;
+  grid.pin = 100 + rows.length - 3;
+  controller.update(6.5, project, view, null, grid);
+  assert.equal(state()["track:0/fx/kept"].frames, held - 2);
+  grid.pin = null;
+  // Past the last frame, and without a grid: the display frames.
+  controller.update(7, project, view, null, grid);
+  assert.equal(state()["track:0/fx/kept"].device, false);
+  controller.update(4, project, view);
+  assert.equal(state()["track:0/fx/kept"].frames, P.activeFrames({start: 1, duration: 10}, 4, 30));
+  controller.dispose();
+}
+
+// On device frames a culled system's box follows the prefab Animator: frame k updates only when the
+// pose after the clone seconds through frame k - 1 (elapsed(A, k - 1)) showed the box, under a camera
+// that never moves.
+async function testDeviceFramesFollowThePrefabPose() {
+  const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]},
+    {parent: 0, path: "fx/cloud", layer: 1, position: [0, 0, 10], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
+  const once = {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]};
+  const culled = system({path: "fx/cloud", node: 1, shape: null, emission: once,
+    culling: {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true},
+    main: {duration: 100, lifetime: constant(100), size: constant(1), cullingMode: 0, looping: true}});
+  // The Animator carries the cloud 50 m aside from .6 to 1.4 clone seconds.
+  const away = [[0, 0], [.6, 0], [.6001, 50], [1.4, 50], [1.4001, 0]];
+  const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
+    templates: [{name: "fx", nodes, systems: [culled], animation: {clips: [{name: "move", start: 0, duration: 10, loop: false}],
+      channels: [{node: 1, clip: 0, kind: "translation", curves: [["linear", away], ["constant", 0], ["constant", 10]]}]}}],
+    cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1}]};
+  assert.equal(P.validDescriptor(descriptor), true);
+  const controller = await P.apply(T, new T.Group(), descriptor);
+  const project = {tracks: [{id: "track", events: [{id: "track:0", start: .3, duration: 10}]}],
+    quality: {values: {stage_display: true}}};
+  const rows = [];
+  for (let k = 0; k < 16; k++) rows.push([Math.round(k * .2 * 1000) / 1000, .13 + .007 * k, 50 + k]);
+  const grid = P.frameGrid(rows);
+  const camera = new T.PerspectiveCamera(30, 16 / 9, .1, 1000);
+  camera.lookAt(0, 0, 10);
+  camera.updateMatrixWorld();
+  const view = {key: {}, cameraAt: () => camera};
+  const activated = grid.activation(.3), last = rows.length - 1;
+  const clone = k => grid.elapsed(activated, k);
+  const aside = k => clone(k) >= .6 && clone(k) < 1.4001;
+  for (let k = activated; k <= last; k++) assert.ok(clone(k) < .6 || clone(k) > .6001, "no frame inside the move");
+  const counts = [], expected = [];
+  let sum = 0, ownSum = 0;
+  for (let k = activated, n = 0; k <= last; k++) {
+    if (k === activated || !aside(k - 1)) {
+      n++;
+      sum += f32(rows[k][1]);
+    }
+    if (k === activated || !aside(k)) ownSum += f32(rows[k][1]);
+    expected.push(n);
+    controller.update(rows[k][0], project, view, null, grid);
+    counts.push(controller.inspect()[0].updates);
+  }
+  assert.ok(expected[expected.length - 1] < last - activated + 1, "the move culls frames");
+  assert.deepEqual(counts, expected);
+  assert.ok(Math.abs(controller.inspect()[0].time - sum) < 1e-9);
+  assert.ok(Math.abs(ownSum - sum) > 1e-3, "the pose through frame k would give another time");
+  controller.dispose();
+}
+
 (async () => {
   testDrawOrderMatchesNativeLanes();
   testPerStepLifetimeFloor();
@@ -834,6 +1160,10 @@ async function testCullingFreezesTheClockOffScreen() {
   testProceduralPrewarmRegeneration();
   testPrewarmRemainderAtSimulationSpeed();
   testBurstsCyclesAndExpiry();
+  testDeviceFrameSteps();
+  testEmissionRateAtStepEnd();
+  testBurstsOncePerWindow();
+  testFrameGrid();
   testCurvesAndColorsOverLifetime();
   testOrbitalRadialAndBurstSpread();
   testLimitVelocityDampenAndDrag();
@@ -845,6 +1175,8 @@ async function testCullingFreezesTheClockOffScreen() {
   await testTiltedAndLocallyScaledBillboards();
   await testPrefabAnimatorCurves();
   await testCullingFreezesTheClockOffScreen();
+  await testDeviceFramesInApply();
+  await testDeviceFramesFollowThePrefabPose();
   console.log("mv_studio_particle_systems_test: ok");
 })().catch(error => {
   console.error(error);
