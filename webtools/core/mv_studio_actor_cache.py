@@ -97,12 +97,25 @@ class ActorCache:
         self.path = directory / "receipts.sqlite3"
         self.context = context
         self.media = media
+        from .mv_studio_import_cache import _source_recipe
+        # The bytes of this tool's code (read through the import system), the library
+        # releases and zlib builds (mv_studio_import_cache): the same in every process
+        # whatever was imported before the cache opened.
+        source = _source_recipe()
         recipe = {
             "version": _PREVIEW_VERSION,
             "runtime": sys.implementation.cache_tag,
-            "dependencies": [getattr(sys.modules.get(name), "__version__", None) for name in ("UnityPy", "numpy", "PIL")],
+            "source": source,
             "decoders": [_decoder(name) for name in ("ASTCENC_BIN", "ELICHIKA_TEXTURE65_BIN")],
         }
+        if source is None:
+            # An importer that cannot hand back module bytes (the APK's packed assets, if
+            # its loader does not) keeps the actor cache as it was before the code recipe:
+            # keyed by _PREVIEW_VERSION and the library releases. Re-opening an MV there
+            # stays as fast as it was; the import receipts store still stays closed.
+            del recipe["source"]
+            recipe["dependencies"] = [getattr(sys.modules.get(name), "__version__", None)
+                                      for name in ("UnityPy", "numpy", "PIL")]
         self.recipe = sha256(_encode(recipe)).hexdigest()
         with closing(self._database()) as db, db:
             db.execute("""CREATE TABLE IF NOT EXISTS actor_receipts (

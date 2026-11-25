@@ -5,6 +5,7 @@ import time
 
 import numpy as np
 
+from . import transient_failures
 from .model_materials import _original_mips
 from .model_viewer import MAX_TEXTURE_PIXELS, _key, _properties, _ref
 from .mv_studio_stage_coloring import _path as _object_path
@@ -361,13 +362,15 @@ def attach_texture_samplers(materials, deadline, *, priority):
         if min(level for _, _, level in bindings) != priority:
             continue
         if time.monotonic() >= deadline:
+            transient_failures.note()  # a faster run would add the remaining chains
             break
         data_size, pixels, count = len(glb.data), materials.pixels, scene.stats["textures"]
         lengths = {name: len(glb.doc[name]) for name in ("bufferViews", "images", "samplers", "textures")}
         texture_indices = materials.textures.copy()
         try:
             sampler = _texture_sampler(materials, source)
-        except (AttributeError, OSError, TypeError, ValueError, subprocess.SubprocessError):
+        except (AttributeError, OSError, TypeError, ValueError, subprocess.SubprocessError) as error:
+            transient_failures.note_if_environmental(error)
             # A missing or failed level must neither expose a partial chain nor
             # reserve texture budget needed by the next native source.
             del glb.data[data_size:]
@@ -479,7 +482,9 @@ def export_reflection(scene, glb, materials, material, cube_cache):
     if key not in cube_cache:
         try:
             result = _cube_pixels(cube.read(), MAX_TEXTURE_PIXELS - materials.pixels, scene.deadline)
-        except (ValueError, OSError, subprocess.TimeoutExpired):
+        except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+            # The decoders note their own failures; this catches a timeout or I/O error around them.
+            transient_failures.note_if_environmental(error)
             result = None
         cube_cache[key] = None
         if result is not None:

@@ -58,6 +58,8 @@ class SavedFacePlatformMismatch(FaceUnavailable):
 
 def _check(deadline):
     if time.monotonic() >= deadline:
+        from .transient_failures import note
+        note()
         raise FaceUnavailable("Finding the original face took too long.")
 
 
@@ -622,6 +624,8 @@ def _download_with_deadline(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
     finished = completed.wait(max(0., deadline - time.monotonic()))
     with lock:
         if not finished or time.monotonic() >= deadline:
+            from .transient_failures import note
+            note()
             state.clear()
             state["abandoned"] = True
             raise FaceUnavailable("Finding the original face took too long.")

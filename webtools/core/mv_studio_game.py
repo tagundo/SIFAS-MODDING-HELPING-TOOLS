@@ -577,6 +577,8 @@ class _ReadJob:
 
 def _check_deadline(deadline):
     if time.monotonic() >= deadline:
+        from .transient_failures import note
+        note()
         raise ValueError("Reading the selected MV assets took too long. Try again.")
 
 

@@ -8,6 +8,9 @@ import json
 import mimetypes
 import os
 import posixpath
+import select
+import socket
+import time
 from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -42,6 +45,51 @@ _MV_REGISTRATION_ROUTES = {
 
 class _MVStreamClosed(Exception):
     """Stop the import when the stream can no longer deliver its preview."""
+
+
+def _run_later(tasks):
+    """Run work an MV import deferred until its result was delivered; it only saves time later."""
+    for task in tasks:
+        try:
+            task()
+        except Exception:  # never let deferred cache writes fail a delivered response
+            pass
+
+
+class _PeerWatch:
+    """Notice, without writing, that the client of a long request went away.
+
+    The request body has been read in full, so the socket only turns readable
+    when the peer closes (EOF or reset). A browser never half-closes a
+    request it still reads. Checks run at most every ``interval`` seconds.
+    """
+
+    def __init__(self, connection, interval=.1):
+        self._connection, self._interval, self._next, self.closed = connection, interval, 0., False
+
+    def _readable(self):
+        # poll() has no descriptor limit; select() cannot watch descriptors above
+        # FD_SETSIZE, which a long-running server can reach.
+        if hasattr(select, "poll"):
+            poller = select.poll()
+            poller.register(self._connection, select.POLLIN | select.POLLPRI)
+            return bool(poller.poll(0))
+        readable, _, _ = select.select([self._connection], [], [], 0)
+        return bool(readable)
+
+    def check(self):
+        now = time.monotonic()
+        if self.closed or now < self._next:
+            return self.closed
+        self._next = now + self._interval
+        try:
+            if self._readable():
+                self.closed = not self._connection.recv(1, socket.MSG_PEEK)
+        except OSError:
+            self.closed = True  # reset by the peer
+        except ValueError:
+            pass  # this descriptor cannot be watched: keep importing
+        return self.closed
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -280,8 +328,26 @@ class Handler(BaseHTTPRequestHandler):
                            "live_id": data["liveId"], "asset_id": data["assetId"], "download": data.get("download", False),
                            **{field: data[field] for field in ("costumes", "deck") if field in data}}
                 if action == "game-stream":
-                    return self._stream_mv_game(mv_studio.load_game, **options)
-                return self._send_json(mv_studio.load_game(Path.cwd(), **options))
+                    # ?progress=1 adds plan/progress records. Older servers ignore the
+                    # query, so a newer page still works with them (without progress).
+                    progress = self._query().get("progress") == ["1"]
+                    return self._stream_mv_game(mv_studio.load_game, progress=progress, **options)
+                from webtools.core.mv_studio_progress import ImportCancelled
+                watch = _PeerWatch(self.connection)
+
+                def cancelled(_event):
+                    if watch.check():
+                        raise ImportCancelled()
+                later = []
+                try:
+                    project = mv_studio.load_game(Path.cwd(), **options, on_progress=cancelled, later=later)
+                except ImportCancelled:
+                    self.close_connection = True
+                    return None
+                try:
+                    return self._send_json(project)
+                finally:
+                    _run_later(later)
             if action == "open":
                 data = self._viewer_feature_request({"path"}, token=False)
                 return self._send_json(mv_studio.open_project(data["path"]))
@@ -303,13 +369,15 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, TypeError, OverflowError, SQLiteError) as error:
             return self._send_json({"error": i18n.tr(str(error), self._lang())}, status=400)
 
-    def _stream_mv_game(self, load_game, **options):
+    def _stream_mv_game(self, load_game, progress=False, **options):
+        from webtools.core.mv_studio_progress import ImportCancelled
         started = False
+        watch = _PeerWatch(self.connection)
 
         def send(event):
             nonlocal started
             line = json.dumps(event, separators=(",", ":"), allow_nan=False).encode("utf-8")
-            if event["type"] == "stage":
+            if event["type"] == "stage" or (progress and not started):
                 # Let even small previews pass browser response buffering before the cast is ready.
                 line = line.ljust(_MV_STREAM_FIRST_RECORD_BYTES - 1, b" ")
             try:
@@ -328,11 +396,33 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as error:
                 raise _MVStreamClosed() from error
 
+        def on_progress(event):
+            # The import stops at its next report or check (event None) once the client
+            # has gone, also when that client did not ask for progress records.
+            try:
+                if watch.check():
+                    raise _MVStreamClosed()
+                if progress and event is not None:
+                    send(event)
+            except _MVStreamClosed as error:
+                raise ImportCancelled() from error
+
+        # Restart-safe receipt writes of a finished import, run once the project went out.
+        later = []
         try:
-            project = load_game(Path.cwd(), **options,
+            project = load_game(Path.cwd(), **options, on_progress=on_progress, later=later,
                                 on_stage=lambda preview: send({"type": "stage", "preview": preview}))
-            send({"type": "complete", "project": project})
-        except _MVStreamClosed:
+            try:
+                send({"type": "complete", "project": project})
+                # The page reads this stream to its end (Connection: close, no length)
+                # before it shows the project: end it now, not after the receipt writes.
+                try:
+                    self.connection.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+            finally:
+                _run_later(later)
+        except (_MVStreamClosed, ImportCancelled):
             return
         except Exception as error:
             if not started:

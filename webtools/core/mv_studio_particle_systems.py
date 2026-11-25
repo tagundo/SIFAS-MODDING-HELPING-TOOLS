@@ -64,7 +64,7 @@ import time
 import zlib
 
 from . import decode, model_animation as animation, model_viewer as viewer
-from . import mv_studio_prefab_animator as animator
+from . import mv_studio_prefab_animator as animator, transient_failures
 from . import mv_studio_stage_motion as motion, mv_studio_stage_title as title, mv_studio_timeline as timeline
 from .model_materials import _original_mips
 from .mv_studio_stage_display import _shader_matches
@@ -1513,7 +1513,10 @@ def read(objects, mono, tracks, deadline, *, claimed=frozenset(), outcomes=None,
         if key not in prefab_ids:
             prefab_ids[key] = None
             outcome = outcomes.setdefault(key, {"systems": [], "rejected": [], "error": None})
-            if time.monotonic() > deadline - _RESERVE_SECONDS or len(templates) >= _MAX_TEMPLATES:
+            over_time = time.monotonic() > deadline - _RESERVE_SECONDS
+            if over_time:
+                transient_failures.note()  # a faster run would read this template
+            if over_time or len(templates) >= _MAX_TEMPLATES:
                 outcome["error"] = "import time budget"
                 unsupported.append({"template": event["label"][:128], "path": "", "reason": "import time budget"})
                 continue

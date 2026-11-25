@@ -38,7 +38,7 @@ import time
 
 from . import model_viewer as viewer, mv_studio_particle_systems as particles
 from . import mv_studio_prefab_animator as animator, mv_studio_stage_title as title
-from . import unity_builtin_meshes
+from . import transient_failures, unity_builtin_meshes
 
 
 SCHEMA = 1
@@ -407,7 +407,10 @@ def read(objects, mono, tracks, deadline, *, claimed=None, outcomes=None, textur
             drawn, gaps, quiet = _particle_summary(outcome)
             index, meshes = None, 0
             try:
-                if time.monotonic() > deadline - _RESERVE_SECONDS or len(templates) >= _MAX_TEMPLATES:
+                if time.monotonic() > deadline - _RESERVE_SECONDS:
+                    transient_failures.note()  # a faster run would read this template
+                    raise animator.Unsupported("import time budget")
+                if len(templates) >= _MAX_TEMPLATES:
                     raise animator.Unsupported("import time budget")
                 walked = (outcome or {}).get("walked")
                 if walked is None:

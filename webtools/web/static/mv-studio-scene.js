@@ -1485,6 +1485,12 @@
         }
       }
 
+      // Optional loading progress for the caller: models done/total, then effects.
+      const report = (update) => {
+        try { if (active()) preferences?.onProgress?.(update); } catch (_) {}
+      };
+      report({ done: start, total: entries.length });
+
       // Fetch the next GLB while the current one decodes. Only one model is
       // decoded at a time so concurrent texture uploads stay bounded on mobile.
       function fetchEntry(entry) {
@@ -1516,8 +1522,10 @@
         } catch (error) {
           if (!signal.aborted && !disposed && options && options.onError) options.onError(error.message);
         }
+        report({ done: index + 1, total: entries.length });
       }
       if (!active()) return;
+      report({ phase: "effects" });
       const title = await global.MVStudioTitle?.apply(T, scene, value.stageTitle);
       if (!active()) {
         title?.dispose();

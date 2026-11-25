@@ -94,13 +94,18 @@ class MVStudioStreamTests(unittest.TestCase):
             self.assertIsNotNone(response.getheader("Content-Length"))
             self.assertEqual(json.load(response), self.project)
         stream, legacy = self.load.call_args_list
-        options = dict(stream.kwargs)
+        options, legacy_options = dict(stream.kwargs), dict(legacy.kwargs)
         self.assertTrue(callable(options.pop("on_stage")))
+        # Both routes stop the import when their client leaves (see the progress tests).
+        self.assertTrue(callable(options.pop("on_progress")))
+        self.assertTrue(callable(legacy_options.pop("on_progress")))
+        # Both run the import's deferred receipt writes after answering.
+        self.assertEqual((options.pop("later"), legacy_options.pop("later")), ([], []))
         self.assertEqual(stream.args, legacy.args)
         self.assertEqual(stream.args, (Path.cwd(),))
-        self.assertEqual(options, legacy.kwargs)
-        self.assertEqual(legacy.kwargs, {"language": "ko", "region": "gl", "platform": "android",
-                                        "live_id": 12002, "asset_id": 1200203, "download": True})
+        self.assertEqual(options, legacy_options)
+        self.assertEqual(legacy_options, {"language": "ko", "region": "gl", "platform": "android",
+                                          "live_id": 12002, "asset_id": 1200203, "download": True})
 
     def test_explicit_costumes_reach_the_import(self):
         # mv_runtime_capture.js --suits pins the suits a recorded game performance wore.

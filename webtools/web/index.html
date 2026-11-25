@@ -464,6 +464,17 @@
         <div class="mv-preview">
           <div id="mv-scene" class="mv-scene"></div>
           <p id="mv-empty-preview" class="mv-empty-preview" data-i18n="Open an MV to preview its stage and timeline.">Open an MV to preview its stage and timeline.</p>
+          <div id="mv-import-progress" class="mv-import-progress" role="group" aria-labelledby="mv-import-step" hidden>
+            <div class="mv-import-head">
+              <span id="mv-import-step" class="mv-import-step"></span>
+              <span id="mv-import-percent" class="mv-import-percent" aria-hidden="true"></span>
+            </div>
+            <progress id="mv-import-bar" class="mv-import-bar" max="100" aria-labelledby="mv-import-step"></progress>
+            <div class="mv-import-foot">
+              <span id="mv-import-detail" class="mv-import-detail"></span>
+              <button id="mv-import-cancel" type="button" data-i18n="Cancel import">Cancel import</button>
+            </div>
+          </div>
           <div class="mv-preview-controls" id="mv-preview-controls" hidden>
             <label><span class="sr-only" data-i18n="Preview camera">Preview camera</span><select id="mv-camera-mode">
               <option value="live" data-i18n="Game camera">Game camera</option>
@@ -726,6 +737,7 @@
   <script src="/static/mv-studio-timeline-tabs.js"></script>
   <script src="/static/mv-studio-timeline-interact.js"></script>
   <script src="/static/mv-studio-scene.js"></script>
+  <script src="/static/mv-studio-import-progress.js"></script>
   <script src="/static/mv-studio-register.js"></script>
   <script src="/static/mv-studio-apply.js"></script>
   <script src="/static/mv-studio.js"></script>

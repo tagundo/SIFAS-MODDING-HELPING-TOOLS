@@ -18,7 +18,7 @@ from urllib.parse import quote
 import zipfile
 
 from webtools import filebrowser
-from . import game_models, model_viewer, viewer_archive
+from . import game_models, model_viewer, transient_failures, viewer_archive
 from .member_identity import member_from_native
 from .sukusta import default_sukusta_dir
 from .viewer_cache import game_models_dir, viewer_cache_root
@@ -40,10 +40,14 @@ _PREVIEW_KIND = {"stage", "effect", "props", "background", "performer", "outfit"
 _MEMBER_MAX = 12
 _ROLES = _PREVIEW_KIND | {"audio", "timeline", "camera", "lighting", "display", "dance", "mouth", "eyes", "gaze", "cheek", "shader", "crowd", "split", "other"}
 _IMPORT = threading.BoundedSemaphore(1)
+_IMPORT_WAIT_SECONDS = 5
 _ACTOR_PREVIEWS = OrderedDict()
 _STAGE_PREVIEWS = OrderedDict()
 _ACTOR_PREVIEW_ENTRIES = 24
 _ACTOR_PREVIEW_METADATA_BYTES = 4 * 1024 * 1024
+# Conversion warnings that follow from the bundle's own content (never from a
+# decoder timeout or a busy worker), so a restart-safe receipt may repeat them.
+_STRUCTURAL_WARNINGS = {"linked_mesh_missing", "linked_texture_missing", "stage_hidden_transform"}
 
 
 def _root():
@@ -181,12 +185,17 @@ def _path(value):
 
 
 def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, stage_bindings=(),
-             native_stage_effect=False, attach="", prop_skeleton=(), warnings=None):
+             native_stage_effect=False, attach="", prop_skeleton=(), warnings=None, reused=None, store=None):
     """Return (media URL, rig) of a model preview; ``warnings`` receives its conversion warnings.
 
     ``attach`` is the performer's m_suit_attach key and ``prop_skeleton`` the
     member's merged prop skeleton (mv_studio_props.skeleton). A stage preview
-    is reused from the cache only when it converted without warnings.
+    is reused from the in-memory cache only when it converted without
+    warnings, and from ``store`` (mv_studio_import_cache) only when its
+    warnings are structural; the receipt then repeats them. ``reused`` (a
+    list) receives True when the result came from a cache. Neither cache keeps
+    a conversion during which a failure that may not repeat was noted
+    (transient_failures).
     """
     models = [path, *companions]
     key = None
@@ -204,9 +213,26 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
             try:
                 previous, _ = media(name)
                 if game_models._sha(previous)[:32] == previous.stem:
+                    if reused is not None:
+                        reused.append(True)
                     return _MEDIA_URL + name, rig
             except OSError:
                 pass
+    receipt = None
+    if key is not None and store is not None and not performer:
+        try:
+            receipt = store.key("preview", str(key[0]), [list(item) for item in key[1]], [list(item) for item in key[2]],
+                                list(key[3]), key[4])
+        except (TypeError, ValueError):
+            receipt = None
+        saved = store.get(receipt) if receipt is not None else None
+        if saved is not None:
+            if warnings is not None:
+                warnings.extend(saved["warnings"])
+            if reused is not None:
+                reused.append(True)
+            return _MEDIA_URL + saved["name"], saved["rig"]
+    watch = transient_failures.Watch()
     prepared = model_viewer.prepare(list(map(str, models)), rigged=performer,
         face_context={"enabled": performer and not companions, "allow_download": False,
                       "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions),
@@ -228,19 +254,19 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
             physics = viewer_physics.catalogue_preview(models, rig["bones"])
             if physics.get("available"):
                 rig = {**rig, "physics": physics}
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             # Optional source physics is independent of the usable body model.
-            pass
+            transient_failures.note_if_environmental(error)
         from . import model_constraints
 
         try:
             constraints = model_constraints.catalogue_preview(models, rig["bones"])
             if constraints.get("available"):
                 rig = {**rig, "constraints": constraints}
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             # Unity constraints are optional rig data, like source physics.
-            pass
-    if key is not None:
+            transient_failures.note_if_environmental(error)
+    if key is not None and watch.clean:
         if performer and rig.get("available") and any(clip.get("bindingComplete") for clip in rig.get("clips", [])):
             model_viewer._conversion_put(
                 cache, key, json.dumps([url.removeprefix(_MEDIA_URL), rig]).encode(),
@@ -249,6 +275,10 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         elif not performer and not prepared.get("warnings"):
             model_viewer._conversion_put(cache, key, json.dumps([url.removeprefix(_MEDIA_URL), rig]).encode(),
                                          max_bytes=16 * 1024, max_entries=32)
+    if receipt is not None and watch.clean:
+        converted = list(prepared.get("warnings") or ())
+        if all(isinstance(item, dict) and item.get("code") in _STRUCTURAL_WARNINGS for item in converted):
+            store.put(receipt, {"name": url.removeprefix(_MEDIA_URL), "rig": rig, "warnings": converted})
     return url, rig
 
 
@@ -303,9 +333,18 @@ def import_asset(path, kind):
     return _asset(_path(path), kind)
 
 
-def _timeline(path):
-    from . import mv_studio_timeline
+def _timeline(path, store=None, reused=None):
+    """(raw bytes, parsed timeline); ``store`` keeps restart-safe receipts of the parse."""
+    from . import mv_studio_import_cache, mv_studio_timeline
     raw = path.read_bytes()
+    receipt = store.key("timeline", mv_studio_import_cache.digest(raw), path.name) if store is not None else None
+    parsed = store.get(receipt) if receipt is not None else None
+    hit = parsed is not None and bool(parsed.get("tracks"))
+    if reused is not None:
+        reused.append(hit)
+    if hit:
+        return raw, parsed
+    watch = transient_failures.Watch()
     parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True,
                                                preview_member_shafts=True, preview_stage_title=True,
                                                preview_stage_particles=True, preview_stage_ribbons=True,
@@ -320,6 +359,10 @@ def _timeline(path):
                                                preview_control_prefabs=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
+    # A texture or template given up for want of time, memory or a working decoder
+    # is not a property of these bytes: such a parse is used but never kept.
+    if receipt is not None and watch.clean:
+        store.put(receipt, parsed)
     return raw, parsed
 
 
@@ -444,26 +487,74 @@ def _stage_snapshot(project, assets, performers):
     })
 
 
+def _descriptor_bytes(*descriptors):
+    return sum(item["size"] for item in descriptors
+               if isinstance(item, dict) and type(item.get("size")) is int and item.get("available") is not False)
+
+
+def _progress_plan(selected):
+    """The steps of this import, in order, for the progress plan."""
+    stage = selected.get("stage") or {}
+    audio = selected.get("audio") or {}
+    performers = selected.get("performers", [])[:_MEMBER_MAX]
+    steps = [{"id": "resolve"},
+             {"id": "timeline", "bytes": _descriptor_bytes(selected.get("timeline"), *selected.get("choreography", []))},
+             {"id": "stage", "bytes": _descriptor_bytes(selected.get("stageModel") or stage.get("model"))},
+             {"id": "effect", "bytes": _descriptor_bytes(selected.get("stageEffect") or stage.get("effect"))}]
+    if stage.get("props"):
+        steps.append({"id": "props", "bytes": _descriptor_bytes(stage["props"])})
+    for index, entry in enumerate(performers, 1):
+        steps.append({"id": "member", "index": index, "of": len(performers),
+                      "bytes": _descriptor_bytes(entry.get("model"), *entry.get("companions", []), *entry.get("facial", []))})
+    if audio.get("cue") and audio.get("acb"):
+        steps.append({"id": "audio", "bytes": _descriptor_bytes(audio["acb"], audio.get("awb"))})
+    steps.append({"id": "finish"})
+    return steps, len(performers), sum(step.get("bytes", 0) for step in steps)
+
+
 def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None, costumes=None,
-              deck=None):
+              deck=None, on_progress=None, later=None):
     """Import the complete project, optionally publishing its renderable stage first.
 
     Performers follow the client's MV deck chain (mv_studio_suits); `deck` gives the
     player state (deck type, local Elichika player). `costumes` ({position: suit id or
     {"suit", "viewStatus"}}) dresses members in explicit suits instead, e.g. the suits a
-    recorded game performance wore."""
-    from . import mv_studio_actor_cache, mv_studio_game, mv_studio_quality, mv_studio_suits
+    recorded game performance wore. `on_progress` receives the events that
+    mv_studio_progress describes and may raise its ImportCancelled.
+
+    The restart-safe receipts of the timeline, clips, stage and soundtrack are
+    written after the project is complete: given a list `later`, as a callable
+    appended to it for the caller to run once the project has been delivered,
+    otherwise before this returns. An import that fails or is cancelled
+    writes none of them."""
+    from . import (mv_studio_actor_cache, mv_studio_game, mv_studio_import_cache, mv_studio_progress, mv_studio_quality,
+                   mv_studio_suits)
 
     if type(download) is not bool:
         raise ValueError("Choose whether to download missing game assets.")
     if on_stage is not None and not callable(on_stage):
         raise TypeError("The stage preview callback must be callable.")
-    if not _IMPORT.acquire(blocking=False):
+    if on_progress is not None and not callable(on_progress):
+        raise TypeError("The progress callback must be callable.")
+    if later is not None and type(later) is not list:
+        raise TypeError("Deferred receipt writes need a list.")
+    progress = mv_studio_progress.Progress(on_progress) if on_progress is not None else mv_studio_progress.SILENT
+    # An import whose client left stops at its next cancellation point (normally within a
+    # fraction of a second). A new import, usually the same person choosing again, waits
+    # for that instead of being refused.
+    if not _IMPORT.acquire(timeout=_IMPORT_WAIT_SECONDS):
         raise ValueError("An MV is already being prepared. Try again when it finishes.")
+    previous_progress = mv_studio_progress.activate(progress)
+    previous_textures = model_viewer.set_texture_store(None)
     try:
+        # Decoded textures are reused across MVs: a costume's are the same in every song.
+        model_viewer.set_texture_store(mv_studio_import_cache.open_texture_cache(media))
         selected = mv_studio_game.resolve(repo_root, region=region, platform=platform,
                                           live_id=live_id, asset_id=asset_id, language=language, costumes=costumes,
                                           deck=deck)
+        steps, members, total_bytes = _progress_plan(selected)
+        progress.plan(steps, members, total_bytes)
+        progress.state("resolve", "done")
         source = {"kind": "game", "region": selected["region"], "platform": selected["platform"],
                   "liveId": selected["liveId"], "assetId": selected["assetId"], "mvOnly": selected.get("mvOnly", False),
                   "registered": selected.get("registered", False),
@@ -481,6 +572,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                                                              quality_set=selected.get("qualitySet"))
         deadline = time.monotonic() + 210
         warnings = project["warnings"]
+        # Receipts are only written once the whole import has succeeded (flush below).
+        receipts = mv_studio_import_cache.open_cache(media, pending=[])
         with tempfile.TemporaryDirectory(prefix="import-", dir=_root()) as name:
             directory = Path(name)
             local, rows = {}, {}
@@ -505,6 +598,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 if row["id"] not in local:
                     try:
                         raw = read_asset(descriptor)
+                        progress.read(len(raw or b""))
                         if not raw:
                             row["status"] = "missing"
                             return row, None
@@ -518,10 +612,13 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                         return row, None
                 return row, local[row["id"]]
 
+            progress.state("timeline", "start")
             timeline_row, timeline = load(selected.get("timeline"), "timeline", "Live timeline")
             if timeline is None:
                 raise ValueError("The original MV timeline pack is missing. Download its missing assets or choose a local mod file.")
-            native, parsed = _timeline(timeline)
+            timeline_reused = []
+            native, parsed = (_timeline(timeline) if receipts is None else
+                              _timeline(timeline, store=receipts, reused=timeline_reused))
             project.update({field: parsed[field] for field in
                             ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
                              "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
@@ -533,27 +630,34 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:_MEMBER_MAX]
             # Dance clips live in the timeline's choreography packs (exact CAB/PathID).
-            clip_names = mv_studio_external_clips.apply(project, native, selected.get("choreography", []), read_asset, deadline)
+            clip_names = mv_studio_external_clips.apply(project, native, selected.get("choreography", []), read_asset, deadline,
+                                                        cache=receipts, reused=timeline_reused)
             performers = _cast_in_timeline_order(original_cast, project["tracks"], clip_names)
+            progress.state("timeline", "cached" if timeline_reused and all(timeline_reused) else "done")
             stage = selected.get("stage") or {}
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
             effect_row, effect_file = load(selected.get("stageEffect") or stage.get("effect"), "effect", "Stage effects")
             from . import mv_studio_import_coverage
             shadow_gap = None
-            for row, preview_path in ((stage_row, stage_file), (effect_row, effect_file)):
+            for step, (row, preview_path) in zip(("stage", "effect"), ((stage_row, stage_file), (effect_row, effect_file))):
                 if preview_path is None:
+                    progress.state(step, "skipped")
                     continue
+                progress.state(step, "start")
                 try:
                     bindings = project.get("stageMotion", {}).get("bindings", ()) if row is effect_row else ()
-                    converted = []
+                    converted, reused = [], []
                     row["previewUrl"], _ = _preview(preview_path, reuse=True, stage_bindings=bindings,
-                                                    native_stage_effect=row is effect_row, warnings=converted)
+                                                    native_stage_effect=row is effect_row, warnings=converted,
+                                                    reused=reused, store=receipts)
                     for item in converted:
                         if item.get("code") == "member_shadow_prefabs_unavailable":
                             warnings.append(f"{row['label']}: {item.get('message')}")
                             shadow_gap = mv_studio_import_coverage.SHADOW_PREFABS_UNAVAILABLE
+                    progress.state(step, "cached" if reused else "done")
                 except (ValueError, OSError) as error:
                     warnings.append(f"{row['label']}: {error}")
+                    progress.state(step, "failed")
             if stage_row and stage_row.get("previewUrl"):
                 project["stage"] = {"glb": stage_row["previewUrl"], "label": stage_row["label"], "sceneName": stage.get("sceneName")}
                 colors = {str(entry["position"]): entry["themeColor"] for entry in original_cast if "themeColor" in entry}
@@ -569,13 +673,19 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             # Why the timeline's performer prop tracks do not play, for the coverage report.
             prop_gap = (mv_studio_import_coverage.PROP_NO_BUNDLE if not stage.get("props") else
                         mv_studio_import_coverage.PROP_SEVERAL if len(prop_bindings) > 1 else None)
-            if performer_prop is None:
+            if performer_prop is None and stage.get("props"):
+                progress.state("props", "start")
                 prop_row, prop_file = load(stage.get("props"), "props", "Stage props")
+                prop_state = "skipped"
                 if prop_file is not None:
                     try:
-                        prop_row["previewUrl"], _ = _preview(prop_file, reuse=True)
+                        reused = []
+                        prop_row["previewUrl"], _ = _preview(prop_file, reuse=True, reused=reused, store=receipts)
+                        prop_state = "cached" if reused else "done"
                     except (ValueError, OSError) as error:
                         warnings.append(f"{prop_row['label']}: {error}")
+                        prop_state = "failed"
+                progress.state("props", prop_state)
             if on_stage is not None and project["stage"] is not None:
                 on_stage(_stage_snapshot(project, rows.values(), performers))
             # Every member merges its own ske_ prop skeleton (whatever prop the
@@ -590,19 +700,24 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                         # An unreadable skeleton leaves the members without merged prop nodes.
                         warnings.append(f"Member prop skeleton: {error}")
             if performer_prop is not None:
+                progress.state("props", "start")
                 prop_row, prop_file = load(stage.get("props"), "props", "Performer prop")
                 prop_gap = mv_studio_import_coverage.PROP_UNAVAILABLE
-                if prop_file is not None:
+                if prop_file is None:
+                    progress.state("props", "skipped")
+                else:
                     try:
                         glb, attachment = mv_studio_props.preview(
                             prop_file, native, timeline.name, performer_prop, deadline,
                         )
                         prop_row.update(previewUrl=_media(glb, "glb"), attachment=attachment)
                         prop_gap = None
+                        progress.state("props", "done")
                     except (ValueError, OSError) as error:
                         prop_row["status"] = "unavailable"
                         warnings.append(f"{prop_row['label']}: {error}")
                         prop_gap = mv_studio_import_coverage.PROP_PREVIEW_FAILED
+                        progress.state("props", "failed")
             describe(selected.get("songBackground"), "background", "Song background")
             movie = selected.get("movie") or {}
             describe(movie.get("source"), "display", "MV screen video")
@@ -624,9 +739,12 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             motion_physics = viewer_physics_runtime.motion_settings(repo_root=repo_root,
                 record={"category": "mv", "region": source["region"], "live_id": source["liveId"]})
             project["motionPhysics"] = motion_physics
-            for entry in performers:
+            for member_index, entry in enumerate(performers, 1):
                 number = entry["position"]
                 label = entry.get("memberName") or f"Member {number}"
+                member_ids = {"index": member_index, "of": len(performers)}
+                progress.state("member", "start", **member_ids, name=label)
+                member_state = "skipped"
                 _, model = load(entry.get("model"), "outfit", entry.get("costumeName") or label)
                 # Position is a workbench starting pose until native rig
                 # translations replace it. Never treat it as a stage bind.
@@ -655,12 +773,17 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     if saved is not None:
                         name, rig, motion = saved
                         result.update(glb=_MEDIA_URL + name, rig=rig, motion=motion)
+                        member_state = "cached"
                     else:
                         clips, motion = [], None
+                        member_state = "failed"
+                        watch = transient_failures.Watch()
                         try:
+                            progress.phase("motion")
                             clips, motion = _motion(timeline, motion_files, facial_files, directory / f"actor-{number}", number,
                                                     result["memberId"], project["tracks"], deadline)
                         except (ValueError, OSError) as error:
+                            transient_failures.note_if_environmental(error)
                             warnings.append(f"{label} choreography: {error}")
                         try:
                             url, rig = _preview(model, performer=True, motions=clips, companions=companions, reuse=True,
@@ -669,9 +792,11 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                                 try:
                                     motion = _facial(timeline, motion, number, project["tracks"], rig.get("memberHead"))
                                 except (ValueError, OSError) as error:
+                                    transient_failures.note_if_environmental(error)
                                     warnings.append(f"{label} facial timeline: {error}")
                             result.update(glb=url, rig=rig, motion=motion)
-                            if key is not None:
+                            member_state = "done"
+                            if key is not None and watch.clean:
                                 actor_cache.put(key, url.removeprefix(_MEDIA_URL), rig, motion)
                         except (ValueError, OSError) as error:
                             warnings.append(f"{label}: {error}")
@@ -695,10 +820,13 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                                 result["rig"] = {**result["rig"], "physics": {**catalog, "native": {
                                     **catalog["native"], "runtime": runtime}}}
                 project["performers"].append(result)
+                progress.state("member", member_state, **member_ids)
             audio = selected.get("audio") or {}
             for role in ("acb", "awb"):
                 describe((audio.get("chorus") or {}).get(role), "audio", f"Chorus {role.upper()}")
             if audio.get("cue") and audio.get("acb"):
+                progress.state("audio", "start")
+                audio_saved = None
                 try:
                     from . import cri_audio_decode
                     _, acb = load(audio["acb"], "audio", "Soundtrack cue bank")
@@ -715,13 +843,25 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             # prevent decoding the same cue's waveform.
                             pass
                     if acb and (awb or not audio.get("awb")):
-                        decoded = directory / "soundtrack.wav"
-                        cri_audio_decode.decode_cue(cue_bank, awb.read_bytes() if awb else None, audio["cue"], decoded)
-                        # The base song's own cue: registration keeps it unless the offset moves it.
-                        project["soundtrack"] = {**_song_audio(decoded), "origin": "game"}
+                        wave_bank = awb.read_bytes() if awb else None
+                        receipt = receipts.key("audio", mv_studio_import_cache.digest(cue_bank),
+                                               wave_bank and mv_studio_import_cache.digest(wave_bank),
+                                               audio["cue"]) if receipts is not None else None
+                        audio_saved = receipts.get(receipt) if receipt is not None else None
+                        if audio_saved is not None:
+                            project["soundtrack"] = audio_saved
+                        else:
+                            decoded = directory / "soundtrack.wav"
+                            watch = transient_failures.Watch()
+                            cri_audio_decode.decode_cue(cue_bank, wave_bank, audio["cue"], decoded)
+                            # The base song's own cue: registration keeps it unless the offset moves it.
+                            project["soundtrack"] = {**_song_audio(decoded), "origin": "game"}
+                            if receipt is not None and watch.clean:
+                                receipts.put(receipt, project["soundtrack"])
                         project["duration"] = max(project["duration"], project["soundtrack"]["duration"])
                 except (ValueError, OSError) as error:
                     warnings.append(f"Soundtrack: {error}")
+                progress.state("audio", "failed" if project["soundtrack"] is None else "cached" if audio_saved is not None else "done")
             if audio.get("cue") and project["soundtrack"] is None:
                 warnings.append("The original soundtrack is unavailable for preview.")
             warnings.extend(f"{item['role']}: {item['reason']}" if isinstance(item, dict) else str(item)
@@ -729,8 +869,17 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             project["assets"] = list(rows.values())
             # After the assets: only an attached performer prop plays its tracks.
             mv_studio_import_coverage.apply(project, prop_gap, shadow_gap)
-        return _register(project, native)
+        with progress.step("finish"):
+            result = _register(project, native)
+        if receipts is not None:
+            if later is None:
+                receipts.flush()
+            else:
+                later.append(receipts.flush)
+        return result
     finally:
+        model_viewer.set_texture_store(previous_textures)
+        mv_studio_progress.restore(previous_progress)
         _IMPORT.release()
 
 

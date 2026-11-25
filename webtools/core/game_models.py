@@ -410,6 +410,8 @@ def _check(job, deadline):
     if job.should_stop():
         raise ImportCancelled()
     if time.monotonic() >= deadline:
+        from .transient_failures import note
+        note()
         raise ValueError("Loading the game asset took too long. Try again.")
 
 
@@ -528,6 +530,8 @@ def _metapack_download(url, offset, size, deadline):
                 chunks, total = [], 0
                 while True:
                     if time.monotonic() >= deadline:
+                        from .transient_failures import note
+                        note()
                         raise ValueError("Loading the game asset took too long. Try again.")
                     block = response.read(min(65536, bound - total + 1))
                     if not block:

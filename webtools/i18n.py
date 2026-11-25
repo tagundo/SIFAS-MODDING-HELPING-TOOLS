@@ -2905,6 +2905,69 @@ _MV_STUDIO_TRANSLATIONS = {
     "Stage": ("무대", "ステージ"),
     "Crowd": ("관객", "観客"),
     "Split screen": ("화면 분할", "画面分割"),
+    # Game import progress (mv-studio-import-progress.js; the server's plan sends the same step labels).
+    "Reading game data…": ("게임 데이터를 읽는 중…", "ゲームデータを読み込み中…"),
+    "Reading the live timeline…": ("라이브 타임라인을 분석하는 중…", "ライブタイムラインを解析中…"),
+    "Converting the stage…": ("무대를 변환하는 중…", "ステージを変換中…"),
+    "Converting stage effects…": ("무대 이펙트를 변환하는 중…", "ステージエフェクトを変換中…"),
+    "Converting stage props…": ("무대 소품을 변환하는 중…", "ステージの小道具を変換中…"),
+    "Converting member {index}/{count}: {name}": ("멤버 변환 중 {index}/{count}: {name}", "メンバーを変換中 {index}/{count}: {name}"),
+    "Decoding the soundtrack…": ("음원을 디코딩하는 중…", "楽曲をデコード中…"),
+    "Finishing the MV project…": ("MV 프로젝트를 마무리하는 중…", "MVプロジェクトを仕上げ中…"),
+    "Opening the timeline bundle…": ("타임라인 번들을 여는 중…", "タイムラインバンドルを開いています…"),
+    "Reading timeline tracks…": ("타임라인 트랙을 읽는 중…", "タイムライントラックを読み込み中…"),
+    "Stage effects {done}/{total}": ("무대 연출 {done}/{total}", "ステージ演出 {done}/{total}"),
+    "Reading choreography…": ("안무 데이터를 읽는 중…", "振り付けデータを読み込み中…"),
+    "Textures {done}": ("텍스처 {done}개", "テクスチャ {done}枚"),
+    "Building dance motion… {done}%": ("댄스 모션을 만드는 중… {done}%", "ダンスモーションを生成中… {done}%"),
+    "Loading 3D models {done}/{total}…": ("3D 모델을 불러오는 중 {done}/{total}…", "3Dモデルを読み込み中 {done}/{total}…"),
+    "Loading 3D models…": ("3D 모델을 불러오는 중…", "3Dモデルを読み込み中…"),
+    "Ready to play": ("재생 준비 완료", "再生の準備ができました"),
+    "Preparing effects…": ("이펙트를 준비하는 중…", "エフェクトを準備中…"),
+    "Reused from cache": ("캐시에서 재사용", "キャッシュから再利用"),
+    "Stage is ready. Members are still loading.": ("무대가 준비되었습니다. 멤버를 불러오는 중입니다.", "ステージの準備ができました。メンバーを読み込み中です。"),
+    "Members done {done}/{count}": ("멤버 {done}/{count} 완료", "メンバー {done}/{count} 完了"),
+    "Game data {read}/{total} MB": ("게임 데이터 {read}/{total} MB", "ゲームデータ {read}/{total} MB"),
+    "Cancel import": ("불러오기 취소", "読み込みをキャンセル"),
+    "Cancelling…": ("취소하는 중…", "キャンセル中…"),
+    "MV import cancelled.": ("MV 불러오기를 취소했습니다.", "MVの読み込みをキャンセルしました。"),
+    # Game import errors (mv_studio.load_game and mv_studio_game) a person can meet.
+    "An MV is already being prepared. Try again when it finishes.": (
+        "다른 MV를 준비하는 중입니다. 끝난 뒤 다시 시도하세요.", "別のMVを準備中です。終わってからもう一度お試しください。"),
+    "The original MV timeline pack is missing. Download its missing assets or choose a local mod file.": (
+        "원본 MV 타임라인 팩이 없습니다. 누락된 에셋을 다운로드하거나 로컬 모드 파일을 선택하세요.",
+        "元のMVタイムラインパックがありません。不足しているアセットをダウンロードするか、ローカルのMODファイルを選んでください。"),
+    "This file does not contain an original live timeline.": (
+        "이 파일에는 원본 라이브 타임라인이 없습니다.", "このファイルには元のライブタイムラインが含まれていません。"),
+    "The original MV timeline exceeds the supported size.": (
+        "원본 MV 타임라인이 지원하는 크기를 넘습니다.", "元のMVタイムラインが対応サイズを超えています。"),
+    "The stage preview or soundtrack exceeds the supported size.": (
+        "무대 미리보기나 음원이 지원하는 크기를 넘습니다.", "ステージプレビューまたは楽曲が対応サイズを超えています。"),
+    "The 3D preview expired. Reopen the asset.": (
+        "3D 미리보기가 만료되었습니다. 에셋을 다시 여세요.", "3Dプレビューの有効期限が切れました。アセットを開き直してください。"),
+    "Reading the selected MV assets took too long. Try again.": (
+        "선택한 MV 에셋을 읽는 데 시간이 너무 오래 걸렸습니다. 다시 시도하세요.",
+        "選択したMVアセットの読み込みに時間がかかりすぎました。もう一度お試しください。"),
+    "The selected game MV and stage are no longer available. Refresh the list.": (
+        "선택한 게임 MV와 무대를 더 이상 사용할 수 없습니다. 목록을 새로 고치세요.",
+        "選択したゲームのMVとステージは利用できなくなりました。リストを更新してください。"),
+    "The selected game pack changed during import. Try again.": (
+        "불러오는 동안 선택한 게임 팩이 바뀌었습니다. 다시 시도하세요.", "読み込み中に選択したゲームパックが変更されました。もう一度お試しください。"),
+    "The selected game pack section is incomplete.": (
+        "선택한 게임 팩 섹션이 불완전합니다.", "選択したゲームパックのセクションが不完全です。"),
+    "The selected MV stage has no game stage model reference.": (
+        "선택한 MV 무대에 게임 무대 모델 참조가 없습니다.", "選択したMVステージにはゲームのステージモデル参照がありません。"),
+    "The selected sound pack has an invalid CRI header.": (
+        "선택한 사운드 팩의 CRI 헤더가 올바르지 않습니다.", "選択したサウンドパックのCRIヘッダーが無効です。"),
+    "A requested costume has no member at its position in this MV.": (
+        "요청한 의상의 위치에 이 MV의 멤버가 없습니다.", "指定した衣装の位置に、このMVのメンバーがいません。"),
+    "Choose a valid game MV and stage.": ("올바른 게임 MV와 무대를 선택하세요.", "有効なゲームのMVとステージを選んでください。"),
+    "Choose valid costumes for the MV members.": ("MV 멤버에게 올바른 의상을 선택하세요.", "MVメンバーに有効な衣装を選んでください。"),
+    "Choose a supported game region and asset platform.": (
+        "지원하는 게임 지역과 에셋 플랫폼을 선택하세요.", "対応しているゲーム地域とアセットプラットフォームを選んでください。"),
+    "This MV has too many linked game assets.": ("이 MV에 연결된 게임 에셋이 너무 많습니다.", "このMVにリンクされたゲームアセットが多すぎます。"),
+    "The game contains too many 3D MV catalog rows.": (
+        "게임의 3D MV 카탈로그 항목이 너무 많습니다.", "ゲームの3D MVカタログ行が多すぎます。"),
 }
 for _source, (_korean, _japanese) in _MV_STUDIO_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean

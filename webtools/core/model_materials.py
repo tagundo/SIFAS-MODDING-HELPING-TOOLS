@@ -204,7 +204,9 @@ def _texture_entry(target, texture, source, index, mip_resolver, texture_resolve
                                          [texture_resolver(level) for level in mips])
             entry["mipWidths"] = [max(1, int(texture.m_Width) >> level) for level in range(len(mips) + 1)]
             entry["mipHeights"] = [max(1, int(texture.m_Height) >> level) for level in range(len(mips) + 1)]
-    except Exception:
+    except Exception as error:
+        from .transient_failures import note_if_environmental
+        note_if_environmental(error)
         limitations.append("Authored mip levels unavailable: " + name)
     return entry
 
@@ -305,7 +307,9 @@ def attach_member_metadata(scene, obj, tree, material, texture_resolver, *, mip_
                                         "matches": identity == shared if identity else None}
                 features["cheek"] = True
             metadata["textures"][name] = entry
-        except Exception:
+        except Exception as error:
+            from .transient_failures import note_if_environmental
+            note_if_environmental(error)
             metadata["limitations"].append("Shader texture unavailable: " + name)
             # An unresolved nonzero dependency is different from a ShaderLab
             # default. Disable just its feature instead of inventing a glow.

@@ -6,6 +6,7 @@ The GLB contains static rest geometry and original-size PNG textures; source
 meshes, skin weights, texture pixels and bundle files are never written.
 """
 from collections import OrderedDict
+from contextlib import contextmanager
 import io
 import hashlib
 import json
@@ -19,7 +20,7 @@ import threading
 import time
 import zlib
 
-from . import decode
+from . import decode, mv_studio_progress, transient_failures
 
 
 MAX_FILES = 8
@@ -67,7 +68,10 @@ class ViewerBusyError(ModelViewerError):
 
 def _remaining(deadline):
     if time.monotonic() >= deadline:
+        transient_failures.note()
         raise ModelViewerError("Model preview took too long. Try opening fewer model files.")
+    # Every deadline check of an MV import is also a point where it stops for a client that left.
+    mv_studio_progress.alive()
 
 
 def _conversion_get(cache, key, deadline):
@@ -838,12 +842,33 @@ def _png_texture(image, deadline):
         return output.getvalue()
 
 
+def set_texture_store(store):
+    """Let conversions on this thread reuse decoded PNGs from ``store`` (mv_studio_import_cache).
+
+    Returns the previous store, to restore it with another call.
+    """
+    previous = getattr(_REQUEST_STATE, "texture_store", None)
+    _REQUEST_STATE.texture_store = store
+    return previous
+
+
+@contextmanager
+def texture_store(store):
+    previous = set_texture_store(store)
+    try:
+        yield store
+    finally:
+        set_texture_store(previous)
+
+
 def _texture_png(texture, deadline, *, stage=False):
     """Decode original texture bytes once, including across ZIP temp paths.
 
     Source hashes belong to the actual encoded pixels, not file timestamps or
     mutable preview objects. Material/sampler metadata is rebuilt each time.
     Reimport bypasses reads and replaces successful entries with fresh results.
+    A texture_store() also keeps the PNG across restarts, keyed by the same
+    source identity plus this code's and the decoders' recipe.
     """
     _remaining(deadline)
     width, height = texture.m_Width, texture.m_Height
@@ -898,6 +923,20 @@ def _texture_png(texture, deadline, *, stage=False):
     png = _conversion_get(_TEXTURE_PNGS, key, deadline)
     if png is not None:
         return png
+    store, receipt = getattr(_REQUEST_STATE, "texture_store", None), None
+    if store is not None:
+        try:
+            receipt = store.key("texture", [int(item) if item is not None else None for item in key[:6]], key[6],
+                                key[7].hex(), list(decoder) if decoder else None,
+                                list(profile) if profile is not None else None, bool(stage_format))
+        except (TypeError, ValueError):
+            receipt = None
+        if receipt is not None and not getattr(_REQUEST_STATE, "reimport", False):
+            png = store.get_bytes(receipt)
+            if png is not None:
+                _conversion_put(_TEXTURE_PNGS, key, png,
+                                max_bytes=MAX_TEXTURE_CACHE_BYTES, max_entries=MAX_TEXTURE_CACHE_ENTRIES)
+                return png
 
     class TextureBytes:
         def __getattr__(self, name):
@@ -913,6 +952,8 @@ def _texture_png(texture, deadline, *, stage=False):
         image.close()
     _conversion_put(_TEXTURE_PNGS, key, png,
                     max_bytes=MAX_TEXTURE_CACHE_BYTES, max_entries=MAX_TEXTURE_CACHE_ENTRIES)
+    if receipt is not None:
+        store.put_bytes(receipt, png)
     return png
 
 
@@ -950,14 +991,16 @@ class _Materials:
             else:
                 pending.append((key, texture))
         reimport = getattr(_REQUEST_STATE, "reimport", False)
+        store = getattr(_REQUEST_STATE, "texture_store", None)
 
         def convert(texture):
             previous = getattr(_REQUEST_STATE, "reimport", False)
             _REQUEST_STATE.reimport = reimport
             try:
-                if getattr(self.scene, "preview_stage", False):
-                    return _texture_png(texture, self.scene.deadline, stage=True)
-                return _texture_png(texture, self.scene.deadline)
+                with texture_store(store):
+                    if getattr(self.scene, "preview_stage", False):
+                        return _texture_png(texture, self.scene.deadline, stage=True)
+                    return _texture_png(texture, self.scene.deadline)
             finally:
                 _REQUEST_STATE.reimport = previous
 
@@ -968,6 +1011,7 @@ class _Materials:
                     try:
                         self.predecoded[key] = future.result()
                     except Exception as error:
+                        transient_failures.note_if_environmental(error)
                         self.predecoded[key] = error
             return [self.texture(obj) for obj in objects]
         finally:
@@ -1016,6 +1060,7 @@ class _Materials:
         index = len(self.glb.doc["textures"])
         self.glb.doc["textures"].append({"source": image_index, "sampler": sampler_index})
         self.scene.stats["textures"] += 1
+        mv_studio_progress.tick("textures", self.scene.stats["textures"])
         return index
 
     def material(self, obj):
@@ -1074,6 +1119,7 @@ class _Materials:
             except Exception as error:
                 if isinstance(error, ModelViewerError):
                     raise
+                transient_failures.note_if_environmental(error)
                 self.scene.warn("texture_unavailable", tree.get("m_Name", ""))
         elif main and main.get("m_Texture", {}).get("m_PathID"):
             self.scene.warn("linked_texture_missing", tree.get("m_Name", ""))
@@ -1723,6 +1769,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 stage_motion = raw = stage_transparent = transparent_skin_material = None
                 overlay = False
         except Exception as error:
+            transient_failures.note_if_environmental(error)
             if auto_face:
                 faces.failed()
                 continue
@@ -1841,9 +1888,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 original_material = _ref(renderer, ref)
                 material_obj = faces.material(renderer, original_material)
                 material = materials.material(material_obj)
-            except Exception:
+            except Exception as error:
                 if not auto_face:
                     raise
+                transient_failures.note_if_environmental(error)
                 material = materials.material(None)
                 scene.warn("texture_unavailable", game_name)
             component = 5123 if len(positions) <= 65535 else 5125
@@ -2126,7 +2174,8 @@ def _to_glb(scene, glb, faces, deadline, rig=None, *, require_existing_clips=Fal
             animated = bytes(glb.finish())
             _remaining(deadline)
             return (animated,) + result[1:] + (rig.metadata(),)
-        except Exception:
+        except Exception as error:
+            transient_failures.note_if_environmental(error)
             glb.doc, glb.data, rig.clips, rig.animation_warnings, rig.scaling = checkpoint
             if require_existing_clips:
                 raise
@@ -2235,7 +2284,8 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
                 if not candidate[4].get("previewMotion", {}).get("verified"):
                     raise ModelViewerError("The bundled preview could not be exported.")
                 base, scene = candidate, expanded
-        except Exception:
+        except Exception as error:
+            transient_failures.note_if_environmental(error)
             # A failed merge may have changed the live environment or GLB.
             # Its immutable body remains safe; do not append faces to that
             # partially imported state or spend another body allowance.
@@ -2289,7 +2339,8 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
             # under the optional-face fallback. Keep the original files intact
             # and report this precise conflict before any costume operation.
             raise ModelViewerError(str(error)) from None
-        except Exception:
+        except Exception as error:
+            transient_failures.note_if_environmental(error)
             if faces is None:
                 faces = FacePlan(scene, paths, None, face_deadline)
                 faces.enabled = True
@@ -2311,8 +2362,8 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
                         recovered = _build(paths, geometry_deadline, dict(face_context, enabled=False), rigged=True,
                                            _optional_deadline=optional_deadline, _geometry_deadline=geometry_deadline)
                         return recovered[:2] + (list(recovered[2]) + faces.warnings, faces.metadata()) + recovered[4:]
-                    except Exception:
-                        pass
+                    except Exception as error:
+                        transient_failures.note_if_environmental(error)
                 return completed
             extra = []
 
@@ -2355,7 +2406,8 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
         if not companions:
             return completed
         return append_motion(companions[:min(2, MAX_INTERNAL_FILES - len(loaded))])
-    except Exception:
+    except Exception as error:
+        transient_failures.note_if_environmental(error)
         metadata = dict(completed[4])
         metadata["animationWarnings"] = list(metadata.get("animationWarnings", [])) + [{
             "code": "animation_unavailable", "message": "A local animation companion could not be imported. The completed model is still shown."}]
@@ -2385,6 +2437,7 @@ def prepare(paths, *, face_context=None, rigged=False, motion_paths=None, reimpo
     library_paths = [path for path in library_paths if path not in paths]
     combined_paths = _paths(paths + library_paths, internal=True)
     if not _BUILD_LOCK.acquire(timeout=1):
+        transient_failures.note()
         raise ViewerBusyError("Another model is opening. Wait for it to finish and try again.")
     previous_reimport = getattr(_REQUEST_STATE, "reimport", False)
     _REQUEST_STATE.reimport = reimport
@@ -2419,6 +2472,7 @@ def prepare(paths, *, face_context=None, rigged=False, motion_paths=None, reimpo
         except ModelViewerError:
             raise
         except Exception as error:
+            transient_failures.note_if_environmental(error)
             raise ModelViewerError("This model could not be opened. Its format or linked assets may be unsupported.") from error
         token = secrets.token_hex(16)
         with _CACHE_LOCK:

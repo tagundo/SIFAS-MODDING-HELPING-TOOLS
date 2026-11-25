@@ -16,6 +16,7 @@ import threading
 import time
 from collections import OrderedDict
 
+from . import mv_studio_progress, transient_failures
 from .repo import ensure_repo_on_path, repo_root
 
 # (path, mtime) -> PNG bytes; b"" marks a known-failed decode so we don't retry.
@@ -57,7 +58,9 @@ def _remember_android_thumbnail(key, data):
 def _remaining(deadline):
     seconds = deadline - time.monotonic()
     if seconds <= 0:
+        transient_failures.note()
         raise TimeoutError("Thumbnail decoding timed out")
+    mv_studio_progress.alive()  # an MV import stops here for a client that left
     return seconds
 
 
@@ -89,6 +92,7 @@ def _stage_block_image(format_name, data, width, height, deadline):
     if not binary or not os.path.isfile(binary):
         raise ValueError("The bundled stage texture decoder is unavailable.")
     if not _TEXTURE65_SLOT.acquire(timeout=_remaining(deadline)):
+        transient_failures.note()
         raise TimeoutError("Another compressed texture is still decoding.")
     try:
         with tempfile.TemporaryDirectory(prefix="webtools_stage_texture_") as directory:
@@ -108,6 +112,10 @@ def _stage_block_image(format_name, data, width, height, deadline):
             if len(pixels) != expected:
                 raise ValueError("The stage texture decoder output changed while reading.")
             return Image.frombytes("RGBA", (width, height), pixels)
+    except BaseException:
+        # The child may have been killed, timed out or failed to start.
+        transient_failures.note()
+        raise
     finally:
         _TEXTURE65_SLOT.release()
 
@@ -117,8 +125,17 @@ def _android_image(texture, deadline, *, stage=False):
 
     Do not access Texture2D.image: unsupported formats can enter native texture
     decoders with known SIGILL failures. get_image_data() only reads bytes and
-    also handles Unity's external/streamed texture storage.
+    also handles Unity's external/streamed texture storage. A failure of the
+    machine (I/O, memory, a decoder child) is noted in transient_failures.
     """
+    try:
+        return _decode_android_image(texture, deadline, stage=stage)
+    except transient_failures.ENVIRONMENT:
+        transient_failures.note()
+        raise
+
+
+def _decode_android_image(texture, deadline, *, stage=False):
     _remaining(deadline)
     width, height = texture.m_Width, texture.m_Height
     if (not isinstance(width, int) or not isinstance(height, int)
@@ -180,6 +197,7 @@ def _android_image(texture, deadline, *, stage=False):
         if not binary or not os.path.isfile(binary):
             raise ValueError("Bundled UnityCrunch ETC2A decoder is unavailable")
         if not _TEXTURE65_SLOT.acquire(timeout=_remaining(deadline)):
+            transient_failures.note()
             raise TimeoutError("Another UnityCrunch texture is still decoding")
         try:
             with tempfile.TemporaryDirectory(prefix="webtools_texture65_") as directory:
@@ -204,6 +222,10 @@ def _android_image(texture, deadline, *, stage=False):
                 if len(pixels) != needed:
                     raise ValueError("UnityCrunch decoder output changed while reading")
                 image = Image.frombytes("RGBA", (width, height), pixels)
+        except BaseException:
+            # The child may have been killed (a negative code), timed out or failed to start.
+            transient_failures.note()
+            raise
         finally:
             _TEXTURE65_SLOT.release()
     else:
@@ -236,14 +258,19 @@ def _android_image(texture, deadline, *, stage=False):
             # Decoding blocks is pixel-exact at every thread count; retain up
             # to four workers only for images large enough to use them.
             threads = max(1, min(4, os.cpu_count() or 1, (width * height + 8191) // 8192))
-            subprocess.run([binary, "-dl", source, output, "-j", str(threads)], check=True,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                           timeout=_remaining(deadline))
-            # Explicit readers avoid importing unrelated Pillow plugins.
-            with decoded_image(output) as decoded:
-                if decoded.size != (width, height):
-                    raise ValueError("ASTC decoder returned incorrect dimensions")
-                image = decoded.convert("RGBA")
+            try:
+                subprocess.run([binary, "-dl", source, output, "-j", str(threads)], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               timeout=_remaining(deadline))
+                # Explicit readers avoid importing unrelated Pillow plugins.
+                with decoded_image(output) as decoded:
+                    if decoded.size != (width, height):
+                        raise ValueError("ASTC decoder returned incorrect dimensions")
+                    image = decoded.convert("RGBA")
+            except BaseException:
+                # The child may have been killed, timed out or failed to start.
+                transient_failures.note()
+                raise
     # UnityPy's Texture2D.image applies this same final flip by default.
     try:
         return image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
