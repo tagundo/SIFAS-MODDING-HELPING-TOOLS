@@ -122,6 +122,76 @@ class ReceiptTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(cache.open_cache(self.media))
 
+    def test_code_is_read_through_the_import_system_also_from_a_zip(self):
+        """An edit is a new recipe whether the code is files or packed (the APK ships it packed)."""
+        import subprocess
+        import zipfile
+        repository = Path(cache.__file__).resolve().parents[2]
+        sources = sorted(path for path in (repository / "webtools").rglob("*.py") if "__pycache__" not in path.parts)
+        recipes = {}
+        for variant, edit in (("a", b""), ("b", b"\n# an edit\n")):
+            for layout in ("zip", "folder"):
+                target = self.root / f"{variant}-{layout}"
+                if layout == "zip":
+                    target = target.with_suffix(".zip")
+                    with zipfile.ZipFile(target, "w") as archive:
+                        for path in sources:
+                            data = path.read_bytes() + (edit if path.name == "mv_studio_timeline.py" else b"")
+                            archive.writestr(path.relative_to(repository).as_posix(), data)
+                else:
+                    for path in sources:
+                        copy = target / path.relative_to(repository)
+                        copy.parent.mkdir(parents=True, exist_ok=True)
+                        copy.write_bytes(path.read_bytes() + (edit if path.name == "mv_studio_timeline.py" else b""))
+                script = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                          "from webtools.core import mv_studio_import_cache as c; "
+                          "assert c.__file__.startswith(sys.argv[1]), c.__file__; print(c._source_recipe())")
+                result = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(target)], capture_output=True,
+                                        text=True, timeout=120, cwd=self.root)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                recipes[variant, layout] = result.stdout.strip()
+        self.assertNotIn("None", recipes.values())
+        for layout in ("zip", "folder"):
+            self.assertNotEqual(recipes["a", layout], recipes["b", layout], layout)
+
+    def test_unreadable_code_keeps_every_store_closed(self):
+        readable = cache._module_bytes
+
+        def unreadable(spec):
+            return None if spec is not None and spec.name == "webtools.core.decode" else readable(spec)
+
+        cache._source_recipe.cache_clear()
+        self.addCleanup(cache._source_recipe.cache_clear)
+        private = self.root / "private"
+        private.mkdir(mode=0o700)
+        with patch.object(cache, "_module_bytes", side_effect=unreadable), \
+                patch.dict(os.environ, {"ELICHIKA_MV_PRIVATE_CACHE": str(private.resolve())}):
+            self.assertIsNone(cache._source_recipe())
+            self.assertIsNone(cache.recipe())
+            self.assertIsNone(cache.open_cache(self.media))
+            self.assertIsNone(cache.open_texture_cache(self.media))
+            self.assertIsNone(mv_studio_actor_cache.open_cache(("gl", "android"), self.media))
+            with self.assertRaises(ValueError):
+                cache.ImportCache(self.root / "receipts", self.media)
+        cache._source_recipe.cache_clear()
+        with patch.dict(os.environ, {"ELICHIKA_MV_PRIVATE_CACHE": str(private.resolve())}):
+            self.assertIsNotNone(cache.open_cache(self.media))
+            self.assertIsNotNone(mv_studio_actor_cache.open_cache(("gl", "android"), self.media))
+
+    def test_recipe_holds_the_format_and_library_releases(self):
+        cache._source_recipe.cache_clear()
+        self.addCleanup(cache._source_recipe.cache_clear)
+        first = cache._source_recipe()
+        cache._source_recipe.cache_clear()
+        with patch.object(cache, "RECEIPT_FORMAT", cache.RECEIPT_FORMAT + 1):
+            self.assertNotEqual(cache._source_recipe(), first)
+        library = cache._library("PIL")
+        self.assertEqual(library[0], "PIL")
+        self.assertIsInstance(library[1], str, "the Pillow release")
+        cache._source_recipe.cache_clear()
+        with patch.object(cache, "_library", side_effect=lambda name: [name, "0.0", None, None]):
+            self.assertNotEqual(cache._source_recipe(), first)
+
     def test_actor_cache_recipe_does_not_depend_on_what_is_imported(self):
         directory = self.root / "actors"
         directory.mkdir(mode=0o700)

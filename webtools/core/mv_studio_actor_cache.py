@@ -98,12 +98,16 @@ class ActorCache:
         self.context = context
         self.media = media
         from .mv_studio_import_cache import _source_recipe
+        # The bytes of this tool's code (read through the import system), the library
+        # releases and zlib builds (mv_studio_import_cache): the same in every process
+        # whatever was imported before the cache opened.
+        source = _source_recipe()
+        if source is None:
+            raise ValueError("The code of this import cannot be identified; the actor cache stays closed.")
         recipe = {
             "version": _PREVIEW_VERSION,
             "runtime": sys.implementation.cache_tag,
-            # The bytes of this tool's code and the installed libraries (mv_studio_import_cache),
-            # the same in every process whatever was imported before the cache opened.
-            "source": _source_recipe(),
+            "source": source,
             "decoders": [_decoder(name) for name in ("ASTCENC_BIN", "ELICHIKA_TEXTURE65_BIN")],
         }
         self.recipe = sha256(_encode(recipe)).hexdigest()
