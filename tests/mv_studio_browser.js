@@ -272,6 +272,11 @@ async function registrationControls(page) {
 async function localAndGame(page, url) {
   await page.goto(url + '/#mv');
   await page.waitForFunction(() => MVStudio.getState().visible);
+  // Keeps the scene the editor creates (on the first load), so the scrub checks can watch its seeks.
+  await page.evaluate(() => {
+    const create = MVStudioScene.create;
+    MVStudioScene.create = (...options) => (window.mvSceneProbe = create(...options));
+  });
   let releaseModel;
   const waitingForModel = new Promise(resolve => { releaseModel = resolve; });
   const delayedModel = async route => { await waitingForModel; await route.continue(); };
@@ -390,22 +395,67 @@ async function localAndGame(page, url) {
   const soundtrackOffset = page.locator('#mv-soundtrack-offset');
   await soundtrackOffset.fill('0.75'); await soundtrackOffset.press('Tab');
   await page.locator('#mv-soundtrack summary').click();
-  const scrubbedTimes = await page.evaluate(async () => {
-    const range = document.getElementById('mv-seek');
+  // Scrubbing: the time follows every slider event, while the 3D scene and the soundtrack seek
+  // once per frame, to the latest time (soundtrack offset .75 above). The log records each
+  // scene.seek, scene.setPlaying and media currentTime write in order.
+  const scrubbed = await page.evaluate(async () => {
+    const scene = window.mvSceneProbe, range = document.getElementById('mv-seek');
+    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const log = [], take = () => log.splice(0);
+    const { seek, setPlaying } = scene;
+    scene.seek = function (seconds, ...rest) { log.push(['scene', seconds]); return seek.call(this, seconds, ...rest); };
+    scene.setPlaying = function (value) { log.push(['playing', value]); return setPlaying.call(this, value); };
+    const media = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+    Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', { ...media,
+      set(value) { log.push(['audio', value]); media.set.call(this, value); } });
     const scrub = value => {
       range.value = value;
       range.dispatchEvent(new Event('input', { bubbles: true }));
       return MVStudio.getState().time;
     };
-    const inputs = [scrub(1.25), scrub(4.75)];
-    range.dispatchEvent(new Event('change', { bubbles: true }));
-    const committed = MVStudio.getState().time;
-    scrub(30);
-    document.querySelector('.mv-clip[data-event=sample-clip]').click();
-    await new Promise(resolve => requestAnimationFrame(resolve));
-    return { inputs, committed, selected: MVStudio.getState().time };
+    try {
+      await frame();
+      take();
+      const inputs = [scrub(1.25), scrub(3), scrub(4.75)];
+      const beforeFrame = take();
+      await frame();
+      const coalesced = { log: take(), scene: scene.inspect().time };
+      await frame();
+      const idle = take();
+      // The end of a scrub (change) seeks to the latest time at once; its pending frame does nothing more.
+      scrub(5.5); scrub(6.25);
+      range.dispatchEvent(new Event('change', { bubbles: true }));
+      const committed = { time: MVStudio.getState().time, log: take(), scene: scene.inspect().time };
+      await frame();
+      const afterCommit = take();
+      // Play straight after a scrub starts from the scrubbed time; the pause seeks there again.
+      scrub(3.5);
+      document.getElementById('mv-play').click();
+      const play = { playing: MVStudio.getState().playing, log: take() };
+      document.getElementById('mv-play').click();
+      take();
+      // A clip click while a scrub is pending: the clip's start wins in the scene and the soundtrack.
+      scrub(30);
+      document.querySelector('.mv-clip[data-event=sample-clip]').click();
+      const clicked = take();
+      await frame();
+      await frame();
+      const selected = { time: MVStudio.getState().time, log: take(), scene: scene.inspect().time };
+      return { inputs, beforeFrame, coalesced, idle, committed, afterCommit, play, clicked, selected };
+    } finally {
+      Object.assign(scene, { seek, setPlaying });
+      Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', media);
+    }
   });
-  assert.deepEqual(scrubbedTimes, { inputs: [1.25, 4.75], committed: 4.75, selected: 2 });
+  assert.deepEqual(scrubbed.inputs, [1.25, 3, 4.75]);
+  assert.deepEqual(scrubbed.beforeFrame, [], 'Slider events seek neither the scene nor the soundtrack before the frame');
+  assert.deepEqual(scrubbed.coalesced, { log: [['audio', 5.5], ['scene', 4.75]], scene: 4.75 });
+  assert.deepEqual(scrubbed.idle, []);
+  assert.deepEqual(scrubbed.committed, { time: 6.25, log: [['audio', 7], ['scene', 6.25]], scene: 6.25 });
+  assert.deepEqual(scrubbed.afterCommit, []);
+  assert.deepEqual(scrubbed.play, { playing: true, log: [['audio', 4.25], ['scene', 3.5], ['playing', true]] });
+  assert.deepEqual(scrubbed.clicked, [['audio', 2.75], ['scene', 2]]);
+  assert.deepEqual(scrubbed.selected, { time: 2, log: [], scene: 2 });
   assert.equal(await page.locator('[data-mv-field=fixed]').count(), 0);
   const untouched = await page.locator('.mv-clip[data-event=light-clip]').elementHandle();
   const clip = page.locator('.mv-clip[data-event=sample-clip]');
@@ -445,11 +495,41 @@ async function localAndGame(page, url) {
   await page.locator('[data-mv-panel-option=quality]').check();
   assert(await shadow.isVisible());
   await page.locator('#mv-panel-menu summary').click();
+  // The time readout, the play label and the timeline playhead follow playback; the playhead
+  // sits at time × the clip scale (the camera clip starts at 7.5 s).
+  const transport = () => page.evaluate(() => {
+    const clip = document.querySelector('.mv-clip[data-event=sample-clip]');
+    const playhead = document.querySelector('.mv-playhead');
+    return { time: MVStudio.getState().time, readout: document.getElementById('mv-time').textContent,
+      play: document.getElementById('mv-play').textContent, playhead: playhead.style.transform,
+      x: Number(/^translateX\((-?[\d.e+-]+)px\)$/.exec(playhead.style.transform)?.[1]), scale: parseFloat(clip.style.left) / 7.5 };
+  });
+  const clock = seconds => {
+    const centiseconds = Math.max(0, Math.round(seconds * 100)), rest = centiseconds % 6000;
+    return `${Math.floor(centiseconds / 6000)}:${String(Math.floor(rest / 100)).padStart(2, '0')}.${String(rest % 100).padStart(2, '0')}`;
+  };
+  const shown = (state) => {
+    assert.equal(state.readout, `${clock(state.time)} / 0:35.00`);
+    assert(Math.abs(state.x - state.time * state.scale) < .05, `playhead ${state.playhead} at ${state.time} s`);
+  };
+  const atRest = await transport();
+  assert.equal(atRest.time, 7.5);
+  assert.equal(atRest.play, '재생');
+  shown(atRest);
   await page.locator('#mv-play').click();
   await page.waitForFunction(() => MVStudio.getState().time > 7.55);
+  assert.equal(await page.locator('#mv-play').textContent(), '일시 정지');
+  await page.waitForFunction(before => document.getElementById('mv-time').textContent !== before.readout &&
+    document.querySelector('.mv-playhead').style.transform !== before.playhead, atRest, { timeout: 10000 });
   await page.locator('[data-tab=tools]').click();
   assert.equal(await page.evaluate(() => MVStudio.getState().playing), false);
+  const paused = await transport();
+  assert(paused.time > 7.55);
+  assert.equal(paused.play, '재생');
+  shown(paused);
   await page.locator('[data-tab=mv]').click();
+  // Showing the MV again rebuilds the timeline: the new playhead is placed at the same time.
+  assert.equal((await transport()).playhead, paused.playhead);
 
   await page.locator('#mv-save').click();
   const link = page.locator('#mv-save-result a');
