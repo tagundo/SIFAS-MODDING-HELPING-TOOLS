@@ -1289,11 +1289,11 @@
     const grid = {
       length: rows.length, times, deltas,
       // The activation frame of a clip starting at `start`: the first frame whose director time
-      // reaches it, -1 when none does. A clip the first frame already shows was activated in it
-      // or in an earlier frame the run did not record; it is taken from the first one, so its
-      // time misses those frames (12023 dump5: fx_par_so2023_02, a clip from 0 s, runs 0.27 s
-      // behind the game in every record, against 0.5 s and a third of its particles on the
-      // display frames).
+      // reaches it, -1 when none does. A clip the first frame already shows is taken from the
+      // first frame: when the frames start with the timeline's first evaluation (as
+      // mv_runtime_capture.deviceFrames gives them) that is its activation frame (12023 dump5:
+      // fx_par_so2023_02, a clip from 0 s, matches ParticleSystem.time in all six records);
+      // otherwise its time misses the frames the run did not record.
       activation(start) {
         const index = search(timelineTick(start), false);
         return index < ticks.length ? index : -1;

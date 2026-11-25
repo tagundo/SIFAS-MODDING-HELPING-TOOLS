@@ -261,6 +261,11 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
     const back = { records: [], trailer: { frameClocks: { ...doc.trailer.frameClocks,
       rows: [row(1, 2, 900, .2), row(2, 1.9, 900.2, .2)] } } };
     assert.equal(capture.deviceFrames(back), null, 'a director going back');
+    // The frames start where the tick first read the director (12023 dump5: a record-only row and an
+    // unread one come before the timeline's first evaluation).
+    const start = { records: [], trailer: { frameClocks: { ...doc.trailer.frameClocks, rows: [row(13000, 0, 990.47, .13, { source: 1 }),
+      row(13001, null, 990.61, .13, { musicTime: 0 }), row(13002, 0, 990.75, .14), row(13003, 0, 990.9, .15), row(13004, .17, 991.1, .2)] } } };
+    assert.deepEqual(capture.deviceFrames(start).map((entry) => entry[2]), [13002, 13003, 13004]);
     // Each request names the game frame it shows (scene.setGameFrame) where it is known.
     const frames = new Map(capture.planRequests(doc, [-1, 0, 1]).map((request) => [request.id, request.frame]));
     assert.deepEqual([frames.get('f0001@-1'), frames.get('f0001@0'), frames.get('f0001@1')], [499, 500, 501]);

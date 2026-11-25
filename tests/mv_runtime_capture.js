@@ -499,16 +499,24 @@ function gameClockSamples(doc) {
     lagMax: samples.length ? lagMax : null, frames };
 }
 
-// Every frame the game rendered, in frame order, as [directorTime, Time.deltaTime, frameCount]
-// (MVStudioParticleSystems.frameGrid): the frame clock's rows when they hold every frame from the
-// first to the last one, each with a director time (frameClocks: else from the music time) and a
-// deltaTime in (0, 10], and the director never goes back; else null. The original particle systems
-// then step each frame's own Time.deltaTime (libunity.so 0x1ce1f4 / 0x1d7490), a clip from the
+// Every frame the game rendered while its director played, in frame order, as [directorTime,
+// Time.deltaTime, frameCount] (MVStudioParticleSystems.frameGrid): the frame clock's rows from the
+// first one whose director time the agent's own per-frame tick read (source 0: the director
+// LiveTimeSynchronizer drives answered), when they hold every frame from there to the last one,
+// each with a director time (frameClocks: else from the music time) and a deltaTime in (0, 10],
+// and the director never goes back; else null. Earlier rows (the tick not running yet, or no
+// director to read) come before the timeline's first evaluation: 12023 dump5 rows 13000 (a
+// record's clock, director 0) and 13001 (director not read) precede the first read at 13002, and
+// fx_par_so2023_02, a clip from 0 s, has ParticleSystem.time = the deltaTime sum from frame 13002
+// in all six records (within 5e-6 s; from 13000 it misses by 0.27 s). The original particle
+// systems step each frame's own Time.deltaTime (libunity.so 0x1ce1f4 / 0x1d7490), a clip from the
 // first frame whose director time reaches its start (12035 dump5: ParticleSystem.time is the
 // deltaTime sum of the frames from that one to the frame before the record's, within 6e-5 s).
 function deviceFrames(doc) {
-  const clocks = frameClocks(doc);
-  if (clocks.size < 2 || !Array.isArray(doc.trailer?.frameClocks?.rows)) return null;
+  const all = [...frameClocks(doc)];
+  const first = all.findIndex(([, clock]) => clock.source === 0 && clock.directorFrom === undefined && Number.isFinite(clock.directorTime));
+  const clocks = first < 0 ? [] : all.slice(first);
+  if (clocks.length < 2 || !Array.isArray(doc.trailer?.frameClocks?.rows)) return null;
   const rows = [];
   let expected = null;
   for (const [frame, clock] of clocks) {
