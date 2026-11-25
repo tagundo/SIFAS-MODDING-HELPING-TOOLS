@@ -947,12 +947,13 @@ async function testDeviceFramesInApply() {
   const controller = await P.apply(T, root, descriptor);
   const project = {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 10}, {id: "track:1", start: .5, duration: 10}]}],
     quality: {values: {stage_display: true}}};
-  // A slow device: director steps of .19 .. .27 s, Time.deltaTime clamped to 1/3 on a long frame, and a
-  // song-end hold of three frames at 6.5 s.
+  // A slow device: director steps of .19 .. .27 s, a different Time.deltaTime in every frame (clamped
+  // to 1/3 on a long frame), and a song-end hold of three frames at 6.5 s. Distinct deltas make a
+  // culled window shifted by one frame sum to another time.
   const rows = [];
   for (let time = .5, k = 0; time < 6.4; k++) {
     const step = [.19, .23, .27, .21][k % 4] + (k === 9 ? .25 : 0);
-    rows.push([Math.round(time * 1000) / 1000, Math.min(1 / 3, [.18, .24, .26, .22][k % 4] + (k === 9 ? .25 : 0)), 100 + k]);
+    rows.push([Math.round(time * 1000) / 1000, Math.min(1 / 3, .17 + .0037 * k + (k === 9 ? .25 : 0)), 100 + k]);
     time += step;
   }
   rows.push([6.5, .2, 100 + rows.length], [6.5, .21, 101 + rows.length], [6.5, .22, 102 + rows.length]);
@@ -979,16 +980,31 @@ async function testDeviceFramesInApply() {
   for (let k = activated; k <= last; k++) sum += f32(rows[k][1]);
   assert.ok(Math.abs(kept0.time - sum) < 1e-9, `time ${kept0.time} = deltaTime of frames A .. j ${sum}`);
   // The culled system steps a frame only when the frame before it saw the box.
-  let culledSum = f32(rows[activated][1]), culledUpdates = 1;
+  const lookedAway = k => rows[k][0] >= 2 && rows[k][0] < 3;
+  let culledSum = f32(rows[activated][1]), culledUpdates = 1, ownSum = f32(rows[activated][1]);
   for (let k = activated + 1; k <= last; k++) {
-    if (rows[k - 1][0] >= 2 && rows[k - 1][0] < 3) continue;
+    if (!lookedAway(k)) ownSum += f32(rows[k][1]);
+    if (lookedAway(k - 1)) continue;
     culledSum += f32(rows[k][1]);
     culledUpdates++;
   }
   assert.ok(culledUpdates < kept0.updates);
   assert.equal(culled0.updates, culledUpdates);
-  assert.ok(Math.abs(culled0.time - culledSum) < 1e-9);
+  assert.ok(Math.abs(culled0.time - culledSum) < 1e-9, `culled time ${culled0.time} = ${culledSum}`);
+  assert.ok(Math.abs(ownSum - culledSum) > 1e-3, "each frame's own cameras would give another time");
   for (let k = activated; k < last; k++) assert.ok(asked.includes(rows[k][0]), `cameras at frame ${k}'s director time`);
+  assert.ok(!asked.includes(rows[last][0]), "the frame shown updated on the frame before it: its own cameras are not asked");
+  // Frame by frame, the updates so far: frame k adds one exactly when frame k - 1's cameras saw the box.
+  const counts = [], expected = [];
+  for (let k = activated, n = 0; k <= last; k++) {
+    if (k === activated || !lookedAway(k - 1)) n++;
+    expected.push(n);
+    controller.update(rows[k][0], project, view, null, grid);
+    counts.push(state()["track:0/fx/culled"].updates);
+  }
+  assert.deepEqual(counts, expected);
+  controller.update(4, project, view, null, grid);
+  row = state();
   // The same particles as the stream on the same updates.
   const stream = P.create(kept, 1234);
   const updates = rows.slice(activated, last + 1).map(entry => f32(entry[1]));
@@ -1019,6 +1035,56 @@ async function testDeviceFramesInApply() {
   controller.dispose();
 }
 
+// On device frames a culled system's box follows the prefab Animator: frame k updates only when the
+// pose after the clone seconds through frame k - 1 (elapsed(A, k - 1)) showed the box, under a camera
+// that never moves.
+async function testDeviceFramesFollowThePrefabPose() {
+  const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]},
+    {parent: 0, path: "fx/cloud", layer: 1, position: [0, 0, 10], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
+  const once = {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]};
+  const culled = system({path: "fx/cloud", node: 1, shape: null, emission: once,
+    culling: {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true},
+    main: {duration: 100, lifetime: constant(100), size: constant(1), cullingMode: 0, looping: true}});
+  // The Animator carries the cloud 50 m aside from .6 to 1.4 clone seconds.
+  const away = [[0, 0], [.6, 0], [.6001, 50], [1.4, 50], [1.4001, 0]];
+  const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
+    templates: [{name: "fx", nodes, systems: [culled], animation: {clips: [{name: "move", start: 0, duration: 10, loop: false}],
+      channels: [{node: 1, clip: 0, kind: "translation", curves: [["linear", away], ["constant", 0], ["constant", 10]]}]}}],
+    cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1}]};
+  assert.equal(P.validDescriptor(descriptor), true);
+  const controller = await P.apply(T, new T.Group(), descriptor);
+  const project = {tracks: [{id: "track", events: [{id: "track:0", start: .3, duration: 10}]}],
+    quality: {values: {stage_display: true}}};
+  const rows = [];
+  for (let k = 0; k < 16; k++) rows.push([Math.round(k * .2 * 1000) / 1000, .13 + .007 * k, 50 + k]);
+  const grid = P.frameGrid(rows);
+  const camera = new T.PerspectiveCamera(30, 16 / 9, .1, 1000);
+  camera.lookAt(0, 0, 10);
+  camera.updateMatrixWorld();
+  const view = {key: {}, cameraAt: () => camera};
+  const activated = grid.activation(.3), last = rows.length - 1;
+  const clone = k => grid.elapsed(activated, k);
+  const aside = k => clone(k) >= .6 && clone(k) < 1.4001;
+  for (let k = activated; k <= last; k++) assert.ok(clone(k) < .6 || clone(k) > .6001, "no frame inside the move");
+  const counts = [], expected = [];
+  let sum = 0, ownSum = 0;
+  for (let k = activated, n = 0; k <= last; k++) {
+    if (k === activated || !aside(k - 1)) {
+      n++;
+      sum += f32(rows[k][1]);
+    }
+    if (k === activated || !aside(k)) ownSum += f32(rows[k][1]);
+    expected.push(n);
+    controller.update(rows[k][0], project, view, null, grid);
+    counts.push(controller.inspect()[0].updates);
+  }
+  assert.ok(expected[expected.length - 1] < last - activated + 1, "the move culls frames");
+  assert.deepEqual(counts, expected);
+  assert.ok(Math.abs(controller.inspect()[0].time - sum) < 1e-9);
+  assert.ok(Math.abs(ownSum - sum) > 1e-3, "the pose through frame k would give another time");
+  controller.dispose();
+}
+
 (async () => {
   testDrawOrderMatchesNativeLanes();
   testPerStepLifetimeFloor();
@@ -1044,6 +1110,7 @@ async function testDeviceFramesInApply() {
   await testPrefabAnimatorCurves();
   await testCullingFreezesTheClockOffScreen();
   await testDeviceFramesInApply();
+  await testDeviceFramesFollowThePrefabPose();
   console.log("mv_studio_particle_systems_test: ok");
 })().catch(error => {
   console.error(error);
