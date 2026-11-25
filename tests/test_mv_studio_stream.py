@@ -11,6 +11,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from webtools import i18n
 from webtools.core import mv_studio
 from webtools.server import Handler
 
@@ -38,11 +39,11 @@ class MVStudioStreamTests(unittest.TestCase):
         self.load = patcher.start()
         self.addCleanup(patcher.stop)
 
-    def connect(self, action="game-stream", *, payload=None, headers=None, method="POST"):
+    def connect(self, action="game-stream", *, payload=None, headers=None, method="POST", lang="ko"):
         connection = http.client.HTTPConnection(self.host, self.port, timeout=5)
         self.addCleanup(connection.close)
         body = json.dumps(self.request if payload is None else payload) if method == "POST" else None
-        connection.request(method, "/api/mv-studio/" + action + "?lang=ko", body,
+        connection.request(method, "/api/mv-studio/" + action + "?lang=" + lang, body,
                            {"Content-Type": "application/json", **(headers or {})})
         return connection.getresponse()
 
@@ -140,16 +141,22 @@ class MVStudioStreamTests(unittest.TestCase):
                 self.assertEqual(json.load(response), {"error": "Choose a supported game selection."})
 
     def test_shared_origin_and_field_guards(self):
+        # The MV routes answer their fixed reasons in the page's ?lang= (English is the fallback).
+        guard = "Open the editor from this app before saving changes."
         for action in ("game", "game-stream"):
-            with self.connect(action, headers={"Origin": "https://foreign.example"}) as response:
-                self.assertEqual(response.status, 403)
-                self.assertIn("Open the editor", json.load(response)["error"])
-            with self.connect(action, headers={"Sec-Fetch-Site": "cross-site"}) as response:
-                self.assertEqual(response.status, 403)
-                self.assertIn("Open the editor", json.load(response)["error"])
-            with self.connect(action, payload={**self.request, "callerPath": "/tmp/bad"}) as response:
-                self.assertEqual(response.status, 400)
-                self.assertEqual(json.load(response), {"error": "Unsupported editing request."})
+            for lang in ("ko", "en"):
+                expected = i18n.tr(guard, lang)
+                with self.connect(action, headers={"Origin": "https://foreign.example"}, lang=lang) as response:
+                    self.assertEqual(response.status, 403)
+                    self.assertEqual(json.load(response)["error"], expected)
+                with self.connect(action, headers={"Sec-Fetch-Site": "cross-site"}, lang=lang) as response:
+                    self.assertEqual(response.status, 403)
+                    self.assertEqual(json.load(response)["error"], expected)
+            self.assertNotEqual(i18n.tr(guard, "ko"), guard, "the guard has a Korean translation")
+            for lang in ("ko", "en"):
+                with self.connect(action, payload={**self.request, "callerPath": "/tmp/bad"}, lang=lang) as response:
+                    self.assertEqual(response.status, 400)
+                    self.assertEqual(json.load(response), {"error": i18n.tr("Unsupported editing request.", lang)})
         self.load.assert_not_called()
 
     def test_unavailable_method_or_route_remains_standard_json_404(self):
