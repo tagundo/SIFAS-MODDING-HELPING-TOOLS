@@ -207,7 +207,7 @@
       }
     });
 
-    return {
+    const view = {
       element: svg,
       update(next) {
         model = { ...next, keys: M.sortedKeys(next.keys), channels: (next.channels || []).filter((channel) => COLORS[channel]) };
@@ -218,6 +218,16 @@
       },
       get dragging() { return !!drag; },
     };
+    // The graph follows its container's width (the side panel can be resized); the
+    // observer stops once the view is replaced.
+    if (global.ResizeObserver) {
+      const observer = new global.ResizeObserver(() => {
+        if (!container.isConnected || container.firstChild !== svg) { observer.disconnect(); return; }
+        if (model && layout && !drag && Math.max(160, Math.round(container.clientWidth || 320)) !== layout.width) view.update(model);
+      });
+      observer.observe(container);
+    }
+    return view;
   }
 
   global.MVStudioCameraCurves = Object.freeze({ create, COLORS, STRINGS: Object.freeze(["Camera curves", "Frame"]) });
