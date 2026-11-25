@@ -1375,6 +1375,28 @@ class FacePlan:
                     # An explicitly shared prefab with distinct atlases has no
                     # single material assignment. Preserve its own material.
                     bindings[key] = None
+            # MergeAndCombineFaceMesh.MergeFace (GL 3.12.0 0x2c94ff4) also gives
+            # headMaterial to every Renderer below headAll (set_sharedMaterial
+            # loop at 0x2c95478) when the face needs merging. A costume's own
+            # Hair keeps its serialized material only on masked heads.
+            try:
+                head_all = _ref(obj, tree.get("headAll"))
+                face_data = scene.tree(face).get("memberFaceData")
+            except Exception:
+                continue
+            merge = face_data.get("needsMergingFace") if isinstance(face_data, dict) else None
+            if (head_all is None or head_all.type.name != "GameObject" or type(merge) not in (bool, int) or merge != 1
+                    or material.assets_file is not obj.assets_file
+                    or _find(scene, scene.transforms.get(_key(head_all)), ("Head_Face", "mesh_facedots")) is not None):
+                continue
+            for renderer, _, game_object in scene.renderers:
+                if _source_path(renderer) != _source_path(obj) or not beneath(game_object, head_all):
+                    continue
+                key = _key(renderer)
+                if key not in bindings:
+                    bindings[key] = material
+                elif bindings[key] is not None and _key(bindings[key]) != _key(material):
+                    bindings[key] = None
         self.material_bindings = bindings
 
     def material(self, renderer, material):

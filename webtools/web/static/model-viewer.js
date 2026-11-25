@@ -2370,7 +2370,7 @@
         if (model) model.traverse(function (mesh) {
           if (!mesh.isSkinnedMesh || isViewerHelper(mesh)) return;
           var mapping = mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.viewerMesh || mesh.userData && mesh.userData.viewerMesh;
-          if (!mapping || !mapping.writable || rendererIds[String(mapping.renderer)]) return;
+          if (!mapping || !mapping.writable || mapping.graftTarget === false || rendererIds[String(mapping.renderer)]) return;
           rendererIds[String(mapping.renderer)] = true;
           targetMeshes.push({ value: String(mapping.renderer), label: mesh.name, mesh: mapping.mesh });
         });

@@ -689,6 +689,22 @@ def _as_tint_default(scene, obj, tree):
     return dict(_WHITE) if identity in _AS_TINT_SHADERS else None
 
 
+def _beneath_named(scene, game_object, name):
+    """Whether a GameObject or one of its same-file ancestors has this name."""
+    source, seen = _source_path(game_object) if game_object is not None else None, set()
+    while game_object is not None and _source_path(game_object) == source and len(seen) < 256:
+        key = _key(game_object)
+        if key in seen:
+            return False
+        seen.add(key)
+        if scene.name(game_object) == name:
+            return True
+        transform = scene.transforms.get(key)
+        parent = _ref(transform, scene.tree(transform).get("m_Father")) if transform else None
+        game_object = _ref(parent, scene.tree(parent).get("m_GameObject")) if parent else None
+    return False
+
+
 def _member_depth_material(scene, material):
     """Admit the exact opaque wrapper that imports the member depth pass."""
     if material.type.name != "Material":
@@ -1800,6 +1816,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         source = _source_path(mesh_source)
         source_index = rig.source_indices.get(source) if rig is not None else None
         writable = source_index is not None and not auto_face
+        # The client folds bone-less pieces and mesh_face into its combined
+        # face (MergeFace/CombineFace); a part transplant cannot target them.
+        graft_target = bool(writable and tree.get("m_Bones")) and not _beneath_named(scene, game_object, "mesh_face")
         import numpy as np
         position_matrix = np.diag([-1., 1., 1., 1.])
         if skin is None:
@@ -1842,7 +1861,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                                    "firstFace": first_face, "faceCount": len(triangles),
                                    "vertexCount": len(positions), "vertexOrder": "identity",
                                    "positionMatrix": position_matrix.T.reshape(-1).tolist(),
-                                   "boneOrder": "identity", "writable": writable}}})
+                                   "boneOrder": "identity", "writable": writable,
+                                   "graftTarget": graft_target}}})
             if penlight_transform and material_obj is not None and _key(material_obj) in penlight[0]:
                 native_material = _penlight_material(scene.tree(material_obj))
                 if native_material is not None:
