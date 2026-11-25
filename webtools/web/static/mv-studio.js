@@ -76,6 +76,16 @@
     return null;
   }
 
+  // Text that changes while the MV plays: write the existing text node in place. Replacing
+  // the node (textContent) is a child-list change, which makes the page's :has() rules
+  // restyle every element of the timeline; a character-data change does not.
+  function setText(element, label) {
+    const node = element.firstChild;
+    if (node && node === element.lastChild && node.nodeType === 3) {
+      if (node.data !== label) node.data = label;
+    } else if (element.textContent !== label) element.textContent = label;
+  }
+
   function make(tag, label, attrs = {}) {
     const element = document.createElement(tag);
     if (label != null) element.textContent = label;
@@ -216,7 +226,7 @@
     lastReadout = now ?? performance.now();
     seekInput.value = time;
     const label = formatTime(time) + " / " + formatTime(project ? project.duration : 0);
-    if (timeOutput.textContent !== label) timeOutput.textContent = label;
+    setText(timeOutput, label);
   }
 
   function audioOffset() {
@@ -244,7 +254,7 @@
 
   function updatePlayButton() {
     const control = byId("mv-play");
-    control.textContent = t(playing ? "Pause" : "Play");
+    setText(control, t(playing ? "Pause" : "Play"));
     control.setAttribute("aria-pressed", String(playing));
     const empty = !project || !project.duration;
     control.disabled = empty || previewLoading || !!gameImport;
