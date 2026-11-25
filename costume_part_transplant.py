@@ -2339,6 +2339,7 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         pid = name2tf.get(nm)
         new_bone_pids.append({"m_FileID": 0, "m_PathID": pid or 0})
     t_smr_tt = t_smr.read_typetree()
+    original_bone_count = len(t_smr_tt.get("m_Bones", []))
     t_smr_tt["m_Bones"] = t_smr_tt.get("m_Bones", []) + new_bone_pids
     # m_BoneNameHashes must stay aligned with m_BindPose if the mesh uses them.
     # tid is the pre-injection snapshot (native bones only), so build a parent-name
@@ -2435,6 +2436,19 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         repair_transplant_physics(out_path, donor_path, target_path, new_map if inject_names else (),
                                   restore_collision=restore_collision, verbose=verbose,
                                   provenance=physics_provenance, donor_environment=donor)
+    # Rules confirmed in the game client (graft_game_rules): a culled donor part keeps
+    # its culling in its own submesh, and a body renderer never skins to face-side bones.
+    from graft_game_rules import rebind_head_bones, split_culled_part
+    if game_atlas:
+        donor_culls = set()
+        for index, _ in selected_groups:
+            floats = dict(_safe_tt(did.get(d_mats[index]["m_PathID"])).get("m_SavedProperties", {}).get("m_Floats", []))
+            donor_culls.add(float(floats["_CullMode"]) if "_CullMode" in floats else None)
+        if len(donor_culls) == 1:
+            split_culled_part(out_path, t_smr.path_id, 3 * int(stats["added_tris"]), donor_culls.pop(), log=log)
+        elif donor_culls & {1., 2.}:
+            log("[warn] the grafted parts use different _CullMode values; they stay in one submesh")
+    rebind_head_bones(out_path, t_smr.path_id, original_bone_count, log=log)
     # read-only: warn if the grown body renderer blew past the runtime combine limits
     check_combine_limits(out_path, verbose=verbose)
     finish_working_bundle(out_path, output_packer)
