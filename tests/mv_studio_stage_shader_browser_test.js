@@ -32,6 +32,14 @@ const CASES = [
     { mode: 'vertex', parallax: true, op: 'alpha-blend', reflectivity: 'vertex', fresnel: true }],
   ['vertex, no parallax, alpha blend, emissive', { emissive: true },
     { mode: 'vertex', parallax: false, op: 'alpha-blend', reflectivity: 'multiply', fresnel: false }],
+  // _BlendMode transparent materials: the pass blends by the alpha _ALPHA_TRANSPARENCY selects.
+  ['Blend SrcAlpha OneMinusSrcAlpha, ZWrite Off (10006/3 bg0004_01_stageB_cut_mt)',
+    { blend: [5, 10], depthWrite: false }, null],
+  ['_ALPHA_TRANSPARENCY_MULTIPLY in queue 3000 (10022/3 bg0007_04_plantsA_tra_mt)',
+    { blend: [5, 10], depthWrite: false, queue: 3000, alphaSource: 'multiply' }, null],
+  ['Blend SrcAlpha One, vertex cube by COLOR.a (11009/3 bg0010_01_stageA_add_ref_mt)',
+    { blend: [5, 1], depthWrite: false, queue: 3000, alphaSource: 'vertex' },
+    { mode: 'vertex', parallax: false, op: 'add', reflectivity: 'vertex', fresnel: false }],
 ];
 
 const SAMPLE = {
@@ -88,7 +96,14 @@ function reference(fields, variant, point) {
       .map(x => x * SAMPLE.emissiveIntensity);
     out = mix(out, emission, v(SAMPLE.emissiveMap[0]));
   }
-  return [...out, tex[3] * SAMPLE.tint[3]].map(x => Math.round(Math.min(Math.max(x, 0), 1) * 255));
+  const alpha = { vertex: color[3], texture: tex[3], multiply: tex[3] * color[3] }[fields.alphaSource || 'texture'] * SAMPLE.tint[3];
+  const clamp = x => Math.min(Math.max(x, 0), 1);
+  let result = [...out.map(clamp), clamp(alpha)];
+  if (fields.blend) {
+    // Over the cleared black, transparent target: source * SrcAlpha + 0 for colour and alpha alike.
+    result = result.map(x => x * result[3]);
+  }
+  return result.map(x => Math.round(x * 255));
 }
 
 (async () => {
@@ -133,7 +148,9 @@ function reference(fields, variant, point) {
         const meta = {
           shader: 'stage', colors: { _TintColor: sample.tint, _AmbientColor: sample.ambient, _BlendColor: sample.blend },
           cull: 2, uvTransform: [1, 1, 0, 0], vertexColor: true, mipBias: 0, lightmap: 0, reflectionToggle: Boolean(variant),
+          queue: fields.queue ?? 2000,
         };
+        for (const key of ['blend', 'depthWrite', 'alphaSource']) if (fields[key] !== undefined) meta[key] = fields[key];
         if (variant) {
           meta.reflection = { bufferView: 0, size: 64, ...variant };
           if (variant.parallax) Object.assign(meta.reflection, { boxMin: sample.boxMin, boxMax: sample.boxMax, origin: sample.origin });
@@ -164,7 +181,9 @@ function reference(fields, variant, point) {
           const point = camera.position.clone().addScaledVector(ray, -camera.position.y / ray.y);
           samples.push({ x, y, point: [-point.x, point.y, point.z], pixel: Array.from(pixels.subarray((y * size + x) * 4, (y * size + x) * 4 + 4)) });
         }
-        results.push({ label, native: mesh.material.isShaderMaterial === true, defines: { ...mesh.material.defines }, samples });
+        const { transparent, blending, depthWrite } = mesh.material;
+        results.push({ label, native: mesh.material.isShaderMaterial === true, defines: { ...mesh.material.defines }, samples,
+          state: { transparent, custom: blending === T.CustomBlending, depthWrite, renderOrder: mesh.renderOrder } });
         controller.dispose();
       }
       return results;
@@ -174,6 +193,8 @@ function reference(fields, variant, point) {
       const [label, fields, variant] = CASES[index];
       assert.equal(result.native, true, `${label}: native stage material`);
       assert.equal(Boolean(result.defines.CUBEMAP), Boolean(variant), `${label}: cube define`);
+      assert.deepEqual(result.state, { transparent: (fields.queue ?? 2000) > 2500, custom: Boolean(fields.blend),
+        depthWrite: fields.depthWrite !== false, renderOrder: (fields.queue ?? 0) > 2500 ? fields.queue : 0 }, `${label}: pass state`);
       let checked = 0;
       const faces = new Set();
       for (const { x, y, point, pixel } of result.samples) {

@@ -25,6 +25,11 @@ _KEYWORDS = {
         "_CUBEMAP_REFLECTIVITY_MULTIPLY", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA", "_FRESNEL_ON",
         "_PARALLAX_CORRECTED_CUBEMAP_ON", "_THIRD_TEX_MODE_DECAL", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_OFF"}),
 }
+# Tags { "Queue" } of each shader's subshader.
+_SHADER_QUEUES = {"stage": 2000}
+# _ALPHA_TRANSPARENCY: the alpha the variant tests against _Cutoff and multiplies by _TintColor.a.
+_ALPHA_SOURCES = {"_ALPHA_TRANSPARENCY_VERTEX_ALPHA": "vertex", "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA": "texture",
+                  "_ALPHA_TRANSPARENCY_MULTIPLY": "multiply"}
 _RIMLIGHT_DEPTH = ("cab-6cf8387efa4151b6220fceb9384d0e8e", 7983779172275908372)
 _AMBIENT_SCRIPT = ("LiveCoreStageAmbient", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll")
 _MODEL_SCRIPT = ("LiveCoreStageModel", *_AMBIENT_SCRIPT[1:])
@@ -171,6 +176,47 @@ def camera_depth(scene, material, renderer_tree, *, supports_cutout):
     return {"kind": "opaque"}
 
 
+def _enum(floats, name, default, count):
+    value = floats.get(name, default)
+    if type(value) not in (int, float) or not math.isfinite(value) or value != int(value) or not 0 <= value < count:
+        return None
+    return int(value)
+
+
+def _stencil(floats):
+    """The float-bound stencil state: {} when it never tests nor writes, None when unreadable.
+
+    Unity enums: CompareFunction (0 Disabled ... 8 Always) and StencilOp (0 Keep ... 7 DecrementWrap).
+    """
+    values = [_enum(floats, *field) for field in (("_StencilRef", 2, 256), ("_StencilComp", 8, 9),
+                                                  ("_StencilPassOp", 0, 8), ("_StencilZFailOp", 0, 8))]
+    if None in values:
+        return None
+    ref, comp, passing, failing = values
+    if comp == 0 or (comp, passing, failing) == (8, 0, 0):
+        return {}
+    return {"stencil": {"ref": ref, "comp": comp, "pass": passing, "zfail": failing}}
+
+
+def _stage_state(tree, floats):
+    """AS/Stage binds Blend [_SrcBlend] [_DstBlend], ZWrite [_ZWrite] and the stencil to floats.
+
+    The shader GUI's _BlendMode only writes those floats, the keywords and the
+    queue; the pass reads the floats themselves.
+    """
+    source, target = _enum(floats, "_SrcBlend", 1, 11), _enum(floats, "_DstBlend", 0, 11)
+    write, queue, stencil = _enum(floats, "_ZWrite", 1, 2), tree.get("m_CustomRenderQueue", -1), _stencil(floats)
+    # UnityEngine.Rendering.BlendMode 9 (SrcAlphaSaturate) is a source factor only.
+    if None in (source, target, write, stencil) or target == 9 or type(queue) is not int or not -1 <= queue <= 5000:
+        return None
+    state = {"queue": _SHADER_QUEUES["stage"] if queue == -1 else queue, **stencil}
+    if (source, target) != (1, 0):
+        state["blend"] = [source, target]
+    if not write:
+        state["depthWrite"] = False
+    return state
+
+
 def read_material(scene, material, ambient, single_ambient):
     if material is None or material.type.name != "Material":
         return None
@@ -180,12 +226,17 @@ def read_material(scene, material, ambient, single_ambient):
         return None
     floats = _properties(tree, "m_Floats")
     keywords = set(tree.get("m_ShaderKeywords", "").split())
+    state = {}
+    if mode == "stage":
+        state = _stage_state(tree, floats)
+        if state is None:
+            return None
     # AS/General/Opaque fixes blend and depth in its compiled passes.
     # Serialized values for those properties can survive a material shader swap.
-    if mode != "general" and (floats.get("_SrcBlend", 1), floats.get("_DstBlend", 0), floats.get("_ZWrite", 1)) != (1, 0, 1):
+    elif mode != "general" and (floats.get("_SrcBlend", 1), floats.get("_DstBlend", 0), floats.get("_ZWrite", 1)) != (1, 0, 1):
         return None
-    if (floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
-            or floats.get("_StencilZFailOp", 0) != 0):
+    if mode != "stage" and (floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
+                            or floats.get("_StencilZFailOp", 0) != 0):
         return None
     colors = _colors(tree)
     if "_TintColor" not in colors or mode != "solid" and "_AmbientColor" not in colors:
@@ -211,9 +262,12 @@ def read_material(scene, material, ambient, single_ambient):
         meta["vertexColor"] = "_VERTEX_COLOR_ON" in keywords
         return meta
     third_modes = keywords & {"_THIRD_TEX_MODE_OFF", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_DECAL"}
-    if ("_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA" not in keywords or len(third_modes) != 1
-            or "_THIRD_TEX_MODE_DECAL" in third_modes):
+    alpha = [source for name, source in _ALPHA_SOURCES.items() if name in keywords]
+    if len(alpha) != 1 or len(third_modes) != 1 or "_THIRD_TEX_MODE_DECAL" in third_modes:
         return None
+    meta.update(state)
+    if alpha[0] != "texture":
+        meta["alphaSource"] = alpha[0]
     modes = keywords & {"_CUBEMAP_MODE_OFF", "_CUBEMAP_MODE_FRAGMENT", "_CUBEMAP_MODE_VERTEX"}
     if len(modes) != 1:
         return None

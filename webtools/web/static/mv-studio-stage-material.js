@@ -115,8 +115,17 @@
     void main() {
       #ifdef LIGHTMAPPED
         vec4 surface = texture2D(mainMap, vStageUV, mipBias);
+        // _ALPHA_TRANSPARENCY_VERTEX_ALPHA (0), _MAIN_TEX_ALPHA (1), _MULTIPLY (2):
+        // the alpha _Cutoff tests and _TintColor.a scales.
+        #if STAGE_ALPHA == 0
+          float alpha = vStageColor.a;
+        #elif STAGE_ALPHA == 2
+          float alpha = surface.a * vStageColor.a;
+        #else
+          float alpha = surface.a;
+        #endif
         #ifdef CUTOUT
-          if (surface.a < alphaCutoff) discard;
+          if (alpha < alphaCutoff) discard;
         #endif
         vec3 baked = 2.0 * texture2D(lightMap, vStageLightUV).rgb;
         vec3 ambientSurface = mix(surface.rgb, ambient.rgb, ambient.a);
@@ -169,7 +178,7 @@
           vec3 emission = mix(ambientSurface, emissiveColor.rgb, emissiveColor.a) * emissiveIntensity;
           color = mix(color, emission, texture2D(emissiveMap, vStageEmissiveUV).r);
         #endif
-        gl_FragColor = vec4(color, surface.a * tint.a);
+        gl_FragColor = vec4(color, alpha * tint.a);
       #elif defined(TEXTURED)
         vec4 surface = texture2D(mainMap, vStageUV);
         #ifdef VERTEX_COLOR
@@ -209,6 +218,53 @@
       Object.hasOwn(reflectivities, value.reflectivity) && typeof value.fresnel === "boolean" &&
       typeof value.parallax === "boolean" && (!value.parallax ||
         [value.boxMin, value.boxMax, value.origin].every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite)));
+  }
+
+  // Float-bound pass state, by Unity enum value: UnityEngine.Rendering.BlendMode,
+  // CompareFunction (0 Disabled) and StencilOp.
+  function renderState(T) {
+    return {
+      factors: [T.ZeroFactor, T.OneFactor, T.DstColorFactor, T.SrcColorFactor, T.OneMinusDstColorFactor,
+        T.SrcAlphaFactor, T.OneMinusSrcColorFactor, T.DstAlphaFactor, T.OneMinusDstAlphaFactor,
+        T.SrcAlphaSaturateFactor, T.OneMinusSrcAlphaFactor],
+      stencilFunctions: [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc, T.EqualStencilFunc,
+        T.LessEqualStencilFunc, T.GreaterStencilFunc, T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc],
+      stencilOps: [T.KeepStencilOp, T.ZeroStencilOp, T.ReplaceStencilOp, T.IncrementStencilOp, T.DecrementStencilOp,
+        T.InvertStencilOp, T.IncrementWrapStencilOp, T.DecrementWrapStencilOp],
+    };
+  }
+
+  const enumIn = (value, count) => Number.isInteger(value) && value >= 0 && value < count;
+
+  function passStateReady(meta) {
+    return (meta.queue === undefined || Number.isInteger(meta.queue) && meta.queue >= 0 && meta.queue <= 5000) &&
+      (meta.blend === undefined || Array.isArray(meta.blend) && meta.blend.length === 2 &&
+        enumIn(meta.blend[0], 11) && enumIn(meta.blend[1], 11) && meta.blend[1] !== 9) &&
+      (meta.depthWrite === undefined || meta.depthWrite === false) &&
+      (meta.stencil === undefined || enumIn(meta.stencil.ref, 256) && enumIn(meta.stencil.comp, 9) &&
+        enumIn(meta.stencil.pass, 8) && enumIn(meta.stencil.zfail, 8));
+  }
+
+  function applyPassState(T, material, meta) {
+    const state = renderState(T);
+    if (meta.blend) {
+      material.blending = T.CustomBlending;
+      material.blendSrc = material.blendSrcAlpha = state.factors[meta.blend[0]];
+      material.blendDst = material.blendDstAlpha = state.factors[meta.blend[1]];
+      material.blendEquation = material.blendEquationAlpha = T.AddEquation;
+    }
+    if (meta.depthWrite === false) material.depthWrite = false;
+    // Unity sorts the queues above 2500 back to front after every opaque queue.
+    material.transparent = meta.queue > 2500;
+    if (meta.stencil) {
+      material.stencilWrite = true;
+      material.stencilRef = meta.stencil.ref;
+      material.stencilFunc = state.stencilFunctions[meta.stencil.comp];
+      material.stencilFuncMask = material.stencilWriteMask = 0xff;
+      material.stencilFail = T.KeepStencilOp;
+      material.stencilZPass = state.stencilOps[meta.stencil.pass];
+      material.stencilZFail = state.stencilOps[meta.stencil.zfail];
+    }
   }
 
   function reflectionDefines(source) {
@@ -421,6 +477,8 @@
           !isColor(meta.colors._BlendColor) || !Number.isFinite(meta.mipBias))) return;
       if (meta.alphaCutoff !== undefined && (meta.shader !== "stage" || !Number.isFinite(meta.alphaCutoff) ||
           meta.alphaCutoff < 0 || meta.alphaCutoff > 1)) return;
+      if (!passStateReady(meta) || meta.alphaSource !== undefined &&
+          (meta.shader !== "stage" || !Object.hasOwn(reflectivities, meta.alphaSource))) return;
       if (meta.emissive && (meta.shader !== "stage" ||
           !node.geometry.getAttribute("_stage_emissive_uv") || !Number.isSafeInteger(meta.emissive.texture) ||
           meta.emissive.texture < 0 || !isColor(meta.emissive.color) ||
@@ -456,6 +514,7 @@
         if (!active()) break;
         if (!lightMap) continue;
         defines.LIGHTMAPPED = 1;
+        defines.STAGE_ALPHA = reflectivities[meta.alphaSource ?? "texture"];
         uniforms.lightMap = {value: lightMap};
         uniforms.mipBias = {value: meta.mipBias};
         uniforms.blendColor = {value: new T.Vector4().fromArray(meta.colors._BlendColor)};
@@ -494,9 +553,14 @@
         name: original.name, defines, uniforms, vertexShader, fragmentShader, skinning, toneMapped: false,
         side: meta.cull === 0 ? T.DoubleSide : meta.cull === 1 ? T.BackSide : T.FrontSide,
       });
+      applyPassState(T, material, meta);
       // A mesh without a COLOR stream reads opaque white.
       if (meta.vertexColor && !node.geometry.getAttribute("_stage_color")) material.defaultAttributeValues._stage_color = [1, 1, 1, 1];
       if (!meta.reflectionToggle || uniforms.useReflection) node.material = material;
+      if (material.transparent) {
+        entry.renderOrder = node.renderOrder;
+        node.renderOrder = meta.queue;
+      }
       // LivePropBasic swaps in its own material instance, which only the prop's
       // LivePropAmbient changes; stage ambient components keep the original asset.
       const propLight = node.geometry.userData?.mvPropLight;
@@ -671,8 +735,9 @@
       },
       dispose() {
         for (const entry of uvRecords) if (uvOwners.get(entry.owner) === entry) uvOwners.delete(entry.owner);
-        for (const {node, original, material} of records) {
+        for (const {node, original, material, renderOrder} of records) {
           node.material = original;
+          if (renderOrder !== undefined) node.renderOrder = renderOrder;
           material.dispose();
         }
         sampler.dispose();

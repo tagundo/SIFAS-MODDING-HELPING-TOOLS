@@ -504,6 +504,54 @@ class StageCubemapTests(unittest.TestCase):
         descriptor = stage.read_material(SimpleNamespace(tree=lambda _: tree), material, {}, {})
         self.assertEqual((descriptor["reflectionToggle"], descriptor["usesEmissive"]), (True, True))
 
+    @staticmethod
+    def stage_material(keywords, floats, queue=-1):
+        material = SimpleNamespace(
+            path_id=13, type=SimpleNamespace(name="Material"),
+            assets_file=SimpleNamespace(externals=[SimpleNamespace(path="CAB-fc0511ca63f2d94bbfe211260d08ddd1")]))
+        color = dict.fromkeys("rgba", 1)
+        tree = {
+            "m_Shader": {"m_FileID": 1, "m_PathID": -6509019661097744245}, "m_ShaderKeywords": keywords,
+            "m_CustomRenderQueue": queue,
+            "m_SavedProperties": {
+                "m_Floats": list(floats.items()),
+                "m_Colors": [("_AmbientColor", color), ("_TintColor", color), ("_BlendColor", color)],
+                "m_TexEnvs": [("_MainTex", {"m_Scale": {"x": 1, "y": 1}, "m_Offset": {"x": 0, "y": 0}})],
+            },
+        }
+        return stage.read_material(SimpleNamespace(tree=lambda _: tree), material, {}, {})
+
+    def test_blend_mode_floats_set_the_pass_state(self):
+        off = "_CUBEMAP_MODE_OFF _CUBEMAP_BLEND_OP_ALPHA_BLEND _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA _THIRD_TEX_MODE_OFF "
+        # 10006/3 bg0004_01_stageB_cut_mt: _BlendMode 1 in the Geometry queue.
+        opaque_queue = self.stage_material(off + "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA",
+                                           {"_BlendMode": 1, "_SrcBlend": 5, "_DstBlend": 10, "_ZWrite": 0})
+        self.assertEqual({key: opaque_queue.get(key) for key in ("blend", "depthWrite", "queue", "alphaSource", "stencil")},
+                         {"blend": [5, 10], "depthWrite": False, "queue": 2000, "alphaSource": None, "stencil": None})
+        # 10022/3 bg0007_04_plantsA_tra_mt: alpha from _MainTex.a * COLOR.a, queue 3000.
+        plants = self.stage_material(off + "_ALPHA_TRANSPARENCY_MULTIPLY",
+                                     {"_SrcBlend": 5, "_DstBlend": 10, "_ZWrite": 0}, queue=3000)
+        self.assertEqual((plants["queue"], plants["alphaSource"]), (3000, "multiply"))
+        # 11009/3 bg0010_01_stageA_add_ref_mt: additive by COLOR.a.
+        additive = self.stage_material("_CUBEMAP_MODE_VERTEX _CUBEMAP_BLEND_OP_ADD _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA "
+                                       "_THIRD_TEX_MODE_OFF _ALPHA_TRANSPARENCY_VERTEX_ALPHA",
+                                       {"_BlendMode": 2, "_SrcBlend": 5, "_DstBlend": 1, "_ZWrite": 0}, queue=3000)
+        self.assertEqual((additive["blend"], additive["alphaSource"], additive["reflectionToggle"]), ([5, 1], "vertex", True))
+        # 12021/3 bg0025_01_stageC_prj_mt writes stencil reference 2.
+        writer = self.stage_material(off + "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA",
+                                     {"_StencilComp": 8, "_StencilPassOp": 2, "_StencilRef": 2, "_StencilZFailOp": 0})
+        self.assertEqual(writer["stencil"], {"ref": 2, "comp": 8, "pass": 2, "zfail": 0})
+        self.assertNotIn("blend", writer)
+        # Opaque defaults keep the descriptor free of pass-state fields.
+        plain = self.stage_material(off + "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA _EMISSION _ZWRITEPARAM_ON",
+                                    {"_BlendMode": 0, "_SrcBlend": 1, "_DstBlend": 0, "_ZWrite": 1, "_StencilComp": 8})
+        self.assertEqual([key for key in ("blend", "depthWrite", "stencil", "alphaSource") if key in plain], [])
+        for floats in ({"_SrcBlend": 11}, {"_DstBlend": 9}, {"_ZWrite": 2}, {"_SrcBlend": 1.5},
+                       {"_StencilComp": 9}, {"_StencilPassOp": 8}):
+            self.assertIsNone(self.stage_material(off + "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA", floats), floats)
+        self.assertIsNone(self.stage_material(off + "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA _ALPHA_TRANSPARENCY_MULTIPLY", {}))
+        self.assertIsNone(self.stage_material(off, {}))
+
     def test_quality_ownership_uses_only_typed_primary_model_ambient(self):
         def node(kind, path):
             return SimpleNamespace(type=SimpleNamespace(name=kind), assets_file=object(), path_id=path)
