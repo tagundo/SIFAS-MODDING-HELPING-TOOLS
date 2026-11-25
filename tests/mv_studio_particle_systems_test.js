@@ -389,6 +389,35 @@ function testDeviceFrameSteps() {
   }
   // The speed scales the frame before it is divided: .04 s at speed .5 is one .02 s step.
   assert.ok(Math.abs(fall(.04, .5) - expected(.02, 1)) < 1e-6, `speed .5: ${fall(.04, .5)}`);
+  // A frame whose sub-step is below 1e-5 runs no update and adds no time (0x1ce370): the burst waits
+  // for the next frame, and the particle then falls as after that frame alone.
+  assert.equal(P.create(falling(1), 3).frames([5e-6], 1).length, 0, "a sub-1e-5 frame runs no update");
+  assert.equal(P.create(falling(.5), 3).frames([1.5e-5], 1).length, 0, "the scaled frame is tested");
+  assert.deepEqual(snapshot(P.create(falling(1), 3), P.create(falling(1), 3).frames([5e-6, .02], 2)),
+    snapshot(P.create(falling(1), 3), P.create(falling(1), 3).frames([.02], 1)));
+  // Steps counted by a burst that repeats every millisecond: each step crosses a repeat and fires it
+  // once (0x65bd78), so the particles are the steps.
+  const counter = speed => system({main: {looping: false, duration: 100, lifetime: constant(100), simulationSpeed: speed},
+    shape: null, emission: {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 0, interval: .001, probability: 1}]}});
+  const steps = (updates, count = updates.length, speed = 1) => P.create(counter(speed), 1).frames(updates, count).length;
+  assert.equal(steps([.2]), 7);
+  // Above 5 s left, 0x1d7490 steps .2 s (the last step when that was longer): a 5.5 s frame takes 3 .2 s
+  // steps down to 4.9 s and then 164 of 5.5 / 184 s, not 184.
+  assert.equal(steps([5.5]), 3 + 164);
+  // Above 10 s it steps 1 s, and keeps the 1 s step while more than 5 s are left: 5.5 s at speed 2 is
+  // 11 s, 6 steps of 1 s down to 5 s and 167 of 11 / 367 s.
+  assert.equal(steps([5.5], 1, 2), 6 + 167);
+  // The accumulator runs down until less than 1e-6 is left: three sub-steps of a .0622 s frame leave
+  // 2^-28 s, which waits for the next frame. A burst at the clock after those three steps fires in the
+  // next frame's first step, not in a fourth step of this one.
+  const frame = f32(.0622), sub = f32(frame / 3), clock = f32(f32(sub + sub) + sub);
+  assert.equal(f32(f32(f32(frame - sub) - sub) - sub), 2 ** -28);
+  const waiting = system({main: {looping: false, duration: 10, lifetime: constant(10)}, shape: null,
+    emission: {rate: constant(0), bursts: [{time: clock, count: constant(1), cycles: 1, interval: 0, probability: 1}]}});
+  const tiny = [frame, .02];
+  const kept = P.create(waiting, 1);
+  assert.equal(kept.frames(tiny, 1).length, 0, "no step for a remainder below 1e-6");
+  assert.equal(kept.frames(tiny, 2).length, 1);
   // A device run's identity is its update array; a new array starts again from the activation.
   const stream = P.create(falling(1), 3), first = [.2, .2];
   const one = snapshot(stream, stream.frames(first, 2));
@@ -438,6 +467,19 @@ function testBurstsOncePerWindow() {
   assert.equal(P.create(row(1), 1).frames([.2], 1).length, 1, "cycles 1 never repeats");
   // A repeat fires in the step whose end reaches it: 1/60 steps cross a .01 s repeat once each.
   assert.equal(P.create(row(0), 1).sample(1, 30).length, 2);
+  // The window is [from, to): a burst at the step's end fires in the next step.
+  const at = (time, main = {looping: false, duration: 10}) => system({main: {lifetime: constant(10), ...main}, shape: null,
+    emission: {rate: constant(0), bursts: [{time, count: constant(1), cycles: 1, interval: 0, probability: 1}]}});
+  const edge = P.create(at(f32(.025)), 1), steps = [f32(.025), f32(.025)];
+  assert.equal(edge.frames(steps, 1).length, 0, "a burst at the step end waits");
+  assert.equal(edge.frames(steps, 2).length, 1);
+  // A step that wraps checks repeats only in [0, to), not in [from, duration + 1e-4) (0x65bcc8-0x65bd10):
+  // the repeat of a .5 s burst at .995 s on a 1 s loop falls in the wrapping step .99 -> 1.01 and never fires.
+  const late = system({main: {looping: true, duration: 1, lifetime: constant(10)}, shape: null,
+    emission: {rate: constant(0), bursts: [{time: .5, count: constant(1), cycles: 0, interval: .495, probability: 1}]}});
+  const wrap = P.create(late, 1), frames = [f32(.99), f32(.02)];
+  assert.equal(wrap.frames(frames, 1).length, 1, "the burst at .5 s");
+  assert.equal(wrap.frames(frames, 2).length, 1, "no repeat from the wrap's end part");
 }
 
 // The device frames of a game run: activation, the frame a time shows, the song-end hold.
@@ -943,8 +985,10 @@ async function testDeviceFramesInApply() {
     culling: {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true}, main});
   const kept = system({path: "fx/kept", node: 1, shape: null, emission: {rate: constant(30), bursts: []},
     culling: {pauses: false, bounds: null, uniform: true}, main});
+  const slow = system({path: "fx/slow", node: 1, shape: null, emission: once,
+    culling: {pauses: false, bounds: null, uniform: true}, main: {...main, simulationSpeed: .5}});
   const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
-    templates: [{name: "fx", nodes, systems: [culled, kept]}],
+    templates: [{name: "fx", nodes, systems: [culled, kept, slow]}],
     cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1},
       {trackId: "track", eventId: "track:1", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 2}]};
   const root = new T.Group();
@@ -983,6 +1027,10 @@ async function testDeviceFramesInApply() {
   let sum = 0;
   for (let k = activated; k <= last; k++) sum += f32(rows[k][1]);
   assert.ok(Math.abs(kept0.time - sum) < 1e-9, `time ${kept0.time} = deltaTime of frames A .. j ${sum}`);
+  // ParticleSystem.time is the frames' Time.deltaTime scaled by simulationSpeed (0x1ce354).
+  let slowSum = 0;
+  for (let k = activated; k <= last; k++) slowSum += f32(f32(rows[k][1]) * .5);
+  assert.ok(Math.abs(row["track:0/fx/slow"].time - slowSum) < 1e-9, `speed .5: ${row["track:0/fx/slow"].time} = ${slowSum}`);
   // The culled system steps a frame only when the frame before it saw the box.
   const lookedAway = k => rows[k][0] >= 2 && rows[k][0] < 3;
   let culledSum = f32(rows[activated][1]), culledUpdates = 1, ownSum = f32(rows[activated][1]);
