@@ -6,6 +6,7 @@ The GLB contains static rest geometry and original-size PNG textures; source
 meshes, skin weights, texture pixels and bundle files are never written.
 """
 from collections import OrderedDict
+from contextlib import contextmanager
 import io
 import hashlib
 import json
@@ -827,12 +828,33 @@ def _png_texture(image, deadline):
         return output.getvalue()
 
 
+def set_texture_store(store):
+    """Let conversions on this thread reuse decoded PNGs from ``store`` (mv_studio_import_cache).
+
+    Returns the previous store, to restore it with another call.
+    """
+    previous = getattr(_REQUEST_STATE, "texture_store", None)
+    _REQUEST_STATE.texture_store = store
+    return previous
+
+
+@contextmanager
+def texture_store(store):
+    previous = set_texture_store(store)
+    try:
+        yield store
+    finally:
+        set_texture_store(previous)
+
+
 def _texture_png(texture, deadline, *, stage=False):
     """Decode original texture bytes once, including across ZIP temp paths.
 
     Source hashes belong to the actual encoded pixels, not file timestamps or
     mutable preview objects. Material/sampler metadata is rebuilt each time.
     Reimport bypasses reads and replaces successful entries with fresh results.
+    A texture_store() also keeps the PNG across restarts, keyed by the same
+    source identity plus this code's and the decoders' recipe.
     """
     _remaining(deadline)
     width, height = texture.m_Width, texture.m_Height
@@ -887,6 +909,20 @@ def _texture_png(texture, deadline, *, stage=False):
     png = _conversion_get(_TEXTURE_PNGS, key, deadline)
     if png is not None:
         return png
+    store, receipt = getattr(_REQUEST_STATE, "texture_store", None), None
+    if store is not None:
+        try:
+            receipt = store.key("texture", [int(item) if item is not None else None for item in key[:6]], key[6],
+                                key[7].hex(), list(decoder) if decoder else None,
+                                list(profile) if profile is not None else None, bool(stage_format))
+        except (TypeError, ValueError):
+            receipt = None
+        if receipt is not None and not getattr(_REQUEST_STATE, "reimport", False):
+            png = store.get_bytes(receipt)
+            if png is not None:
+                _conversion_put(_TEXTURE_PNGS, key, png,
+                                max_bytes=MAX_TEXTURE_CACHE_BYTES, max_entries=MAX_TEXTURE_CACHE_ENTRIES)
+                return png
 
     class TextureBytes:
         def __getattr__(self, name):
@@ -902,6 +938,8 @@ def _texture_png(texture, deadline, *, stage=False):
         image.close()
     _conversion_put(_TEXTURE_PNGS, key, png,
                     max_bytes=MAX_TEXTURE_CACHE_BYTES, max_entries=MAX_TEXTURE_CACHE_ENTRIES)
+    if receipt is not None:
+        store.put_bytes(receipt, png)
     return png
 
 
@@ -939,14 +977,16 @@ class _Materials:
             else:
                 pending.append((key, texture))
         reimport = getattr(_REQUEST_STATE, "reimport", False)
+        store = getattr(_REQUEST_STATE, "texture_store", None)
 
         def convert(texture):
             previous = getattr(_REQUEST_STATE, "reimport", False)
             _REQUEST_STATE.reimport = reimport
             try:
-                if getattr(self.scene, "preview_stage", False):
-                    return _texture_png(texture, self.scene.deadline, stage=True)
-                return _texture_png(texture, self.scene.deadline)
+                with texture_store(store):
+                    if getattr(self.scene, "preview_stage", False):
+                        return _texture_png(texture, self.scene.deadline, stage=True)
+                    return _texture_png(texture, self.scene.deadline)
             finally:
                 _REQUEST_STATE.reimport = previous
 

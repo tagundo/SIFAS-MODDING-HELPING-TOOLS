@@ -98,13 +98,16 @@ class ReceiptTests(unittest.TestCase):
         self.assertIsNone(self.store.get("../" + key))
 
     def test_the_store_is_bounded(self):
-        with patch.object(cache, "_MAX_ENTRIES", 3):
-            keys = [self.store.key("audio", index) for index in range(5)]
-            for index, key in enumerate(keys):
-                self.assertTrue(self.store.put(key, {"index": index}))
-                os.utime(self.store.directory / (key + ".receipt"), ns=(index * 10 ** 9, index * 10 ** 9))
-            self.store._evict()
+        self.store.max_entries = 3
+        keys = [self.store.key("audio", index) for index in range(5)]
+        for index, key in enumerate(keys):
+            self.assertTrue(self.store.put(key, {"index": index}))
+            os.utime(self.store.directory / (key + ".receipt"), ns=(index * 10 ** 9, index * 10 ** 9))
+        self.store._evict()
         self.assertEqual(sorted(path.stem for path in self.store.directory.glob("*.receipt")), sorted(keys[2:]))
+        self.store.max_entries, self.store.max_bytes = 100, 1
+        self.store._evict()
+        self.assertEqual(list(self.store.directory.glob("*.receipt")), [], "the byte bound applies too")
 
     def test_store_needs_a_private_folder(self):
         private = self.root / "private"
@@ -204,6 +207,73 @@ class ImportStepReceiptTests(unittest.TestCase):
             mv_studio_external_clips.apply(json.loads(json.dumps(project)), b"timeline", [{"asset": "dance"}], reads(), None,
                                            cache=self.store)
             self.assertEqual(resolve.call_count, 2)
+
+
+class TextureStoreTests(unittest.TestCase):
+    """Decoded PNGs outlive the process only through an import's texture store, under the full source key."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = Path(temporary.name) / "textures"
+        directory.mkdir(mode=0o700)
+        self.store = cache.ImportCache(directory, mv_studio.media, max_entries=8, max_bytes=1 << 20)
+        model_viewer._TEXTURE_PNGS.clear()
+        self.addCleanup(model_viewer._TEXTURE_PNGS.clear)
+        model_viewer._REQUEST_STATE.reimport = False
+
+    @staticmethod
+    def texture(red=20):
+        from types import SimpleNamespace
+        data = bytes([red, 40, 60, 255] * 4)
+        texture = SimpleNamespace(m_Width=2, m_Height=2, m_TextureFormat=4, m_ImageCount=1, m_TextureDimension=2,
+                                  image_data=data, m_StreamData=None, object_reader=None)
+        texture.get_image_data = lambda: texture.image_data
+        return texture
+
+    def test_png_is_reused_after_a_restart_only_inside_an_import(self):
+        import time
+        with patch.object(model_viewer.decode, "_android_image", wraps=model_viewer.decode._android_image) as decode:
+            with model_viewer.texture_store(self.store):
+                first = model_viewer._texture_png(self.texture(), time.monotonic() + 10)
+            model_viewer._TEXTURE_PNGS.clear()  # a restart
+            with model_viewer.texture_store(self.store):
+                self.assertEqual(model_viewer._texture_png(self.texture(), time.monotonic() + 10), first)
+            self.assertEqual(decode.call_count, 1)
+            self.assertEqual(len(list(self.store.directory.glob("*.receipt"))), 1)
+            # Other pixels are another key.
+            model_viewer._TEXTURE_PNGS.clear()
+            with model_viewer.texture_store(self.store):
+                self.assertNotEqual(model_viewer._texture_png(self.texture(red=21), time.monotonic() + 10), first)
+            self.assertEqual(decode.call_count, 2)
+            # Outside an import (other tools) nothing is read from or written to the store.
+            model_viewer._TEXTURE_PNGS.clear()
+            model_viewer._texture_png(self.texture(red=22), time.monotonic() + 10)
+            self.assertEqual(decode.call_count, 3)
+            self.assertEqual(len(list(self.store.directory.glob("*.receipt"))), 2)
+            # Reimport decodes again and refreshes the receipt.
+            model_viewer._TEXTURE_PNGS.clear()
+            model_viewer._REQUEST_STATE.reimport = True
+            try:
+                with model_viewer.texture_store(self.store):
+                    self.assertEqual(model_viewer._texture_png(self.texture(), time.monotonic() + 10), first)
+            finally:
+                model_viewer._REQUEST_STATE.reimport = False
+            self.assertEqual(decode.call_count, 4)
+        self.assertIsNone(getattr(model_viewer._REQUEST_STATE, "texture_store", None))
+
+    def test_a_corrupt_png_receipt_is_decoded_again(self):
+        import time
+        with model_viewer.texture_store(self.store):
+            first = model_viewer._texture_png(self.texture(), time.monotonic() + 10)
+        receipt, = self.store.directory.glob("*.receipt")
+        data = receipt.read_bytes()
+        receipt.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+        model_viewer._TEXTURE_PNGS.clear()
+        with patch.object(model_viewer.decode, "_android_image", wraps=model_viewer.decode._android_image) as decode:
+            with model_viewer.texture_store(self.store):
+                self.assertEqual(model_viewer._texture_png(self.texture(), time.monotonic() + 10), first)
+            self.assertEqual(decode.call_count, 1)
 
 
 if __name__ == "__main__":

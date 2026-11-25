@@ -39,9 +39,13 @@ import zlib
 
 _MAX_ENTRIES = 96
 _MAX_BYTES = 96 * 1024 * 1024
+# Decoded textures (PNG) live in their own folder: a costume's are reused by
+# every MV it appears in, while its whole GLB is specific to one MV's dance.
+_MAX_TEXTURES = 1024
+_MAX_TEXTURE_BYTES = 192 * 1024 * 1024
 _MAX_RECEIPT_BYTES = 32 * 1024 * 1024
 _KEY = re.compile(r"[a-f0-9]{64}\Z")
-_KINDS = {"timeline", "clips", "preview", "audio"}
+_KINDS = {"timeline", "clips", "preview", "audio", "texture"}
 _MEDIA_URL = "/api/mv-studio/media/"
 _MEDIA_NAME = re.compile(r"[a-f0-9]{32}\.(?:glb|wav|ogg|mp3|m4a|flac)\Z")
 _ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError, RuntimeError, zlib.error,
@@ -199,9 +203,11 @@ def digest(data):
 
 
 class ImportCache:
-    def __init__(self, directory, media):
+    def __init__(self, directory, media, max_entries=None, max_bytes=None):
         self.directory = directory
         self.media = media
+        self.max_entries = _MAX_ENTRIES if max_entries is None else max_entries
+        self.max_bytes = _MAX_BYTES if max_bytes is None else max_bytes
         self.recipe = recipe()
 
     def key(self, kind, *parts):
@@ -222,17 +228,58 @@ class ImportCache:
                 return False
         return True
 
+    def _read(self, key):
+        path = self._path(key)
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_RECEIPT_BYTES:
+            return None, None
+        raw = path.read_bytes()
+        head, _, body = raw.partition(b"\n")
+        header = json.loads(head)
+        if (header.get("key") != key or header.get("recipe") != self.recipe
+                or header.get("sha256") != sha256(body).hexdigest()):
+            return None, None
+        return path, body
+
+    def _write(self, key, body):
+        data = json.dumps({"key": key, "recipe": self.recipe, "sha256": sha256(body).hexdigest()}).encode() + b"\n" + body
+        if len(data) > _MAX_RECEIPT_BYTES:
+            return False
+        path = self._path(key)
+        descriptor, name = tempfile.mkstemp(dir=self.directory, prefix=".receipt-")
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+            os.replace(name, path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+        self._evict()
+        return True
+
+    def get_bytes(self, key):
+        """Bytes stored with put_bytes (checksummed like every receipt), or None."""
+        try:
+            path, body = self._read(key)
+            if body is None:
+                return None
+            try:
+                os.utime(path)
+            except OSError:
+                pass
+            return body
+        except _ERRORS:
+            return None
+
+    def put_bytes(self, key, data):
+        try:
+            return isinstance(data, bytes) and bool(data) and self._write(key, data)
+        except _ERRORS:
+            return False
+
     def get(self, key):
         """The payload stored under key, or None. Media it names must still hold their exact bytes."""
         try:
-            path = self._path(key)
-            if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_RECEIPT_BYTES:
-                return None
-            raw = path.read_bytes()
-            head, _, body = raw.partition(b"\n")
-            header = json.loads(head)
-            if (header.get("key") != key or header.get("recipe") != self.recipe
-                    or header.get("sha256") != sha256(body).hexdigest()):
+            path, body = self._read(key)
+            if body is None:
                 return None
             payload = _loads(zlib.decompress(body))
             if not self._media_current(_media_names(payload)):
@@ -253,20 +300,7 @@ class ImportCache:
             text = _dumps(payload)
             if not _same(_loads(text), payload) or not self._media_current(_media_names(payload)):
                 return False
-            body = zlib.compress(text.encode(), 6)
-            data = json.dumps({"key": key, "recipe": self.recipe, "sha256": sha256(body).hexdigest()}).encode() + b"\n" + body
-            if len(data) > _MAX_RECEIPT_BYTES:
-                return False
-            path = self._path(key)
-            descriptor, name = tempfile.mkstemp(dir=self.directory, prefix=".receipt-")
-            try:
-                with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(data)
-                os.replace(name, path)
-            finally:
-                Path(name).unlink(missing_ok=True)
-            self._evict()
-            return True
+            return self._write(key, zlib.compress(text.encode(), 6))
         except _ERRORS:
             return False
 
@@ -282,26 +316,30 @@ class ImportCache:
         total = 0
         for index, (_, size, path) in enumerate(entries):
             total += size
-            if index >= _MAX_ENTRIES or total > _MAX_BYTES:
+            if index >= self.max_entries or total > self.max_bytes:
                 path.unlink(missing_ok=True)
 
 
-def open_cache(media):
-    """The private receipt store, or None when ELICHIKA_MV_PRIVATE_CACHE is not a private folder."""
+def open_cache(media, folder="imports", **limits):
+    """A private receipt store, or None when ELICHIKA_MV_PRIVATE_CACHE is not a private folder."""
     value = os.environ.get("ELICHIKA_MV_PRIVATE_CACHE")
     effective_uid = getattr(os, "geteuid", None)
-    if not value or effective_uid is None:
+    if not value or effective_uid is None or folder not in ("imports", "textures"):
         return None
     try:
         configured = Path(value)
         if not configured.is_absolute() or configured.resolve() != configured:
             return None
-        directory = configured / "imports"
+        directory = configured / folder
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = directory.lstat()
         if (directory.resolve() != directory or not stat.S_ISDIR(info.st_mode) or info.st_uid != effective_uid()
                 or stat.S_IMODE(info.st_mode) & 0o077):
             return None
-        return ImportCache(directory, media)
+        return ImportCache(directory, media, **limits)
     except _ERRORS:
         return None
+
+
+def open_texture_cache(media):
+    return open_cache(media, "textures", max_entries=_MAX_TEXTURES, max_bytes=_MAX_TEXTURE_BYTES)
