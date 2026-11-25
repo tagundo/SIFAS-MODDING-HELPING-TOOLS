@@ -1149,6 +1149,16 @@
     if (focus) byId("mv-member-filter").querySelector('[aria-checked="true"]')?.focus();
   }
 
+  // The selected tab or member chip stays in view inside its scrolling strip; only the
+  // strip scrolls, never the page.
+  function revealSelected(strip, selector) {
+    const item = strip.querySelector(selector);
+    if (!item || strip.scrollWidth <= strip.clientWidth) return;
+    const box = strip.getBoundingClientRect(), rect = item.getBoundingClientRect();
+    if (rect.left < box.left) strip.scrollLeft -= box.left - rect.left;
+    else if (rect.right > box.right) strip.scrollLeft += rect.right - box.right;
+  }
+
   function renderTimelineTabs() {
     const nav = byId("mv-timeline-nav"), list = byId("mv-timeline-tabs");
     nav.hidden = !project;
@@ -1163,6 +1173,7 @@
       title: (tab) => format("Tracks: {tracks} · Clips: {clips}", { tracks: tab.tracks, clips: tab.count }),
     });
     if (refocus) byId("mv-tab-" + activeTab)?.focus({ preventScroll: true });
+    revealSelected(list, '[aria-selected="true"]');
   }
 
   function renderMemberFilter(plan) {
@@ -1178,6 +1189,7 @@
     }
     Tabs.renderChips(box, { choices, active: plan.member === null ? "" : plan.member, onSelect: selectMember });
     if (refocus) box.querySelector('[aria-checked="true"]')?.focus({ preventScroll: true });
+    revealSelected(box, '[aria-checked="true"]');
   }
 
   // Tracks that hold edited clips, plus the plugin lanes of the Edit tab.
