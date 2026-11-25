@@ -12,8 +12,11 @@
    phone where folding and Home come back to the layout it loaded with), panel open states
    kept across a reload, every panel hidden, and the selected tab kept in view in a phone's
    tab strip. Shift+Tab back through the side panel (side by side and stacked) never leaves
-   the focused field under a panel name that sticks to its top. Korean UI, with screenshots
-   in EVIDENCE_DIR. */
+   the focused field under a panel name that sticks to its top. Also: the splitter's focus
+   ring, a press, move and release inside one frame, a window with no room for the panel
+   (no splitter, the toggle still works), panels the editor opens itself not being stored,
+   the one-row toolbar and the member chip kept in view at 320x568, and storage that throws
+   or is missing from page load on. Korean UI, with screenshots in EVIDENCE_DIR. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -83,18 +86,20 @@ function probe() {
   }
 }
 
-// The 12035 structure on the local stage model (one member wearing the same model).
-function project(local) {
+// The 12035 structure on the local stage model (members wearing the same model; one by default).
+const MEMBERS = ['우에하라 아유무', '나카스 카스미', '오사카 시즈쿠', '아사카 카린', '미야시타 아이', '코노에 카나타', '유키 세츠나', '엠마 베르데', '텐노지 리나'];
+function project(local, members = 1) {
   const data = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'mv_studio_tracks_12035.json'), 'utf8'));
   for (const track of data.tracks) delete track.editableValues;
   return { ...local, name: 'Timeline 12035', duration: data.duration, nativeTimeline: true, tracks: data.tracks,
     source: { kind: 'game', region: 'gl', platform: 'android', liveId: 12035, assetId: 1 },
-    performers: [{ id: 'member-1', label: '우에하라 아유무', position: 1, glb: local.stage.glb, transform: { position: [0, 0, 0] } }],
+    performers: MEMBERS.slice(0, members).map((label, index) => ({ id: `member-${index + 1}`, label, position: index + 1,
+      glb: local.stage.glb, transform: { position: [index - (members - 1) / 2, 0, 0] } })),
     quality: { mode: 1, modes: [{ id: 1, label: 'Medium', values: {} }], options: [], values: {} } };
 }
 
 // embedded: the page as the Android and macOS apps show it (no workbench header).
-async function openProject(page, url, embedded = false) {
+async function openProject(page, url, embedded = false, members = 1) {
   await page.goto(url + (embedded ? '/?embedded=1#mv' : '/#mv'));
   await page.waitForFunction(() => MVStudio.getState().visible);
   await page.locator('#mv-open').click();
@@ -102,7 +107,7 @@ async function openProject(page, url, embedded = false) {
   await page.locator('#picker-entries li').filter({ hasText: 'stage-fixture.glb' }).click();
   await page.waitForFunction(() => !!MVStudio.getState().project?.stage?.glb);
   const local = (await page.evaluate(() => MVStudio.getState())).project;
-  const timeline = project(local);
+  const timeline = project(local, members);
   await page.route('**/api/mv-studio/catalog?*', (route) => route.fulfill({ json: { region: 'gl', platform: 'android',
     regions: [{ id: 'gl', label: 'Global (GL)' }], platforms: [{ id: 'android', label: 'Android' }],
     songs: [{ id: 12035, title: 'Timeline 12035', variants: [{ id: 1, label: 'MV' }] }] } }));
@@ -383,6 +388,25 @@ async function desktop(browser, url) {
   assert(burst > 0 && burst < perRender * 1.5, `eight moves in one frame redraw once (${burst} / ${perRender})`);
   state = await read(page);
   near(state.inspector.width, initial.inspector.width + 120 - 32, 'the burst moved the splitter 32 px right');
+  // A press, a move and the release inside one frame: the release applies the move that
+  // was waiting for the frame.
+  const quick = await page.evaluate(async () => {
+    const grip = document.getElementById('mv-inspector-resizer'), inspector = document.getElementById('mv-inspector');
+    const box = grip.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
+    const fire = (type, dx) => grip.dispatchEvent(new PointerEvent(type, { pointerId: 8, isPrimary: true, button: 0, buttons: type === 'pointerup' ? 0 : 1,
+      clientX: x + dx, clientY: y, bubbles: true, cancelable: true }));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const start = Math.round(inspector.getBoundingClientRect().width);
+    fire('pointerdown', 0);
+    fire('pointermove', -24);
+    fire('pointerup', -24);
+    return { start, released: Math.round(inspector.getBoundingClientRect().width) };
+  });
+  assert.equal(quick.released, quick.start + 24, 'the release applies the move of the same frame');
+  state = await read(page);
+  assert.equal(state.inspector.width, quick.start + 24, 'and it stays');
+  assert.equal(state.stored.width, String(quick.start + 24), 'and is kept');
+  assertRenderer(state, 'a drag inside one frame');
 
   // ---- Keyboard --------------------------------------------------------------------------
   await grip.focus();
@@ -390,6 +414,12 @@ async function desktop(browser, url) {
   let width = (await read(page)).inspector.width;
   await grip.press('ArrowLeft');
   assert.equal((await read(page)).inspector.width, width + 16, 'Left widens the panel by 16 px');
+  // Used from the keyboard, the splitter shows a focus ring.
+  const ring = await grip.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { focused: node.matches(':focus-visible'), style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
+  });
+  assert(ring.focused && ring.style !== 'none' && ring.width >= 2, `the focused splitter shows its ring (${JSON.stringify(ring)})`);
   await grip.press('Shift+ArrowLeft');
   assert.equal((await read(page)).inspector.width, width + 16 + 64, 'Shift+Left by 64 px');
   await grip.press('ArrowRight');
@@ -500,6 +530,26 @@ async function desktop(browser, url) {
   assert.equal(state.pageOverflow, 0);
   assert.equal(state.stored.width, null, 'fitting the default stores nothing');
   assertRenderer(state, 'narrow window');
+  // Narrower still, with no room for the panel's 220 px minimum beside a 320 px stage: no
+  // splitter to drag, and the toolbar toggle still folds the panel away and brings it back.
+  await page.setViewportSize({ width: 540, height: 400 });
+  state = await read(page);
+  assert(Math.floor(state.workspace.width - 6 - 320) < 220, `no room for the minimum (${state.workspace.width})`);
+  assert.equal(state.grip.hidden, true, 'no splitter without room for the panel');
+  assert(state.inspector, 'the panel stays');
+  assert.equal(state.pageOverflow, 0);
+  await toggle.click();
+  state = await read(page);
+  assert.equal(state.folded, true, 'the toggle folds the panel');
+  assert.equal(state.inspector, null);
+  assert.equal(state.grip.hidden, false, 'the folded rail is there to bring it back');
+  near(state.stage.width, state.workspace.width - state.grip.width, 'the stage spans the row beside the rail');
+  assertRenderer(state, 'too narrow, folded');
+  await toggle.click();
+  state = await read(page);
+  assert.equal(state.folded, false, 'the toggle brings the panel back');
+  assert.equal(state.grip.hidden, true);
+  assert.equal(state.stored.folded, null);
   await page.setViewportSize({ width: 1366, height: 768 });
   state = await read(page);
   assert.equal(state.inspector.width, initial.inspector.width, 'the default again with the room');
@@ -819,6 +869,23 @@ async function panels(browser, url) {
   assert.equal(await page.locator('#mv-inspector-toggle').isVisible(), true, 'and the toggle');
   for (let index = 1; index < count; index++) await boxes.nth(index).check();
   await page.locator('#mv-panel-menu > summary').click();
+
+  // A panel the editor opens itself is not a preference: the user closes 'Selected event',
+  // selecting a clip opens it, and the stored choice stays closed.
+  const stored = () => page.evaluate(() => JSON.parse(localStorage.getItem('elichika.mv.panelOpen.v1')));
+  const events = page.locator('#mv-events');
+  if (!await events.evaluate((node) => node.open)) {
+    await page.locator('#mv-events > summary').click();
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem('elichika.mv.panelOpen.v1')).events === true);
+  }
+  await page.locator('#mv-events > summary').click();
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('elichika.mv.panelOpen.v1')).events === false);
+  // The memory listens while the toggle event is captured, before this one.
+  await events.evaluate((node) => { window.mvLayoutToggled = 0; node.addEventListener('toggle', () => { window.mvLayoutToggled++; }); });
+  await page.locator('#mv-timeline-grid .mv-clip').first().click();
+  await page.waitForFunction(() => window.mvLayoutToggled > 0);
+  assert.equal(await events.evaluate((node) => node.open), true, 'selecting a clip opens Selected event');
+  assert.deepEqual(await stored(), { assets: true, performers: true, tracks: false, events: false }, 'the opening is not stored');
   assert.deepEqual(errors, []);
   await context.close();
 }
@@ -852,6 +919,89 @@ async function phoneLandscape(browser, url) {
   await context.close();
 }
 
+// Storage that throws from the first script on (site data blocked) or is missing (an Android
+// WebView without DOM storage): the page loads without errors and the splitter works for the
+// page's life. The language comes from the host (?embedded=1&lang=ko), as the apps pass it.
+async function storageBlocked(browser, url) {
+  for (const kind of ['throws', 'missing']) {
+    const context = await browser.newContext({ locale: 'ko', viewport: { width: 1366, height: 768 } });
+    await context.addInitScript((kind) => {
+      Object.defineProperty(window, 'localStorage', { configurable: true, get() {
+        if (kind === 'throws') throw new DOMException('The operation is insecure.', 'SecurityError');
+        return null;
+      } });
+    }, kind);
+    await context.addInitScript(probe);
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(url + '/?embedded=1&lang=ko#mv');
+    const opened = await page.waitForFunction(() => window.MVStudio && MVStudio.getState().visible).then(() => true, () => false);
+    assert.deepEqual(errors, [], `${kind}: no page errors while loading`);
+    assert(opened, `${kind}: MV Studio opens`);
+    let state = await read(page);
+    assert.deepEqual(state.stored, { width: 'unavailable', height: 'unavailable', folded: 'unavailable' }, `${kind}: no storage`);
+    near(state.inspector.width, Math.min(360, Math.max(240, 1366 * .24)), `${kind}: the default width`);
+    const width = state.inspector.width;
+    const grip = page.getByRole('separator', { name: '패널 너비' });
+    await grip.press('Shift+ArrowLeft');
+    state = await read(page);
+    assert.equal(state.inspector.width, width + 64, `${kind}: the splitter works`);
+    assert.equal(state.grip.now, width + 64);
+    await grip.press('Enter');
+    assert.equal((await read(page)).folded, true, `${kind}: Enter folds the panel`);
+    await page.getByRole('button', { name: '사이드 패널' }).click();
+    assert.equal((await read(page)).inspector.width, width + 64, `${kind}: the toggle brings it back`);
+    assert.deepEqual(errors, [], `${kind}: no page errors`);
+    await context.close();
+  }
+}
+
+// The narrowest phone in use (320x568) with a nine-member MV: the MV toolbar stays one row and
+// the page does not scroll sideways; a tap on a member chip half hidden at the end of its strip
+// shows the whole chip, and only the strip scrolls.
+async function phoneNarrow(browser, url) {
+  const context = await browser.newContext({ locale: 'ko', viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true });
+  await context.addInitScript(probe);
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await openProject(page, url, true, MEMBERS.length);
+  const state = await read(page);
+  assert(state.toolbar <= 38, `the MV toolbar is one row at 320 px (${state.toolbar})`);
+  assert.equal(state.pageOverflow, 0);
+  near(state.timeline.bottom, state.viewportBottom, 'the timeline ends at the page bottom');
+  const cut = await page.evaluate(() => {
+    const strip = document.getElementById('mv-member-filter'), chips = [...strip.querySelectorAll('[aria-checked]')];
+    const chip = chips[chips.length - 1];
+    strip.scrollLeft = 0;
+    const box = strip.getBoundingClientRect();
+    strip.scrollLeft = Math.max(0, chip.getBoundingClientRect().left - (box.right - 30));
+    const rect = chip.getBoundingClientRect();
+    return { count: chips.length, overflow: strip.scrollWidth > strip.clientWidth, label: chip.textContent, checked: chip.getAttribute('aria-checked'),
+      x: (Math.max(rect.left, box.left) + box.right) / 2, y: rect.top + rect.height / 2, hidden: rect.right - box.right };
+  });
+  assert.equal(cut.count, MEMBERS.length + 1, 'all members and each member');
+  assert(cut.overflow, 'the member strip scrolls on a phone');
+  assert.equal(cut.checked, 'false');
+  assert(cut.hidden > 8, `the last chip is cut by the strip's end (${cut.hidden})`);
+  await page.touchscreen.tap(cut.x, cut.y);
+  await settle(page);
+  const shown = await page.evaluate((label) => {
+    const strip = document.getElementById('mv-member-filter');
+    const chip = [...strip.querySelectorAll('[aria-checked]')].find((node) => node.textContent === label);
+    const box = strip.getBoundingClientRect(), rect = chip.getBoundingClientRect();
+    return { checked: chip.getAttribute('aria-checked'), inside: rect.left >= box.left - .5 && rect.right <= box.right + .5,
+      page: [scrollX, scrollY, document.scrollingElement.scrollTop] };
+  }, cut.label);
+  assert.equal(shown.checked, 'true', 'the tapped member is selected');
+  assert(shown.inside, 'the selected member chip is all in view');
+  assert.deepEqual(shown.page, [0, 0, 0], 'the page itself does not scroll');
+  await page.screenshot({ path: path.join(evidence, 'layout-phone-narrow-ko.png') });
+  assert.deepEqual(errors, []);
+  await context.close();
+}
+
 async function run() {
   let server, browser;
   try {
@@ -863,7 +1013,9 @@ async function run() {
     await tablet(browser, server.url);
     await phonePortrait(browser, server.url);
     await phoneShort(browser, server.url);
+    await phoneNarrow(browser, server.url);
     await phoneLandscape(browser, server.url);
+    await storageBlocked(browser, server.url);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {
     if (browser) await browser.close();
