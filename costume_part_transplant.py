@@ -64,6 +64,7 @@ other tools. This is an unofficial, fan-made tool; use at your own risk.
 """
 
 import os
+import re
 import sys
 import zlib
 import copy
@@ -135,26 +136,38 @@ _TRANSLATIONS = {
         "Move to another empty UV area": "다른 빈 UV 영역으로 옮기기",
         "Match smaller textures to larger ones": "작은 이미지를 큰 이미지에 맞추기",
         "Texture and UV placement": "텍스처·UV 배치 방식",
-        "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head material, so an atlas would never be shown and would move the blush. Choose Body as the wearer mesh, or use original or empty UV positions.":
+        "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head material, so an atlas would never be shown and would move the blush. Choose Body as the receiving mesh, or use original or empty UV positions.":
             "머리 메시에는 새 텍스처 아틀라스를 사용할 수 없습니다. 게임은 머리 아래의 모든 메시를 원래 머리 머티리얼로 그리므로 아틀라스는 표시되지 않고 홍조 위치도 틀어집니다. 이식받을 메시로 Body를 고르거나, 원래 UV 위치 또는 빈 UV 영역을 사용하세요.",
         "Load the costume together with its face before transplanting onto a head mesh. The game draws the face's eyes and mouth from the same head texture, and their areas must be protected.":
             "머리 메시에 이식하려면 의상을 얼굴과 함께 불러오세요. 게임은 얼굴의 눈과 입도 같은 머리 텍스처로 그리므로 그 영역을 보호해야 합니다.",
-        "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the wearer mesh, or select a smaller part.":
+        "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the receiving mesh, or select a smaller part.":
             "머리 텍스처에 얼굴·눈·입·홍조와 기존 머리 메시를 피해 선택한 부분을 넣을 빈 곳이 없습니다. 이식받을 메시로 Body를 고르거나 더 작은 부분을 선택하세요.",
-        "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the wearer mesh.":
+        "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the receiving mesh.":
             "얼굴 메시에는 부분을 이식할 수 없습니다. 게임은 얼굴 메시를 원래 머리 머티리얼과 고정된 홍조 위치로 다시 합쳐 그립니다. 이식받을 메시로 Body나 Hair를 고르세요.",
-        "One game material holds one culling setting, so the donor and wearer materials must match. Choose a wearer mesh whose material uses the same culling, such as Body or Hair.":
-            "게임 머티리얼 하나에는 컬링 설정이 하나뿐이므로 Donor와 착용자 머티리얼이 같아야 합니다. 같은 컬링을 쓰는 머티리얼의 메시(Body나 Hair 등)를 이식받을 메시로 고르세요.",
+        "One game material holds one culling setting, so the donor's and the receiving mesh's materials must match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.":
+            "게임 머티리얼 하나에는 컬링 설정이 하나뿐이므로 도너 머티리얼과 이식받을 메시의 머티리얼이 같아야 합니다. 같은 컬링을 쓰는 머티리얼의 메시(Body나 Hair 등)를 이식받을 메시로 고르세요.",
         "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.":
             "선택한 부분의 텍스처가 같은 UV 면적에 대해 대응하는 머리 텍스처보다 더 촘촘한 픽셀을 씁니다. 얼굴·눈·입이 머리 텍스처로 그려지므로 머리 텍스처의 크기는 바꾸지 않습니다. 이식받을 메시로 Body를 고르세요.",
         "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.":
             "선택한 부분의 원래 UV 위치는 머리 텍스처에서 이미 얼굴·눈·입·홍조 또는 다른 머리 메시가 쓰고 있습니다. '빈 UV 영역으로 이동'을 고르거나, 이식받을 메시로 Body를 고르세요.",
         "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh.":
             "선택한 부분의 텍스처를 원래 픽셀 그대로 머리 텍스처에 넣을 수 없습니다. 이유는 로그에 있습니다. 이식받을 메시로 Body를 고르세요.",
+        "{slot}: the part uses {part} for a {part_main} main texture; the head uses {head} for {head_main}.":
+            "{slot}: 이식할 부분은 {part_main} 메인 텍스처에 {part}를 쓰고, 머리는 {head_main}에 {head}를 씁니다.",
+        "{slot}: the part uses {part}; the head uses {head}.":
+            "{slot}: 이식할 부분은 {part}, 머리는 {head}를 씁니다.",
+        "{slot} is already used at the part's original UV position.":
+            "{slot}에서 이 부분의 원래 UV 위치는 이미 사용 중입니다.",
+        "Island {island} of {islands} ({width}×{height} px) found no free texels in {slot}.":
+            "UV 섬 {islands}개 중 {island}번째({width}×{height} px)가 {slot}에서 빈 텍셀을 찾지 못했습니다.",
+        "The search stopped after {count} positions for island {island} of {islands}.":
+            "UV 섬 {islands}개 중 {island}번째의 위치를 {count}곳까지 찾아보고 멈췄습니다.",
+        "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}.":
+            "{donor}: _CullMode가 {donor_value}이지만 {receiver}는 {receiver_value}입니다.",
         "Receiving mesh":
             "이식받을 메시",
-        "Body: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into the body texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":
-            "Body: 이식한 부분은 원래 본을 그대로 따라가므로 머리 장식은 계속 머리에 붙어 있습니다. 텍스처는 몸 텍스처에 들어가며 아틀라스도 사용할 수 있고, 홍조에는 영향이 없습니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
+        "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":
+            "Body 등 머리 밖의 메시: 이식한 부분은 원래 본을 그대로 따라가므로 머리 장식은 계속 머리에 붙어 있습니다. 텍스처는 그 메시의 텍스처에 들어가며 아틀라스도 사용할 수 있고, 홍조에는 영향이 없습니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
         "Meshes under the head (such as Hair): the game draws every head mesh with the shared head material. The part's texture must fit in free head-texture space outside the face, eyes, mouth and blush; no atlas is made, and the face must be loaded. Body and head meshes draw in the same order with the same outline.":
             "머리 아래 메시(Hair 등): 게임은 머리 아래의 모든 메시를 공용 머리 머티리얼로 그립니다. 이식한 부분의 텍스처는 얼굴·눈·입·홍조 영역을 피해 머리 텍스처의 빈 곳에 들어가야 하며, 아틀라스는 만들지 않고 얼굴도 함께 불러와야 합니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
         "Reuse original UV positions": "원래 UV 위치 재사용",
@@ -202,26 +215,38 @@ _TRANSLATIONS = {
         "Move to another empty UV area": "別の空きUV領域へ移動",
         "Match smaller textures to larger ones": "小さい画像を大きい画像に合わせる",
         "Texture and UV placement": "テクスチャ・UVの配置方法",
-        "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head material, so an atlas would never be shown and would move the blush. Choose Body as the wearer mesh, or use original or empty UV positions.":
+        "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head material, so an atlas would never be shown and would move the blush. Choose Body as the receiving mesh, or use original or empty UV positions.":
             "頭のメッシュには新しいテクスチャアトラスを使えません。ゲームは頭の下のすべてのメッシュを元の頭マテリアルで描画するため、アトラスは表示されず、チークの位置もずれます。移植先のメッシュにBodyを選ぶか、元のUV位置または空きUV領域を使ってください。",
         "Load the costume together with its face before transplanting onto a head mesh. The game draws the face's eyes and mouth from the same head texture, and their areas must be protected.":
             "頭のメッシュに移植するには、衣装を顔と一緒に読み込んでください。ゲームは顔の目と口も同じ頭テクスチャで描画するため、その領域を保護する必要があります。",
-        "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the wearer mesh, or select a smaller part.":
+        "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the receiving mesh, or select a smaller part.":
             "頭テクスチャに、顔・目・口・チークと既存の頭メッシュを避けて選択パーツを入れる空きがありません。移植先のメッシュにBodyを選ぶか、より小さいパーツを選択してください。",
-        "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the wearer mesh.":
+        "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the receiving mesh.":
             "顔のメッシュにはパーツを移植できません。ゲームは顔のメッシュを元の頭マテリアルと固定のチーク位置で結合し直して描画します。移植先のメッシュにBodyかHairを選んでください。",
-        "One game material holds one culling setting, so the donor and wearer materials must match. Choose a wearer mesh whose material uses the same culling, such as Body or Hair.":
-            "ゲームのマテリアル1つにはカリング設定が1つしかないため、ドナーと移植先のマテリアルが一致する必要があります。同じカリングを使うマテリアルのメッシュ（BodyやHairなど）を移植先に選んでください。",
+        "One game material holds one culling setting, so the donor's and the receiving mesh's materials must match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.":
+            "ゲームのマテリアル1つにはカリング設定が1つしかないため、ドナーと移植先のメッシュのマテリアルが一致する必要があります。同じカリングを使うマテリアルのメッシュ（BodyやHairなど）を移植先に選んでください。",
         "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.":
             "選択したパーツのテクスチャは、同じUV面積に対して対応する頭テクスチャより細かいピクセルを使っています。顔・目・口は頭テクスチャで描画されるため、頭テクスチャのサイズは変更しません。移植先のメッシュにBodyを選んでください。",
         "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.":
             "選択したパーツの元のUV位置は、頭テクスチャ上ですでに顔・目・口・チークまたは別の頭メッシュが使っています。「空きUV領域へ移動」を選ぶか、移植先のメッシュにBodyを選んでください。",
         "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh.":
             "選択したパーツのテクスチャを元のピクセルのまま頭テクスチャに書き込めません。理由はログに記録されています。移植先のメッシュにBodyを選んでください。",
+        "{slot}: the part uses {part} for a {part_main} main texture; the head uses {head} for {head_main}.":
+            "{slot}：パーツは{part_main}のメインテクスチャに対して{part}、頭は{head_main}に対して{head}を使います。",
+        "{slot}: the part uses {part}; the head uses {head}.":
+            "{slot}：パーツは{part}、頭は{head}を使います。",
+        "{slot} is already used at the part's original UV position.":
+            "{slot}では、このパーツの元のUV位置はすでに使われています。",
+        "Island {island} of {islands} ({width}×{height} px) found no free texels in {slot}.":
+            "UVアイランド{islands}個中{island}番目（{width}×{height} px）は{slot}で空きテクセルを見つけられませんでした。",
+        "The search stopped after {count} positions for island {island} of {islands}.":
+            "UVアイランド{islands}個中{island}番目の位置を{count}か所まで探して停止しました。",
+        "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}.":
+            "{donor}：_CullModeは{donor_value}ですが、{receiver}は{receiver_value}です。",
         "Receiving mesh":
             "移植先のメッシュ",
-        "Body: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into the body texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":
-            "Body：移植したパーツは元のボーンに従うため、頭のアクセサリーは頭に付いたままです。テクスチャは体のテクスチャに入り、アトラスも使えます。チークには影響しません。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。",
+        "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":
+            "Bodyなど頭の外のメッシュ：移植したパーツは元のボーンに従うため、頭のアクセサリーは頭に付いたままです。テクスチャはそのメッシュのテクスチャに入り、アトラスも使えます。チークには影響しません。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。",
         "Meshes under the head (such as Hair): the game draws every head mesh with the shared head material. The part's texture must fit in free head-texture space outside the face, eyes, mouth and blush; no atlas is made, and the face must be loaded. Body and head meshes draw in the same order with the same outline.":
             "頭の下のメッシュ（Hairなど）：ゲームは頭の下のすべてのメッシュを共通の頭マテリアルで描画します。パーツのテクスチャは顔・目・口・チークの領域を避けて頭テクスチャの空きに収める必要があり、アトラスは作らず、顔も一緒に読み込む必要があります。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。",
         "Reuse original UV positions": "元のUV位置を再利用",
@@ -290,11 +315,26 @@ def _tr(text, **kw):
     return s.format(**kw) if kw else s
 
 
+def _template_pattern(template):
+    """A regex for one translated detail template; {name} matches its value."""
+    parts = re.split(r"\{(\w+)\}", template)
+    return re.compile("".join(re.escape(part) if index % 2 == 0 else f"(?P<{part}>.+?)"
+                              for index, part in enumerate(parts)))
+
+
 def _tr_reason(text):
-    """Translate the fixed sentences inside an error that also names assets."""
-    for key, value in _TRANSLATIONS.get(_LANG, {}).items():
-        if len(key) > 40 and key in text:
+    """Translate the fixed sentences inside an error that also names assets.
+
+    Detail templates ("{slot}: ...") are matched with their values kept, so
+    slot names, sizes and counts survive translation.
+    """
+    table = _TRANSLATIONS.get(_LANG, {})
+    for key, value in table.items():
+        if len(key) > 40 and "{" not in key and key in text:
             text = text.replace(key, value)
+    for key, value in table.items():
+        if "{" in key and "}" in key:
+            text = _template_pattern(key).sub(lambda match, value=value: value.format(**match.groupdict()), text)
     return text
 
 

@@ -371,6 +371,29 @@ class RefusalTranslationTests(unittest.TestCase):
                     self.assertIn(sentence, cpt._TRANSLATIONS[language])
                     self.assertNotEqual(cpt._TRANSLATIONS[language][sentence], sentence)
         self.assertNotRegex(CULL_MODE_HINT, re.compile("head accessory", re.I))
+        for sentence in (HEAD_ATLAS_REFUSED, HEAD_NO_SPACE, FACE_TARGET_REFUSED, CULL_MODE_HINT):
+            self.assertNotIn("wearer", sentence, "the part panel calls it the receiving mesh")
+
+    def test_detail_templates_translate_with_their_values_kept(self):
+        from graft_texture_atlas import CULL_MODE_DETAIL
+        script = (ROOT / "webtools/web/static/viewer-transplants.js").read_text(encoding="utf-8")
+        templates = (compat.HEAD_MAP_DETAIL_DENSITY, compat.HEAD_MAP_DETAIL_SIZE, compat.HEAD_DETAIL_POSITION,
+                     compat.HEAD_DETAIL_ISLAND, compat.HEAD_DETAIL_SEARCH, CULL_MODE_DETAIL)
+        for template in templates:
+            names = set(re.findall(r"\{(\w+)\}", template))
+            with self.subTest(template=template[:40]):
+                self.assertIn('"' + template + '"', script)
+                for language in ("ko", "ja"):
+                    translated = cpt._TRANSLATIONS[language][template]
+                    self.assertEqual(set(re.findall(r"\{(\w+)\}", translated)), names)
+        message = HEAD_NO_SPACE + " " + compat.HEAD_DETAIL_ISLAND.format(
+            island=3, islands=22, width=93, height=129, slot="_RimlightTex")
+        with patch.object(cpt, "_LANG", "ko"):
+            translated = cpt._tr_reason(message)
+        self.assertEqual(translated, cpt._TRANSLATIONS["ko"][HEAD_NO_SPACE] + " UV 섬 22개 중 3번째(93×129 px)가 "
+                         "_RimlightTex에서 빈 텍셀을 찾지 못했습니다.")
+        with patch.object(cpt, "_LANG", "en"):
+            self.assertEqual(cpt._tr_reason(message), message)
 
 
 if __name__ == "__main__":

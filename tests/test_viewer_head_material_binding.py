@@ -144,28 +144,35 @@ class GraftTargetFlagTests(unittest.TestCase):
             self.assertFalse(model_viewer._beneath_named(scene, names["Body"], "mesh_face"))
             self.assertFalse(model_viewer._beneath_named(scene, names["Face"], "Mesh_Face"))
 
+    def exported(self, raw):
+        """Prepare a saved costume and read each primitive's viewerMesh flags by renderer."""
+        with tempfile.TemporaryDirectory(prefix="graft-target-flag-") as directory:
+            path = Path(directory) / "costume.unity"
+            path.write_bytes(raw)
+            metadata = model_viewer.prepare([str(path)], rigged=True,
+                                            face_context={"enabled": False, "allow_download": False})
+        glb = model_viewer.get_model(metadata["id"])
+        size = struct.unpack_from("<I", glb, 12)[0]
+        document = json.loads(glb[20:20 + size])
+        return {primitive["extras"]["viewerMesh"]["renderer"]:
+                tuple(primitive["extras"]["viewerMesh"][key] for key in ("writable", "graftTarget", "headMesh"))
+                for mesh in document["meshes"] for primitive in mesh["primitives"]}
+
     def exported_flags(self, kind):
-        """Prepare a real saved costume and read each primitive's viewerMesh flags."""
+        """The plain costume fixture, edited into a bone-less or mesh_face renderer."""
         import UnityPy
         import costume_part_transplant as cpt
+        from test_graft_head_costume import skinless
         from test_viewer_transplants import costume_fixture
         environment = UnityPy.load(costume_fixture())
         objects = {obj.path_id: obj for obj in environment.objects}
         renderer = next(obj for obj in environment.objects if obj.type.name == "SkinnedMeshRenderer")
         tree = renderer.read_typetree()
         if kind == "bone-less":
-            # Like a game face piece: no bones, bind poses or skin weights.
             tree["m_Bones"] = []
             renderer.save_typetree(tree)
             mesh = objects[tree["m_Mesh"]["m_PathID"]]
-            mesh_tree = mesh.read_typetree()
-            _, channels, _, starts, _ = cpt.stream_layout(mesh_tree)
-            skin = channels[12]["stream"]
-            for index in (12, 13):
-                mesh_tree["m_VertexData"]["m_Channels"][index].update(stream=0, offset=0, format=0, dimension=0)
-            mesh_tree["m_VertexData"]["m_DataSize"] = bytes(mesh_tree["m_VertexData"]["m_DataSize"])[:starts[skin]]
-            mesh_tree["m_BindPose"] = []
-            mesh.save_typetree(mesh_tree)
+            mesh.save_typetree(skinless(mesh.read_typetree()))
         elif kind == "mesh_face":
             # Re-parent the renderer's GameObject under a new mesh_face holder.
             game = objects[tree["m_GameObject"]["m_PathID"]].read_typetree()
@@ -187,16 +194,7 @@ class GraftTargetFlagTests(unittest.TestCase):
             cpt._make_object(renderer.assets_file, template_transform, 8001, holder_transform)
             objects[father_id].save_typetree(father)
             objects[transform_id].save_typetree(transform)
-        with tempfile.TemporaryDirectory(prefix="graft-target-flag-") as directory:
-            path = Path(directory) / "costume.unity"
-            path.write_bytes(environment.file.save(packer="original"))
-            metadata = model_viewer.prepare([str(path)], rigged=True,
-                                            face_context={"enabled": False, "allow_download": False})
-        glb = model_viewer.get_model(metadata["id"])
-        size = struct.unpack_from("<I", glb, 12)[0]
-        document = json.loads(glb[20:20 + size])
-        return [(primitive["extras"]["viewerMesh"]["writable"], primitive["extras"]["viewerMesh"]["graftTarget"])
-                for mesh in document["meshes"] for primitive in mesh["primitives"]]
+        return [flags[:2] for flags in self.exported(environment.file.save(packer="original")).values()]
 
     def test_exported_part_targets_exclude_bone_less_and_mesh_face_renderers(self):
         self.assertEqual(self.exported_flags("ordinary"), [(True, True)])
@@ -204,6 +202,18 @@ class GraftTargetFlagTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 self.assertEqual(self.exported_flags(kind), [(True, False)],
                                  "still editable, but never offered as a receiving mesh")
+
+    def test_receiving_meshes_below_a_merged_head_are_flagged_as_head_meshes(self):
+        """The panel's Body/head explanation follows the same rule as the graft core."""
+        from test_graft_head_costume import head_costume
+        for masked in (False, True):
+            with self.subTest(masked=masked):
+                target, ids = head_costume(masked=masked)
+                flags = self.exported(target.file.save(packer="original"))
+                self.assertEqual(flags[str(ids["hair"])], (True, True, not masked))
+                self.assertEqual(flags[str(ids["face"])][1:], (False, False), "the face is never a receiving mesh")
+        flags = self.exported(__import__("test_viewer_transplants").costume_fixture())
+        self.assertEqual(list(flags.values()), [(True, True, False)], "no BodyPartManager: not a head mesh")
 
 
 if __name__ == "__main__":

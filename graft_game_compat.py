@@ -159,14 +159,14 @@ CHEEK_WINDOW = (0.0, 1.221 / 2.22, 1 / 2.22, 1.0)
 
 HEAD_ATLAS_REFUSED = (
     "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head "
-    "material, so an atlas would never be shown and would move the blush. Choose Body as the wearer mesh, "
+    "material, so an atlas would never be shown and would move the blush. Choose Body as the receiving mesh, "
     "or use original or empty UV positions.")
 HEAD_FACE_REQUIRED = (
     "Load the costume together with its face before transplanting onto a head mesh. The game draws the "
     "face's eyes and mouth from the same head texture, and their areas must be protected.")
 HEAD_NO_SPACE = (
     "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and "
-    "existing head meshes. Choose Body as the wearer mesh, or select a smaller part.")
+    "existing head meshes. Choose Body as the receiving mesh, or select a smaller part.")
 HEAD_POSITION_IN_USE = (
     "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, "
     "blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.")
@@ -186,7 +186,7 @@ HEAD_MAP_DETAIL_DENSITY = "{slot}: the part uses {part} for a {part_main} main t
 HEAD_MAP_DETAIL_SIZE = "{slot}: the part uses {part}; the head uses {head}."
 FACE_TARGET_REFUSED = (
     "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original "
-    "head material and fixed blush positions. Choose Body or Hair as the wearer mesh.")
+    "head material and fixed blush positions. Choose Body or Hair as the receiving mesh.")
 
 
 def _size_text(size):

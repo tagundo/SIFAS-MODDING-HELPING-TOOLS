@@ -61,8 +61,10 @@ _MEMBER_EXTERNAL = ("cab-9382ea964987eceddd567506a3b21312", 8291131735116688333)
 _FEATURES = {"_MATCAP_ON", "_EMISSIVE_ON", "_CHEEK_ON"}
 _RIM_FLOATS = ("_RimglightIntensity", "_RimglightPower")
 _RIM_COLORS = ("_RimlightColor", "_RimlightDirection")
-CULL_MODE_HINT = ("One game material holds one culling setting, so the donor and wearer materials must match. "
-                  "Choose a wearer mesh whose material uses the same culling, such as Body or Hair.")
+CULL_MODE_HINT = ("One game material holds one culling setting, so the donor's and the receiving mesh's materials must "
+                  "match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.")
+# Template detail before CULL_MODE_HINT; UIs translate it with its values kept.
+CULL_MODE_DETAIL = "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}."
 
 
 def _pairs(tree, key):
@@ -186,9 +188,9 @@ def _check_profiles(sources, diagnostics):
                 if name == "_CullMode":
                     # A material-state rule, not a head rule: the client keeps one
                     # sharedMaterial per combined renderer (CombineBody/BuildSkinInfo).
-                    raise AtlasCompatibilityError(
-                        f"{source.name}: _CullMode is {floats[name]:g}, while {sources[0].name} uses {tf[name]:g}. "
-                        + CULL_MODE_HINT)
+                    raise AtlasCompatibilityError(CULL_MODE_DETAIL.format(
+                        donor=source.name, donor_value=f"{floats[name]:g}", receiver=sources[0].name,
+                        receiver_value=f"{tf[name]:g}") + " " + CULL_MODE_HINT)
                 raise AtlasCompatibilityError(f"{source.name}: active {name} differs from the wearer; match this material setting before combining Body materials.")
         for name in wanted_colors:
             # RGB values of a zero-strength tint/ambient operation are dormant.

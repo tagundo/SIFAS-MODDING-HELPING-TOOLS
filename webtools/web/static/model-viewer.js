@@ -2372,7 +2372,7 @@
           var mapping = mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.viewerMesh || mesh.userData && mesh.userData.viewerMesh;
           if (!mapping || !mapping.writable || mapping.graftTarget === false || rendererIds[String(mapping.renderer)]) return;
           rendererIds[String(mapping.renderer)] = true;
-          targetMeshes.push({ value: String(mapping.renderer), label: mesh.name, mesh: mapping.mesh });
+          targetMeshes.push({ value: String(mapping.renderer), label: mesh.name, mesh: mapping.mesh, head: mapping.headMesh === true });
         });
         return { modelId: metadata && metadata.id, editing: bodyEditingMetadata(), targetMeshes: targetMeshes,
         authoring: authoringState(), loadedPaths: loadedPaths.slice(),

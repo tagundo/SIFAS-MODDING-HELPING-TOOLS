@@ -117,20 +117,20 @@
   // Part-transplant target choice and the core's fixed refusal sentences
   // (graft_game_compat / graft_texture_atlas); keep these keys identical.
   var REASONS = [
-    "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head material, so an atlas would never be shown and would move the blush. Choose Body as the wearer mesh, or use original or empty UV positions.",
+    "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head material, so an atlas would never be shown and would move the blush. Choose Body as the receiving mesh, or use original or empty UV positions.",
     "Load the costume together with its face before transplanting onto a head mesh. The game draws the face's eyes and mouth from the same head texture, and their areas must be protected.",
-    "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the wearer mesh, or select a smaller part.",
-    "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the wearer mesh.",
-    "One game material holds one culling setting, so the donor and wearer materials must match. Choose a wearer mesh whose material uses the same culling, such as Body or Hair.",
+    "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the receiving mesh, or select a smaller part.",
+    "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the receiving mesh.",
+    "One game material holds one culling setting, so the donor's and the receiving mesh's materials must match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.",
     "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.",
     "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.",
     "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh."
   ];
   Object.assign(TEXT, {
     "Receiving mesh": ["이식받을 메시", "移植先のメッシュ"],
-    "Body: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into the body texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.": [
-      "Body: 이식한 부분은 원래 본을 그대로 따라가므로 머리 장식은 계속 머리에 붙어 있습니다. 텍스처는 몸 텍스처에 들어가며 아틀라스도 사용할 수 있고, 홍조에는 영향이 없습니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
-      "Body：移植したパーツは元のボーンに従うため、頭のアクセサリーは頭に付いたままです。テクスチャは体のテクスチャに入り、アトラスも使えます。チークには影響しません。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。"],
+    "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.": [
+      "Body 등 머리 밖의 메시: 이식한 부분은 원래 본을 그대로 따라가므로 머리 장식은 계속 머리에 붙어 있습니다. 텍스처는 그 메시의 텍스처에 들어가며 아틀라스도 사용할 수 있고, 홍조에는 영향이 없습니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
+      "Bodyなど頭の外のメッシュ：移植したパーツは元のボーンに従うため、頭のアクセサリーは頭に付いたままです。テクスチャはそのメッシュのテクスチャに入り、アトラスも使えます。チークには影響しません。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。"],
     "Meshes under the head (such as Hair): the game draws every head mesh with the shared head material. The part's texture must fit in free head-texture space outside the face, eyes, mouth and blush; no atlas is made, and the face must be loaded. Body and head meshes draw in the same order with the same outline.": [
       "머리 아래 메시(Hair 등): 게임은 머리 아래의 모든 메시를 공용 머리 머티리얼로 그립니다. 이식한 부분의 텍스처는 얼굴·눈·입·홍조 영역을 피해 머리 텍스처의 빈 곳에 들어가야 하며, 아틀라스는 만들지 않고 얼굴도 함께 불러와야 합니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
       "頭の下のメッシュ（Hairなど）：ゲームは頭の下のすべてのメッシュを共通の頭マテリアルで描画します。パーツのテクスチャは顔・目・口・チークの領域を避けて頭テクスチャの空きに収める必要があり、アトラスは作らず、顔も一緒に読み込む必要があります。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。"]
@@ -143,14 +143,35 @@
     "頭テクスチャに、顔・目・口・チークと既存の頭メッシュを避けて選択パーツを入れる空きがありません。移植先のメッシュにBodyを選ぶか、より小さいパーツを選択してください。"];
   TEXT[REASONS[3]] = ["얼굴 메시에는 부분을 이식할 수 없습니다. 게임은 얼굴 메시를 원래 머리 머티리얼과 고정된 홍조 위치로 다시 합쳐 그립니다. 이식받을 메시로 Body나 Hair를 고르세요.",
     "顔のメッシュにはパーツを移植できません。ゲームは顔のメッシュを元の頭マテリアルと固定のチーク位置で結合し直して描画します。移植先のメッシュにBodyかHairを選んでください。"];
-  TEXT[REASONS[4]] = ["게임 머티리얼 하나에는 컬링 설정이 하나뿐이므로 Donor와 착용자 머티리얼이 같아야 합니다. 같은 컬링을 쓰는 머티리얼의 메시(Body나 Hair 등)를 이식받을 메시로 고르세요.",
-    "ゲームのマテリアル1つにはカリング設定が1つしかないため、ドナーと移植先のマテリアルが一致する必要があります。同じカリングを使うマテリアルのメッシュ（BodyやHairなど）を移植先に選んでください。"];
+  TEXT[REASONS[4]] = ["게임 머티리얼 하나에는 컬링 설정이 하나뿐이므로 도너 머티리얼과 이식받을 메시의 머티리얼이 같아야 합니다. 같은 컬링을 쓰는 머티리얼의 메시(Body나 Hair 등)를 이식받을 메시로 고르세요.",
+    "ゲームのマテリアル1つにはカリング設定が1つしかないため、ドナーと移植先のメッシュのマテリアルが一致する必要があります。同じカリングを使うマテリアルのメッシュ（BodyやHairなど）を移植先に選んでください。"];
   TEXT[REASONS[5]] = ["선택한 부분의 텍스처가 같은 UV 면적에 대해 대응하는 머리 텍스처보다 더 촘촘한 픽셀을 씁니다. 얼굴·눈·입이 머리 텍스처로 그려지므로 머리 텍스처의 크기는 바꾸지 않습니다. 이식받을 메시로 Body를 고르세요.",
     "選択したパーツのテクスチャは、同じUV面積に対して対応する頭テクスチャより細かいピクセルを使っています。顔・目・口は頭テクスチャで描画されるため、頭テクスチャのサイズは変更しません。移植先のメッシュにBodyを選んでください。"];
   TEXT[REASONS[6]] = ["선택한 부분의 원래 UV 위치는 머리 텍스처에서 이미 얼굴·눈·입·홍조 또는 다른 머리 메시가 쓰고 있습니다. '빈 UV 영역으로 이동'을 고르거나, 이식받을 메시로 Body를 고르세요.",
     "選択したパーツの元のUV位置は、頭テクスチャ上ですでに顔・目・口・チークまたは別の頭メッシュが使っています。「空きUV領域へ移動」を選ぶか、移植先のメッシュにBodyを選んでください。"];
   TEXT[REASONS[7]] = ["선택한 부분의 텍스처를 원래 픽셀 그대로 머리 텍스처에 넣을 수 없습니다. 이유는 로그에 있습니다. 이식받을 메시로 Body를 고르세요.",
     "選択したパーツのテクスチャを元のピクセルのまま頭テクスチャに書き込めません。理由はログに記録されています。移植先のメッシュにBodyを選んでください。"];
+  // Detail sentences with values ({slot}, sizes, counts) kept in translation.
+  var REASON_TEMPLATES = [
+    "{slot}: the part uses {part} for a {part_main} main texture; the head uses {head} for {head_main}.",
+    "{slot}: the part uses {part}; the head uses {head}.",
+    "{slot} is already used at the part's original UV position.",
+    "Island {island} of {islands} ({width}×{height} px) found no free texels in {slot}.",
+    "The search stopped after {count} positions for island {island} of {islands}.",
+    "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}."
+  ];
+  TEXT[REASON_TEMPLATES[0]] = ["{slot}: 이식할 부분은 {part_main} 메인 텍스처에 {part}를 쓰고, 머리는 {head_main}에 {head}를 씁니다.",
+    "{slot}：パーツは{part_main}のメインテクスチャに対して{part}、頭は{head_main}に対して{head}を使います。"];
+  TEXT[REASON_TEMPLATES[1]] = ["{slot}: 이식할 부분은 {part}, 머리는 {head}를 씁니다.",
+    "{slot}：パーツは{part}、頭は{head}を使います。"];
+  TEXT[REASON_TEMPLATES[2]] = ["{slot}에서 이 부분의 원래 UV 위치는 이미 사용 중입니다.",
+    "{slot}では、このパーツの元のUV位置はすでに使われています。"];
+  TEXT[REASON_TEMPLATES[3]] = ["UV 섬 {islands}개 중 {island}번째({width}×{height} px)가 {slot}에서 빈 텍셀을 찾지 못했습니다.",
+    "UVアイランド{islands}個中{island}番目（{width}×{height} px）は{slot}で空きテクセルを見つけられませんでした。"];
+  TEXT[REASON_TEMPLATES[4]] = ["UV 섬 {islands}개 중 {island}번째의 위치를 {count}곳까지 찾아보고 멈췄습니다.",
+    "UVアイランド{islands}個中{island}番目の位置を{count}か所まで探して停止しました。"];
+  TEXT[REASON_TEMPLATES[5]] = ["{donor}: _CullMode가 {donor_value}이지만 {receiver}는 {receiver_value}입니다.",
+    "{donor}：_CullModeは{donor_value}ですが、{receiver}は{receiver_value}です。"];
   TEXT["Selected bones"] = ["선택 본", "選択ボーン"];
   TEXT["Selected faces"] = ["이식할 면", "移植する面"];
   function selectedBoneManifest(parts, selected) {
@@ -179,6 +200,29 @@
     "The original model files changed. The displayed model was kept.": ["원본 모델 파일이 변경되어 현재 표시 모델을 유지했습니다.", "元のモデルファイルが変更されたため、表示中のモデルを保持しました。"],
     "The original face could not be restored. The displayed model was kept.": ["원래 얼굴을 복원할 수 없어 현재 표시 모델을 유지했습니다.", "元の顔を復元できないため、表示中のモデルを保持しました。"]
   });
+  // Fixed refusal sentences and detail templates from the Python core, in the
+  // page language; template values (slots, sizes, counts) are kept.
+  function reasonText(text, lang) {
+    function tr(key) { var value = TEXT[key]; return value && (lang === "ko" || lang === "ja") ? value[lang === "ko" ? 0 : 1] : key; }
+    text = String(text || "");
+    REASONS.forEach(function (key) { if (text.indexOf(key) >= 0) text = text.split(key).join(tr(key)); });
+    REASON_TEMPLATES.forEach(function (key) {
+      var names = [], pattern = key.split(/\{(\w+)\}/).map(function (part, index) {
+        if (index % 2) { names.push(part); return "(.+?)"; }
+        return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }).join("");
+      text = text.replace(new RegExp(pattern, "g"), function () {
+        var values = arguments;
+        return tr(key).replace(/\{(\w+)\}/g, function (whole, name) { var at = names.indexOf(name); return at < 0 ? whole : values[at + 1]; });
+      });
+    });
+    return text;
+  }
+  // The model marks meshes below a merged head's headAll (drawn with the head
+  // material in game); the label alone never decides it.
+  function receivingMeshKind(value, option) {
+    return value && option && option.getAttribute("data-head-mesh") === "true" ? "head" : "body";
+  }
   function create(options) {
     options = options || {};
     var disposed = false, busy = false, jobId = "", events = null, entries = [];
@@ -230,16 +274,11 @@
       (children || []).forEach(function (child) { node.appendChild(child); }); return node;
     }
     function label(key, control) { return element("label", {}, [element("span", { "data-transplant-label": key, text: key }), control]); }
-    function localizeReason(text) {
-      text = String(text || "");
-      REASONS.forEach(function (key) { if (text.indexOf(key) >= 0) text = text.split(key).join(t(key)); });
-      return text;
-    }
+    function localizeReason(text) { return reasonText(text, (document.documentElement.lang || "en").split("-")[0]); }
     function targetHint(entry) {
       if (!entry.targetHint) return;
-      var option = entry.targetMesh.selectedOptions && entry.targetMesh.selectedOptions[0];
-      var body = !entry.targetMesh.value || !!option && /^Body(?:_|$)/i.test(option.textContent);
-      var key = body ? "Body: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into the body texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline."
+      var body = receivingMeshKind(entry.targetMesh.value, entry.targetMesh.selectedOptions && entry.targetMesh.selectedOptions[0]) === "body";
+      var key = body ? "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline."
         : "Meshes under the head (such as Hair): the game draws every head mesh with the shared head material. The part's texture must fit in free head-texture space outside the face, eyes, mouth and blush; no atlas is made, and the face must be loaded. Body and head meshes draw in the same order with the same outline.";
       entry.targetHint.dataset.transplantLabel = key; entry.targetHint.dataset.targetKind = body ? "body" : "head";
       if (entry.targetHint.textContent !== t(key)) entry.targetHint.textContent = t(key);
@@ -327,7 +366,7 @@
         if (entry.targetMesh && entry.targetMeshKey !== targetKey) {
           entry.targetMeshKey = targetKey; var previous = entry.targetMesh.value;
           entry.targetMesh.replaceChildren(element("option", { value: "", text: "Body" }));
-          targets.forEach(function (mesh) { entry.targetMesh.appendChild(element("option", { value: mesh.value, text: mesh.label })); });
+          targets.forEach(function (mesh) { entry.targetMesh.appendChild(element("option", { value: mesh.value, text: mesh.label, "data-head-mesh": mesh.head ? "true" : "false" })); });
           if (targets.some(function (mesh) { return mesh.value === previous; })) entry.targetMesh.value = previous;
           else { var bodyMesh = targets.find(function (mesh) { return /^Body(?:_|$)/i.test(mesh.label); }); entry.targetMesh.value = bodyMesh ? bodyMesh.value : ""; }
           targetHint(entry);
@@ -1046,5 +1085,6 @@
       dispose: function () { disposed = true; if (events) events.close(); if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }).catch(function () {}); entries.forEach(function (entry) { if (entry.request) entry.request.abort(); if (entry.uvColor) entry.uvColor.dispose(); if (entry.preview) entry.preview.dispose(); entry.panel.remove(); }); }
     };
   }
-  global.ViewerTransplants = { create: create, selectedBoneManifest: selectedBoneManifest, setBoneSelection: setBoneSelection };
+  global.ViewerTransplants = { create: create, selectedBoneManifest: selectedBoneManifest, setBoneSelection: setBoneSelection,
+    reasonText: reasonText, receivingMeshKind: receivingMeshKind };
 }(window));

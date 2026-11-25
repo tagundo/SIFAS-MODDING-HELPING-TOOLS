@@ -78,8 +78,23 @@ def pixels(texture):
     return np.asarray(texture.read().image.convert("RGBA"))[::-1]
 
 
-def head_costume(*, hair=HAIR, hair_copy=False):
-    """Return a reopened game-like costume and the path IDs of its parts."""
+def skinless(tree):
+    """Like a game face piece: no bind poses and no skin weight channels."""
+    _, channels, _, starts, _ = cpt.stream_layout(tree)
+    skin = channels[12]["stream"]
+    for index in (12, 13):
+        tree["m_VertexData"]["m_Channels"][index].update(stream=0, offset=0, format=0, dimension=0)
+    tree["m_VertexData"]["m_DataSize"] = bytes(tree["m_VertexData"]["m_DataSize"])[:starts[skin]]
+    tree["m_BindPose"] = []
+    return tree
+
+
+def head_costume(*, hair=HAIR, hair_copy=False, masked=False):
+    """Return a reopened game-like costume and the path IDs of its parts.
+
+    ``masked`` adds Head_All/Head_Face/mesh_facedots: the client does not merge
+    such a face, so its head meshes keep their own materials.
+    """
     environment, renderer, mesh, material = fixture(BLUE, size=SIZE)
     sf = renderer.assets_file
     objects = {obj.path_id: obj for obj in environment.objects}
@@ -107,6 +122,8 @@ def head_costume(*, hair=HAIR, hair_copy=False):
     head_all, head_all_transform = node("Head_All", head_transform)
     _, hair_holder = node("mesh_hair", head_all_transform)
     _, face_holder = node("mesh_face", head_all_transform)
+    if masked:
+        node("mesh_facedots", node("Head_Face", head_all_transform)[1])
     # Move the costume's renderer to Head_All/mesh_hair/Hair.
     hair_go = renderer.read_typetree()["m_GameObject"]["m_PathID"]
     hair_transform = trees[hair_go]["m_Component"][0]["component"]["m_PathID"]
@@ -121,7 +138,7 @@ def head_costume(*, hair=HAIR, hair_copy=False):
     face_go, _ = node("Face", face_holder, (face_renderer,))
     face_tree = renderer.read_typetree()
     face_tree.update(m_GameObject=pointer(face_go), m_Mesh=pointer(face_mesh), m_Bones=[])
-    cpt._make_object(sf, mesh, face_mesh, set_uvs(mesh.read_typetree(), FACE))
+    cpt._make_object(sf, mesh, face_mesh, skinless(set_uvs(mesh.read_typetree(), FACE)))
     cpt._make_object(sf, renderer, face_renderer, face_tree)
     hair_tree = renderer.read_typetree()
     ids_out = {"hair": renderer.path_id, "face": face_renderer, "face_mesh": face_mesh, "mesh": mesh.path_id,

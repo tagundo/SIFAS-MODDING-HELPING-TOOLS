@@ -705,6 +705,50 @@ def _beneath_named(scene, game_object, name):
     return False
 
 
+def _merged_head_roots(scene, source):
+    """headAll GameObjects of BodyPartManagers in ``source`` whose face is merged.
+
+    Mirrors graft_game_compat.head_material_binding: the client draws every
+    renderer below such a headAll with headMaterial (MergeFace 0x2c95478), so
+    a part transplant onto it writes into the head texture. Masked heads
+    (Head_Face/mesh_facedots) keep their own materials and are left out.
+    """
+    from .model_faces import _find
+    cache = scene.__dict__.setdefault("_merged_head_roots", {})
+    if source not in cache:
+        roots = []
+        for obj in scene.env.objects:
+            if obj.type.name != "MonoBehaviour" or _source_path(obj) != source:
+                continue
+            try:
+                tree = scene.tree(obj)
+                head_all = _ref(obj, tree.get("headAll")) if "headMaterial" in tree else None
+            except Exception:
+                continue
+            if head_all is None or head_all.type.name != "GameObject":
+                continue
+            if _find(scene, scene.transforms.get(_key(head_all)), ("Head_Face", "mesh_facedots")) is None:
+                roots.append(_key(head_all))
+        cache[source] = roots
+    return cache[source]
+
+
+def _beneath_any(scene, game_object, roots):
+    """Whether a GameObject or one of its same-file ancestors is in ``roots``."""
+    source, seen = _source_path(game_object) if game_object is not None else None, set()
+    while game_object is not None and _source_path(game_object) == source and len(seen) < 256:
+        key = _key(game_object)
+        if key in roots:
+            return True
+        if key in seen:
+            return False
+        seen.add(key)
+        transform = scene.transforms.get(key)
+        parent = _ref(transform, scene.tree(transform).get("m_Father")) if transform else None
+        game_object = _ref(parent, scene.tree(parent).get("m_GameObject")) if parent else None
+    return False
+
+
 def _member_depth_material(scene, material):
     """Admit the exact opaque wrapper that imports the member depth pass."""
     if material.type.name != "Material":
@@ -1819,6 +1863,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         # The client folds bone-less pieces and mesh_face into its combined
         # face (MergeFace/CombineFace); a part transplant cannot target them.
         graft_target = bool(writable and tree.get("m_Bones")) and not _beneath_named(scene, game_object, "mesh_face")
+        # A receiving mesh below a merged head's headAll is drawn with the head
+        # material: the panel explains that choice from this flag.
+        head_mesh = graft_target and _beneath_any(scene, game_object, _merged_head_roots(scene, _source_path(renderer)))
         import numpy as np
         position_matrix = np.diag([-1., 1., 1., 1.])
         if skin is None:
@@ -1862,7 +1909,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                                    "vertexCount": len(positions), "vertexOrder": "identity",
                                    "positionMatrix": position_matrix.T.reshape(-1).tolist(),
                                    "boneOrder": "identity", "writable": writable,
-                                   "graftTarget": graft_target}}})
+                                   "graftTarget": graft_target, "headMesh": head_mesh}}})
             if penlight_transform and material_obj is not None and _key(material_obj) in penlight[0]:
                 native_material = _penlight_material(scene.tree(material_obj))
                 if native_material is not None:
