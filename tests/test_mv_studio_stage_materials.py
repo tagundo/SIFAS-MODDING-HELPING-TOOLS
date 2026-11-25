@@ -441,9 +441,68 @@ class StageCubemapTests(unittest.TestCase):
         cube = SimpleNamespace(assets_file=object(), path_id=1, type=SimpleNamespace(name="Cubemap"), read=Mock())
         with patch.object(stage, "_ref", return_value=cube), patch.object(stage, "_cube_pixels", return_value=(b"data", 8, 4)):
             result = stage.export_reflection(scene, glb, materials, object(), {})
-        self.assertEqual(result["blend"], "add-vertex-alpha")
+        self.assertEqual({key: result[key] for key in ("mode", "parallax", "op", "reflectivity", "fresnel")},
+                         {"mode": "fragment", "parallax": True, "op": "add", "reflectivity": "vertex", "fresnel": False})
         self.assertEqual(result["bufferView"], 0)
         self.assertEqual(materials.pixels, 4)
+
+    def test_every_reflection_keyword_combination_selects_its_variant(self):
+        variant = stage.reflection_variant
+        # 12035/1 and 12023/1 bg0007_02_stageA_opa_ref_mt: a fragment cube without parallax correction.
+        self.assertEqual(variant("_CUBEMAP_MODE_FRAGMENT _CUBEMAP_BLEND_OP_ALPHA_BLEND _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA "
+                                 "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA _THIRD_TEX_MODE_OFF".split()),
+                         {"mode": "fragment", "parallax": False, "op": "alpha-blend", "reflectivity": "vertex", "fresnel": False})
+        # 12035/2 and 12023/2 bg0008_01_stageA_opa_ref_mt: alpha blend by _MainTex alpha.
+        self.assertEqual(variant("_CUBEMAP_MODE_FRAGMENT _PARALLAX_CORRECTED_CUBEMAP_ON _CUBEMAP_BLEND_OP_ALPHA_BLEND "
+                                 "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA".split())["reflectivity"], "texture")
+        # 11054/3 bg0022_01_floorA_opa_ref_mt: _MainTex alpha times COLOR alpha.
+        self.assertEqual(variant("_CUBEMAP_MODE_FRAGMENT _CUBEMAP_BLEND_OP_ALPHA_BLEND "
+                                 "_CUBEMAP_REFLECTIVITY_MULTIPLY".split())["reflectivity"], "multiply")
+        # 11078/3 bg0024_01_stageA1_opa_emi_ref_mt: per-vertex direction with fresnel.
+        self.assertEqual(variant("_CUBEMAP_MODE_VERTEX _PARALLAX_CORRECTED_CUBEMAP_ON _CUBEMAP_BLEND_OP_ALPHA_BLEND "
+                                 "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA _FRESNEL_ON".split()),
+                         {"mode": "vertex", "parallax": True, "op": "alpha-blend", "reflectivity": "vertex", "fresnel": True})
+        # A stale keyword outside AS/Stage's keyword space selects nothing.
+        self.assertEqual(variant("_CUBEMAP_MODE_FRAGMENT _CUBEMAP_BLEND_OP_ADD _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA "
+                                 "_EMISSION _ZWRITEPARAM_ON".split())["op"], "add")
+        for keywords in ("_CUBEMAP_MODE_OFF _CUBEMAP_BLEND_OP_ADD _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA",
+                         "_CUBEMAP_BLEND_OP_ADD _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA",
+                         "_CUBEMAP_MODE_FRAGMENT _CUBEMAP_MODE_VERTEX _CUBEMAP_BLEND_OP_ADD _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA",
+                         "_CUBEMAP_MODE_FRAGMENT _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA",
+                         "_CUBEMAP_MODE_FRAGMENT _CUBEMAP_BLEND_OP_ADD"):
+            self.assertIsNone(variant(keywords.split()), keywords)
+
+    def test_non_parallax_reflection_needs_no_box(self):
+        glb = model_viewer._Glb()
+        scene = SimpleNamespace(deadline=1, tree=lambda _: {
+            "m_ShaderKeywords": "_CUBEMAP_MODE_FRAGMENT _CUBEMAP_BLEND_OP_ALPHA_BLEND _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA",
+            "m_SavedProperties": {"m_Colors": [], "m_TexEnvs": [("_Cube", {"m_Texture": {}})]},
+        })
+        cube = SimpleNamespace(assets_file=object(), path_id=1, type=SimpleNamespace(name="Cubemap"), read=Mock())
+        with patch.object(stage, "_ref", return_value=cube), patch.object(stage, "_cube_pixels", return_value=(b"data", 8, 4)):
+            result = stage.export_reflection(scene, glb, SimpleNamespace(pixels=0), object(), {})
+        self.assertEqual(result, {"bufferView": 0, "size": 8, "mode": "fragment", "parallax": False,
+                                  "op": "alpha-blend", "reflectivity": "vertex", "fresnel": False})
+
+    def test_emissive_third_texture_keeps_its_reflection(self):
+        # 10001/3 bg0001_01_stageB1_opa_emi_ref_mt.
+        material = SimpleNamespace(
+            path_id=12, type=SimpleNamespace(name="Material"),
+            assets_file=SimpleNamespace(externals=[SimpleNamespace(path="CAB-fc0511ca63f2d94bbfe211260d08ddd1")]))
+        color = dict.fromkeys("rgba", 1)
+        tree = {
+            "m_Shader": {"m_FileID": 1, "m_PathID": -6509019661097744245},
+            "m_ShaderKeywords": "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA _CUBEMAP_BLEND_OP_ALPHA_BLEND _CUBEMAP_MODE_FRAGMENT "
+                                "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA _FRESNEL_ON _PARALLAX_CORRECTED_CUBEMAP_ON "
+                                "_THIRD_TEX_MODE_EMISSIVE",
+            "m_SavedProperties": {
+                "m_Floats": [("_SrcBlend", 1), ("_DstBlend", 0), ("_ZWrite", 1)],
+                "m_Colors": [("_AmbientColor", color), ("_TintColor", color), ("_BlendColor", color)],
+                "m_TexEnvs": [("_MainTex", {"m_Scale": {"x": 1, "y": 1}, "m_Offset": {"x": 0, "y": 0}})],
+            },
+        }
+        descriptor = stage.read_material(SimpleNamespace(tree=lambda _: tree), material, {}, {})
+        self.assertEqual((descriptor["reflectionToggle"], descriptor["usesEmissive"]), (True, True))
 
     def test_quality_ownership_uses_only_typed_primary_model_ambient(self):
         def node(kind, path):

@@ -24,7 +24,12 @@
       uniform vec4 emissiveUVTransform;
       varying vec2 vStageEmissiveUV;
     #endif
-    #ifdef CUBEMAP
+    #if defined(CUBEMAP) && defined(CUBEMAP_VERTEX)
+      // _CUBEMAP_MODE_VERTEX: the direction and N.V are per-vertex varyings.
+      uniform vec3 reflectionBoxMin, reflectionBoxMax, reflectionOrigin;
+      varying vec3 vReflectionDirection;
+      varying float vReflectionFacing;
+    #elif defined(CUBEMAP)
       varying vec3 vReflectionPosition;
       varying vec3 vReflectionNormal;
     #endif
@@ -48,9 +53,23 @@
         #include <beginnormal_vertex>
         #include <skinnormal_vertex>
         const vec3 unityAxes = vec3(-1.0, 1.0, 1.0);
-        vReflectionPosition = (modelMatrix * vec4(transformed, 1.0)).xyz * unityAxes;
+        vec3 reflectionPosition = (modelMatrix * vec4(transformed, 1.0)).xyz * unityAxes;
         vec3 worldNormal = (vec4(normalMatrix * objectNormal, 0.0) * viewMatrix).xyz;
-        vReflectionNormal = normalize(worldNormal) * unityAxes;
+        vec3 reflectionNormal = normalize(worldNormal) * unityAxes;
+        #ifdef CUBEMAP_VERTEX
+          vec3 view = normalize(cameraPosition * unityAxes - reflectionPosition);
+          vec3 ray = reflect(-view, reflectionNormal);
+          #ifdef CUBEMAP_PARALLAX
+            vec3 walls = max((reflectionBoxMax - reflectionPosition) / ray, (reflectionBoxMin - reflectionPosition) / ray);
+            vReflectionDirection = ray * min(min(walls.x, walls.y), walls.z) + reflectionPosition - reflectionOrigin;
+          #else
+            vReflectionDirection = ray;
+          #endif
+          vReflectionFacing = dot(view, reflectionNormal);
+        #else
+          vReflectionPosition = reflectionPosition;
+          vReflectionNormal = reflectionNormal;
+        #endif
       #endif
       gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
     }
@@ -84,9 +103,14 @@
     #ifdef CUBEMAP
       uniform bool useReflection;
       uniform samplerCube reflectionCube;
-      uniform vec3 reflectionBoxMin, reflectionBoxMax, reflectionOrigin;
-      varying vec3 vReflectionPosition;
-      varying vec3 vReflectionNormal;
+      #ifdef CUBEMAP_VERTEX
+        varying vec3 vReflectionDirection;
+        varying float vReflectionFacing;
+      #else
+        uniform vec3 reflectionBoxMin, reflectionBoxMax, reflectionOrigin;
+        varying vec3 vReflectionPosition;
+        varying vec3 vReflectionNormal;
+      #endif
     #endif
     void main() {
       #ifdef LIGHTMAPPED
@@ -99,18 +123,44 @@
         vec3 lit = ambientSurface * baked * vStageColor.rgb;
         #ifdef CUBEMAP
           if (useReflection) {
-            vec3 nativeCamera = cameraPosition * vec3(-1.0, 1.0, 1.0);
-            vec3 ray = reflect(normalize(vReflectionPosition - nativeCamera), normalize(vReflectionNormal));
-            vec3 walls = max((reflectionBoxMax - vReflectionPosition) / ray, (reflectionBoxMin - vReflectionPosition) / ray);
-            float distance = min(min(walls.x, walls.y), walls.z);
-            vec3 direction = ray * distance + vReflectionPosition - reflectionOrigin;
-            vec3 reflected = mix(textureCube(reflectionCube, direction).rgb, ambient.rgb, ambient.a);
-            #if defined(CUBEMAP_ADD)
-              lit += reflected * clamp(surface.a, 0.0, 1.0);
-            #elif defined(CUBEMAP_ADD_VERTEX_ALPHA)
-              lit += reflected * clamp(vStageColor.a, 0.0, 1.0);
+            // AS/Stage _CUBEMAP_* variants, in Unity's world axes.
+            #ifdef CUBEMAP_VERTEX
+              vec3 direction = vReflectionDirection;
+              float facing = vReflectionFacing;
             #else
-              lit = mix(lit, reflected, clamp(vStageColor.a, 0.0, 1.0));
+              vec3 nativeCamera = cameraPosition * vec3(-1.0, 1.0, 1.0);
+              vec3 view = normalize(nativeCamera - vReflectionPosition);
+              vec3 normal = normalize(vReflectionNormal);
+              vec3 ray = reflect(-view, normal);
+              #ifdef CUBEMAP_PARALLAX
+                vec3 walls = max((reflectionBoxMax - vReflectionPosition) / ray, (reflectionBoxMin - vReflectionPosition) / ray);
+                float distance = min(min(walls.x, walls.y), walls.z);
+                vec3 direction = ray * distance + vReflectionPosition - reflectionOrigin;
+              #else
+                vec3 direction = ray;
+              #endif
+              float facing = dot(normal, view);
+            #endif
+            vec3 reflected = mix(textureCube(reflectionCube, direction).rgb, ambient.rgb, ambient.a);
+            // _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA (0), _MAIN_TEX_ALPHA (1), _MULTIPLY (2).
+            #if CUBEMAP_REFLECTIVITY == 1
+              float reflectivity = surface.a;
+            #elif CUBEMAP_REFLECTIVITY == 2
+              float reflectivity = surface.a * vStageColor.a;
+            #else
+              float reflectivity = vStageColor.a;
+            #endif
+            #ifdef CUBEMAP_FRESNEL
+              // Schlick: (1 - N.V)^5 lifts the reflectivity towards 1.
+              float rim = 1.0 - facing;
+              float rim2 = rim * rim;
+              reflectivity = (1.0 - reflectivity) * (rim * rim2 * rim2) + reflectivity;
+            #endif
+            reflectivity = clamp(reflectivity, 0.0, 1.0);
+            #ifdef CUBEMAP_ADD
+              lit += reflected * reflectivity;
+            #else
+              lit = mix(lit, reflected, reflectivity);
             #endif
           }
         #endif
@@ -148,12 +198,26 @@
     return Array.isArray(value) && value.length === 4 && value.every(Number.isFinite);
   }
 
+  // The AS/Stage reflection variant (mv_studio_stage_materials.reflection_variant).
+  const reflectivities = {vertex: 0, texture: 1, multiply: 2};
+
   function reflectionSource(value) {
     return Number.isSafeInteger(value?.bufferView) && value.bufferView >= 0 &&
       Number.isSafeInteger(value.size) && value.size >= 8 && value.size <= 256 &&
       (value.size & (value.size - 1)) === 0 &&
-      ["vertex-alpha", "add-texture-alpha", "add-vertex-alpha"].includes(value.blend) &&
-      [value.boxMin, value.boxMax, value.origin].every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite));
+      ["fragment", "vertex"].includes(value.mode) && ["add", "alpha-blend"].includes(value.op) &&
+      Object.hasOwn(reflectivities, value.reflectivity) && typeof value.fresnel === "boolean" &&
+      typeof value.parallax === "boolean" && (!value.parallax ||
+        [value.boxMin, value.boxMax, value.origin].every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite)));
+  }
+
+  function reflectionDefines(source) {
+    const defines = {CUBEMAP: 1, CUBEMAP_REFLECTIVITY: reflectivities[source.reflectivity]};
+    if (source.mode === "vertex") defines.CUBEMAP_VERTEX = 1;
+    if (source.parallax) defines.CUBEMAP_PARALLAX = 1;
+    if (source.op === "add") defines.CUBEMAP_ADD = 1;
+    if (source.fresnel) defines.CUBEMAP_FRESNEL = 1;
+    return defines;
   }
 
   async function loadCube(T, parser, source) {
@@ -357,7 +421,7 @@
           !isColor(meta.colors._BlendColor) || !Number.isFinite(meta.mipBias))) return;
       if (meta.alphaCutoff !== undefined && (meta.shader !== "stage" || !Number.isFinite(meta.alphaCutoff) ||
           meta.alphaCutoff < 0 || meta.alphaCutoff > 1)) return;
-      if (meta.emissive && (meta.shader !== "stage" || meta.reflectionToggle ||
+      if (meta.emissive && (meta.shader !== "stage" ||
           !node.geometry.getAttribute("_stage_emissive_uv") || !Number.isSafeInteger(meta.emissive.texture) ||
           meta.emissive.texture < 0 || !isColor(meta.emissive.color) ||
           !isColor(meta.emissive.uvTransform) || !Number.isFinite(meta.emissive.intensity))) return;
@@ -415,14 +479,14 @@
           if (!active()) break;
           reflectionCube = cubes.get(source.bufferView);
           if (reflectionCube) {
-            defines.CUBEMAP = 1;
-            if (source.blend === "add-texture-alpha") defines.CUBEMAP_ADD = 1;
-            else if (source.blend === "add-vertex-alpha") defines.CUBEMAP_ADD_VERTEX_ALPHA = 1;
+            Object.assign(defines, reflectionDefines(source));
             uniforms.useReflection = {value: false};
             uniforms.reflectionCube = {value: null};
-            uniforms.reflectionBoxMin = {value: new T.Vector3().fromArray(source.boxMin)};
-            uniforms.reflectionBoxMax = {value: new T.Vector3().fromArray(source.boxMax)};
-            uniforms.reflectionOrigin = {value: new T.Vector3().fromArray(source.origin)};
+            if (source.parallax) {
+              uniforms.reflectionBoxMin = {value: new T.Vector3().fromArray(source.boxMin)};
+              uniforms.reflectionBoxMax = {value: new T.Vector3().fromArray(source.boxMax)};
+              uniforms.reflectionOrigin = {value: new T.Vector3().fromArray(source.origin)};
+            }
           }
         }
       }

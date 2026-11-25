@@ -15,18 +15,30 @@ _SHADERS = {
     ("cab-31fad648db7286e0012ae8cc07024bff", -1043432931367049882): "solid",
     ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367): "general",
 }
+# Each shader's keyword space. Unity ignores a material keyword its shader
+# does not declare, so only these select a compiled variant.
+_KEYWORDS = {
+    "stage": frozenset({
+        "_ALPHATEST_ON", "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA", "_ALPHA_TRANSPARENCY_MULTIPLY",
+        "_ALPHA_TRANSPARENCY_VERTEX_ALPHA", "_CUBEMAP_BLEND_OP_ADD", "_CUBEMAP_BLEND_OP_ALPHA_BLEND",
+        "_CUBEMAP_MODE_FRAGMENT", "_CUBEMAP_MODE_OFF", "_CUBEMAP_MODE_VERTEX", "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA",
+        "_CUBEMAP_REFLECTIVITY_MULTIPLY", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA", "_FRESNEL_ON",
+        "_PARALLAX_CORRECTED_CUBEMAP_ON", "_THIRD_TEX_MODE_DECAL", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_OFF"}),
+}
 _RIMLIGHT_DEPTH = ("cab-6cf8387efa4151b6220fceb9384d0e8e", 7983779172275908372)
 _AMBIENT_SCRIPT = ("LiveCoreStageAmbient", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll")
 _MODEL_SCRIPT = ("LiveCoreStageModel", *_AMBIENT_SCRIPT[1:])
 _EMISSIVE_SCRIPT = ("LiveCoreStageEmissive", *_AMBIENT_SCRIPT[1:])
 _MAIN_STAGE = "/EntryPoint/Live/Stages/MainStage"
 _COLOR_FIELDS = ("_AmbientColor", "_TintColor", "_BlendColor")
-_PARALLAX_REFLECTION = {"_CUBEMAP_MODE_FRAGMENT", "_PARALLAX_CORRECTED_CUBEMAP_ON"}
-_REFLECTION_BLENDS = {
-    ("_CUBEMAP_BLEND_OP_ALPHA_BLEND", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA"): "vertex-alpha",
-    ("_CUBEMAP_BLEND_OP_ADD", "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA"): "add-texture-alpha",
-    ("_CUBEMAP_BLEND_OP_ADD", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA"): "add-vertex-alpha",
-}
+# AS/Stage reflection keywords. Every combination selects its own compiled
+# variant: the cube direction per fragment or per vertex, optionally parallax
+# corrected against _BoxMin/_BoxMax, a reflectivity from COLOR.a, _MainTex.a
+# or both, an optional Schlick fresnel on it, and an add or alpha-blend op.
+_CUBE_MODES = {"_CUBEMAP_MODE_FRAGMENT": "fragment", "_CUBEMAP_MODE_VERTEX": "vertex"}
+_REFLECTION_OPS = {"_CUBEMAP_BLEND_OP_ADD": "add", "_CUBEMAP_BLEND_OP_ALPHA_BLEND": "alpha-blend"}
+_REFLECTIVITY = {"_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA": "vertex", "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA": "texture",
+                 "_CUBEMAP_REFLECTIVITY_MULTIPLY": "multiply"}
 _CUBE_FORMATS = {34: "etc1", 32: "pvrtc4"}
 _MAX_CUBE_SIZE = 256
 MAIN_SAMPLERS, AUXILIARY_SAMPLERS, STATIC_OPAQUE_SAMPLERS = range(3)
@@ -208,10 +220,11 @@ def read_material(scene, material, ambient, single_ambient):
     bias = floats.get("_MainTexMipmapBias", 0)
     if type(bias) not in (float, int) or not math.isfinite(bias) or "_BlendColor" not in colors:
         return None
+    # The emissive third texture and the cube reflection are independent
+    # keyword groups: their variants apply the reflection, then tint and
+    # _BlendColor, then lerp to the emission by _EmissiveTex.r.
     reflection = "_CUBEMAP_MODE_OFF" not in modes
     emissive = "_THIRD_TEX_MODE_EMISSIVE" in third_modes
-    if emissive and reflection:
-        return None
     return dict(meta, vertexColor=True, mipBias=bias, reflectionToggle=reflection, usesEmissive=emissive)
 
 
@@ -381,20 +394,31 @@ def _cube_pixels(cube, remaining_pixels, deadline):
     return data, side, pixels
 
 
+def reflection_variant(keywords):
+    """The AS/Stage cube reflection variant a keyword set selects, or None."""
+    keywords = set(keywords) & _KEYWORDS["stage"]
+    picked = [[value for name, value in table.items() if name in keywords]
+              for table in (_CUBE_MODES, _REFLECTION_OPS, _REFLECTIVITY)]
+    if any(len(values) != 1 for values in picked) or "_CUBEMAP_MODE_OFF" in keywords:
+        return None
+    (mode,), (op,), (reflectivity,) = picked
+    return {"mode": mode, "parallax": "_PARALLAX_CORRECTED_CUBEMAP_ON" in keywords, "op": op,
+            "reflectivity": reflectivity, "fresnel": "_FRESNEL_ON" in keywords}
+
+
 def export_reflection(scene, glb, materials, material, cube_cache):
     tree = scene.tree(material)
-    keywords = set(tree.get("m_ShaderKeywords", "").split())
-    if not _PARALLAX_REFLECTION <= keywords or "_FRESNEL_ON" in keywords:
+    variant = reflection_variant(tree.get("m_ShaderKeywords", "").split())
+    if variant is None:
         return None
-    blends = {name for name in keywords if name.startswith(("_CUBEMAP_BLEND_OP_", "_CUBEMAP_REFLECTIVITY_"))}
-    blend = _REFLECTION_BLENDS.get(tuple(sorted(blends)))
-    if blend is None:
-        return None
-    colors = _properties(tree, "m_Colors")
-    vectors = {field: _numbers(colors.get(source), "rgb") for field, source in
-               (("boxMin", "_BoxMin"), ("boxMax", "_BoxMax"), ("origin", "_CubemapPos"))}
-    if any(value is None for value in vectors.values()):
-        return None
+    vectors = {}
+    if variant["parallax"]:
+        # Only the parallax-corrected variants declare _BoxMin, _BoxMax and _CubemapPos.
+        colors = _properties(tree, "m_Colors")
+        vectors = {field: _numbers(colors.get(source), "rgb") for field, source in
+                   (("boxMin", "_BoxMin"), ("boxMax", "_BoxMax"), ("origin", "_CubemapPos"))}
+        if any(value is None for value in vectors.values()):
+            return None
     cube_ref = _properties(tree, "m_TexEnvs").get("_Cube", {}).get("m_Texture")
     cube = _ref(material, cube_ref)
     if cube is None or cube.type.name != "Cubemap":
@@ -411,7 +435,7 @@ def export_reflection(scene, glb, materials, material, cube_cache):
             cube_cache[key] = {"bufferView": glb.view(data), "size": size}
             materials.pixels += pixels
     data = cube_cache[key]
-    return {**vectors, **data, "blend": blend} if data is not None else None
+    return {**vectors, **data, **variant} if data is not None else None
 
 
 def read_vertex_inputs(handler, output, count):
