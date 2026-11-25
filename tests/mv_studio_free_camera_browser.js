@@ -21,7 +21,9 @@
    - Key current view after a view preset keys the shown view (the game camera then shows it);
    - every string has Korean and Japanese copy, and the bar follows a language switch;
    - on a phone, a tablet, a phone in landscape and a laptop screen the bar never covers the
-     preview controls, stays one row, and every control is where a tap lands.
+     preview controls, stays one row, and every control is where a tap lands; where it goes
+     (below or beside the controls, or below with the preview held taller) follows from where
+     the host put the preview and its controls.
 
    Real 12035 MV (skipped unless MV_FREECAM_SERVER_ROOT is an Elichika server root that imports
    GL Android 12035 with its member; no game data in Git): the four views around the member pass
@@ -239,17 +241,53 @@ const apart = (a, b) => a.left >= b.right - .5 || a.right <= b.left + .5 || a.to
 const inside = (a, b) => a.left >= b.left - .5 && a.right <= b.right + .5 && a.top >= b.top - .5 && a.bottom <= b.bottom + .5;
 
 // Phones and a tablet (touch) and a laptop screen, each with the export note above the
-// workspace (a shorter preview, as after an export). The bar never covers the preview controls:
-// it is one row at the bottom of the view, or, in a preview too short for both, beside the
-// controls (with no room there, the preview keeps the height both need while the bar shows). The view keeps the whole preview (the game camera's canvas). The preview controls,
-// the target list and every view button are where a tap lands (beside the controls, after a
-// sideways swipe), and a tap on a view button turns the free camera to that side.
+// workspace (a shorter preview, as after an export); the phone's timeline is as tall as it goes,
+// so its preview starts at its least height. The bar never covers the preview controls, stays in
+// the preview, is one row, and the view keeps the whole preview (the game camera's canvas). The
+// preview controls, the target list and every view button are where a tap lands (beside the
+// controls, after a sideways swipe), and a tap on a view button turns the free camera there.
 const LAYOUTS = [
-  { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, place: 'bottom', squeeze: true },
-  { name: 'tablet', viewport: { width: 768, height: 1024 }, touch: true, place: 'bottom' },
-  { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true, place: 'beside', swipe: true },
-  { name: 'laptop', viewport: { width: 1280, height: 720 }, touch: false, place: 'bottom' },
+  { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, squeeze: true },
+  { name: 'tablet', viewport: { width: 768, height: 1024 }, touch: true },
+  { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true },
+  { name: 'laptop', viewport: { width: 1280, height: 720 }, touch: false },
 ];
+// The bar's gap below the preview controls, its margin from the preview's edge, and the
+// narrowest bar worth placing beside the controls (mv-studio-free-camera.js / .css).
+const GAP = 6, EDGE = 8, MIN_BESIDE = 160;
+
+// Where the bar belongs, from where the host put the preview and its controls (so it holds for
+// any host layout): below the controls when it fits there; otherwise beside them when there is
+// room; with room in neither place, the preview's least height (--mv-preview-min, `own` px as
+// the host sets it) becomes what the controls and the bar need. `least` is the preview's height
+// before the bar showed.
+function checkPlacement(label, shown, held, own, least) {
+  const below = shown.controls.bottom - shown.preview.top + GAP + shown.bar.height + EDGE;
+  const room = shown.preview.right - shown.controls.right - 2 * GAP;
+  const beside = shown.classes.includes('mv-freecam-beside');
+  const place = beside ? 'beside' : held ? 'bottom, preview held' : 'bottom';
+  const facts = `${place}: needs ${below} px below the controls, ${room} px beside them, preview ${least} -> ${shown.preview.height} px, least ${own} px, held ${JSON.stringify(held)}`;
+  if (beside) {
+    assert(below > least + .5, `${label}: beside the controls only when the bar does not fit below them (${facts})`);
+    assert(room >= MIN_BESIDE - .5, `${label}: beside the controls only with room there (${facts})`);
+    assert(shown.bar.left >= shown.controls.right, `${label}: right of the preview controls`);
+    assert.equal(held, '', `${label}: beside the controls, the preview keeps its height (${facts})`);
+  } else {
+    assert(Math.abs(shown.bar.bottom - (shown.preview.bottom - EDGE)) < .5 && Math.abs(shown.bar.left - (shown.preview.left + EDGE)) < .5, `${label}: bottom left (${facts})`);
+    assert(shown.bar.top >= shown.controls.bottom + GAP - .5, `${label}: below the preview controls (${facts})`);
+    // With room beside the controls the preview is never held; without it, it is held exactly
+    // when the host's least height is too short for the controls and the bar.
+    const hold = room < MIN_BESIDE - .5 && below > own + .5;
+    if (hold) {
+      assert(held && Math.abs(parseFloat(held) - Math.ceil(below)) <= 1, `${label}: the preview's least height becomes what the bar needs (${facts})`);
+      assert(shown.preview.height >= below - .5, `${label}: the preview grows for the bar (${facts})`);
+    } else {
+      assert.equal(held, '', `${label}: the preview's least height stays the host's (${facts})`);
+      assert(below <= least + .5, `${label}: the bar fits below the controls as the preview was (${facts})`);
+    }
+  }
+  return { place, below, room };
+}
 
 async function layouts(browser, url) {
   const results = {};
@@ -266,33 +304,24 @@ async function layouts(browser, url) {
       note.hidden = false;
       note.replaceChildren(Object.assign(document.createElement('a'), { href: '#', textContent: 'A song for You- You- You-6c3fc246.unity' }));
     });
-    // The phone's timeline as tall as it goes: the preview at its least height (108 px), too
-    // short for the preview controls and the bar, with no room beside the controls.
     if (layout.squeeze) {
       await page.locator('#mv-timeline-resizer').focus();
       await page.keyboard.press('End');
       await frames(page);
     }
     const least = await page.evaluate(() => document.querySelector('.mv-preview').getBoundingClientRect().height);
+    const own = await page.evaluate(() => parseFloat(getComputedStyle(document.getElementById('mv-workspace')).getPropertyValue('--mv-preview-min')));
+    if (layout.squeeze) assert(Math.abs(least - own) < 1, `${label}: the preview starts at its least height (${least}, ${own})`);
     await setMode(page, 'orbit');
     await page.locator('#mv-free-camera').waitFor({ state: 'visible' });
     await frames(page);
-    const shown = await page.evaluate(layoutProbe, !!layout.swipe);
+    let shown = await page.evaluate(layoutProbe, false);
     const held = await page.evaluate(() => document.getElementById('mv-workspace').style.getPropertyValue('--mv-preview-min'));
-    if (layout.squeeze) {
-      assert(least <= 108.5, `${label}: the preview starts at its least height (${least})`);
-      assert(held && shown.preview.height > least, `${label}: the preview grows for the bar (${least} -> ${shown.preview.height}, ${held})`);
-    }
+    const placement = checkPlacement(label, shown, held, own, least);
+    // Beside the controls the view buttons may need a sideways swipe.
+    if (placement.place === 'beside') shown = await page.evaluate(layoutProbe, true);
     assert(apart(shown.bar, shown.controls), `${label}: the bar does not cover the preview controls (${JSON.stringify([shown.bar, shown.controls])})`);
     assert(inside(shown.bar, shown.preview), `${label}: the bar stays inside the preview`);
-    if (layout.place === 'bottom') {
-      assert(!shown.classes.includes('mv-freecam-beside'), `${label}: at the bottom of the view`);
-      assert(Math.abs(shown.bar.bottom - (shown.preview.bottom - 8)) < .5 && Math.abs(shown.bar.left - (shown.preview.left + 8)) < .5, `${label}: bottom left`);
-      assert(shown.bar.top >= shown.controls.bottom, `${label}: below the preview controls`);
-    } else {
-      assert(shown.classes.includes('mv-freecam-beside'), `${label}: beside the preview controls`);
-      assert(shown.bar.left >= shown.controls.right, `${label}: right of the preview controls`);
-    }
     assert.deepEqual(shown.scene, shown.preview, `${label}: the view keeps the whole preview`);
     const missed = Object.entries({ ...shown.hits, ...shown.scrolled }).filter(([, reached]) => !reached).map(([name]) => name);
     assert.deepEqual(missed, [], `${label}: every control is where a tap lands`);
@@ -311,8 +340,8 @@ async function layouts(browser, url) {
     assert.equal(await page.evaluate(() => document.elementFromPoint(...(({ left, top, width, height }) => [left + width / 2, top + height / 2])(
       document.getElementById('mv-camera-mode').getBoundingClientRect())) === document.getElementById('mv-camera-mode')), true, `${label}: back to the game camera`);
     assert.deepEqual(errors, []);
-    results[layout.name] = { place: shown.classes.includes('mv-freecam-beside') ? 'beside' : 'bottom', compact: shown.classes.filter((name) => /compact|tight/.test(name)),
-      preview: [shown.preview.width, shown.preview.height], previewBefore: least, held, bar: [shown.bar.left - shown.preview.left, shown.bar.top - shown.preview.top, shown.bar.width, shown.bar.height] };
+    results[layout.name] = { ...placement, compact: shown.classes.filter((name) => /compact|tight/.test(name)),
+      preview: [shown.preview.width, shown.preview.height], previewBefore: least, own, held, bar: [shown.bar.left - shown.preview.left, shown.bar.top - shown.preview.top, shown.bar.width, shown.bar.height] };
     await page.context().close();
   }
   return results;
