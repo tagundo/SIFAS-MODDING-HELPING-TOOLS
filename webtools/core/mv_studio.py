@@ -28,8 +28,9 @@ PROJECT_BYTES = 16 * 1024 * 1024
 PACKAGE_BYTES = 384 * 1024 * 1024
 MEDIA_BYTES = 96 * 1024 * 1024
 MAX_MEDIA = 48
-_MEDIA = {"glb": "model/gltf-binary", "wav": "audio/wav", "ogg": "audio/ogg", "mp3": "audio/mpeg", "m4a": "audio/mp4"}
-_MEDIA_NAME = re.compile(r"[a-f0-9]{32}\.(?:glb|wav|ogg|mp3|m4a)\Z")
+_MEDIA = {"glb": "model/gltf-binary", "wav": "audio/wav", "ogg": "audio/ogg", "mp3": "audio/mpeg", "m4a": "audio/mp4",
+          "flac": "audio/flac"}
+_MEDIA_NAME = re.compile(r"[a-f0-9]{32}\.(?:glb|wav|ogg|mp3|m4a|flac)\Z")
 _TOKEN = re.compile(r"[a-f0-9]{32}\Z")
 _NATIVE_DIGEST = re.compile(rb"[a-f0-9]{64}\Z")
 _MEDIA_URL = "/api/mv-studio/media/"
@@ -69,7 +70,7 @@ def _media(data, extension):
         raise ValueError("The stage preview or soundtrack exceeds the supported size.")
     valid = {"glb": lambda: data[:4] == b"glTF", "wav": lambda: data[:4] == b"RIFF" and data[8:12] == b"WAVE",
              "ogg": lambda: data[:4] == b"OggS", "mp3": lambda: data[:3] == b"ID3" or data[:1] == b"\xff",
-             "m4a": lambda: data[4:8] == b"ftyp"}
+             "m4a": lambda: data[4:8] == b"ftyp", "flac": lambda: data[:4] == b"fLaC"}
     if not valid[extension]():
         raise ValueError("The preview asset does not have the expected file format.")
     if extension == "glb":
@@ -463,6 +464,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         source = {"kind": "game", "region": selected["region"], "platform": selected["platform"],
                   "liveId": selected["liveId"], "assetId": selected["assetId"], "mvOnly": selected.get("mvOnly", False),
                   "registered": selected.get("registered", False),
+                  # Which registered song this is (its revision and base): the store reuses removed songs' IDs.
+                  **({"registeredSong": selected["registeredSong"]} if selected.get("registeredSong") else {}),
                   # The deck tab / local player and every position's suit source, so a saved
                   # project or a frame capture says which player state dressed the members.
                   **mv_studio_suits.provenance(selected.get("deck"), selected.get("performers"))}
@@ -695,7 +698,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     if acb and (awb or not audio.get("awb")):
                         decoded = directory / "soundtrack.wav"
                         cri_audio_decode.decode_cue(cue_bank, awb.read_bytes() if awb else None, audio["cue"], decoded)
-                        project["soundtrack"] = _song_audio(decoded)
+                        # The base song's own cue: registration keeps it unless the offset moves it.
+                        project["soundtrack"] = {**_song_audio(decoded), "origin": "game"}
                         project["duration"] = max(project["duration"], project["soundtrack"]["duration"])
                 except (ValueError, OSError) as error:
                     warnings.append(f"Soundtrack: {error}")

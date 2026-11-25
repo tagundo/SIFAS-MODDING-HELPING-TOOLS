@@ -15,10 +15,6 @@ const modelName = 'stage-fixture.glb';
 fs.mkdirSync(modded, { recursive: true });
 fs.mkdirSync(evidence, { recursive: true });
 fs.writeFileSync(path.join(modded, modelName), fixture().glb);
-fs.writeFileSync(path.join(modded, 'android-timeline.unity'), 'selection fixture');
-fs.writeFileSync(path.join(modded, 'chart.json'), '{}');
-fs.writeFileSync(path.join(modded, 'custom.acb'), 'selection fixture');
-fs.writeFileSync(path.join(modded, 'custom.awb'), 'selection fixture');
 const wav = Buffer.alloc(44 + 160000);
 wav.write('RIFF', 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8);
 wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
@@ -56,42 +52,221 @@ async function chooseFile(page, folder, file) {
   await page.locator('#picker-entries li').filter({ hasText: file }).click();
 }
 
+// MV-only song registration panel (mv-studio-register.js) on mocked routes: defaults, project audio
+// decoded and uploaded as 44.1 kHz stereo PCM with the offset trimmed, the missing-iOS consent,
+// the register-job payload, the success text, "fix" for a legacy song and the base MV picker.
 async function registrationControls(page) {
-  let registration, attachment;
-  await page.route('**/api/mv-studio/register?*', route => {
-    registration = route.request().postDataJSON();
-    return route.fulfill({ json: { liveId: 90, title: 'MV copy', mvOnly: true, restartRequired: true } });
+  const project = await page.evaluate(() => MVStudio.getState().project);
+  const soundtrack = { origin: 'project', offset: project.soundtrack.offset, duration: project.soundtrack.duration,
+    url: project.soundtrack.url };
+  let unbased = false, modBase = false;
+  // A mod project on a chosen base: both originals are local, the iOS bake fails (OTHER_PLATFORM_FAILED).
+  const modPlan = () => ({
+    region: 'gl', base: { liveId: 13, assetId: 35, title: '다른 노래', stage: '별빛 무대', fixed: false, registered: false },
+    song: null, targets: [], target: 'new', title: 'MV Studio sample', credit: '',
+    platforms: { android: { status: 'local' }, ios: { status: 'local' } }, projectPlatform: 'android',
+    timeline: { native: true, kind: 'mod', unchanged: false, bake: ['android', 'ios'], download: [], missing: [], keep: [] },
+    edits: { cameraShots: 0, values: 1, timing: 0, clips: 1, follow: false }, notInGame: [], blocked: [], warnings: [],
+    audio: { default: 'base', encoder: true, soundtrack, beat: null, previewStart: 0 }, jacket: { default: 'base' },
+    encoder: true, managedRestart: false,
   });
-  await page.route('**/api/mv-studio/chart-templates?*', route => route.fulfill({ json: {
-    templates: [{ id: 765, difficultyType: 30, label: '상급' }],
-  } }));
-  await page.route('**/api/mv-studio/charts?*', route => {
-    attachment = route.request().postDataJSON();
-    return route.fulfill({ json: { liveId: 90, title: 'MV copy', mvOnly: false, restartRequired: true } });
-  });
-  await page.locator('#mv-registration summary').click();
-  await page.locator('#mv-registration-title').fill('MV copy');
-  await page.locator('[data-mv-register-timeline=android]').click();
-  await chooseFile(page, modded, 'android-timeline.unity');
-  await page.locator('[data-mv-register-audio=awb]').click();
-  await chooseFile(page, modded, 'custom.awb');
-  assert(await page.locator('#mv-register').isDisabled());
-  await page.locator('[data-mv-register-audio=acb]').click();
-  await chooseFile(page, modded, 'custom.acb');
-  await page.locator('#mv-register').click();
-  await page.waitForFunction(() => document.getElementById('mv-status').textContent.includes('재시작'));
-  assert.deepEqual(registration, { region: 'gl', sourceLiveId: 12, assetId: 34, title: 'MV copy',
-    timelinePaths: { android: path.join(modded, 'android-timeline.unity') },
-    audioAcbPath: path.join(modded, 'custom.acb'), audioAwbPath: path.join(modded, 'custom.awb') });
-  await page.locator('#mv-chart-templates').click();
-  assert.equal(await page.locator('#mv-chart-template').inputValue(), '765');
-  await page.locator('#mv-chart-file').click();
-  await chooseFile(page, modded, 'chart.json');
-  await page.locator('#mv-attach-chart').click();
-  await page.locator('#mv-chart-templates').waitFor();
-  assert.deepEqual(attachment, { region: 'gl', liveId: 90, charts: { 30: {
-    path: path.join(modded, 'chart.json'), template_difficulty_id: 765,
-  } } });
+  const plan = () => modBase ? modPlan() : unbased ? {
+    region: 'gl', base: null, song: null, targets: [], target: 'new', title: 'MV Studio sample', credit: '', platforms: {},
+    projectPlatform: null, timeline: { native: false, unchanged: true, bake: [], download: [], missing: [], keep: [] },
+    edits: {}, notInGame: [], blocked: [{ message: 'Choose the base MV.' }], warnings: [],
+    audio: { default: 'base', encoder: true, soundtrack, beat: null, previewStart: 0 }, jacket: { default: 'base' }, encoder: true,
+  } : {
+    region: 'gl', base: { liveId: 12, assetId: 34, title: 'MV Studio sample', stage: '별빛 무대', fixed: true, registered: false },
+    song: null, targets: [], target: 'new', title: 'MV Studio sample', credit: '',
+    platforms: { android: { status: 'project' }, ios: { status: 'download', bytes: 314572 } }, projectPlatform: 'android',
+    timeline: { native: true, unchanged: false, bake: ['android', 'ios'], download: ['ios'], missing: [], keep: [] },
+    edits: { cameraShots: 1, values: 2, timing: 1, clips: 3, follow: false }, notInGame: [{ message: 'Member positions' }],
+    blocked: [], warnings: [], audio: { default: 'project', encoder: true, soundtrack, beat: null, previewStart: 0 },
+    jacket: { default: 'base' }, encoder: true, managedRestart: false,
+  };
+  const plans = [], jobs = [], sequence = [];
+  let pcm = null;
+  await page.route('**/api/mv-studio/registration-plan?*', (route) => { plans.push(route.request().postDataJSON()); sequence.push('plan');
+    return route.fulfill({ json: plan() }); });
+  await page.route('**/api/mv-studio/songs?*', (route) => route.fulfill({ json: { region: 'gl', encoder: true, managedRestart: false,
+    songs: [{ liveId: 93000, region: 'gl', title: '옛 등록 곡', visible: false, actions: ['fix', 'remove'], templateAssetId: 34,
+      platforms: { android: 'stock', ios: 'stock' }, updatedAt: 1764000000 }] } }));
+  await page.route('**/api/mv-studio/pcm?*', (route) => { pcm = route.request().postDataBuffer();
+    return route.fulfill({ json: { name: 'a'.repeat(32) + '.wav', duration: 9.25 } }); });
+  await page.route('**/api/mv-studio/register-job?*', (route) => { jobs.push(route.request().postDataJSON()); sequence.push('job');
+    return route.fulfill({ json: { job_id: 'job' + jobs.length } }); });
+  const stream = (events) => events.map((event) => 'data: ' + JSON.stringify(event) + '\n\n').join('');
+  await page.route('**/api/jobs/job1/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-stage', stage: 'check', label: 'Checking the base MV originals', index: 0, total: 3 },
+    { type: 'mv-stage', stage: 'android', label: 'Building the Android timeline', index: 1, total: 3 },
+    { type: 'mv-song', mode: 'new', changed: true, restart: 'manual', warnings: [],
+      song: { liveId: 93001, region: 'gl', title: 'MV Studio sample' } },
+    { type: 'done', status: 'done', summary: 'ok' }]) }));
+  await page.route('**/api/jobs/job2/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-song', mode: 'update', changed: true, restart: 'manual', warnings: [], song: { liveId: 93000, region: 'gl', title: '옛 등록 곡' } },
+    { type: 'done', status: 'done', summary: 'ok' }]) }));
+  const otherFailed = 'The edits could not be baked into the iOS original MV. Register for Android only to play the original MV on iOS.';
+  await page.route('**/api/jobs/job3/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-stage', stage: 'check', label: 'Checking the base MV originals', index: 0, total: 3 },
+    { type: 'done', status: 'error', summary: otherFailed }]) }));
+  // job4: the Android-only job, held open (no 'done') until finishJob4, then cancelled. job5: the next
+  // normal submit, whose iOS bake fails again. job6: Android only again, registered.
+  let finishJob4 = false;
+  await page.route('**/api/jobs/job4/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' },
+    body: 'retry: 100\n\n' + stream([
+      { type: 'mv-stage', stage: 'android', label: 'Building the Android timeline', index: 1, total: 3 },
+      ...(finishJob4 ? [{ type: 'done', status: 'cancelled', summary: 'MV registration was cancelled.' }] : [])]) }));
+  await page.route('**/api/jobs/job5/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-stage', stage: 'check', label: 'Checking the base MV originals', index: 0, total: 3 },
+    { type: 'done', status: 'error', summary: otherFailed }]) }));
+  await page.route('**/api/jobs/job6/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-song', mode: 'new', changed: true, restart: 'manual', warnings: [], song: { liveId: 93002, region: 'gl', title: 'MV Studio sample' } },
+    { type: 'done', status: 'done', summary: 'ok' }]) }));
+  const panel = page.locator('#mv-panel-register');
+  assert.equal(await panel.locator(':scope > summary').textContent(), 'MV 전용 곡으로 등록');
+  await panel.locator(':scope > summary').click();
+  await page.locator('#mv-register-base').filter({ hasText: '별빛 무대' }).waitFor();
+  assert.equal(plans[0].project.source.liveId, 12);
+  assert.deepEqual(plans[0].unbaked, []);
+  assert.equal(await page.locator('#mv-register-title').inputValue(), 'MV Studio sample');
+  assert(await page.locator('input[name=mv-register-audio][value=project]').isChecked());
+  assert(await page.locator('#mv-register-submit').isDisabled(), 'Project audio needs its BPM first');
+  assert.match(await page.locator('#mv-register-plan').textContent(), /카메라 1컷 수정/);
+  assert.match(await page.locator('#mv-register-plan').textContent(), /게임에 들어가지 않음: 멤버 위치/);
+  assert.doesNotMatch(await page.locator('#mv-register-plan').textContent(), /의상/, 'The outfit hint belongs to the costume note only');
+  assert(!(await page.locator('#mv-register-download').isChecked()));
+  await page.locator('#mv-register-bpm').fill('120');
+  await page.locator('#mv-register-first-beat').fill('0.5');
+  const planned = sequence.length;
+  await page.locator('#mv-register-submit').click();
+  const consent = page.locator('#mv-register-confirm');
+  await consent.waitFor();
+  assert.equal(await consent.locator('p').textContent(), 'iOS에서는 원래 MV가 재생됩니다. 계속할까요?');
+  await page.locator('#mv-register-confirm-yes').click();
+  await page.locator('#mv-register-result').filter({ hasText: '등록했습니다' }).waitFor();
+  assert.match(await page.locator('#mv-register-result').textContent(), /'MV Studio sample'\(93001\)를 등록했습니다\..*게임 서버를 다시 시작해야 적용됩니다\./);
+  // 16-bit 44.1 kHz stereo PCM; the 10 s soundtrack starts 0.75 s in (audio time = director time + offset).
+  assert.equal(pcm.toString('ascii', 0, 4), 'RIFF');
+  assert.equal(pcm.toString('ascii', 8, 16), 'WAVEfmt ');
+  assert.deepEqual([pcm.readUInt16LE(20), pcm.readUInt16LE(22), pcm.readUInt32LE(24), pcm.readUInt16LE(34)], [1, 2, 44100, 16]);
+  assert.equal(pcm.readUInt32LE(40), pcm.length - 44);
+  assert(Math.abs((pcm.length - 44) / 4 - (10 - 0.75) * 44100) <= 1, String(pcm.length));
+  assert.deepEqual(sequence.slice(planned, planned + 2), ['plan', 'job'], 'Each submit checks the posted project again before the job');
+  const { project: posted, ...request } = jobs[0];
+  assert.equal(posted.source.liveId, 12);
+  assert.deepEqual(request, { mode: 'new', title: 'MV Studio sample', credit: null, jacket: { kind: 'base' },
+    audio: { kind: 'project', pcm: 'a'.repeat(32) + '.wav', bpm: 120, firstBeat: 0.5, previewStart: 0 },
+    platforms: ['android'], download: false, unbaked: [] });
+  assert.deepEqual(await page.evaluate(() => MVStudio.getState().project.registration), { region: 'gl', liveId: 93001 });
+  // A legacy song without its Advanced chart: "Fix" runs an update that only adds the placeholder.
+  unbased = true;
+  await page.locator('#mv-register-songs > summary').click();
+  const legacy = page.locator('[data-mv-song="93000"]');
+  await legacy.waitFor();
+  assert.match(await legacy.textContent(), /게임에 보이지 않음 \(상급 채보 없음\)/);
+  await legacy.locator('[data-mv-song-action=fix]').click();
+  await page.waitForFunction(() => document.querySelector('#mv-register-base-change'));
+  assert.deepEqual(jobs[1], { mode: 'update', region: 'gl', liveId: 93000, addPlaceholder: true });
+  // A project without a game base: Register stays disabled until a base MV is chosen from the catalog.
+  assert(await page.locator('#mv-register-submit').isDisabled());
+  assert.match(await page.locator('#mv-register-plan').textContent(), /기본 MV를 고르세요\./);
+  await page.locator('#mv-register-base-change').click();
+  await page.locator('#mv-register-base-song option').first().waitFor({ state: 'attached' });
+  assert.deepEqual(await page.locator('#mv-register-base-song option').allTextContents(), ['다른 노래 (13)']);
+  const before = plans.length;
+  unbased = false;
+  modBase = true;
+  await page.locator('#mv-register-base-use').click();
+  await page.waitForFunction(() => !document.querySelector('#mv-register-picker'));
+  for (let tries = 0; tries < 100 && plans.length === before; tries++) await page.waitForTimeout(50);
+  assert.deepEqual(plans[plans.length - 1].template, { region: 'gl', liveId: 13, assetId: 35 });
+  // The edits do not fit the iOS original: the panel offers to register for Android only.
+  await page.waitForFunction(() => { const submit = document.querySelector('#mv-register-submit'); return submit && !submit.disabled; });
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-error').filter({ hasText: 'iOS 원본 MV에 넣지 못했습니다' }).waitFor();
+  assert.deepEqual(jobs[2].platforms, ['android', 'ios']);
+  assert.deepEqual(jobs[2].template, { region: 'gl', liveId: 13, assetId: 35 });
+  const only = page.locator('#mv-register-only');
+  await page.waitForFunction(() => { const button = document.querySelector('#mv-register-only'); return button && !button.disabled; });
+  assert.equal(await only.textContent(), 'Android에만 등록');
+  await only.click();
+  // While the one-platform choice holds, the check list shows the platform it leaves out.
+  await page.locator('#mv-register-stage').filter({ hasText: 'Android 타임라인' }).waitFor();
+  assert.deepEqual(jobs[3].platforms, ['android']);
+  assert.equal(await page.locator('#mv-register-excluded').textContent(), '⚠iOS: 이번 등록에서 빠지며 원래 MV가 재생됩니다');
+  assert.match(await page.locator('#mv-register-plan').textContent(), /Android에 적용/);
+  assert.doesNotMatch(await page.locator('#mv-register-plan').textContent(), /Android · iOS 모두 적용/);
+  await panel.screenshot({ path: path.join(evidence, 'register-excluded-ko.png') });
+  // The Android-only job is cancelled: the choice ends with it, and the next Register sends both platforms.
+  finishJob4 = true;
+  await page.locator('#mv-register-error').filter({ hasText: 'MV 등록을 취소했습니다.' }).waitFor();
+  assert.equal(await page.locator('#mv-register-excluded').count(), 0);
+  await page.waitForFunction(() => { const submit = document.querySelector('#mv-register-submit'); return submit && !submit.disabled; });
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-error').filter({ hasText: 'iOS 원본 MV에 넣지 못했습니다' }).waitFor();
+  assert.deepEqual(jobs[4].platforms, ['android', 'ios'], 'A cancelled one-platform job does not leave iOS out of the next one');
+  await page.waitForFunction(() => { const button = document.querySelector('#mv-register-only'); return button && !button.disabled; });
+  await page.locator('#mv-register-only').click();
+  await page.locator('#mv-register-result').filter({ hasText: '93002' }).waitFor();
+  assert.deepEqual(jobs[5].platforms, ['android']);
+  assert.equal(await page.locator('#mv-register-excluded').count(), 0);
+  // A store refusal after the game server stopped: Cancel is off from the stop on, and the error
+  // comes with the server's state. The stream stays open (without 'done') until finishJob7.
+  let finishJob7 = false;
+  const refused = 'The selected music ID or cue already belongs to a song in this region.';
+  await page.route('**/api/jobs/job7/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' },
+    body: 'retry: 100\n\n' + stream([
+      { type: 'mv-stage', stage: 'check', label: 'Checking the base MV originals', index: 0, total: 4 },
+      { type: 'mv-stage', stage: 'stop', label: 'Stopping the game server', index: 1, total: 4 },
+      ...(finishJob7 ? [{ type: 'mv-failed', message: refused, restart: 'done' },
+        { type: 'done', status: 'error', summary: refused }] : [])]) }));
+  await page.waitForFunction(() => { const submit = document.querySelector('#mv-register-submit'); return submit && !submit.disabled; });
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-stage').filter({ hasText: '게임 서버 정지' }).waitFor();
+  assert(await page.locator('#mv-register-cancel').isDisabled(), 'No cancel once the server stops');
+  finishJob7 = true;
+  await page.locator('#mv-register-error').filter({ hasText: '이 지역의 다른 곡이 이미 쓰고 있습니다' }).waitFor();
+  assert.equal(await page.locator('#mv-register-error-server').textContent(), '게임 서버를 다시 시작했습니다.');
+  // An update that stopped the server but changed nothing: the result says both.
+  await page.route('**/api/jobs/job8/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-stage', stage: 'stop', label: 'Stopping the game server', index: 1, total: 4 },
+    { type: 'mv-song', mode: 'update', changed: false, restart: 'done', warnings: [],
+      song: { liveId: 93002, region: 'gl', title: 'MV Studio sample' } },
+    { type: 'done', status: 'done', summary: 'No changes to apply.' }]) }));
+  await page.waitForFunction(() => { const submit = document.querySelector('#mv-register-submit'); return submit && !submit.disabled; });
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-result').filter({ hasText: '바뀐 내용이 없습니다.' }).waitFor();
+  assert.equal(jobs.length, 8);
+  assert.deepEqual(await page.locator('#mv-register-result p').allTextContents(), ['바뀐 내용이 없습니다.', '게임 서버를 다시 시작했습니다.']);
+  assert.equal(await page.locator('#mv-register-result-server').textContent(), '게임 서버를 다시 시작했습니다.');
+  assert.equal(await page.locator('#mv-register-error').count(), 0);
+  // Deleting on a standalone PC: the server was stopped and must be started again; the store's
+  // warning and the backup are shown with the result.
+  await page.route('**/api/mv-studio/songs/remove-plan?*', (route) => route.fulfill({ json: { reviewToken: 'a'.repeat(64),
+    summary: { users: { u_live_mv_deck: 2 } }, blocked: [] } }));
+  await page.route('**/api/mv-studio/songs/remove-job?*', (route) => route.fulfill({ json: { job_id: 'remove1' } }));
+  const notCleaned = "The song was removed, but players' records for it could not be cleaned. The game ignores records of songs it no longer has.";
+  await page.route('**/api/jobs/remove1/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-stage', stage: 'remove', label: 'Removing the song from the game', index: 2, total: 3 },
+    { type: 'mv-song-removed', liveId: 93000, region: 'gl', title: '옛 등록 곡', restart: 'stopped', warnings: [notCleaned],
+      backup: '/backups/mv-studio-remove-93000', managed: false },
+    { type: 'done', status: 'done', summary: 'ok' }]) }));
+  await page.locator('[data-mv-song="93000"] [data-mv-song-action=remove]').click();
+  await page.locator('#mv-register-remove-dialog [data-mv-remove=confirm]').click();
+  const removed = page.locator('#mv-register-removed');
+  await removed.waitFor();
+  assert.match(await removed.textContent(), /'옛 등록 곡'\(93000\)를 삭제했습니다\./);
+  assert.equal(await page.locator('#mv-register-removed-server').textContent(), '게임 서버를 멈췄습니다. 다시 시작하세요.');
+  assert.match(await removed.textContent(), /플레이어 기록을 정리하지 못했습니다/);
+  assert.match(await removed.textContent(), /백업: \/backups\/mv-studio-remove-93000/);
+  await page.unroute('**/api/mv-studio/songs/remove-plan?*');
+  await page.unroute('**/api/mv-studio/songs/remove-job?*');
+  modBase = false;
+  await page.unroute('**/api/mv-studio/registration-plan?*');
+  await page.unroute('**/api/mv-studio/songs?*');
+  await page.unroute('**/api/mv-studio/pcm?*');
+  await page.unroute('**/api/mv-studio/register-job?*');
+  await panel.locator(':scope > summary').click();
 }
 
 async function localAndGame(page, url) {
@@ -373,10 +548,19 @@ async function timelineResize(page) {
   assert.equal(await scroll.evaluate(element => element.style.getPropertyValue('--mv-timeline-height')), '');
 }
 
+// The workbench process ends before its library folder is removed.
+function stopped(child) {
+  return new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    child.once('exit', () => resolve());
+    child.kill();
+  });
+}
+
 async function run() {
-  const server = await startServer();
-  let browser;
+  let server, browser;
   try {
+    server = await startServer();
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const page = await browser.newPage({ locale: 'ko', viewport: { width: 1180, height: 820 } });
@@ -395,7 +579,8 @@ async function run() {
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {
     if (browser) await browser.close();
-    server.processHandle.kill();
+    if (server) await stopped(server.processHandle);
+    fs.rmSync(library, { recursive: true, force: true });
   }
 }
 

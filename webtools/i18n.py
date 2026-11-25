@@ -2680,27 +2680,9 @@ _MV_STUDIO_TRANSLATIONS = {
     "Tracks": ("트랙", "トラック"),
     "Selected event": ("선택한 이벤트", "選択したイベント"),
     "MV quality settings": ("MV 그래픽 설정", "MVグラフィック設定"),
-    "Register in game": ("게임에 등록", "ゲームに登録"),
-    "MV title": ("MV 제목", "MVのタイトル"),
-    "Register original as an MV-only copy": ("게임 원본을 MV 전용 복사본으로 등록", "ゲームの元データをMV専用コピーとして登録"),
-    "Register MV-only copy with selected timelines": ("선택한 타임라인으로 MV 전용 복사본 등록", "選んだタイムラインでMV専用コピーを登録"),
-    "Register MV-only copy with selected assets": ("선택한 에셋으로 MV 전용 복사본 등록", "選んだアセットでMV専用コピーを登録"),
-    "Custom timelines (optional)": ("사용자 타임라인 (선택)", "カスタムタイムライン（任意）"),
-    "Choose Android timeline": ("Android 타임라인 선택", "Androidタイムラインを選択"),
-    "Choose iOS timeline": ("iOS 타임라인 선택", "iOSタイムラインを選択"),
-    "Use exported timeline": ("내보낸 타임라인 사용", "書き出したタイムラインを使用"),
-    "Custom soundtrack (optional)": ("사용자 음원 (선택)", "カスタム音源（任意）"),
-    "Choose an ACB with one game music cue and its AWB if the cue streams from an external file.": [
-        "게임 음원 큐가 하나인 ACB를 선택하세요. 외부 파일에서 스트리밍할 경우 해당 AWB도 선택하세요.",
-        "ゲーム音源のキューが1つ入ったACBを選んでください。外部ファイルからのストリーミングには対応するAWBも選んでください。"
-    ],
     "Choose ACB": ("ACB 선택", "ACBを選択"),
     "Choose AWB": ("AWB 선택", "AWBを選択"),
-    "Choose the ACB that uses this AWB.": ("이 AWB를 사용하는 ACB를 선택하세요.", "このAWBを使用するACBを選んでください。"),
-    "Registering MV…": ("MV 등록 중…", "MVを登録中…"),
-    "MV-only copy registered.": ("MV 전용 복사본을 등록했습니다.", "MV専用コピーを登録しました。"),
     "Restart the game server to load the updated catalog.": ("목록 변경을 게임에 적용하려면 게임 서버를 재시작하세요.", "更新した一覧をゲームに反映するには、ゲームサーバーを再起動してください。"),
-    "Live show": ("라이브", "ライブ"),
     "Load chart templates": ("채보 템플릿 불러오기", "譜面テンプレートを読み込む"),
     "Loading chart templates…": ("채보 템플릿 불러오는 중…", "譜面テンプレートを読み込み中…"),
     "No compatible chart templates.": ("호환되는 채보 템플릿을 찾지 못했습니다.", "対応する譜面テンプレートがありません。"),
@@ -2858,6 +2840,562 @@ _MV_EDITOR_A_TRANSLATIONS = {
     ),
 }
 for _source, (_korean, _japanese) in _MV_EDITOR_A_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# MV-only song registration (mv-studio-register.js, core/mv_studio_register.py): the panel, the
+# job stages, the plan notes, every Elichika store message (mv_studio_live.MESSAGES), the CRI
+# encoder's fixed messages and the native export refusals a registration can show.
+_MV_REGISTER_TRANSLATIONS = {
+    # Panel
+    "Register as an MV-only song": ("MV 전용 곡으로 등록", "MV専用曲として登録"),
+    "Update song": ("업데이트", "更新"),
+    "Register as a new song": ("새 곡으로 등록", "新しい曲として登録"),
+    "Base MV": ("기본 MV", "ベースMV"),
+    "Choose base MV": ("기본 MV 고르기", "ベースMVを選ぶ"),
+    "Change": ("변경", "変更"),
+    "Stage, choreography, props and members come from the base MV.": (
+        "무대·안무·소품·멤버는 기본 MV의 것을 사용합니다.", "ステージ・振り付け・小物・メンバーはベースMVのものを使います。"),
+    "Title": ("제목", "タイトル"),
+    "Credit": ("크레디트", "クレジット"),
+    "Leave empty to use the base song's credit.": (
+        "비워 두면 기본 MV 곡의 크레디트를 씁니다.", "空欄のままにするとベースMVの曲のクレジットを使います。"),
+    "Jacket": ("재킷", "ジャケット"),
+    "Choose image": ("이미지 선택", "画像を選択"),
+    "Choose jacket image": ("재킷 이미지 선택", "ジャケット画像を選択"),
+    "Use the base jacket": ("기본 재킷 사용", "ベースのジャケットを使う"),
+    "Keep the registered jacket": ("등록된 재킷 유지", "登録済みのジャケットのまま"),
+    "Choose the square area for the jacket.": ("재킷으로 쓸 정사각형 영역을 고르세요.", "ジャケットに使う正方形の範囲を選んでください。"),
+    "Jacket area size": ("영역 크기", "範囲の大きさ"),
+    "The selected area is used as is.": ("고른 영역을 그대로 씁니다.", "選んだ範囲をそのまま使います。"),
+    "The selected area is resized to 400×400.": ("고른 영역을 400×400으로 크기만 맞춥니다.", "選んだ範囲を400×400に拡大・縮小します。"),
+    "This 400×400 image is used as is.": ("400×400 이미지라 그대로 씁니다.", "400×400の画像なのでそのまま使います。"),
+    "This square image is resized to 400×400.": ("정사각형 이미지를 400×400으로 크기만 맞춥니다.", "正方形の画像を400×400に拡大・縮小します。"),
+    "The registered jacket stays.": ("등록된 재킷을 그대로 둡니다.", "登録済みのジャケットのままです。"),
+    "The base song's jacket is used.": ("기본 MV 곡의 재킷을 씁니다.", "ベースMVの曲のジャケットを使います。"),
+    "400×400 · choose an area when the image is not square.": (
+        "400×400 · 정사각형이 아니면 영역을 고르세요.", "400×400・正方形でない画像は範囲を選んでください。"),
+    "Audio": ("음원", "音源"),
+    "Original song audio": ("원곡 음원 그대로", "原曲の音源のまま"),
+    "Keep the registered audio": ("등록된 음원 유지", "登録済みの音源のまま"),
+    "Project audio": ("프로젝트 음원", "プロジェクトの音源"),
+    "Prepared ACB/AWB (advanced)": ("준비된 ACB/AWB 파일 (고급)", "用意したACB/AWBファイル（上級者向け）"),
+    "This version can register only the original audio or prepared ACB/AWB files.": (
+        "이 버전에서는 원곡 음원 또는 ACB/AWB 파일만 쓸 수 있습니다.", "このバージョンでは原曲の音源かACB/AWBファイルだけを使えます。"),
+    "This project has no soundtrack.": ("이 프로젝트에는 음원이 없습니다.", "このプロジェクトには音源がありません。"),
+    "BPM": ("BPM", "BPM"),
+    "First beat (s)": ("첫 박 (초)", "最初の拍（秒）"),
+    "Preview start (s)": ("미리듣기 시작 (초)", "試聴の開始（秒）"),
+    "The soundtrack offset ({offset} s) is applied to the registered audio.": (
+        "음원 오프셋({offset}초)을 등록할 음원에 반영합니다.", "音源オフセット（{offset}秒）を登録する音源に反映します。"),
+    "What reaches the game": ("게임 반영 점검", "ゲームへの反映チェック"),
+    "Timeline unchanged: the original MV plays.": ("타임라인 변경 없음: 원래 MV가 재생됩니다.", "タイムラインの変更なし：元のMVが再生されます。"),
+    "No native timeline: the base MV's timeline plays unchanged.": (
+        "게임용 타임라인이 없는 프로젝트라 기본 MV의 타임라인이 그대로 재생됩니다.",
+        "ゲーム用タイムラインがないプロジェクトなので、ベースMVのタイムラインがそのまま再生されます。"),
+    "Camera: {count} shots edited": ("카메라 {count}컷 수정", "カメラ{count}カットを編集"),
+    "Camera: {count} shots edited (follow camera included)": (
+        "카메라 {count}컷 수정 (팔로우 카메라 포함)", "カメラ{count}カットを編集（フォローカメラを含む）"),
+    "Values: {values} · clip timing: {timing}": (
+        "조명·효과 값 {values}개 · 클립 타이밍 {timing}개", "照明・効果の値{values}件・クリップのタイミング{timing}件"),
+    "Applied on Android and iOS": ("Android · iOS 모두 적용", "AndroidとiOSの両方に反映"),
+    "Applied on {platform}": ("{platform}에 적용", "{platform}に反映"),
+    "Download (about {size} MB)": ("내려받기 (약 {size} MB)", "ダウンロード（約{size} MB）"),
+    "No {platform} original": ("{platform} 원본 없음", "{platform}の元データなし"),
+    "{platform} has no original in this region: it plays the base MV.": (
+        "이 지역에는 {platform} 원본이 없어 기본 MV가 재생됩니다.", "この地域には{platform}の元データがないため、ベースMVが再生されます。"),
+    "Not in the game:": ("게임에 들어가지 않음:", "ゲームには入らないもの："),
+    "Checking what reaches the game…": ("게임 반영 점검 중…", "ゲームへの反映をチェック中…"),
+    "Open this panel to check what reaches the game.": (
+        "이 패널을 열면 게임에 반영되는 내용을 점검합니다.", "このパネルを開くとゲームに反映される内容をチェックします。"),
+    "Region: {region}": ("지역: {region}", "地域：{region}"),
+    "New song": ("새 곡", "新しい曲"),
+    "Update {title} ({id})": ("{title} ({id}) 업데이트", "{title}（{id}）を更新"),
+    "Register as": ("등록 대상", "登録先"),
+    "Songs registered from this base MV: {songs}": ("이 기본 MV로 등록한 곡이 있습니다: {songs}", "このベースMVで登録した曲があります：{songs}"),
+    "Not chosen": ("선택 안 함", "未選択"),
+    "Search MV": ("MV 검색", "MVを検索"),
+    "Use this base MV": ("이 MV를 기본 MV로 사용", "このMVをベースにする"),
+    "Continue": ("계속", "続ける"),
+    "iOS will play the original MV. Continue?": ("iOS에서는 원래 MV가 재생됩니다. 계속할까요?", "iOSでは元のMVが再生されます。続けますか？"),
+    "Android will play the original MV. Continue?": (
+        "Android에서는 원래 MV가 재생됩니다. 계속할까요?", "Androidでは元のMVが再生されます。続けますか？"),
+    "Android and iOS will play the original MV. Continue?": (
+        "Android와 iOS 모두 원래 MV가 재생됩니다. 계속할까요?", "AndroidとiOSの両方で元のMVが再生されます。続けますか？"),
+    "Preparing the project": ("프로젝트 준비 중", "プロジェクトを準備中"),
+    "Decoding the soundtrack": ("음원 읽는 중", "音源を読み込み中"),
+    "Registered '{title}' ({id}).": ("'{title}'({id})를 등록했습니다.", "「{title}」（{id}）を登録しました。"),
+    "Updated '{title}' ({id}).": ("'{title}'({id})를 업데이트했습니다.", "「{title}」（{id}）を更新しました。"),
+    "Removed '{title}' ({id}).": ("'{title}'({id})를 삭제했습니다.", "「{title}」（{id}）を削除しました。"),
+    "No changes to apply.": ("바뀐 내용이 없습니다.", "変更はありません。"),
+    "The game server was restarted.": ("게임 서버를 다시 시작했습니다.", "ゲームサーバーを再起動しました。"),
+    "The game server restarts when this job finishes.": ("작업이 끝나면 게임 서버를 다시 시작합니다.", "処理が終わるとゲームサーバーを再起動します。"),
+    "Restart the game server to apply it.": ("게임 서버를 다시 시작해야 적용됩니다.", "反映するにはゲームサーバーを再起動してください。"),
+    "The game server was stopped. Start it again.": ("게임 서버를 멈췄습니다. 다시 시작하세요.", "ゲームサーバーを停止しました。もう一度起動してください。"),
+    "In game: Live → song list → {title} → MV": (
+        "게임: 라이브 → 곡 목록 → {title} → MV 버튼", "ゲーム：ライブ → 楽曲一覧 → {title} → MVボタン"),
+    "Registered MV-only songs ({count})": ("등록한 MV 전용 곡 ({count})", "登録したMV専用曲（{count}）"),
+    "No MV-only songs are registered in this region.": ("이 지역에 등록한 MV 전용 곡이 없습니다.", "この地域に登録したMV専用曲はありません。"),
+    "Updated {date}": ("{date} 수정", "{date} 更新"),
+    "Not visible in the game (no Advanced chart)": ("게임에 보이지 않음 (상급 채보 없음)", "ゲームに表示されません（上級の譜面なし）"),
+    "Base MV unknown": ("기본 MV를 알 수 없음", "ベースMVが不明"),
+    "Original MV on iOS": ("iOS 원본 MV", "iOSは元のMV"),
+    "Original MV on Android": ("Android 원본 MV", "Androidは元のMV"),
+    "Open": ("열기", "開く"),
+    "Fix": ("고치기", "修正"),
+    "Delete": ("삭제", "削除"),
+    "Delete '{title}'?": ("'{title}'를 삭제할까요?", "「{title}」を削除しますか？"),
+    ("This deletes the song, its jacket, audio and timeline files, and every player's MV deck, play records and playlist "
+     "entries for it. A backup is made first, and the game server stops for a moment."): (
+        "곡, 재킷, 음원, 타임라인 파일과 모든 플레이어의 이 곡 MV 덱·플레이 기록·플레이리스트 항목을 지웁니다. "
+        "지우기 전에 백업을 만들고, 게임 서버를 잠시 멈춥니다.",
+        "曲、ジャケット、音源、タイムラインのファイルと、全プレイヤーのこの曲のMVデッキ・プレイ記録・プレイリスト項目を削除します。"
+        "削除の前にバックアップを作り、ゲームサーバーを一時停止します。"),
+    "Player records to delete: {count}": ("지울 플레이어 기록: {count}개", "削除するプレイヤー記録：{count}件"),
+    "Advanced: replace charts": ("고급: 채보 바꾸기", "上級者向け：譜面の差し替え"),
+    "Replace the placeholder Advanced chart with your own, or add other difficulties.": (
+        "자리 표시용 상급 채보를 직접 만든 채보로 바꾸거나 다른 난이도를 추가합니다.",
+        "仮の上級譜面を自作の譜面に差し替えたり、ほかの難易度を追加したりします。"),
+    "This browser cannot open this audio format. Convert it to WAV and import it again.": (
+        "이 브라우저에서 이 음원 형식을 열 수 없습니다. WAV로 바꿔서 가져오세요.",
+        "このブラウザーではこの音源の形式を開けません。WAVに変換して読み込み直してください。"),
+    "The project soundtrack is no longer available. Import it again.": (
+        "프로젝트 음원을 더 이상 찾을 수 없습니다. 다시 가져오세요.", "プロジェクトの音源が見つかりません。読み込み直してください。"),
+    "The soundtrack offset leaves no audio to register.": (
+        "음원 오프셋 때문에 등록할 음원이 남지 않습니다.", "音源オフセットのため、登録する音源が残りません。"),
+    "The converted audio is empty or larger than 96 MiB.": (
+        "변환한 음원이 비어 있거나 96 MiB보다 큽니다.", "変換した音源が空か、96 MiBを超えています。"),
+    "MV registration progress is unavailable. Reopen this page.": (
+        "등록 진행 상황을 받을 수 없습니다. 이 페이지를 다시 여세요.", "登録の進行状況を受け取れません。このページを開き直してください。"),
+    "MV registration progress was interrupted. Check the songs list.": (
+        "등록 진행 상황이 끊겼습니다. 등록한 곡 목록을 확인하세요.", "登録の進行状況が途切れました。登録した曲の一覧を確認してください。"),
+    "MV registration was cancelled.": ("MV 등록을 취소했습니다.", "MVの登録をキャンセルしました。"),
+    "Removing the MV-only song was cancelled.": ("MV 전용 곡 삭제를 취소했습니다.", "MV専用曲の削除をキャンセルしました。"),
+    "Some editor changes are not baked into the timeline yet. Wait for them to finish, then register again.": (
+        "아직 타임라인에 반영되지 않은 편집이 있습니다. 끝날 때까지 기다린 뒤 다시 등록하세요.",
+        "まだタイムラインに反映されていない編集があります。終わるまで待ってから登録し直してください。"),
+    # Job stages
+    "Checking the base MV originals": ("기본 MV 원본 확인", "ベースMVの元データを確認"),
+    "Building the Android timeline": ("Android 타임라인 만드는 중", "Android用タイムラインを作成中"),
+    "Building the iOS timeline": ("iOS 타임라인 만드는 중", "iOS用タイムラインを作成中"),
+    "Converting the audio": ("음원 변환 중", "音源を変換中"),
+    "Building the preview audio": ("미리듣기 음원 만드는 중", "試聴用の音源を作成中"),
+    "Preparing the jacket": ("재킷 준비 중", "ジャケットを準備中"),
+    "Stopping the game server": ("게임 서버 정지", "ゲームサーバーを停止"),
+    "Writing to the game catalog": ("게임 목록에 쓰는 중", "ゲームの一覧に書き込み中"),
+    "Restarting the game server": ("게임 서버 다시 시작", "ゲームサーバーを再起動"),
+    "Removing the song from the game": ("게임에서 곡 지우는 중", "ゲームから曲を削除中"),
+    # Plan notes and registration errors (core/mv_studio_register.py)
+    "MV registration requires the Elichika server app.": (
+        "MV 등록에는 Elichika 서버 앱이 필요합니다.", "MVの登録にはElichikaサーバーアプリが必要です。"),
+    "Another MV registration or removal is running. Try again when it finishes.": (
+        "다른 MV 등록이나 삭제가 진행 중입니다. 끝난 뒤 다시 시도하세요.",
+        "ほかのMVの登録または削除を実行中です。終わってからもう一度お試しください。"),
+    "Choose the base MV.": ("기본 MV를 고르세요.", "ベースMVを選んでください。"),
+    "The base MV of this song is unknown. Only removal is available.": (
+        "이 곡의 기본 MV를 알 수 없습니다. 삭제만 할 수 있습니다.", "この曲のベースMVが不明です。削除のみできます。"),
+    ("The registered song this project was opened from was removed. Choose a stock base MV to register this "
+     "project."): (
+        "이 프로젝트를 연 등록 곡이 삭제되었습니다. 이 프로젝트를 등록하려면 게임의 원래 MV를 기본 MV로 고르세요.",
+        "このプロジェクトを開いた登録済みの曲は削除されました。このプロジェクトを登録するには、ゲームの元のMVをベースMVとして選んでください。"),
+    "This song was made from another base MV. Register the project as a new song.": (
+        "이 곡은 다른 기본 MV로 만들었습니다. 이 프로젝트는 새 곡으로 등록하세요.",
+        "この曲は別のベースMVから作られています。このプロジェクトは新しい曲として登録してください。"),
+    "The track structure changed, so the timeline cannot go into the game:": (
+        "트랙 구조가 바뀌어 게임에 넣을 수 없습니다:", "トラックの構成が変わったため、ゲームに入れられません："),
+    "The original MV timeline is unavailable. Reopen the original timeline before saving.": (
+        "원본 MV 타임라인을 찾을 수 없습니다. 원본 타임라인을 다시 연 뒤 저장하세요.",
+        "元のMVタイムラインが見つかりません。元のタイムラインを開き直してから保存してください。"),
+    "The project's timeline does not belong to this base MV.": (
+        "프로젝트의 타임라인이 이 기본 MV의 것이 아닙니다.", "プロジェクトのタイムラインはこのベースMVのものではありません。"),
+    "The base MV's original iOS timeline is not available. Allow the download, or register for Android only.": (
+        "기본 MV의 iOS 원본 타임라인이 없습니다. 내려받기를 허용하거나 Android에만 등록하세요.",
+        "ベースMVのiOS用の元タイムラインがありません。ダウンロードを許可するか、Androidだけに登録してください。"),
+    "The base MV's original Android timeline is not available. Allow the download, or register for iOS only.": (
+        "기본 MV의 Android 원본 타임라인이 없습니다. 내려받기를 허용하거나 iOS에만 등록하세요.",
+        "ベースMVのAndroid用の元タイムラインがありません。ダウンロードを許可するか、iOSだけに登録してください。"),
+    ("The edits could not be baked into the iOS original MV. Register for Android only to play the original MV on "
+     "iOS."): (
+        "편집 내용을 iOS 원본 MV에 넣지 못했습니다. iOS에서 원래 MV가 재생되도록 Android에만 등록하세요.",
+        "編集内容をiOSの元のMVに反映できませんでした。iOSでは元のMVが再生されるよう、Androidだけに登録してください。"),
+    ("The edits could not be baked into the Android original MV. Register for iOS only to play the original MV on "
+     "Android."): (
+        "편집 내용을 Android 원본 MV에 넣지 못했습니다. Android에서 원래 MV가 재생되도록 iOS에만 등록하세요.",
+        "編集内容をAndroidの元のMVに反映できませんでした。Androidでは元のMVが再生されるよう、iOSだけに登録してください。"),
+    "The Android and iOS timelines came out different, so nothing was registered.": (
+        "Android와 iOS 타임라인이 서로 다르게 만들어져 등록하지 않았습니다.",
+        "AndroidとiOSのタイムラインが異なる結果になったため、登録しませんでした。"),
+    "The project changed after the last check. Check it again, then register.": (
+        "마지막 점검 뒤에 프로젝트가 바뀌었습니다. 다시 점검한 다음 등록하세요.",
+        "前回のチェックの後にプロジェクトが変わりました。もう一度チェックしてから登録してください。"),
+    "{platform}: the registered timeline stays": ("{platform}: 등록된 타임라인을 그대로 둡니다", "{platform}：登録済みのタイムラインのままです"),
+    "Register for Android only": ("Android에만 등록", "Androidだけに登録"),
+    "Register for iOS only": ("iOS에만 등록", "iOSだけに登録"),
+    "{platform}: left out of this registration, it plays the original MV": (
+        "{platform}: 이번 등록에서 빠지며 원래 MV가 재생됩니다", "{platform}：今回の登録から外れ、元のMVが再生されます"),
+    "Backup: {path}": ("백업: {path}", "バックアップ：{path}"),
+    "Enter a song title between 1 and 160 characters.": ("곡 제목을 1~160자로 입력하세요.", "曲のタイトルを1〜160文字で入力してください。"),
+    "Enter a credit of at most 200 characters on one line.": (
+        "크레디트는 한 줄로 200자 이내로 입력하세요.", "クレジットは1行・200文字以内で入力してください。"),
+    "Choose Android, iOS or both.": ("Android, iOS 또는 둘 다 고르세요.", "Android、iOS、または両方を選んでください。"),
+    "The MV registration request is invalid.": ("MV 등록 요청이 올바르지 않습니다.", "MVの登録リクエストが正しくありません。"),
+    "Choose a new song, or a registered song to update.": (
+        "새 곡 또는 업데이트할 등록 곡을 고르세요.", "新しい曲か、更新する登録済みの曲を選んでください。"),
+    "A new song has no registered part to keep.": ("새 곡에는 유지할 등록 내용이 없습니다.", "新しい曲には保持する登録内容がありません。"),
+    "Choose the song audio.": ("곡 음원을 고르세요.", "曲の音源を選んでください。"),
+    "Enter the BPM and the first beat of the project audio.": (
+        "프로젝트 음원의 BPM과 첫 박을 입력하세요.", "プロジェクトの音源のBPMと最初の拍を入力してください。"),
+    "Enter a BPM between 1 and 999 and a first beat of 0 seconds or more.": (
+        "BPM은 1~999, 첫 박은 0초 이상으로 입력하세요.", "BPMは1〜999、最初の拍は0秒以上で入力してください。"),
+    "Enter a preview start of 0 seconds or more.": ("미리듣기 시작은 0초 이상으로 입력하세요.", "試聴の開始は0秒以上で入力してください。"),
+    "The converted project audio is no longer available. Register again.": (
+        "변환한 프로젝트 음원을 더 이상 찾을 수 없습니다. 다시 등록하세요.",
+        "変換したプロジェクトの音源が見つかりません。もう一度登録してください。"),
+    "The base song's audio is not available locally. Allow the download, or keep the original audio.": (
+        "기본 MV 곡의 음원이 이 기기에 없습니다. 내려받기를 허용하거나 원곡 음원을 그대로 쓰세요.",
+        "ベースMVの曲の音源がこの端末にありません。ダウンロードを許可するか、原曲の音源のまま使ってください。"),
+    "Choose the jacket.": ("재킷을 고르세요.", "ジャケットを選んでください。"),
+    "The jacket area must be a square inside the image.": (
+        "재킷 영역은 이미지 안의 정사각형이어야 합니다.", "ジャケットの範囲は画像内の正方形にしてください。"),
+    "The jacket must be a PNG, JPEG or another image this app can open.": (
+        "재킷은 PNG, JPEG 등 이 앱이 열 수 있는 이미지여야 합니다.", "ジャケットはPNGやJPEGなど、このアプリで開ける画像にしてください。"),
+    "The jacket image is larger than this app can open.": (
+        "재킷 이미지가 너무 커서 이 앱에서 열 수 없습니다.", "ジャケット画像が大きすぎて、このアプリでは開けません。"),
+    "Track settings do not reach the game:": ("트랙 설정은 게임에 반영되지 않습니다:", "トラックの設定はゲームに反映されません："),
+    "These edited values are preview-only:": ("이 편집 값은 미리보기에만 적용됩니다:", "これらの編集値はプレビューのみに反映されます："),
+    "Imported stage, effect or prop models": ("가져온 무대·효과·소품 모델", "読み込んだステージ・エフェクト・小物のモデル"),
+    "Imported performer models": ("가져온 출연자 모델", "読み込んだ出演者のモデル"),
+    "Member positions": ("멤버 위치", "メンバーの位置"),
+    "Pinned costumes (choose outfits in the game's MV deck)": (
+        "의상 고정 (의상은 게임의 MV 덱에서 고르세요)", "衣装の固定（衣装はゲームのMVデッキで選んでください）"),
+    "MV quality preview settings": ("MV 그래픽 미리보기 설정", "MVグラフィックのプレビュー設定"),
+    "Editor changes that could not be baked:": ("타임라인에 반영하지 못한 편집:", "タイムラインに反映できなかった編集："),
+    "The follow camera is baked for the preview members' heights.": (
+        "팔로우 카메라는 미리보기 멤버 키 기준으로 만들어집니다.", "フォローカメラはプレビューのメンバーの身長を基準に作られます。"),
+    "The audio is {seconds} s longer than the MV. The last scene holds until the music ends.": (
+        "음원이 MV보다 {seconds}초 깁니다. 마지막 장면이 멈춘 채로 끝까지 재생됩니다.",
+        "音源がMVより{seconds}秒長いです。最後の場面が止まったまま最後まで再生されます。"),
+    "The audio is {seconds} s shorter than the MV. The MV ends with the music.": (
+        "음원이 MV보다 {seconds}초 짧습니다. 음원이 끝나면 MV도 끝납니다.", "音源がMVより{seconds}秒短いです。音源が終わるとMVも終わります。"),
+    "The soundtrack offset applies only to the project audio. The original audio starts with the MV.": (
+        "음원 오프셋은 프로젝트 음원에만 적용됩니다. 원곡 음원은 MV와 함께 시작합니다.",
+        "音源オフセットはプロジェクトの音源にだけ反映されます。原曲の音源はMVと同時に始まります。"),
+    "The edits are counted once the original MV is available. Allow the download to bake them.": (
+        "원본 MV를 받은 뒤 편집을 셉니다. 반영하려면 내려받기를 허용하세요.",
+        "元のMVを取得してから編集を数えます。反映するにはダウンロードを許可してください。"),
+    # Registration routes (webtools/server.py)
+    "Send the converted audio as a WAV file.": ("변환한 음원을 WAV 파일로 보내세요.", "変換した音源をWAVファイルとして送ってください。"),
+    "The converted audio upload was interrupted.": ("변환한 음원 업로드가 중간에 끊겼습니다.", "変換した音源のアップロードが途中で途切れました。"),
+    "Open 3D MV at the local app address before changing the game catalog.": (
+        "게임 목록을 바꾸려면 이 기기의 앱 주소에서 3D MV를 여세요.",
+        "ゲームの一覧を変更するには、この端末のアプリのアドレスで3D MVを開いてください。"),
+    "Open the editor from this app before saving changes.": (
+        "변경 내용을 저장하려면 이 앱에서 편집기를 여세요.", "変更を保存するには、このアプリからエディターを開いてください。"),
+    "The MV request failed.": ("MV 요청에 실패했습니다.", "MVのリクエストに失敗しました。"),
+    "Invalid editing request size.": ("편집 요청 크기가 올바르지 않습니다.", "編集リクエストのサイズが正しくありません。"),
+    "The editing request is too large or empty.": ("편집 요청이 너무 크거나 비어 있습니다.", "編集リクエストが大きすぎるか、空です。"),
+    "Unsupported editing request.": ("지원하지 않는 편집 요청입니다.", "対応していない編集リクエストです。"),
+    "Choose a valid MV search.": ("올바른 MV 검색어를 입력하세요.", "正しいMVの検索条件を入力してください。"),
+    "Provide a matching chart and difficulty template.": (
+        "맞는 채보와 난이도 템플릿을 넣어 주세요.", "対応する譜面と難易度テンプレートを指定してください。"),
+    "Database maintenance is busy. Retry after the current operation finishes.": (
+        "다른 데이터베이스 작업이 진행 중입니다. 끝난 뒤 다시 시도하세요.",
+        "ほかのデータベース処理を実行中です。終わってからもう一度お試しください。"),
+    "Database maintenance could not start safely. Retry after checking the runtime.": (
+        "데이터베이스 작업을 안전하게 시작하지 못했습니다. 실행 환경을 확인한 뒤 다시 시도하세요.",
+        "データベース処理を安全に開始できませんでした。実行環境を確認してからもう一度お試しください。"),
+    # Native export refusals (core/mv_studio_timeline.py)
+    "Native export can edit existing tracks in their original order only.": (
+        "게임용 내보내기는 기존 트랙을 원래 순서 그대로만 편집할 수 있습니다.",
+        "ゲーム用の書き出しでは、既存のトラックを元の順番のまま編集することしかできません。"),
+    "Track identity, binding, and original metadata are read-only in native exports.": (
+        "게임용 내보내기에서 트랙 식별자, 연결 대상, 원래 메타데이터는 바꿀 수 없습니다.",
+        "ゲーム用の書き出しでは、トラックの識別子・バインド先・元のメタデータは変更できません。"),
+    "Native export can edit existing clip slots in their original order only.": (
+        "게임용 내보내기는 기존 클립 칸을 원래 순서 그대로만 편집할 수 있습니다.",
+        "ゲーム用の書き出しでは、既存のクリップ枠を元の順番のまま編集することしかできません。"),
+    "The revision cannot replace a native clip's original identities or fields.": (
+        "편집으로 원래 클립의 식별자나 필드를 바꿀 수 없습니다.", "編集で元のクリップの識別子やフィールドを置き換えることはできません。"),
+    "The revision cannot change which native clip fields are editable.": (
+        "편집으로 원래 클립의 편집 가능한 필드를 바꿀 수 없습니다.", "編集で元のクリップの編集可能なフィールドを変えることはできません。"),
+    "Change the original clip timings to set the native timeline duration.": (
+        "게임용 타임라인 길이를 바꾸려면 원래 클립의 타이밍을 바꾸세요.",
+        "ゲーム用タイムラインの長さを変えるには、元のクリップのタイミングを変えてください。"),
+    "An edited clip uses a shared or external playable asset. Edit its timing only.": (
+        "편집한 클립이 공유되거나 외부에 있는 재생 에셋을 씁니다. 타이밍만 편집하세요.",
+        "編集したクリップは共有または外部の再生アセットを使っています。タイミングだけを編集してください。"),
+    "This camera animation is shared or external. Edit its timing only.": (
+        "이 카메라 애니메이션은 공유되거나 외부에 있습니다. 타이밍만 편집하세요.",
+        "このカメラアニメーションは共有または外部のものです。タイミングだけを編集してください。"),
+    "Camera point edits require an untrimmed, full native shot with unchanged sample times.": (
+        "카메라 포인트를 편집하려면 잘리지 않은 원래 컷 전체와 바뀌지 않은 샘플 시간이 필요합니다.",
+        "カメラポイントの編集には、切り詰めていない元のカット全体と変わっていないサンプル時刻が必要です。"),
+    "Keep the original camera point count and times.": (
+        "카메라 포인트의 원래 개수와 시간을 유지하세요.", "カメラポイントの元の数と時刻を保ってください。"),
+    "The native copy changed unrelated Unity objects or resources.": (
+        "게임용 사본에서 관계없는 Unity 오브젝트나 리소스가 바뀌었습니다.",
+        "ゲーム用のコピーで無関係なUnityオブジェクトまたはリソースが変わりました。"),
+    "A native timeline edit did not survive serialization.": (
+        "게임용 타임라인 편집이 저장 과정에서 유지되지 않았습니다.", "ゲーム用タイムラインの編集が保存の過程で保たれませんでした。"),
+    "Timeline diagnostics are read-only in native exports.": (
+        "게임용 내보내기에서 타임라인 진단 정보는 바꿀 수 없습니다.", "ゲーム用の書き出しでは、タイムラインの診断情報は変更できません。"),
+    "The revision no longer matches the original timeline.": (
+        "편집 내용이 원래 타임라인과 더 이상 맞지 않습니다.", "編集内容が元のタイムラインと一致しなくなりました。"),
+    # Elichika store (mv_studio_live.MESSAGES)
+    "Choose a native file of the expected type.": ("올바른 형식의 게임 파일을 고르세요.", "正しい形式のゲーム用ファイルを選んでください。"),
+    "The selected file is empty, too large or unreadable.": (
+        "선택한 파일이 비어 있거나 너무 크거나 읽을 수 없습니다.", "選んだファイルが空か、大きすぎるか、読み込めません。"),
+    "The selected file changed during registration. Try again.": (
+        "등록하는 동안 선택한 파일이 바뀌었습니다. 다시 시도하세요.", "登録中に選んだファイルが変わりました。もう一度お試しください。"),
+    "Provide each native timeline as an unpacked UnityFS bundle.": (
+        "게임용 타임라인은 압축을 푼 UnityFS 번들로 넣어 주세요.", "ゲーム用タイムラインは展開済みのUnityFSバンドルで指定してください。"),
+    "The native timeline exceeds the supported file size.": (
+        "게임용 타임라인이 지원하는 파일 크기를 넘습니다.", "ゲーム用タイムラインが対応するファイルサイズを超えています。"),
+    "The jacket must be a PNG or JPEG image of exactly 400x400 pixels.": (
+        "재킷은 정확히 400x400 픽셀인 PNG 또는 JPEG 이미지여야 합니다.", "ジャケットはちょうど400x400ピクセルのPNGまたはJPEG画像にしてください。"),
+    "The jacket image must be at most 2 MiB.": ("재킷 이미지는 2 MiB 이하여야 합니다.", "ジャケット画像は2 MiB以下にしてください。"),
+    "Provide the song audio as an ACB cue sheet with its optional AWB bank.": (
+        "곡 음원은 ACB 큐 시트와 (필요하면) AWB 뱅크로 넣어 주세요.", "曲の音源はACBキューシートと（必要なら）AWBバンクで指定してください。"),
+    "The audio cue sheet or bank is empty or too large.": (
+        "음원 큐 시트나 뱅크가 비어 있거나 너무 큽니다.", "音源のキューシートまたはバンクが空か、大きすぎます。"),
+    "Provide an ACB containing one playable cue with the same name as the sheet.": (
+        "시트와 같은 이름의 재생 가능한 큐가 하나 든 ACB를 넣어 주세요.", "シートと同じ名前の再生できるキューが1つ入ったACBを指定してください。"),
+    "Provide the matching AWB for a streaming cue, or only the ACB for an embedded cue.": (
+        "스트리밍 큐에는 짝이 맞는 AWB를, 내장 큐에는 ACB만 넣어 주세요.",
+        "ストリーミングのキューには対応するAWBを、埋め込みのキューにはACBだけを指定してください。"),
+    "The audio cue could not be read or decoded.": ("음원 큐를 읽거나 디코딩하지 못했습니다.", "音源のキューを読み込めないか、デコードできませんでした。"),
+    "Choose the ACB cue sheet for this AWB bank.": ("이 AWB 뱅크의 ACB 큐 시트를 고르세요.", "このAWBバンクに対応するACBキューシートを選んでください。"),
+    "The CRI sheet must use an unused music_XXXX game cue name.": (
+        "CRI 시트 이름은 쓰이지 않은 music_XXXX 게임 큐 이름이어야 합니다.", "CRIシート名は未使用のmusic_XXXX形式のゲームのキュー名にしてください。"),
+    "The timeline must use the native format of its selected platform.": (
+        "타임라인은 선택한 플랫폼의 게임 형식이어야 합니다.", "タイムラインは選んだプラットフォームのゲーム形式にしてください。"),
+    "The selected Unity file has no unique native timeline container.": (
+        "선택한 Unity 파일에 게임용 타임라인 컨테이너가 하나만 있지 않습니다.",
+        "選んだUnityファイルにゲーム用タイムラインのコンテナーが1つだけではありません。"),
+    "The selected Unity timeline container is empty.": ("선택한 Unity 타임라인 컨테이너가 비어 있습니다.", "選んだUnityタイムラインのコンテナーが空です。"),
+    "The native timeline and its dependencies must match the selected stage template.": (
+        "게임용 타임라인과 그 의존 파일이 선택한 기본 무대와 맞아야 합니다.",
+        "ゲーム用タイムラインとその依存ファイルは、選んだベースのステージと一致する必要があります。"),
+    "The timeline changes a serialized game type used by the stage.": (
+        "타임라인이 무대가 쓰는 게임 데이터 형식을 바꿉니다.", "タイムラインがステージで使うゲームのデータ形式を変えています。"),
+    "The timeline changes native container, script or resource data.": (
+        "타임라인이 게임 컨테이너, 스크립트 또는 리소스 데이터를 바꿉니다.", "タイムラインがゲームのコンテナー・スクリプト・リソースのデータを変えています。"),
+    "The timeline introduces a reference outside the selected stage template.": (
+        "타임라인이 선택한 기본 무대 밖을 참조합니다.", "タイムラインが選んだベースのステージの外を参照しています。"),
+    "The native Unity timeline could not be read against the selected stage template.": (
+        "게임용 Unity 타임라인을 선택한 기본 무대와 비교해 읽지 못했습니다.",
+        "ゲーム用Unityタイムラインを、選んだベースのステージと照らし合わせて読み込めませんでした。"),
+    "A game catalog is missing the base MV's native timeline pack.": (
+        "게임 목록에 기본 MV의 타임라인 팩이 없습니다.", "ゲームの一覧にベースMVのタイムラインパックがありません。"),
+    "Install the base MV's original timeline for this platform locally, or allow the download, to verify the edit.": (
+        "편집을 확인하려면 이 플랫폼의 기본 MV 원본 타임라인을 기기에 받아 두거나 내려받기를 허용하세요.",
+        "編集を確認するには、このプラットフォーム用のベースMVの元タイムラインを端末に用意するか、ダウンロードを許可してください。"),
+    "The supplied original timeline does not match the base MV's catalogued size.": (
+        "받은 원본 타임라인이 게임 목록에 적힌 기본 MV의 크기와 다릅니다.",
+        "取得した元タイムラインが、ゲームの一覧にあるベースMVのサイズと一致しません。"),
+    "Provide a native timeline for Android, iOS or both.": (
+        "Android, iOS 또는 둘 다의 게임용 타임라인을 넣어 주세요.", "Android、iOS、または両方のゲーム用タイムラインを指定してください。"),
+    "A game catalog is missing the base MV's native timeline.": (
+        "게임 목록에 기본 MV의 타임라인이 없습니다.", "ゲームの一覧にベースMVのタイムラインがありません。"),
+    "Select the GL or JP catalog.": ("GL 또는 JP 목록을 고르세요.", "GLまたはJPの一覧を選んでください。"),
+    "The region's game databases are incomplete.": ("이 지역의 게임 데이터베이스가 완전하지 않습니다.", "この地域のゲームデータベースがそろっていません。"),
+    "Close the database editor so MV Studio can update all catalogs in one transaction.": (
+        "MV 스튜디오가 모든 목록을 한 번에 고칠 수 있도록 데이터베이스 편집기를 닫으세요.",
+        "MVスタジオがすべての一覧を一度に更新できるよう、データベースエディターを閉じてください。"),
+    "The installed game database layout does not support this MV.": (
+        "설치된 게임 데이터베이스 구조가 이 MV를 지원하지 않습니다.", "インストール済みのゲームデータベースの構造がこのMVに対応していません。"),
+    "Stop the game server before removing an MV-only song.": (
+        "MV 전용 곡을 지우기 전에 게임 서버를 멈추세요.", "MV専用曲を削除する前にゲームサーバーを停止してください。"),
+    "Provide the original timelines per platform.": ("원본 타임라인을 플랫폼별로 넣어 주세요.", "元のタイムラインをプラットフォームごとに指定してください。"),
+    "Name the preview cue sheet after the music cue sheet with _SABI.": (
+        "미리듣기 큐 시트 이름은 음악 큐 시트 이름 뒤에 _SABI를 붙이세요.", "試聴用キューシートの名前は、曲のキューシート名の後ろに_SABIを付けてください。"),
+    "Fingerprints must be short text values for android, ios, audio or jacket.": (
+        "지문 값은 android, ios, audio, jacket용 짧은 문자열이어야 합니다.", "フィンガープリントはandroid・ios・audio・jacket用の短い文字列にしてください。"),
+    "The MV-only song ID is outside this region's range.": (
+        "MV 전용 곡 ID가 이 지역의 범위를 벗어납니다.", "MV専用曲のIDがこの地域の範囲外です。"),
+    "No free MV-only song ID is left in this region.": ("이 지역에 남은 MV 전용 곡 ID가 없습니다.", "この地域で使えるMV専用曲のIDが残っていません。"),
+    "The base MV must be a stock 3D song with a song cue and formation.": (
+        "기본 MV는 곡 음원과 멤버 구성이 있는 게임 원래의 3D 곡이어야 합니다.",
+        "ベースMVは、曲の音源とメンバー編成があるゲーム本来の3D曲にしてください。"),
+    "Choose a stock game MV as the base, not a registered MV-only song.": (
+        "기본 MV로는 등록한 MV 전용 곡이 아닌 게임 원래의 MV를 고르세요.",
+        "ベースMVには、登録したMV専用曲ではなくゲーム本来のMVを選んでください。"),
+    "The selected 3D timeline does not belong to the base song.": (
+        "선택한 3D 타임라인이 기본 곡의 것이 아닙니다.", "選んだ3Dタイムラインはベースの曲のものではありません。"),
+    "An MV position refers to an unknown stage.": ("MV 위치가 알 수 없는 무대를 가리킵니다.", "MVの位置が不明なステージを指しています。"),
+    "Select a song registered by MV Studio.": ("MV 스튜디오로 등록한 곡을 고르세요.", "MVスタジオで登録した曲を選んでください。"),
+    "A game catalog is missing a complete package of the base MV.": (
+        "게임 목록에 기본 MV의 패키지가 온전히 있지 않습니다.", "ゲームの一覧にベースMVのパッケージがそろっていません。"),
+    "A game catalog is missing its main package.": ("게임 목록에 main 패키지가 없습니다.", "ゲームの一覧にmainパッケージがありません。"),
+    "A game catalog is missing the base song's native cue sheet.": (
+        "게임 목록에 기본 곡의 큐 시트가 없습니다.", "ゲームの一覧にベースの曲のキューシートがありません。"),
+    "The new audio must keep the song's existing cue sheet names.": (
+        "새 음원은 곡의 기존 큐 시트 이름을 그대로 써야 합니다.", "新しい音源は曲の既存のキューシート名をそのまま使う必要があります。"),
+    "The selected music ID or cue already belongs to a song in this region.": (
+        "선택한 음악 ID나 큐를 이 지역의 다른 곡이 이미 쓰고 있습니다.", "選んだ音楽IDまたはキューは、この地域のほかの曲がすでに使っています。"),
+    "The chart template has more stage effects than MV Studio can copy.": (
+        "채보 템플릿의 스테이지 효과가 MV 스튜디오가 복사할 수 있는 수보다 많습니다.",
+        "譜面テンプレートのステージ効果が、MVスタジオでコピーできる数より多いです。"),
+    "The song's placeholder chart ID is already in use.": (
+        "이 곡의 자리 표시용 채보 ID를 이미 쓰고 있습니다.", "この曲の仮の譜面IDはすでに使われています。"),
+    "No playable Advanced chart was found to use as this song's placeholder.": (
+        "이 곡의 자리 표시용으로 쓸 수 있는 상급 채보를 찾지 못했습니다.", "この曲の仮の譜面として使える上級の譜面が見つかりませんでした。"),
+    "The placeholder chart template could not be read.": ("자리 표시용 채보 템플릿을 읽지 못했습니다.", "仮の譜面テンプレートを読み込めませんでした。"),
+    "The requested MV-only song ID is already in use.": ("요청한 MV 전용 곡 ID를 이미 쓰고 있습니다.", "指定したMV専用曲のIDはすでに使われています。"),
+    "Choose the update options explicitly.": ("업데이트 옵션을 직접 고르세요.", "更新のオプションを明示的に選んでください。"),
+    "The registered song is incomplete in the game catalog. Remove it and register again.": (
+        "등록한 곡이 게임 목록에 온전히 있지 않습니다. 삭제한 뒤 다시 등록하세요.",
+        "登録した曲がゲームの一覧にそろっていません。削除してから登録し直してください。"),
+    "The removal review is out of date. Review the song again before removing it.": (
+        "삭제 확인 내용이 오래되었습니다. 곡을 다시 확인한 뒤 삭제하세요.", "削除の確認内容が古くなっています。曲をもう一度確認してから削除してください。"),
+    "A live in progress uses this song. Finish the live in the game, then try again.": (
+        "플레이 중인 라이브가 이 곡을 쓰고 있습니다. 게임에서 라이브를 끝낸 뒤 다시 시도하세요.",
+        "プレイ中のライブがこの曲を使っています。ゲームでライブを終えてから、もう一度お試しください。"),
+    "A profile showcase or ranking uses this song. Change it to another song in the game, then try again.": (
+        "프로필 쇼케이스나 랭킹이 이 곡을 쓰고 있습니다. 게임에서 다른 곡으로 바꾼 뒤 다시 시도하세요.",
+        "プロフィールの展示またはランキングがこの曲を使っています。ゲームでほかの曲に変えてから、もう一度お試しください。"),
+    ("The song was removed, but players' records for it could not be cleaned. The game ignores records of songs it no "
+     "longer has."): (
+        "곡은 지웠지만 플레이어 기록을 정리하지 못했습니다. 게임은 없는 곡의 기록을 무시합니다.",
+        "曲は削除しましたが、プレイヤーの記録を整理できませんでした。ゲームは存在しない曲の記録を無視します。"),
+    ("The change was saved, but some files it no longer needs could not be moved or deleted. The game does not use "
+     "them."): (
+        "변경은 저장했지만 더는 필요 없는 일부 파일을 옮기거나 지우지 못했습니다. 게임은 이 파일을 쓰지 않습니다.",
+        "変更は保存しましたが、不要になった一部のファイルを移動または削除できませんでした。ゲームはこれらのファイルを使いません。"),
+    "The change was saved, but older MV Studio backups could not be deleted.": (
+        "변경은 저장했지만 오래된 MV 스튜디오 백업을 지우지 못했습니다.", "変更は保存しましたが、古いMVスタジオのバックアップを削除できませんでした。"),
+    "Choose the exact source stage before installing a replacement timeline.": (
+        "대체 타임라인을 넣기 전에 원본 무대를 정확히 고르세요.", "差し替えタイムラインを入れる前に、元のステージを正確に選んでください。"),
+    "The chart exceeds the supported file size.": ("채보가 지원하는 파일 크기를 넘습니다.", "譜面が対応するファイルサイズを超えています。"),
+    "Provide a complete native stage chart, with its own note list.": (
+        "노트 목록이 들어 있는 완전한 게임용 채보를 넣어 주세요.", "ノーツの一覧を含む完全なゲーム用譜面を指定してください。"),
+    "The native chart must contain complete notes.": ("게임용 채보에 노트가 온전히 들어 있어야 합니다.", "ゲーム用譜面には完全なノーツが必要です。"),
+    "The native chart contains invalid appeal chances.": ("게임용 채보에 잘못된 어필 찬스가 있습니다.", "ゲーム用譜面に不正なアピールチャンスがあります。"),
+    "The native chart contains invalid note effects.": ("게임용 채보에 잘못된 노트 효과가 있습니다.", "ゲーム用譜面に不正なノーツ効果があります。"),
+    "The native chart contains invalid stage effects.": ("게임용 채보에 잘못된 스테이지 효과가 있습니다.", "ゲーム用譜面に不正なステージ効果があります。"),
+    "The native chart repeats an appeal chance or effect ID.": (
+        "게임용 채보에 어필 찬스나 효과 ID가 중복됩니다.", "ゲーム用譜面でアピールチャンスまたは効果のIDが重複しています。"),
+    "A chart note has an invalid timing, value or reference.": (
+        "채보 노트의 타이밍, 값 또는 참조가 잘못되었습니다.", "譜面のノーツのタイミング・値・参照が正しくありません。"),
+    "Provide one or more native chart files.": ("게임용 채보 파일을 하나 이상 넣어 주세요.", "ゲーム用譜面ファイルを1つ以上指定してください。"),
+    "Choose a game difficulty type for each chart.": ("채보마다 게임 난이도를 고르세요.", "譜面ごとにゲームの難易度を選んでください。"),
+    "A native chart needs a file and a gameplay template.": (
+        "게임용 채보에는 파일과 게임 플레이 템플릿이 필요합니다.", "ゲーム用譜面にはファイルとゲームプレイのテンプレートが必要です。"),
+    "Select an open gameplay template of the same difficulty type.": (
+        "같은 난이도의 열려 있는 게임 플레이 템플릿을 고르세요.", "同じ難易度の、開放済みのゲームプレイテンプレートを選んでください。"),
+    "A chart is already installed for that difficulty.": ("그 난이도에는 이미 채보가 들어 있습니다.", "その難易度にはすでに譜面が入っています。"),
+    "The stock game requires a type-30 chart to open the song's MV from its music list.": (
+        "게임 원래 클라이언트는 곡 목록에서 MV를 열려면 상급(30) 채보가 필요합니다.",
+        "ゲーム本来のクライアントでは、楽曲一覧からMVを開くには上級（30）の譜面が必要です。"),
+    "The gameplay template is missing its difficulty settings.": (
+        "게임 플레이 템플릿에 난이도 설정이 없습니다.", "ゲームプレイテンプレートに難易度の設定がありません。"),
+    "No free chart ID is left for that difficulty.": ("그 난이도에 쓸 수 있는 채보 ID가 남지 않았습니다.", "その難易度で使える譜面IDが残っていません。"),
+    # CRI HCA encoder and ACB/AWB writer (core/cri_hca_encode.py, core/cri_acb_write.py)
+    "The encoder needs 16-bit stereo PCM samples.": ("인코더에는 16비트 스테레오 PCM 샘플이 필요합니다.", "エンコーダーには16ビットのステレオPCMサンプルが必要です。"),
+    "The decoded audio does not have the input's length and channels.": (
+        "디코딩한 음원의 길이나 채널 수가 입력과 다릅니다.", "デコードした音源の長さまたはチャンネル数が入力と一致しません。"),
+    "The PCM samples must be int16 with shape (frames, channels).": (
+        "PCM 샘플은 (프레임, 채널) 모양의 int16이어야 합니다.", "PCMサンプルは(フレーム, チャンネル)の形のint16にしてください。"),
+    "The HCA key must be a nonzero 64-bit value.": ("HCA 키는 0이 아닌 64비트 값이어야 합니다.", "HCAキーは0以外の64ビット値にしてください。"),
+    "The HCA stream has no complete header.": ("HCA 스트림에 온전한 헤더가 없습니다.", "HCAストリームに完全なヘッダーがありません。"),
+    "The HCA stream has no HCA header.": ("HCA 스트림에 HCA 헤더가 없습니다.", "HCAストリームにHCAヘッダーがありません。"),
+    "The HCA header is truncated or fails its checksum.": (
+        "HCA 헤더가 잘렸거나 체크섬이 맞지 않습니다.", "HCAヘッダーが途中で切れているか、チェックサムが一致しません。"),
+    "The HCA header has no format or compression chunk.": (
+        "HCA 헤더에 형식 또는 압축 청크가 없습니다.", "HCAヘッダーにフォーマットまたは圧縮のチャンクがありません。"),
+    "The HCA header has no channels, sample rate or frame size.": (
+        "HCA 헤더에 채널 수, 샘플레이트 또는 프레임 크기가 없습니다.", "HCAヘッダーにチャンネル数・サンプルレート・フレームサイズがありません。"),
+    "The HCA encoder could not fit a frame.": ("HCA 인코더가 프레임을 크기에 맞추지 못했습니다.", "HCAエンコーダーがフレームを収められませんでした。"),
+    "The HCA encoder overflowed a frame.": ("HCA 인코더의 프레임이 넘쳤습니다.", "HCAエンコーダーのフレームがあふれました。"),
+    "The audio is empty or longer than the encoder limit.": ("음원이 비어 있거나 인코더 한도보다 깁니다.", "音源が空か、エンコーダーの上限より長いです。"),
+    "The HCA key or bank subkey is invalid.": ("HCA 키 또는 뱅크 보조 키가 올바르지 않습니다.", "HCAキーまたはバンクのサブキーが正しくありません。"),
+    "The encode progress callback is not callable.": ("인코딩 진행 콜백을 호출할 수 없습니다.", "エンコードの進捗コールバックを呼び出せません。"),
+    "The WAV data must be bytes.": ("WAV 데이터는 바이트여야 합니다.", "WAVデータはバイト列にしてください。"),
+    "The WAV file is empty or larger than the upload limit.": (
+        "WAV 파일이 비어 있거나 업로드 한도보다 큽니다.", "WAVファイルが空か、アップロードの上限を超えています。"),
+    "The file is not a complete RIFF/WAVE file.": ("온전한 RIFF/WAVE 파일이 아닙니다.", "完全なRIFF/WAVEファイルではありません。"),
+    "The WAV file has no format or data chunk.": ("WAV 파일에 형식 또는 데이터 청크가 없습니다.", "WAVファイルにフォーマットまたはデータのチャンクがありません。"),
+    "The WAV format chunk has an unsupported size.": ("WAV 형식 청크의 크기를 지원하지 않습니다.", "WAVのフォーマットチャンクのサイズに対応していません。"),
+    "The WAV file is not 16-bit integer PCM.": ("WAV 파일이 16비트 정수 PCM이 아닙니다.", "WAVファイルが16ビット整数PCMではありません。"),
+    "The WAV file has the wrong sample rate or channel count.": (
+        "WAV 파일의 샘플레이트나 채널 수가 맞지 않습니다.", "WAVファイルのサンプルレートまたはチャンネル数が正しくありません。"),
+    "The WAV format chunk is inconsistent.": ("WAV 형식 청크의 내용이 서로 맞지 않습니다.", "WAVのフォーマットチャンクの内容が矛盾しています。"),
+    "The WAV data is empty or ends inside a sample.": (
+        "WAV 데이터가 비어 있거나 샘플 중간에서 끝납니다.", "WAVデータが空か、サンプルの途中で終わっています。"),
+    "The preview start must be a time inside the song.": ("미리듣기 시작은 곡 안의 시간이어야 합니다.", "試聴の開始は曲の範囲内の時間にしてください。"),
+    "The preview fade must be zero or more seconds.": ("미리듣기 페이드는 0초 이상이어야 합니다.", "試聴のフェードは0秒以上にしてください。"),
+    "The preview length must be a positive sample count.": ("미리듣기 길이는 양수 샘플 수여야 합니다.", "試聴の長さは正のサンプル数にしてください。"),
+    "The HCA header has an unsupported chunk.": ("HCA 헤더에 지원하지 않는 청크가 있습니다.", "HCAヘッダーに対応していないチャンクがあります。"),
+    "The HCA bitrate is too low for this audio.": ("이 음원에는 HCA 비트레이트가 너무 낮습니다.", "この音源にはHCAのビットレートが低すぎます。"),
+    "The WAV file has a truncated chunk.": ("WAV 파일의 청크가 잘렸습니다.", "WAVファイルのチャンクが途中で切れています。"),
+    "The WAV file must be 44100 Hz stereo.": ("WAV 파일은 44100 Hz 스테레오여야 합니다.", "WAVファイルは44100 Hzのステレオにしてください。"),
+    "The WAV file has a misplaced format chunk.": ("WAV 파일의 형식 청크 위치가 잘못되었습니다.", "WAVファイルのフォーマットチャンクの位置が正しくありません。"),
+    "The WAV file has a misplaced data chunk.": ("WAV 파일의 데이터 청크 위치가 잘못되었습니다.", "WAVファイルのデータチャンクの位置が正しくありません。"),
+    "The reference PCM must be int16 with shape (samples, channels).": (
+        "기준 PCM은 (샘플, 채널) 모양의 int16이어야 합니다.", "基準のPCMは(サンプル, チャンネル)の形のint16にしてください。"),
+    "The cue sheet has no CRI UTF table.": ("큐 시트에 CRI UTF 테이블이 없습니다.", "キューシートにCRI UTFテーブルがありません。"),
+    "The cue sheet contains invalid table bounds.": ("큐 시트의 테이블 범위가 잘못되었습니다.", "キューシートのテーブル範囲が正しくありません。"),
+    "The cue sheet has an inconsistent row layout.": ("큐 시트의 행 구조가 서로 맞지 않습니다.", "キューシートの行の構造が矛盾しています。"),
+    "BPM and the first beat are required for the cue's beat table.": (
+        "큐의 비트 테이블을 만들려면 BPM과 첫 박이 필요합니다.", "キューのビートテーブルにはBPMと最初の拍が必要です。"),
+    "The beat table needs a supported time signature.": ("비트 테이블에는 지원하는 박자가 필요합니다.", "ビートテーブルには対応している拍子が必要です。"),
+    "The preview excerpt must lie inside the song.": ("미리듣기 구간은 곡 안에 있어야 합니다.", "試聴の区間は曲の範囲内にしてください。"),
+    "The cue sheet name is invalid.": ("큐 시트 이름이 올바르지 않습니다.", "キューシート名が正しくありません。"),
+    "The cue sheet GUID must be 16 bytes.": ("큐 시트 GUID는 16바이트여야 합니다.", "キューシートのGUIDは16バイトにしてください。"),
+    "The HCA stream length does not match its header.": ("HCA 스트림 길이가 헤더와 맞지 않습니다.", "HCAストリームの長さがヘッダーと一致しません。"),
+    "The HCA stream has no samples.": ("HCA 스트림에 샘플이 없습니다.", "HCAストリームにサンプルがありません。"),
+    "The template cue sheet must hold exactly one cue with one waveform.": (
+        "템플릿 큐 시트에는 파형 하나짜리 큐가 정확히 하나 있어야 합니다.",
+        "テンプレートのキューシートには、波形が1つのキューがちょうど1つ必要です。"),
+    "The template cue is not HCA audio.": ("템플릿 큐가 HCA 음원이 아닙니다.", "テンプレートのキューがHCA音源ではありません。"),
+    "The template cue uses an unsupported streaming mode.": (
+        "템플릿 큐가 지원하지 않는 스트리밍 방식을 씁니다.", "テンプレートのキューが対応していないストリーミング方式を使っています。"),
+    "The template waveform has no bank id.": ("템플릿 파형에 뱅크 ID가 없습니다.", "テンプレートの波形にバンクIDがありません。"),
+    "The rebuilt cue sheet does not name its cue.": ("다시 만든 큐 시트에 큐 이름이 없습니다.", "作り直したキューシートにキュー名がありません。"),
+    "The decode quality floor must be a number of decibels.": (
+        "디코딩 품질 하한은 데시벨 숫자여야 합니다.", "デコード品質の下限はデシベルの数値にしてください。"),
+    "The app's HCA decoder is missing, so the new audio cannot be checked.": (
+        "앱의 HCA 디코더가 없어 새 음원을 확인할 수 없습니다.", "アプリのHCAデコーダーがないため、新しい音源を確認できません。"),
+    "The new audio does not decode to the input's length and channels.": (
+        "새 음원을 디코딩하면 길이나 채널 수가 입력과 다릅니다.", "新しい音源をデコードすると、長さまたはチャンネル数が入力と一致しません。"),
+    "The decoded audio differs too much from the input.": ("디코딩한 음원이 입력과 너무 다릅니다.", "デコードした音源が入力と違いすぎます。"),
+    "The cue sheet has an invalid string offset.": ("큐 시트의 문자열 위치가 잘못되었습니다.", "キューシートの文字列の位置が正しくありません。"),
+    "The cue sheet has an unterminated string.": ("큐 시트에 끝나지 않은 문자열이 있습니다.", "キューシートに終端のない文字列があります。"),
+    "The cue sheet has an unsupported column type.": ("큐 시트에 지원하지 않는 열 형식이 있습니다.", "キューシートに対応していない列の型があります。"),
+    "The cue sheet has a truncated column.": ("큐 시트의 열이 잘렸습니다.", "キューシートの列が途中で切れています。"),
+    "The cue sheet has a truncated column declaration.": ("큐 시트의 열 선언이 잘렸습니다.", "キューシートの列の宣言が途中で切れています。"),
+    "The cue sheet has an unsupported column declaration.": (
+        "큐 시트에 지원하지 않는 열 선언이 있습니다.", "キューシートに対応していない列の宣言があります。"),
+    "The audio bank (AWB) cannot be read.": ("오디오 뱅크(AWB)를 읽을 수 없습니다.", "オーディオバンク（AWB）を読み込めません。"),
+    "The beat table needs at least one tempo.": ("비트 테이블에는 템포가 하나 이상 필요합니다.", "ビートテーブルにはテンポが1つ以上必要です。"),
+    "Each tempo needs a BPM and a start sample.": ("템포마다 BPM과 시작 샘플이 필요합니다.", "テンポごとにBPMと開始サンプルが必要です。"),
+    "The first beat must be a time inside the song.": ("첫 박은 곡 안의 시간이어야 합니다.", "最初の拍は曲の範囲内の時間にしてください。"),
+    "The BPM must be a number between 0 and 1000.": ("BPM은 0과 1000 사이의 숫자여야 합니다.", "BPMは0から1000の間の数値にしてください。"),
+    "The beats must start inside the song, in order.": ("박은 곡 안에서 순서대로 시작해야 합니다.", "拍は曲の範囲内で順番に始まる必要があります。"),
+    "The template cue sheet cannot be read.": ("템플릿 큐 시트를 읽을 수 없습니다.", "テンプレートのキューシートを読み込めません。"),
+    "The template cue sheet does not have the stock music layout.": (
+        "템플릿 큐 시트가 게임 원래 음악의 구조가 아닙니다.", "テンプレートのキューシートがゲーム本来の楽曲の構造ではありません。"),
+    "The template stream-only cue has an unexpected memory bank.": (
+        "스트리밍 전용 템플릿 큐에 예상하지 않은 메모리 뱅크가 있습니다.",
+        "ストリーミング専用のテンプレートのキューに想定外のメモリーバンクがあります。"),
+    "The template's memory and stream banks use different keys.": (
+        "템플릿의 메모리 뱅크와 스트림 뱅크가 서로 다른 키를 씁니다.",
+        "テンプレートのメモリーバンクとストリームバンクが異なるキーを使っています。"),
+    "The template cue sheet has no memory bank column.": (
+        "템플릿 큐 시트에 메모리 뱅크 열이 없습니다.", "テンプレートのキューシートにメモリーバンクの列がありません。"),
+    "The template cue sheet has no stream bank hash.": (
+        "템플릿 큐 시트에 스트림 뱅크 해시가 없습니다.", "テンプレートのキューシートにストリームバンクのハッシュがありません。"),
+    "The template cue sheet has no beat table.": ("템플릿 큐 시트에 비트 테이블이 없습니다.", "テンプレートのキューシートにビートテーブルがありません。"),
+    "The new audio was not decoded by the app's HCA decoder.": (
+        "새 음원을 앱의 HCA 디코더로 디코딩하지 않았습니다.", "新しい音源はアプリのHCAデコーダーでデコードされませんでした。"),
+    "The cue sheet has an undecodable string.": ("큐 시트에 읽을 수 없는 문자열이 있습니다.", "キューシートに読み取れない文字列があります。"),
+    "The cue sheet has an invalid data offset.": ("큐 시트의 데이터 위치가 잘못되었습니다.", "キューシートのデータの位置が正しくありません。"),
+    "The template cue sheet has an unsupported stream bank header table.": (
+        "템플릿 큐 시트의 스트림 뱅크 헤더 테이블을 지원하지 않습니다.",
+        "テンプレートのキューシートのストリームバンクヘッダーテーブルに対応していません。"),
+    "The new audio does not decode.": ("새 음원이 디코딩되지 않습니다.", "新しい音源をデコードできません。"),
+}
+for _source, (_korean, _japanese) in _MV_REGISTER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 

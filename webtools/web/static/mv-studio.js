@@ -3,8 +3,9 @@
   "use strict";
 
   const route = "/api/mv-studio/";
-  const panelKeys = ["assets", "performers", "soundtrack", "tracks", "events", "quality", "registration", "warnings"];
-  const panelNames = ["MV assets", "Performers", "Soundtrack", "Tracks", "Selected event", "MV quality settings", "Register in game", "Import notes"];
+  // MV-only song registration is the "register" plugin panel (mv-studio-register.js).
+  const panelKeys = ["assets", "performers", "soundtrack", "tracks", "events", "quality", "warnings"];
+  const panelNames = ["MV assets", "Performers", "Soundtrack", "Tracks", "Selected event", "MV quality settings", "Import notes"];
   const assetKinds = [
     ["stage", "Stage"], ["background", "Background"], ["outfit", "Performer outfit"],
     ["props", "Props"], ["effect", "Effects"], ["audio", "Soundtrack"], ["other", "Other asset"],
@@ -32,8 +33,6 @@
   let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
   let previewLoading = false, playheadNode, seekInput, timeOutput, lastReadout = -Infinity;
   let hidden = [], assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
-  let registered = null, registrationTitle = "", chartTemplates = [], chartTemplate = "", chartPath = "";
-  let registrationTimelines = {}, registrationAudio = {}, latestNativeTimeline = null;
   let lastGamePayload = null;
   // Runtime notes from the 3D preview of the open project (for example a
   // depth-of-field clip whose focus target the preview cannot find). They are
@@ -304,7 +303,6 @@
       if (panel.plugin) {
         try { return typeof panel.plugin.available !== "function" || !!panel.plugin.available(ctx); } catch (error) { console.error(error); return false; }
       }
-      if (panel.key === "registration") return gameSource() !== null;
       if (panel.key === "warnings") return warningLines().length > 0;
       return true;
     }).map((panel) => panel.key);
@@ -906,114 +904,6 @@
     scene?.setPhysicsTiming?.({ device: refreshRateMode ? { refreshRateMode: true, displayRate: refreshRateMode } : {} });
   }
 
-  function gameSource() {
-    const source = project && project.source;
-    return source && source.kind === "game" && Number.isSafeInteger(source.liveId) ? source : null;
-  }
-
-  function renderRegistration() {
-    const box = byId("mv-registration-fields"), source = gameSource();
-    box.replaceChildren();
-    if (!source) return;
-    const name = make("input", null, { type: "text", maxlength: 120, id: "mv-registration-title" });
-    name.value = registrationTitle || project.name;
-    name.addEventListener("input", () => { registrationTitle = name.value; });
-    const overrides = Object.entries(registrationTimelines).filter(([, path]) => path);
-    const register = button(t(registrationAudio.acb ? "Register MV-only copy with selected assets" :
-      overrides.length ? "Register MV-only copy with selected timelines" : "Register original as an MV-only copy"), () => {
-      const title = name.value.trim();
-      if (!title) { name.focus(); return; }
-      const payload = { region: source.region, sourceLiveId: source.liveId, title };
-      if (Number.isSafeInteger(source.assetId)) payload.assetId = source.assetId;
-      if (overrides.length) payload.timelinePaths = Object.fromEntries(overrides);
-      if (registrationAudio.acb) payload.audioAcbPath = registrationAudio.acb;
-      if (registrationAudio.awb) payload.audioAwbPath = registrationAudio.awb;
-      operation("Registering MV…", async (signal) => {
-        const receipt = await request("register", payload, signal);
-        if (!Number.isSafeInteger(receipt.liveId)) throw new Error("The MV registration response is invalid.");
-        registered = { ...receipt, region: source.region };
-        chartTemplates = []; chartTemplate = chartPath = "";
-        report(t("MV-only copy registered.") + (receipt.restartRequired ? " " + t("Restart the game server to load the updated catalog.") : ""));
-      });
-    }, { id: "mv-register" });
-    register.disabled = !!pending || !!registrationAudio.awb && !registrationAudio.acb;
-    const timeline = make("fieldset");
-    timeline.append(make("legend", t("Custom timelines (optional)")));
-    for (const [platform, title] of [["android", "Choose Android timeline"], ["ios", "Choose iOS timeline"]]) {
-      const selectedPath = registrationTimelines[platform];
-      if (selectedPath) timeline.append(make("p", `${platform === "ios" ? "iOS" : "Android"} · ${basename(selectedPath)}`, { title: selectedPath }));
-      const choose = button(t(title), () => settings.pickFile((path) => {
-        if (visible && gameSource() === source) { registrationTimelines[platform] = path; renderRegistration(); }
-      }, t(title), ["unity", "bundle", "asset", "bytes"]), { "data-mv-register-timeline": platform });
-      choose.disabled = !!pending;
-      const row = make("div", null, { class: "mv-controls" });
-      row.append(choose);
-      if (selectedPath) row.append(button(t("Remove"), () => { delete registrationTimelines[platform]; renderRegistration(); }));
-      if (!selectedPath && latestNativeTimeline && latestNativeTimeline.source.liveId === source.liveId &&
-          latestNativeTimeline.source.assetId === source.assetId && latestNativeTimeline.source.region === source.region &&
-          latestNativeTimeline.platform === platform) {
-        row.append(button(t("Use exported timeline"), () => {
-          registrationTimelines[platform] = latestNativeTimeline.path; renderRegistration();
-        }));
-      }
-      timeline.append(row);
-    }
-    const music = make("fieldset");
-    music.append(make("legend", t("Custom soundtrack (optional)")), make("p", t("Choose an ACB with one game music cue and its AWB if the cue streams from an external file.")));
-    for (const [kind, title] of [["acb", "Choose ACB"], ["awb", "Choose AWB"]]) {
-      const selectedPath = registrationAudio[kind];
-      if (selectedPath) music.append(make("p", `${kind.toUpperCase()} · ${basename(selectedPath)}`, { title: selectedPath }));
-      const choose = button(t(title), () => settings.pickFile((path) => {
-        if (visible && gameSource() === source) { registrationAudio[kind] = path; renderRegistration(); }
-      }, t(title), [kind]), { "data-mv-register-audio": kind });
-      choose.disabled = !!pending;
-      const row = make("div", null, { class: "mv-controls" });
-      row.append(choose);
-      if (selectedPath) row.append(button(t("Remove"), () => { delete registrationAudio[kind]; renderRegistration(); }));
-      music.append(row);
-    }
-    if (registrationAudio.awb && !registrationAudio.acb) music.append(make("p", t("Choose the ACB that uses this AWB.")));
-    box.append(field("MV title", name), timeline, music, register);
-    if (registered) box.append(make("p", `${registered.title || project.name} · ${t(registered.mvOnly ? "MV only" : "Live show")} (${registered.liveId})`));
-    const target = registered || (source.mvOnly || source.registered ? { liveId: source.liveId, region: source.region, mvOnly: source.mvOnly } : null);
-    if (!target) return;
-    if (!chartTemplates.length) {
-      const load = button(t("Load chart templates"), () => operation("Loading chart templates…", async (signal) => {
-        const query = new URLSearchParams({ region: target.region, liveId: target.liveId });
-        const receipt = await request("chart-templates?" + query, undefined, signal);
-        chartTemplates = (receipt.templates || []).filter((item) => Number.isSafeInteger(item.id) && Number.isSafeInteger(item.difficultyType));
-        report(chartTemplates.length ? "" : t("No compatible chart templates."));
-      }), { id: "mv-chart-templates" });
-      load.disabled = !!pending;
-      box.append(load);
-      return;
-    }
-    const choices = make("select", null, { id: "mv-chart-template" });
-    replaceOptions(choices, chartTemplates, chartTemplate);
-    chartTemplate = choices.value;
-    choices.addEventListener("change", () => { chartTemplate = choices.value; });
-    const pick = button(t("Choose chart file"), () => settings.pickFile((path) => {
-      if (!visible) return;
-      chartPath = path; renderRegistration();
-    }, t("Choose chart file"), ["json"]), { id: "mv-chart-file" });
-    pick.disabled = !!pending;
-    const attach = button(t("Attach chart"), () => {
-      const template = chartTemplates.find((item) => text(item.id) === chartTemplate);
-      if (!template || !chartPath) return;
-      operation("Attaching chart…", async (signal) => {
-        const charts = { [template.difficultyType]: { path: chartPath, template_difficulty_id: template.id } };
-        const receipt = await request("charts", { region: target.region, liveId: target.liveId, charts }, signal);
-        registered = { ...target, ...receipt };
-        chartTemplates = []; chartTemplate = chartPath = "";
-        report(t("Chart attached.") + (receipt.restartRequired ? " " + t("Restart the game server to load the updated catalog.") : ""));
-      });
-    }, { id: "mv-attach-chart" });
-    attach.disabled = !!pending || !chartPath;
-    box.append(field("Chart template", choices), pick);
-    if (chartPath) box.append(make("p", basename(chartPath), { title: chartPath }));
-    box.append(attach);
-  }
-
   function chooseEvent(track, event, move = true) {
     selected = { track: track.id, event: event.id };
     pause();
@@ -1585,7 +1475,7 @@
     if (!panel) return;
     if (!panel.plugin) {
       ({ assets: renderAssets, performers: renderPerformers, soundtrack: renderSoundtrack, tracks: renderTracks, events: renderEvent,
-        quality: renderQuality, registration: renderRegistration, warnings: renderWarnings })[key]?.();
+        quality: renderQuality, warnings: renderWarnings })[key]?.();
       return;
     }
     // A plugin panel whose availability changed is shown or hidden first.
@@ -1684,6 +1574,11 @@
         bounds: () => ({ min: 0, max: project ? project.duration : 0, minLength: Interact.FRAME }), ...options }),
       // Playhead and MainCamera cut times (plus the other clip edges of trackId, except eventId).
       snapTargets: (trackId = null, eventId = null) => project ? clipSnapTargets(trackId, eventId) : [],
+      // For the MV registration panel: the app's file picker, its UI language and the game import
+      // (opening a registered song like any game MV).
+      pickFile: (callback, title, extensions) => settings.pickFile(callback, title, extensions),
+      language: () => settings.language(),
+      importGame: (payload) => { if (!pending && !gameImport) runGameImport(payload); },
     });
   }
 
@@ -1702,7 +1597,6 @@
     renderTracks();
     renderEvent();
     renderQuality();
-    renderRegistration();
     const available = availablePanels();
     for (const panel of panelList) if (panel.plugin && available.includes(panel.key)) renderPanel(panel.key);
     renderTimeline();
@@ -1758,10 +1652,7 @@
     previewWarnings = [];
     selected = preserveTime || reason === "reimport" ? previous : null;
     if (selected && !findEvent(selected.track, selected.event)) selected = null;
-    if (!preserveTime) {
-      registered = latestNativeTimeline = null; registrationTitle = performerId = ""; registrationTimelines = {}; registrationAudio = {};
-      chartTemplates = []; chartTemplate = chartPath = "";
-    }
+    if (!preserveTime) performerId = "";
     previewLoading = !!scene;
     try {
       const ready = scene && scene.load(next, { reuseOutfit, reuseStage });
@@ -1797,7 +1688,6 @@
       renderAssets();
       renderPerformers();
       renderSoundtrack();
-      renderRegistration();
       updateHistoryButtons();
     }
   }
@@ -1841,12 +1731,11 @@
         report("");
       });
     }, t(kind === "audio" ? "Import soundtrack" : "Import MV asset"), kind === "audio"
-      ? ["m4a", "mp3", "ogg", "wav"] : ["unity", "bundle", "asset", "bytes", "zip", "glb"]);
+      ? ["m4a", "mp3", "ogg", "wav", "flac"] : ["unity", "bundle", "asset", "bytes", "zip", "glb"]);
   }
 
   function saveResult(endpoint, pendingLabel, doneLabel) {
     if (!project || pending) return;
-    const source = gameSource();
     operation(pendingLabel, async (signal) => {
       // Plugins finish pending work (camera bakes) or refuse with an Error first.
       for (const plugin of plugins) {
@@ -1863,7 +1752,6 @@
       if (receipt.path && global.ElichikaPlatform && ElichikaPlatform.supports("reveal")) {
         result.append(button(t("Show in Finder"), () => ElichikaPlatform.request("reveal", { path: receipt.path }).catch(showError)));
       }
-      if (endpoint === "export-timeline" && source && receipt.path) latestNativeTimeline = { source, platform: source.platform, path: receipt.path };
       result.hidden = false;
       report(t(doneLabel));
     });
