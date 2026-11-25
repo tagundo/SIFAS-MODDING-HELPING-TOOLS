@@ -7,7 +7,7 @@ from . import model_viewer as viewer, mv_studio_butterfly_glow as billboard
 from . import mv_studio_butterfly_shine as shine, mv_studio_leaves as leaves
 from . import mv_studio_stage_burst as burst, mv_studio_stage_dust as dust
 from . import mv_studio_stage_glow as glow, mv_studio_stage_particles as particles, mv_studio_stage_title as title
-from . import mv_studio_timeline as timeline
+from . import mv_studio_timeline as timeline, transient_failures
 from .model_rig import _authored_trs, _trs
 from .mv_studio_stage_title_particles import _constant, _float32
 
@@ -225,6 +225,8 @@ def read(objects, mono, tracks, deadline):
             if (track["id"], event["id"]) not in candidates:
                 continue
             if len(cues) >= _MAX_CUES or time.monotonic() >= deadline:
+                if len(cues) < _MAX_CUES:
+                    transient_failures.note()  # out of time, not out of cues
                 complete = False
                 break
             identity = None

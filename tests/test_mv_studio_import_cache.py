@@ -209,6 +209,144 @@ class ImportStepReceiptTests(unittest.TestCase):
             self.assertEqual(resolve.call_count, 2)
 
 
+def _script(path, body):
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o700)
+    return path
+
+
+@unittest.skipIf(os.name == "nt", "the fake decoders are shell scripts")
+class TransientFailureTests(unittest.TestCase):
+    """A result shaped by a failure that may not repeat (a killed decoder, a deadline) is used but never kept."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / "receipts").mkdir(mode=0o700)
+        patcher = patch.object(mv_studio, "_root", return_value=self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(mv_studio._STAGE_PREVIEWS.clear)
+        self.flag = self.root / "low-memory"
+        # Like the Android low-memory killer: the decoder child dies with SIGKILL while the flag exists.
+        self.texture65 = _script(self.root / "texture65", f'if [ -e "{self.flag}" ]; then kill -9 $$; fi\n'
+                                 'head -c $(( $1 * $2 * 4 )) /dev/zero > "$4"\n')
+
+    def store(self):
+        """A store as a fresh process opens it."""
+        return cache.ImportCache(self.root / "receipts", mv_studio.media)
+
+    @staticmethod
+    def crunched():
+        from types import SimpleNamespace
+        texture = SimpleNamespace(m_Width=4, m_Height=4, m_TextureFormat=65, m_ImageCount=1, m_TextureDimension=2,
+                                  image_data=b"crunched", m_StreamData=None, object_reader=None)
+        texture.get_image_data = lambda: texture.image_data
+        return texture
+
+    def parse(self, raw, name, **flags):
+        """A timeline parse that, like the particle importer, shows a texture it cannot decode as unavailable."""
+        import time
+        from webtools.core import decode, mv_studio_stage_title as title
+        try:
+            with decode._android_image(self.crunched(), time.monotonic() + 10, stage=True):
+                coverage = "rendered"
+        except title._UNSUPPORTED as error:
+            coverage = f"not rendered: texture is unavailable ({error})"
+        return {"duration": 1.0, "tracks": [{"id": "t", "events": [], "coverage": coverage}]}
+
+    def test_a_decoder_killed_once_does_not_outlive_a_restart(self):
+        timeline = self.root / "game-1.unity"
+        timeline.write_bytes(b"timeline")
+        coverage = lambda parsed: parsed["tracks"][0]["coverage"]
+        with (patch.dict(os.environ, {"ELICHIKA_TEXTURE65_BIN": str(self.texture65)}),
+              patch("webtools.core.mv_studio_timeline.parse_timeline", side_effect=self.parse) as parse):
+            self.flag.touch()
+            reused = []
+            _, degraded = mv_studio._timeline(timeline, store=self.store(), reused=reused)
+            self.assertIn("code -9", coverage(degraded))
+            self.assertEqual(list((self.root / "receipts").glob("*.receipt")), [], "a degraded parse is never kept")
+            self.flag.unlink()
+            # After a restart the parse runs again and heals; the clean parse is then kept and reused.
+            _, healed = mv_studio._timeline(timeline, store=self.store(), reused=reused)
+            _, again = mv_studio._timeline(timeline, store=self.store(), reused=reused)
+            self.assertEqual((coverage(healed), coverage(again)), ("rendered", "rendered"))
+            self.assertEqual((parse.call_count, reused), (2, [False, False, True]))
+
+    def test_machine_failures_of_the_decoders_are_noted_and_data_errors_are_not(self):
+        import subprocess
+        import time
+        from types import SimpleNamespace
+        from webtools.core import decode, transient_failures
+        astc = SimpleNamespace(m_Width=4, m_Height=4, m_TextureFormat=48, m_ImageCount=1, m_TextureDimension=2,
+                               image_data=b"\0" * 16, m_StreamData=None, object_reader=None)  # ASTC_RGB_4x4
+        astc.get_image_data = lambda: astc.image_data
+        unsupported = SimpleNamespace(**{**vars(astc), "m_TextureFormat": 10})  # DXT1
+        unsupported.get_image_data = lambda: b""
+        failing = _script(self.root / "astcenc", "exit 3\n")
+        not_executable = self.root / "astcenc-plain"
+        not_executable.write_bytes(b"not a program")
+        cases = [("ASTCENC_BIN", failing, astc, subprocess.CalledProcessError),
+                 ("ASTCENC_BIN", not_executable, astc, OSError),
+                 ("ELICHIKA_TEXTURE65_BIN", self.texture65, self.crunched(), ValueError)]
+        self.flag.touch()
+        for variable, binary, texture, error in cases:
+            with self.subTest(binary=binary.name), patch.dict(os.environ, {variable: str(binary)}):
+                watch = transient_failures.Watch()
+                with self.assertRaises(error):
+                    decode._android_image(texture, time.monotonic() + 10)
+                self.assertFalse(watch.clean)
+        # A format no decoder handles fails the same way every time.
+        watch = transient_failures.Watch()
+        with self.assertRaises(ValueError):
+            decode._android_image(unsupported, time.monotonic() + 10)
+        self.assertTrue(watch.clean)
+        # So does a run out of time.
+        with self.assertRaises(TimeoutError):
+            decode._android_image(astc, time.monotonic() - 1)
+        self.assertFalse(watch.clean)
+
+    def test_stage_and_clip_receipts_skip_conversions_with_noted_failures(self):
+        from webtools.core import transient_failures
+        stage = self.root / "import-a" / "game-2.unity"
+        stage.parent.mkdir()
+        stage.write_bytes(b"Native stage")
+        glb = model_viewer._Glb().finish()
+        failures = [True]
+
+        def prepare(*args, **kwargs):
+            if failures[0]:
+                transient_failures.note()  # e.g. a reflection cubemap whose decoder timed out
+            return {"id": "s", "warnings": []}
+
+        with (patch.object(model_viewer, "prepare", side_effect=prepare) as converted,
+              patch.object(model_viewer, "get_model", return_value=glb)):
+            for _ in range(2):
+                mv_studio._preview(stage, reuse=True, store=self.store())
+            self.assertEqual(converted.call_count, 2, "neither the receipt nor the in-memory cache kept it")
+            failures[0] = False
+            for _ in range(2):
+                mv_studio._preview(stage, reuse=True, store=self.store())
+                mv_studio._STAGE_PREVIEWS.clear()
+            self.assertEqual(converted.call_count, 3)
+        project = {"tracks": [{"id": "t", "label": "Dance", "events": [
+            {"id": "e", "label": "clip", "values": {"playableClass": "AnimationPlayableAsset", "animation": "cab-1:5"}}]}],
+            "warnings": []}
+        result = {"clips": {}, "warnings": ["no loaded dependency provides cab-1"]}
+
+        def resolve(*args):
+            transient_failures.note()  # a pack that failed to load for want of memory
+            return result
+
+        with patch.object(mv_studio_external_clips, "resolve", side_effect=resolve) as clips:
+            for _ in range(2):
+                mv_studio_external_clips.apply(json.loads(json.dumps(project)), b"timeline", [{"asset": "dance"}],
+                                               mv_studio_external_clips.SharedReads(lambda descriptor: b"pack"), None,
+                                               cache=self.store())
+            self.assertEqual(clips.call_count, 2)
+
+
 class TextureStoreTests(unittest.TestCase):
     """Decoded PNGs outlive the process only through an import's texture store, under the full source key."""
 

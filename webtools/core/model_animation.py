@@ -46,6 +46,8 @@ class AnimationError(ValueError):
 
 def _check(deadline):
     if deadline is not None and time.monotonic() >= deadline:
+        from .transient_failures import note
+        note()
         raise AnimationError("Animation export exceeded its time budget.")
 
 

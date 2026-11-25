@@ -21,7 +21,7 @@ by event id; event values stay byte-for-byte what native export expects.
 import json
 import struct
 
-from . import game_motion_selection as selection
+from . import game_motion_selection as selection, transient_failures
 from .mv_studio_timeline import EXTERNAL_CLIP_WARNING
 
 _MAX_NOTES = 32
@@ -50,6 +50,7 @@ class SharedReads:
             try:
                 self._held[identity] = (self._read(descriptor), None)
             except (ValueError, OSError) as error:
+                transient_failures.note_if_environmental(error)
                 self._held[identity] = (None, error)
 
     def peek(self, descriptor):
@@ -134,7 +135,9 @@ def resolve(tracks, timeline_raw, dependencies, deadline):
             continue
         try:
             loaded.append(_source(raw, label, deadline))
-        except _ERRORS:
+        except _ERRORS as error:
+            # A pack that failed to load for want of time, memory or I/O may load next time.
+            transient_failures.note_if_environmental(error)
             unavailable.append(label)
     conflict = None
     try:
@@ -187,6 +190,7 @@ def apply(project, timeline_raw, descriptors, reads, deadline, cache=None, reuse
     if not references(project.get("tracks") or ()):
         return {}
     descriptors = [item for item in descriptors or () if isinstance(item, dict)]
+    watch = transient_failures.Watch()
     reads.prefetch(descriptors)
     dependencies = [(_label(item), reads.peek(item)) for item in descriptors]
     receipt = result = None
@@ -207,7 +211,8 @@ def apply(project, timeline_raw, descriptors, reads, deadline, cache=None, reuse
             return {}
         if result is None:
             return {}
-        if receipt is not None:
+        # A pack that failed for a reason that may not repeat is not a property of its bytes.
+        if receipt is not None and watch.clean:
             cache.put(receipt, result)
     warnings = project["warnings"]
     if EXTERNAL_CLIP_WARNING in warnings:

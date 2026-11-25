@@ -18,7 +18,7 @@ from urllib.parse import quote
 import zipfile
 
 from webtools import filebrowser
-from . import game_models, model_viewer, viewer_archive
+from . import game_models, model_viewer, transient_failures, viewer_archive
 from .member_identity import member_from_native
 from .sukusta import default_sukusta_dir
 from .viewer_cache import game_models_dir, viewer_cache_root
@@ -191,7 +191,8 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
     from the in-memory cache only when it converted without warnings, and from
     ``store`` (mv_studio_import_cache) only when its warnings are structural;
     the receipt then repeats them. ``reused`` (a list) receives True when the
-    result came from a cache.
+    result came from a cache. Neither cache keeps a conversion during which a
+    failure that may not repeat was noted (transient_failures).
     """
     models = [path, *companions]
     key = None
@@ -227,6 +228,7 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
             if reused is not None:
                 reused.append(True)
             return _MEDIA_URL + saved["name"], saved["rig"]
+    watch = transient_failures.Watch()
     prepared = model_viewer.prepare(list(map(str, models)), rigged=performer,
         face_context={"enabled": performer and not companions, "allow_download": False,
                       "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions),
@@ -247,19 +249,19 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
             physics = viewer_physics.catalogue_preview(models, rig["bones"])
             if physics.get("available"):
                 rig = {**rig, "physics": physics}
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             # Optional source physics is independent of the usable body model.
-            pass
+            transient_failures.note_if_environmental(error)
         from . import model_constraints
 
         try:
             constraints = model_constraints.catalogue_preview(models, rig["bones"])
             if constraints.get("available"):
                 rig = {**rig, "constraints": constraints}
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             # Unity constraints are optional rig data, like source physics.
-            pass
-    if key is not None:
+            transient_failures.note_if_environmental(error)
+    if key is not None and watch.clean:
         if performer and rig.get("available") and any(clip.get("bindingComplete") for clip in rig.get("clips", [])):
             model_viewer._conversion_put(
                 cache, key, json.dumps([url.removeprefix(_MEDIA_URL), rig]).encode(),
@@ -268,7 +270,7 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         elif not performer and not prepared.get("warnings"):
             model_viewer._conversion_put(cache, key, json.dumps([url.removeprefix(_MEDIA_URL), rig]).encode(),
                                          max_bytes=16 * 1024, max_entries=32)
-    if receipt is not None:
+    if receipt is not None and watch.clean:
         converted = list(prepared.get("warnings") or ())
         if all(isinstance(item, dict) and item.get("code") in _STRUCTURAL_WARNINGS for item in converted):
             store.put(receipt, {"name": url.removeprefix(_MEDIA_URL), "rig": rig, "warnings": converted})
@@ -337,6 +339,7 @@ def _timeline(path, store=None, reused=None):
         reused.append(hit)
     if hit:
         return raw, parsed
+    watch = transient_failures.Watch()
     parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True,
                                                preview_member_shafts=True, preview_stage_title=True,
                                                preview_stage_particles=True, preview_stage_ribbons=True,
@@ -351,7 +354,9 @@ def _timeline(path, store=None, reused=None):
                                                preview_control_prefabs=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
-    if receipt is not None:
+    # A texture or template given up for want of time, memory or a working decoder
+    # is not a property of these bytes: such a parse is used but never kept.
+    if receipt is not None and watch.clean:
         store.put(receipt, parsed)
     return raw, parsed
 
@@ -739,11 +744,13 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     else:
                         clips, motion = [], None
                         member_state = "failed"
+                        watch = transient_failures.Watch()
                         try:
                             progress.phase("motion")
                             clips, motion = _motion(timeline, motion_files, facial_files, directory / f"actor-{number}", number,
                                                     result["memberId"], project["tracks"], deadline)
                         except (ValueError, OSError) as error:
+                            transient_failures.note_if_environmental(error)
                             warnings.append(f"{label} choreography: {error}")
                         try:
                             url, rig = _preview(model, performer=True, motions=clips, companions=companions, reuse=True,
@@ -752,10 +759,11 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                                 try:
                                     motion = _facial(timeline, motion, number, project["tracks"], rig.get("memberHead"))
                                 except (ValueError, OSError) as error:
+                                    transient_failures.note_if_environmental(error)
                                     warnings.append(f"{label} facial timeline: {error}")
                             result.update(glb=url, rig=rig, motion=motion)
                             member_state = "done"
-                            if key is not None:
+                            if key is not None and watch.clean:
                                 actor_cache.put(key, url.removeprefix(_MEDIA_URL), rig, motion)
                         except (ValueError, OSError) as error:
                             warnings.append(f"{label}: {error}")
@@ -811,10 +819,11 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             project["soundtrack"] = audio_saved
                         else:
                             decoded = directory / "soundtrack.wav"
+                            watch = transient_failures.Watch()
                             cri_audio_decode.decode_cue(cue_bank, wave_bank, audio["cue"], decoded)
                             # The base song's own cue: registration keeps it unless the offset moves it.
                             project["soundtrack"] = {**_song_audio(decoded), "origin": "game"}
-                            if receipt is not None:
+                            if receipt is not None and watch.clean:
                                 receipts.put(receipt, project["soundtrack"])
                         project["duration"] = max(project["duration"], project["soundtrack"]["duration"])
                 except (ValueError, OSError) as error:
