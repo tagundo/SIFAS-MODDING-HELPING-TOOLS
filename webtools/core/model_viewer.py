@@ -19,7 +19,7 @@ import threading
 import time
 import zlib
 
-from . import decode
+from . import decode, mv_studio_progress
 
 
 MAX_FILES = 8
@@ -1005,6 +1005,7 @@ class _Materials:
         index = len(self.glb.doc["textures"])
         self.glb.doc["textures"].append({"source": image_index, "sampler": sampler_index})
         self.scene.stats["textures"] += 1
+        mv_studio_progress.tick("textures", self.scene.stats["textures"])
         return index
 
     def material(self, obj):

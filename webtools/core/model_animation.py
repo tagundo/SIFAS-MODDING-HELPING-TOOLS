@@ -949,8 +949,14 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
     clips = [obj for obj in scene.env.objects if obj.type.name == "AnimationClip"]
     if len(clips) > MAX_CLIPS:
         warn("animation_limit", "", f"Only the first {MAX_CLIPS} supplied animation clips are available in this preview; {len(clips) - MAX_CLIPS} clips were omitted.")
-    for obj in clips[:MAX_CLIPS]:
+    # Progress in source bytes: a full dance outweighs a facial pose.
+    sizes = [max(1, int(getattr(obj, "byte_size", 1) or 1)) for obj in clips[:MAX_CLIPS]]
+    total_size, done_size = sum(sizes), 0
+    from .mv_studio_progress import tick
+    for obj, size in zip(clips[:MAX_CLIPS], sizes):
         _check(deadline)
+        tick("animation", round(100 * done_size / total_size), 100)
+        done_size += size
         name = scene.name(obj)
         checkpoint = (len(glb.data), len(glb.doc["accessors"]), len(glb.doc["bufferViews"]))
         try:
@@ -963,8 +969,9 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             morph_indices = {}
             visibility_tracks = []
             planned_frames, planned_values = 0, 0
-            for track in clip["tracks"]:
+            for track_index, track in enumerate(clip["tracks"]):
                 _check(deadline)
+                tick("animation", round(100 * (done_size - size + size * track_index / len(clip["tracks"])) / total_size), 100)
                 if track["kind"] == "visibility":
                     mode = track.get("visibilityType", "renderer")
                     targets = _nodes(visibility_bindings.get(mode, {}), track["path"])
