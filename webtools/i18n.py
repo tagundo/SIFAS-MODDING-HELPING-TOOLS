@@ -2794,6 +2794,8 @@ _MV_STUDIO_TRANSLATIONS = {
     "Textures {done}": ("텍스처 {done}개", "テクスチャ {done}枚"),
     "Building dance motion… {done}%": ("댄스 모션을 만드는 중… {done}%", "ダンスモーションを生成中… {done}%"),
     "Loading 3D models {done}/{total}…": ("3D 모델을 불러오는 중 {done}/{total}…", "3Dモデルを読み込み中 {done}/{total}…"),
+    "Loading 3D models…": ("3D 모델을 불러오는 중…", "3Dモデルを読み込み中…"),
+    "Ready to play": ("재생 준비 완료", "再生の準備ができました"),
     "Preparing effects…": ("이펙트를 준비하는 중…", "エフェクトを準備中…"),
     "Reused from cache": ("캐시에서 재사용", "キャッシュから再利用"),
     "Stage is ready. Members are still loading.": ("무대가 준비되었습니다. 멤버를 불러오는 중입니다.", "ステージの準備ができました。メンバーを読み込み中です。"),

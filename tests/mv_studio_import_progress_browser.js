@@ -87,13 +87,16 @@ const project = { version: 1, name: 'Progress fixture', token: 'a'.repeat(32), d
 const EXPECT = {
   ko: { member: '멤버 변환 중 1/2: 上原歩夢', timeline: '라이브 타임라인을 분석하는 중…', members: '멤버 1/2 완료', data: '게임 데이터 3.0/7.8 MB',
         stageReady: '무대가 준비되었습니다. 멤버를 불러오는 중입니다.', cancel: '불러오기 취소', cancelled: 'MV 불러오기를 취소했습니다.',
-        textures: '텍스처 12개', dance: '댄스 모션을 만드는 중… 40%', models: '3D 모델을 불러오는 중 0/1…', preparing: '게임에서 MV 준비 중…' },
+        textures: '텍스처 12개', dance: '댄스 모션을 만드는 중… 40%', models: '3D 모델을 불러오는 중 0/1…', preparing: '게임에서 MV 준비 중…',
+        ready: '재생 준비 완료' },
   ja: { member: 'メンバーを変換中 1/2: 上原歩夢', timeline: 'ライブタイムラインを解析中…', members: 'メンバー 1/2 完了', data: 'ゲームデータ 3.0/7.8 MB',
         stageReady: 'ステージの準備ができました。メンバーを読み込み中です。', cancel: '読み込みをキャンセル', cancelled: 'MVの読み込みをキャンセルしました。',
-        textures: 'テクスチャ 12枚', dance: 'ダンスモーションを生成中… 40%', models: '3Dモデルを読み込み中 0/1…', preparing: 'ゲームデータからMVを準備中…' },
+        textures: 'テクスチャ 12枚', dance: 'ダンスモーションを生成中… 40%', models: '3Dモデルを読み込み中 0/1…', preparing: 'ゲームデータからMVを準備中…',
+        ready: '再生の準備ができました' },
   en: { member: 'Converting member 1/2: 上原歩夢', timeline: 'Reading the live timeline…', members: 'Members done 1/2', data: 'Game data 3.0/7.8 MB',
         stageReady: 'Stage is ready. Members are still loading.', cancel: 'Cancel import', cancelled: 'MV import cancelled.',
-        textures: 'Textures 12', dance: 'Building dance motion… 40%', models: 'Loading 3D models 0/1…', preparing: 'Preparing MV from game…' },
+        textures: 'Textures 12', dance: 'Building dance motion… 40%', models: 'Loading 3D models 0/1…', preparing: 'Preparing MV from game…',
+        ready: 'Ready to play' },
 };
 
 async function send(page, event, finish = false) {
@@ -206,13 +209,25 @@ async function run() {
       assert.equal(view.cancelDisabled, true, 'nothing to cancel once the project has arrived');
       await page.evaluate(() => { mvStreamProbe.loadChoices.onProgress({ done: 1, total: 1 }); mvStreamProbe.loadChoices.onProgress({ phase: 'effects' }); });
       await look();
+      // Every state the card passes through until it goes.
+      await page.evaluate(() => {
+        const card = document.querySelector('#mv-import-progress');
+        window.mvCardSeen = [];
+        new MutationObserver(() => mvCardSeen.push(card.hidden ? 'hidden' : document.querySelector('#mv-import-percent').textContent
+          + '|' + document.querySelector('#mv-import-step').textContent))
+          .observe(card, { subtree: true, childList: true, characterData: true, attributes: true });
+      });
       await page.evaluate(() => mvStreamProbe.finishLoad());
       await settled();
+      await page.waitForFunction(() => document.querySelector('#mv-import-progress').hidden);
+      const seen = await page.evaluate(() => mvCardSeen);
+      assert(seen.includes('100%|' + expect.ready), seen.join(' / '));
+      percents.push(100);
       view = await card(page);
       assert.equal(view.hidden, true);
       assert.equal(await page.evaluate(() => MVStudio.getState().project.name), 'Progress fixture');
       for (let index = 1; index < percents.length; index++) assert(percents[index] >= percents[index - 1], percents.join(','));
-      assert(percents.at(-1) > 90 && percents.at(-1) <= 100, percents.join(','));
+      assert.equal(percents.at(-1), 100, percents.join(','));
 
       // 2. Cancel aborts the request; the server stops at its next report (tests/test_mv_studio_progress.py).
       await begin();

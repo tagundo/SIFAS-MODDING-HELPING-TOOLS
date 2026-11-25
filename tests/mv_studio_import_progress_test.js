@@ -82,17 +82,20 @@ const state = (step, value, extra = {}) => ({ type: 'progress', step, state: val
   assert.equal(view.percent, 90, 'the server part is 90%');
   tracker.complete();
   view = see(4100);
-  assert.deepEqual(view.step, ['Loading 3D models {done}/{total}…', { done: 0, total: 0 }]);
+  assert.deepEqual(view.step, ['Loading 3D models…', {}], 'no 0/0 before the scene counts its models');
   tracker.page({ done: 1, total: 4 });
+  assert.deepEqual(see(4150).step, ['Loading 3D models {done}/{total}…', { done: 1, total: 4 }]);
   tracker.page({ done: 4, total: 4 });
   assert.equal(see(4200).percent, 97);
   tracker.page({ phase: 'effects' });
   view = see(4300);
   assert.deepEqual(view.step, ['Preparing effects…', {}]);
   tracker.page({ phase: 'ready' });
-  assert.equal(see(4400).percent, 100);
+  view = see(4400);
+  assert.equal(view.percent, 100);
+  assert.deepEqual(view.step, ['Ready to play', {}]);
   for (let index = 1; index < percents.length; index++) assert(percents[index] >= percents[index - 1], percents.join(','));
-  assert.equal(view.elapsed, 3.3);
+  assert.equal(view.elapsed, 3.4);
 }
 
 {
@@ -119,7 +122,8 @@ assert.equal(Progress.megabytes(7.78 * 1024 * 1024), '7.8');
 // Every label the tracker can show has Korean and Japanese text.
 const i18n = fs.readFileSync(path.join(__dirname, '..', 'webtools', 'i18n.py'), 'utf8');
 const labels = [...Object.values(Progress.STEP_LABELS), ...Object.values(Progress.PHASE_LABELS), 'Preparing MV from game…',
-  'Stage is ready. Members are still loading.', 'Loading 3D models {done}/{total}…', 'Preparing effects…',
+  'Stage is ready. Members are still loading.', 'Loading 3D models {done}/{total}…', 'Loading 3D models…',
+  'Ready to play', 'Preparing effects…',
   'Reused from cache', 'Members done {done}/{count}', 'Game data {read}/{total} MB', 'Cancel import', 'Cancelling…',
   'MV import cancelled.'];
 for (const label of labels) {

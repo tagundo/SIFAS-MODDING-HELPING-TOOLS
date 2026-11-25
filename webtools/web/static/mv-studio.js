@@ -1922,10 +1922,16 @@
     renderImportProgress(load);
   }
 
-  function stopImportProgress(load) {
+  function stopImportProgress(load, finished = false) {
     clearInterval(load.timer);
     const card = byId("mv-import-progress");
-    if (card && gameImport === load) card.hidden = true;
+    if (!card || gameImport !== load) return;
+    if (!finished) {
+      card.hidden = true;
+      return;
+    }
+    // Leave the full bar in view for a moment, unless another import takes the card.
+    setTimeout(() => { if (!gameImport) card.hidden = true; }, 400);
   }
 
   async function showGameStage(load, preview) {
@@ -1994,13 +2000,16 @@
           renderImportProgress(load);
         });
         committed = true;
+        // The scene is ready: the bar shows 100% before the card goes.
+        load.progress?.page({ phase: "ready" });
+        renderImportProgress(load);
         report(complete ? "" : t("Some timeline edits could not be carried over."), !complete);
       } catch (error) {
         if (load.cancelRequested && !load.finishing) report(t("MV import cancelled."));
         if (!load.finishing) requireCurrent();
         throw error;
       } finally {
-        stopImportProgress(load);
+        stopImportProgress(load, committed);
         if (!committed) discardStage(load);
         gameImport = null;
         lockGameEditing(false);

@@ -160,8 +160,11 @@
       }
       let step = ["Preparing MV from game…", {}], phase = null;
       if (state.page) {
-        step = state.page.phase === "effects" || state.page.phase === "ready" ? ["Preparing effects…", {}]
-          : ["Loading 3D models {done}/{total}…", { done: state.page.done || 0, total: state.page.total || 0 }];
+        step = state.page.phase === "ready" ? ["Ready to play", {}]
+          : state.page.phase === "effects" ? ["Preparing effects…", {}]
+          // Nothing to count (a reused stage and no performer): no "0/0".
+          : !(state.page.total > 0) ? ["Loading 3D models…", {}]
+          : ["Loading 3D models {done}/{total}…", { done: state.page.done || 0, total: state.page.total }];
       } else if (state.current) {
         const planned = state.steps.find((item) => item.key === state.current.key);
         const label = STEP_LABELS[state.current.id] || planned?.label || "Preparing MV from game…";
