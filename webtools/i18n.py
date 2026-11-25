@@ -2670,6 +2670,9 @@ _MV_STUDIO_TRANSLATIONS = {
     "Exporting native timeline…": ("게임용 타임라인 내보내는 중…", "ゲーム用タイムラインを書き出し中…"),
     "Native timeline exported.": ("게임용 타임라인을 내보냈습니다.", "ゲーム用タイムラインを書き出しました。"),
     "Open an MV to preview its stage and timeline.": ("MV를 열면 무대와 타임라인을 볼 수 있습니다.", "MVを開くとステージとタイムラインを確認できます。"),
+    "The 3D preview could not prepare its materials before playback. They are prepared when first shown.": (
+        "3D 미리보기가 재생 전에 재질을 미리 준비하지 못했습니다. 처음 표시될 때 준비합니다.",
+        "3Dプレビューで再生前にマテリアルを準備できませんでした。最初に表示されるときに準備します。"),
     "This MV has no visual assets available for preview.": ("이 MV에서 미리 볼 수 있는 모델을 찾지 못했습니다.", "このMVにはプレビューできるモデルがありません。"),
     "Preview camera": ("미리보기 카메라", "プレビューカメラ"),
     "Game camera": ("게임 카메라", "ゲームカメラ"),

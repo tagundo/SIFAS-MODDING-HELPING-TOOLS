@@ -162,7 +162,7 @@ function fixture(visible = true, options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-scene.js'), 'utf8'), context);
   const mount = { clientWidth: 1280, clientHeight: 720, appendChild() {} };
   const app = window.MVStudioScene.create(mount,
-    { visible, onError(message) { throw new Error(message); } });
+    { visible, onError(message) { throw new Error(message); }, onWarning: options.onWarning });
   return { app, frames, cameras, samples, models, holds, queued, fetched, parsing, renderer, mount, window, fades, shadows,
     checkResize: onResize, get world() { return world; } };
 }
@@ -1057,8 +1057,43 @@ function checkAssetDumpHelpers() {
   assert.deepEqual(read.properties._RimglightIntensity, { t: 'float', v: .5, from: 'uRimglightIntensity' });
 }
 
+// After a load the programs and textures of every material are prepared (renderer.compile and
+// initTexture), hidden ones included. That is only an optimisation: when it fails the load still
+// completes and draws, and the preview lists a warning.
+async function checkWarmScene() {
+  const warnings = [], compiled = [], uploaded = [];
+  const texture = new THREE.Texture({ width: 4, height: 4, complete: true });
+  texture.needsUpdate = true;
+  const build = (root) => {
+    const hidden = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ map: texture }));
+    hidden.visible = false;
+    root.add(hidden);
+  };
+  const f = fixture(true, { build, onWarning: (message) => warnings.push(message) });
+  f.renderer.compile = (scene, camera) => compiled.push([scene.isScene, camera.isCamera]);
+  f.renderer.initTexture = (value) => uploaded.push(value);
+  await f.app.load(project(76));
+  assert.deepEqual(compiled, [[true, true]], 'one compile of the scene after the load');
+  assert.deepEqual(uploaded, [texture], 'the texture of a hidden material is uploaded');
+  assert.deepEqual(warnings, []);
+  f.app.dispose();
+
+  const failing = fixture(true, { onWarning: (message) => warnings.push(message) });
+  let attempts = 0;
+  failing.renderer.compile = () => { attempts++; throw new Error('program link failed'); };
+  await failing.app.load(project(77));
+  assert.equal(attempts, 1);
+  assert.deepEqual(warnings, ['The 3D preview could not prepare its materials before playback. They are prepared when first shown.']);
+  const drawn = failing.frames.length;
+  failing.app.seek(1, project(77));
+  assert.equal(failing.frames.length, drawn + 1, 'the loaded scene still draws');
+  assert.deepEqual(failing.frames.at(-1), ['model-77', 'outline-77']);
+  failing.app.dispose();
+}
+
 (async () => {
   checkResizeDraws();
+  await checkWarmScene();
   await checkNativeRenderHeight();
   await checkAdaptivePreview();
   await checkAssetDump();
