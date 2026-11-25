@@ -1,7 +1,7 @@
 /* MV Studio free camera views (mv-studio-free-camera.js): a compact bar over the bottom of
    the preview, shown while the preview draws the free camera. It never covers the preview
    controls: in a preview too short for both it sits beside them (.mv-freecam-beside, placed
-   by the script). One row: a bar that does not fit gets more compact (.mv-freecam-compact,
+   by the script), or, with no room there, the script keeps the preview tall enough. One row: a bar that does not fit gets more compact (.mv-freecam-compact,
    .mv-freecam-tight), then scrolls sideways. The view buttons are a segmented group like the
    3D model tab's camera buttons. */
 

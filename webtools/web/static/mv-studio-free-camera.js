@@ -41,8 +41,9 @@
     "Follow member", "While a member is the target, the free camera moves with that member as the MV plays or the playhead moves. Preview only.",
   ]);
 
-  // Gap (px) between the bar and the preview controls, and the narrowest bar placed beside them.
-  const GAP = 6, MIN_BESIDE = 160;
+  // Gap (px) between the bar and the preview controls, the bar's margin from the preview's edge
+  // (mv-studio-free-camera.css) and the narrowest bar placed beside the controls.
+  const GAP = 6, EDGE = 8, MIN_BESIDE = 160;
   // A bar that does not fit drops its sliders (the number boxes stay), then its captions.
   const COMPACT = Object.freeze(["mv-freecam-compact", "mv-freecam-tight"]);
 
@@ -211,23 +212,41 @@
 
   // The bar never covers the preview controls, and the view keeps the game camera's canvas, so
   // "Key current view" keys the lens as shown. The bar is one row at the bottom of the view,
-  // below the controls; a preview too short for both (a phone in landscape) gets the bar
-  // beside the controls instead.
+  // below the controls. A preview too short for both gets the bar beside the controls (a phone
+  // in landscape); with no room beside them either (a phone held upright), the preview keeps
+  // the height both need while the bar shows (see holdPreview).
   function place() {
     placed = 0;
     if (!refs) return;
     const bar = refs.bar, preview = bar.parentElement, controls = global.document.getElementById("mv-preview-controls");
     bar.classList.remove("mv-freecam-beside");
-    if (bar.offsetParent === null || !preview || !controls || controls.offsetParent !== preview) return;
-    compact(bar);
-    const below = controls.offsetTop + controls.offsetHeight + GAP;
-    const start = controls.offsetLeft + controls.offsetWidth + GAP;
-    if (bar.offsetTop < below && preview.clientWidth - start - GAP >= MIN_BESIDE) {
-      bar.style.setProperty("--mv-freecam-top", `${controls.offsetTop}px`);
-      bar.style.setProperty("--mv-freecam-start", `${start}px`);
-      bar.classList.add("mv-freecam-beside");
+    let needed = 0;
+    if (bar.offsetParent !== null && preview && controls && controls.offsetParent === preview) {
       compact(bar);
+      const below = controls.offsetTop + controls.offsetHeight + GAP;
+      const start = controls.offsetLeft + controls.offsetWidth + GAP;
+      if (preview.clientWidth - start - GAP < MIN_BESIDE) needed = below + bar.offsetHeight + EDGE;
+      else if (bar.offsetTop < below) {
+        bar.style.setProperty("--mv-freecam-top", `${controls.offsetTop}px`);
+        bar.style.setProperty("--mv-freecam-start", `${start}px`);
+        bar.classList.add("mv-freecam-beside");
+        compact(bar);
+      }
     }
+    holdPreview(preview?.closest(".mv-workspace"), needed);
+  }
+
+  // The workspace's --mv-preview-min (the preview's least height, which the host's timeline
+  // resizer keeps free) becomes at least `height` px; 0 gives it back its own value. The host
+  // sizes the timeline again on a window resize.
+  function holdPreview(workspace, height) {
+    if (!workspace) return;
+    const held = workspace.style.getPropertyValue("--mv-preview-min");
+    workspace.style.removeProperty("--mv-preview-min");
+    const own = parseFloat(global.getComputedStyle(workspace).getPropertyValue("--mv-preview-min")) || 0;
+    const next = height > own ? `${Math.ceil(height)}px` : "";
+    if (next) workspace.style.setProperty("--mv-preview-min", next);
+    if (next !== held) global.dispatchEvent(new global.Event("resize"));
   }
 
   function compact(bar) {

@@ -25,8 +25,9 @@
 
    Real 12035 MV (skipped unless MV_FREECAM_SERVER_ROOT is an Elichika server root that imports
    GL Android 12035 with its member; no game data in Git): the four views around the member pass
-   the same checks, Korean screenshots of the bar and the four views are taken, and the native
-   timeline export is byte-identical before and after using the free camera.
+   the same checks, Korean screenshots of the bar and the four views are taken, the native
+   timeline export is byte-identical before and after using the free camera, and on a phone
+   (touch) the bar stays clear of the preview controls with every control reachable.
 
    Screenshots go to EVIDENCE_DIR (a temporary folder otherwise). */
 'use strict';
@@ -240,11 +241,11 @@ const inside = (a, b) => a.left >= b.left - .5 && a.right <= b.right + .5 && a.t
 // Phones and a tablet (touch) and a laptop screen, each with the export note above the
 // workspace (a shorter preview, as after an export). The bar never covers the preview controls:
 // it is one row at the bottom of the view, or, in a preview too short for both, beside the
-// controls. The view keeps the whole preview (the game camera's canvas). The preview controls,
+// controls (with no room there, the preview keeps the height both need while the bar shows). The view keeps the whole preview (the game camera's canvas). The preview controls,
 // the target list and every view button are where a tap lands (beside the controls, after a
 // sideways swipe), and a tap on a view button turns the free camera to that side.
 const LAYOUTS = [
-  { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, place: 'bottom' },
+  { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, place: 'bottom', squeeze: true },
   { name: 'tablet', viewport: { width: 768, height: 1024 }, touch: true, place: 'bottom' },
   { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true, place: 'beside', swipe: true },
   { name: 'laptop', viewport: { width: 1280, height: 720 }, touch: false, place: 'bottom' },
@@ -265,10 +266,23 @@ async function layouts(browser, url) {
       note.hidden = false;
       note.replaceChildren(Object.assign(document.createElement('a'), { href: '#', textContent: 'A song for You- You- You-6c3fc246.unity' }));
     });
+    // The phone's timeline as tall as it goes: the preview at its least height (108 px), too
+    // short for the preview controls and the bar, with no room beside the controls.
+    if (layout.squeeze) {
+      await page.locator('#mv-timeline-resizer').focus();
+      await page.keyboard.press('End');
+      await frames(page);
+    }
+    const least = await page.evaluate(() => document.querySelector('.mv-preview').getBoundingClientRect().height);
     await setMode(page, 'orbit');
     await page.locator('#mv-free-camera').waitFor({ state: 'visible' });
     await frames(page);
     const shown = await page.evaluate(layoutProbe, !!layout.swipe);
+    const held = await page.evaluate(() => document.getElementById('mv-workspace').style.getPropertyValue('--mv-preview-min'));
+    if (layout.squeeze) {
+      assert(least <= 108.5, `${label}: the preview starts at its least height (${least})`);
+      assert(held && shown.preview.height > least, `${label}: the preview grows for the bar (${least} -> ${shown.preview.height}, ${held})`);
+    }
     assert(apart(shown.bar, shown.controls), `${label}: the bar does not cover the preview controls (${JSON.stringify([shown.bar, shown.controls])})`);
     assert(inside(shown.bar, shown.preview), `${label}: the bar stays inside the preview`);
     if (layout.place === 'bottom') {
@@ -292,11 +306,13 @@ async function layouts(browser, url) {
     assert(sideError(view.unity, SIDES.left) < 1 && Math.abs(view.ndc[0]) < 1e-4 && Math.abs(view.ndc[1]) < 1e-4, `${label}: the Left view`);
     await setMode(page, 'live');
     await page.locator('#mv-free-camera').waitFor({ state: 'hidden' });
+    assert.equal(await page.evaluate(() => document.getElementById('mv-workspace').style.getPropertyValue('--mv-preview-min')), '',
+      `${label}: the preview's least height is the host's own again`);
     assert.equal(await page.evaluate(() => document.elementFromPoint(...(({ left, top, width, height }) => [left + width / 2, top + height / 2])(
       document.getElementById('mv-camera-mode').getBoundingClientRect())) === document.getElementById('mv-camera-mode')), true, `${label}: back to the game camera`);
     assert.deepEqual(errors, []);
     results[layout.name] = { place: shown.classes.includes('mv-freecam-beside') ? 'beside' : 'bottom', compact: shown.classes.filter((name) => /compact|tight/.test(name)),
-      preview: [shown.preview.width, shown.preview.height], bar: [shown.bar.left - shown.preview.left, shown.bar.top - shown.preview.top, shown.bar.width, shown.bar.height] };
+      preview: [shown.preview.width, shown.preview.height], previewBefore: least, held, bar: [shown.bar.left - shown.preview.left, shown.bar.top - shown.preview.top, shown.bar.width, shown.bar.height] };
     await page.context().close();
   }
   return results;
@@ -636,7 +652,30 @@ async function real(browser) {
     assert(exportedAfter.equals(exportedBefore), '12035: the native timeline export is byte-identical');
     assert.deepEqual(errors, []);
     await page.context().close();
-    return { member: label, views, exportBytes: exportedAfter.length };
+
+    // The same MV on a phone (touch, 390x844): the bar is clear of the preview controls and
+    // every control is where a tap lands; a Korean screenshot of the preview.
+    const phone = await newPage(browser, errors, { width: 390, height: 844 }, { isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    await phone.goto(server.url + '/#mv');
+    await capture.importOriginal(phone, { region: 'gl', platform: 'android', liveId: 12035, assetId: 1203503 }, true);
+    await phone.waitForFunction(() => window.probeCtx.scene()?.freeView.targets().some((item) => item.kind === 'member'), null, { timeout: 600000 });
+    await seek(phone, time);
+    await setMode(phone, 'orbit');
+    await phone.locator('#mv-freecam-target').selectOption(member.id);
+    await phone.locator('[data-mv-freecam-view="front"]').tap();
+    await frames(phone);
+    const shown = await phone.evaluate(layoutProbe);
+    assert(apart(shown.bar, shown.controls) && inside(shown.bar, shown.preview),
+      `12035 phone: the bar is clear of the preview controls, inside the preview (${JSON.stringify([shown.preview, shown.controls, shown.bar, shown.classes])})`);
+    const missed = Object.entries({ ...shown.hits, ...shown.scrolled }).filter(([, reached]) => !reached).map(([name]) => name);
+    assert.deepEqual(missed, [], '12035 phone: every control is where a tap lands');
+    await phone.waitForTimeout(300);
+    await phone.locator('.mv-preview').screenshot({ path: path.join(evidence, 'freecam-12035-phone-ko.png') });
+    await setMode(phone, 'live');
+    assert.deepEqual(errors, []);
+    await phone.context().close();
+    return { member: label, views, exportBytes: exportedAfter.length,
+      phone: { preview: [shown.preview.width, shown.preview.height], bar: [shown.bar.width, shown.bar.height], compact: shown.classes.filter((name) => /compact|tight/.test(name)) } };
   } finally {
     server.child.kill();
   }
