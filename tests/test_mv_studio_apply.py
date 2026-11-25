@@ -444,6 +444,58 @@ class ApplyAllTests(ApplyCase):
 
 
 @NEEDS_STORE
+class ConsentAndKeepTests(ApplyCase):
+    """Apply all with a platform left out, and the keep rules of both modes."""
+
+    def stock_project(self):
+        return self.project(source={"kind": "game", "region": "gl", "platform": "android", "liveId": 21, "assetId": 2101,
+                                    "mvOnly": False, "registered": False, "timelineKey": "A2101"})
+
+    def test_apply_all_of_an_unedited_project_needs_no_download_and_keeps_a_left_out_platform(self):
+        project = self.imported()
+        self.bloom(project["tracks"])["intensity"] = 2.5
+        self.run_apply(project, "edits")
+        self.remote["tl2101i"] = self.local.pop("tl2101i")
+        plan = self.plan(self.stock_project())
+        # Back to the stock reads no original: no download is offered for it.
+        self.assertEqual((plan["all"]["download"], plan["all"]["missing"], plan["all"]["counts"]["clips"],
+                          plan["all"]["unchanged"]), ([], [], 0, False))
+        # A page that still leaves iOS out with consent (an older check): iOS keeps what it plays.
+        ios = self.served("ios")
+        job, _ = self.run_apply(self.stock_project(), "all", plan=plan, platforms=("android",))
+        self.assertEqual(self.result(job)["parts"], ["android"])
+        self.assertEqual(self.timeline()["platforms"], {"android": "stock", "ios": "custom"})
+        self.assertEqual(self.served("ios"), ios)
+        self.assertEqual(sorted(self.result(job)["applied"]["platforms"]), ["android"])
+        # Both platforms: iOS plays the stock again, without any download.
+        self.loads.clear()
+        job, _ = self.run_apply(self.stock_project(), "all")
+        self.assertEqual((self.result(job)["parts"], self.timeline()["override"]), (["ios"], False))
+        self.assertNotIn(("tl2101i", True), self.loads)
+
+    def test_apply_all_with_edits_keeps_a_platform_left_out_with_consent(self):
+        first = self.imported()
+        self.bloom(first["tracks"])["intensity"] = 2.5
+        self.run_apply(first, "edits")
+        ios = self.served("ios")
+        self.remote["tl2101i"] = self.local.pop("tl2101i")
+        project = self.stock_project()
+        project["tracks"][2]["events"][0]["start"] = 0.5
+        plan = self.plan(project)
+        self.assertEqual(plan["all"]["download"], ["ios"])
+        job, _ = self.run_apply(project, "all", plan=plan, platforms=("android",))
+        self.assertEqual(self.result(job)["parts"], ["android"])
+        self.assertEqual(self.served("ios"), ios, "iOS keeps the MV it plays now")
+        expected = copy.deepcopy(reg_tests.base_tracks())
+        expected[2]["events"][0]["start"] = 0.5
+        self.assertEqual(tracks_of(self.served("android")), expected)
+        # Without the consent (the download allowed, or iOS not left out), iOS takes the whole project too.
+        job, _ = self.run_apply(project, "all", download=True)
+        self.assertEqual(self.result(job)["parts"], ["ios"])
+        self.assertEqual(tracks_of(self.served("ios")), expected)
+
+
+@NEEDS_STORE
 class SongTargetTests(ApplyCase):
     def test_an_mv_only_song_takes_edits_and_apply_all_as_timeline_only_updates(self):
         job, _ = self.run_job(self.request(self.edited(self.imported()), title="내 곡", credit="작곡: 나"))

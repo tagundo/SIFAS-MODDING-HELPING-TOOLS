@@ -1223,6 +1223,19 @@ def _timeline_identity(descriptor, platform, blob):
     return identity
 
 
+def _unchanged_stock(blob, tracks):
+    """True when a game import of the base MV carries no edits: its bake reads no original (every
+    platform not kept plays the stock rows), so no download is needed for it."""
+    if blob["kind"] != "stock" or blob["raw"] is None:
+        return False
+    try:
+        reference = _parse(blob["raw"])
+        result, _ = normalize(reference["tracks"], tracks)
+        return not count_edits(reference["tracks"], result)["clips"]
+    except (StructureError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _left_out(repo_root, facts, platform, blob, request):
     """Check that a platform missing from ``platforms`` was left out with the user's consent.
 
@@ -1302,17 +1315,29 @@ def _bake(job, progress, repo_root, project, base, facts, request, song, *, left
         unchanged = mod_raw is None and not count_edits(reference["tracks"], result)["clips"]
         return result, unchanged
 
+    def left_out(platform):
+        _left_out(repo_root, facts, platform, blob, request)
+        if left_out_keep:
+            keep(platform, None)
+
+    def unchanged_result():
+        # Every platform not kept plays the stock rows, except one left out with consent when it
+        # keeps what it plays (apply to game): the consent said so, whatever the edits are.
+        if left_out_keep:
+            for platform in catalogued:
+                if platform not in wanted and timelines.get(platform) is not KEEP:
+                    left_out(platform)
+        return timelines, {}, fingerprints
+
     if mod_raw is not None or blob["kind"] == "stock":
         normalized, unchanged = reference_from(mod_raw if mod_raw is not None else blob["raw"])
         if unchanged:
-            return timelines, originals, fingerprints
+            return unchanged_result()
     for platform, descriptor in catalogued.items():
         if timelines.get(platform) is KEEP:
             continue
         if platform not in wanted:
-            _left_out(repo_root, facts, platform, blob, request)
-            if left_out_keep:
-                keep(platform, None)
+            left_out(platform)
             continue
         own = mod_raw is not None and platform == blob["platform"]
         fingerprint = expected[platform]
@@ -1326,7 +1351,7 @@ def _bake(job, progress, repo_root, project, base, facts, request, song, *, left
         if normalized is None:
             normalized, unchanged = reference_from(stock)
             if unchanged:
-                return timelines, {}, fingerprints
+                return unchanged_result()
         try:
             output = _export(mod_raw if own else stock, request["title"], normalized)
         except ValueError:

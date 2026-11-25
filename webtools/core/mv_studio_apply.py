@@ -355,6 +355,8 @@ def plan(repo_root, project, *, unbaked=(), language="en"):
              "pending": {platform: counts["clips"] for platform, counts in pending.items()}}
     edits["unchanged"] = not edits["counts"]["clips"]
     every = {"counts": None, "unchanged": True, "download": [], "missing": [], "blocked": []}
+    # An unedited game import bakes nothing: every platform plays the stock rows, no original is read.
+    stock_unchanged = register._unchanged_stock(blob, project["tracks"])
     parsed, served_tracks = {}, {}
     for platform in _catalogued(target):
         descriptor = target["facts"]["timelines"][platform]
@@ -366,7 +368,8 @@ def plan(repo_root, project, *, unbaked=(), language="en"):
             result["expected"]["sha"][platform] = _sha(served_raw)
         # Apply all bakes from the true stock: it needs the stock, and differs when the game plays other content.
         if stock_raw is None:
-            every["download" if stock_status == "download" else "missing"].append(platform)
+            if not stock_unchanged:
+                every["download" if stock_status == "download" else "missing"].append(platform)
         else:
             parsed.setdefault("stock", register._parse(stock_raw, "stock"))
         if served_raw is not None:
@@ -396,7 +399,9 @@ def plan(repo_root, project, *, unbaked=(), language="en"):
         edits["apply"].append(platform)
         if stock_raw is None and platform not in edits["download"]:
             edits["download" if stock_status == "download" else "missing"].append(platform)
-    if "stock" in parsed:
+    if stock_unchanged:
+        every["counts"] = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0}
+    elif "stock" in parsed:
         try:
             normalized, _ = register.normalize(parsed["stock"]["tracks"], ours)
             every["counts"] = register.count_edits(parsed["stock"]["tracks"], normalized)
