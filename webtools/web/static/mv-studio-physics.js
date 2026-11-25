@@ -83,6 +83,8 @@
     return Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
   }
 
+  // The engine is created with deferCapture: every captureAnimationPose() below is followed
+  // by its step() or apply() with nothing in between.
   function create(root, catalog, motionSettings) {
     const source = global.ViewerGamePhysics;
     if (!catalog?.available || !Array.isArray(catalog.managers) || !Array.isArray(catalog.components) ||
@@ -197,7 +199,7 @@
     function apply(time, delta, quality, motion) {
       configure(quality);
       if (!active && !delta) return;
-      engine ||= source.create(root, catalog, null, { initializationPose: original });
+      engine ||= source.create(root, catalog, null, { initializationPose: original, deferCapture: true });
       applied = false;
       remember();
       if (delta > 0) {
@@ -220,7 +222,7 @@
         if (active) engine?.keepFramePose?.();
         return false;
       }
-      engine ||= source.create(root, catalog, null, { initializationPose: original });
+      engine ||= source.create(root, catalog, null, { initializationPose: original, deferCapture: true });
       remember();
       const pose = previous || { time, animatedProperties: motion?.animatedProperties?.(time) || {} };
       engine.captureAnimationPose({ time: pose.time, advancing: true, animatedProperties: pose.animatedProperties });
