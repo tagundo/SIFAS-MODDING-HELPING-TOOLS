@@ -10,6 +10,7 @@
      side; right +X, the members' right), at the same distance, height angle and FOV;
    - Distance (number box, slider) and FOV (number box, Shift+wheel) change only the distance or
      only the FOV; the plain wheel still dollies;
+   - after Enter, the distance and FOV boxes show the value applied (clamped to the bar's range);
    - a member target carries the camera along only while Follow member is on;
    - nothing reaches the project, its history or the game camera;
    - Key current view after a view preset keys the shown view (the game camera then shows it);
@@ -383,6 +384,32 @@ async function synthetic(browser, url) {
   after = await measure(page);
   assert.equal(after.fov, widened, 'the plain wheel keeps the FOV');
   assert(angleBetween(after.quaternion, lens.quaternion) < 1e-6, 'and dollies along the view');
+  // After Enter the box shows the value applied (clamped to the bar's range) while it keeps
+  // focus; an empty entry gets the current value back; a box that was focused while the wheel
+  // moved the camera shows the new value once left.
+  for (const [box, typed, key, applied, shown] of [[distanceBox, '0.1', 'distance', .3, '0.3'], [fovBox, '200', 'fov', 120, '120'],
+    [fovBox, '', 'fov', 120, '120']]) {
+    await box.fill(typed);
+    await box.press('Enter');
+    near((await freeState(page))[key], applied, 1e-9, `${key} ${JSON.stringify(typed)} applies ${applied}`);
+    assert.equal(await box.inputValue(), shown, `${key} ${JSON.stringify(typed)}: the box shows ${shown}`);
+    assert.equal(await box.evaluate((node) => node === document.activeElement), true, 'the box keeps focus after Enter');
+    await page.locator('#mv-timeline-label').click();
+    assert.equal(await box.inputValue(), shown, `${key} ${JSON.stringify(typed)}: still ${shown} once left`);
+  }
+  for (const [box, value] of [[distanceBox, '4'], [fovBox, '40']]) {
+    await box.fill(value);
+    await box.press('Tab');
+  }
+  await distanceBox.focus();
+  await page.mouse.move(canvas.x + canvas.width / 2, canvas.y + canvas.height / 3);
+  await page.mouse.wheel(0, -200);
+  await page.waitForFunction(() => window.probeCtx.scene().freeView.state().distance < 4 - 1e-6);
+  await frames(page);
+  assert.equal(await distanceBox.inputValue(), '4', 'a focused box keeps what it shows');
+  await page.locator('#mv-timeline-label').click();
+  const dollied = (await freeState(page)).distance;
+  assert.equal(await distanceBox.inputValue(), String(Number(dollied.toFixed(2))), 'and shows the distance once left');
 
   // Follow member: the member moves between 0 s and 0.5 s (its Tip bone swings).
   await seek(page, 0);

@@ -116,13 +116,16 @@
     number.setAttribute("aria-label", t(label));
     slider.addEventListener("input", () => { apply(fromSlider(slider.valueAsNumber)); });
     slider.addEventListener("change", () => { apply(fromSlider(slider.valueAsNumber)); commit(); });
+    // The box then shows the value applied (clamped and rounded), also while it keeps focus
+    // after Enter; an empty or invalid entry gets the current value back.
     number.addEventListener("change", () => {
       if (number.value !== "" && finite(number.valueAsNumber)) {
         apply(clamp(number.valueAsNumber, numberRange.min, numberRange.max));
         commit();
       }
-      sync();
+      sync(number);
     });
+    number.addEventListener("blur", () => sync());
     wrap.append(make("span", { text: label }), slider, number, ctx.make("span", unit, { class: "mv-freecam-unit", "aria-hidden": "true" }));
     return { wrap, slider, number };
   }
@@ -182,7 +185,8 @@
   }
 
   // The bar shows only while the preview draws the free camera; its values follow the camera.
-  function sync() {
+  // A focused box or slider keeps what is being typed or dragged, except `forced`.
+  function sync(forced = null) {
     if (!refs) return;
     hookScene();
     const mode = modeSelect();
@@ -196,11 +200,11 @@
     if (refs.bar.hidden) return;
     refreshTargets();
     const state = api.state();
-    const active = global.document.activeElement;
-    if (active !== refs.distance.number) refs.distance.number.value = String(round(state.distance, state.distance < 10 ? 2 : 1));
-    if (active !== refs.fov.number) refs.fov.number.value = String(round(state.fov, 1));
-    if (active !== refs.distance.slider) refs.distance.slider.value = String(sliderOf(state.distance));
-    if (active !== refs.fov.slider) refs.fov.slider.value = String(round(clamp(state.fov, FOV.min, FOV.max), 0));
+    const keep = (element) => element !== forced && element === global.document.activeElement;
+    if (!keep(refs.distance.number)) refs.distance.number.value = String(round(state.distance, state.distance < 10 ? 2 : 1));
+    if (!keep(refs.fov.number)) refs.fov.number.value = String(round(state.fov, 1));
+    if (!keep(refs.distance.slider)) refs.distance.slider.value = String(sliderOf(state.distance));
+    if (!keep(refs.fov.slider)) refs.fov.slider.value = String(round(clamp(state.fov, FOV.min, FOV.max), 0));
     refs.follow.checked = state.follow;
     refs.follow.disabled = state.target === "stage";
   }
@@ -260,9 +264,9 @@
       ctx = context;
       refs = build();
       if (!refs) return;
-      modeSelect()?.addEventListener("change", sync);
+      modeSelect()?.addEventListener("change", () => sync());
       // "Frame scene" switches the select to the free camera without a change event.
-      global.document.getElementById("mv-frame-scene")?.addEventListener("click", () => global.requestAnimationFrame(sync));
+      global.document.getElementById("mv-frame-scene")?.addEventListener("click", () => global.requestAnimationFrame(() => sync()));
       global.document.getElementById("mv-scene")?.addEventListener("wheel", wheel, { capture: true, passive: false });
       if (global.ResizeObserver) {
         const observer = new global.ResizeObserver(queuePlace);
