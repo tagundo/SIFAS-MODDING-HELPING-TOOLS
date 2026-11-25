@@ -227,6 +227,19 @@ async function registrationControls(page) {
   finishJob7 = true;
   await page.locator('#mv-register-error').filter({ hasText: '이 지역의 다른 곡이 이미 쓰고 있습니다' }).waitFor();
   assert.equal(await page.locator('#mv-register-error-server').textContent(), '게임 서버를 다시 시작했습니다.');
+  // An update that stopped the server but changed nothing: the result says both.
+  await page.route('**/api/jobs/job8/events', (route) => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: stream([
+    { type: 'mv-stage', stage: 'stop', label: 'Stopping the game server', index: 1, total: 4 },
+    { type: 'mv-song', mode: 'update', changed: false, restart: 'done', warnings: [],
+      song: { liveId: 93002, region: 'gl', title: 'MV Studio sample' } },
+    { type: 'done', status: 'done', summary: 'No changes to apply.' }]) }));
+  await page.waitForFunction(() => { const submit = document.querySelector('#mv-register-submit'); return submit && !submit.disabled; });
+  await page.locator('#mv-register-submit').click();
+  await page.locator('#mv-register-result').filter({ hasText: '바뀐 내용이 없습니다.' }).waitFor();
+  assert.equal(jobs.length, 8);
+  assert.deepEqual(await page.locator('#mv-register-result p').allTextContents(), ['바뀐 내용이 없습니다.', '게임 서버를 다시 시작했습니다.']);
+  assert.equal(await page.locator('#mv-register-result-server').textContent(), '게임 서버를 다시 시작했습니다.');
+  assert.equal(await page.locator('#mv-register-error').count(), 0);
   // Deleting on a standalone PC: the server was stopped and must be started again; the store's
   // warning and the backup are shown with the result.
   await page.route('**/api/mv-studio/songs/remove-plan?*', (route) => route.fulfill({ json: { reviewToken: 'a'.repeat(64),
