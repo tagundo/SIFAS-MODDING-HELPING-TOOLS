@@ -64,6 +64,13 @@
 /* Undo / redo, next to the tabs (the Edit tab lists what they change). */
 .mv-history-controls { grid-area: history; display: flex; gap: 4px; padding-inline-end: 6px; border-inline-end: 1px solid var(--line); }
 #tab-mv .mv-history-button { min-width: var(--mv-control-h-sm); min-height: var(--mv-control-h-sm); padding: 0 4px; font-size: .9rem; line-height: 1; }
+/* The name next to the icon wherever the row has room (tablets, a foldable's inner screen, phones
+   held sideways): touch has no tooltip. Narrow phones keep the icon (the name is its aria-label). */
+.mv-history-text { display: none; }
+@media (min-width: 600px) {
+  #tab-mv .mv-history-button { padding: 0 7px; }
+  .mv-history-text { display: inline; margin-inline-start: 4px; font-size: .72rem; white-space: nowrap; }
+}
 
 /* Rows that are not tracks. */
 .mv-lane-label.mv-lane-group { min-height: var(--mv-group-h); padding-block: 0; background: var(--panel2); color: var(--muted); font-size: .68rem; font-weight: 600; }
