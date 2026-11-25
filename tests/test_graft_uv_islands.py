@@ -261,65 +261,89 @@ class CoarseMipPlacementTests(unittest.TestCase):
 class ReservedCoarsePlacementTests(unittest.TestCase):
     """Coarse footprints are scored against reserved texels first, folded through the wrap mode.
 
-    A 64-pixel bilinear texture with a full mip chain. The top band (v >= 60/64)
-    is reserved, like the face block of a head texture. Receiver cells cover
-    most of the rest, leaving two free slots for the 10x10-texel island
-    footprint: B in the bottom-left corner and A at (24, 24). B keeps off the
-    receiver's coarse texels for more levels than A. At B, the island's level-2
-    footprint reaches one texel below row 0, which Repeat folds onto the top
-    row: the reserved band. Clamp folds it onto row 0 instead.
+    A 256-pixel bilinear texture with a full mip chain; levels 0-3 are at
+    least 32 texels across and are compared first. The top band (v >= 240/256)
+    and a bottom-right block are reserved, like the face of a head texture.
+    Receiver rectangles cover the rest, leaving one 16-grid position each for
+    the 26x26-texel island footprint: B in the bottom-left corner, A at
+    (96, 96). A touches the receiver from level 2 on; B keeps off it through
+    level 3. At B, the island's level-2 footprint reaches one texel below row 0
+    and left of column 0, which Repeat folds onto the reserved band and block.
+    Clamp folds them onto row and column 0 instead.
     """
-    SIZE = 64
+    SIZE = 256
 
     def receiver_cells(self):
-        cells = []
-        for x0 in range(0, 52, 4):
-            for y0 in range(0, 56, 4):
-                if (x0 < 16 and y0 < 16) or (20 <= x0 <= 32 and 20 <= y0 <= 32):
-                    continue
-                cells += inset(x0, y0, 4, self.SIZE)
-        return cells
+        def rect(x0, y0, x1, y1):
+            u0, v0, u1, v1 = x0 / self.SIZE, y0 / self.SIZE, x1 / self.SIZE, y1 / self.SIZE
+            return [((u0, v0), (u1, v0), (u0, v1)), ((u1, v0), (u1, v1), (u0, v1))]
+        # Sampler footprints of these rectangles leave texels 0-38 (B) and
+        # 96-121 (A) free on both axes; the 26-texel footprint fits once in each.
+        return (rect(40.25, .25, 214.75, 39.75) + rect(.25, 40.25, 255.75, 94.75)
+                + rect(.25, 95.25, 94.75, 122.75) + rect(123.25, 95.25, 255.75, 122.75)
+                + rect(.25, 123.25, 255.75, 237.75))
 
-    def place(self, wrap):
+    RESERVED = {"rects": [(0., 240 / 256, 1., 1.), (216 / 256, 0., 1., 40 / 256)]}
+
+    def reserved_rows(self, size):
+        """Reserved texels at one level (top-left rows), by the closed rectangles widened 1.5 texels."""
+        mask = np.zeros((size, size), bool)
+        mask[:size - max(0, int(np.ceil(240 / 256 * size - 1.5)))] = True
+        corner_rows = min(size, int(np.floor(40 / 256 * size + .5)) + 1)
+        mask[size - corner_rows:, max(0, int(np.ceil(216 / 256 * size - 1.5))):] = True
+        return mask
+
+    def place(self, wrap, reserved=None):
         size = self.SIZE
-        receiver = [image((size >> level, size >> level), (9, 9, 9, 255)) for level in range(7)]
-        donor = [image((size >> level, size >> level), (200, 10 + level, 10, 255)) for level in range(7)]
+        count = size.bit_length()
+        receiver = [image((size >> level, size >> level), (9, 9, 9, 255)) for level in range(count)]
+        donor = [image((size >> level, size >> level), (200, 10 + level, 10, 255)) for level in range(count)]
         target, part_source = source("receiver", receiver, wrap=wrap), source("donor", donor, wrap=wrap)
-        geometry = grouped_mesh([self.receiver_cells(), inset(33, 33, 8, size)])
+        geometry = grouped_mesh([self.receiver_cells(), inset(129, 129, 24, size)])
         result = prepare_uv_reuse([target, part_source], geometry, 1, uv_placement="move_to_empty",
-                                  reserved={"rects": [(0., 60 / size, 1., 1.)]})
+                                  reserved=reserved or self.RESERVED)
         self.assertIsNotNone(result)
-        position = tuple(33 + round(offset * size) for offset in result.transforms[1].offset)
+        position = tuple(129 + round(offset * size) for offset in result.transforms[1].offset)
         return result, position
 
     def test_repeat_wrap_onto_reserved_texels_moves_the_island_off_the_edge(self):
         result, position = self.place(wrap=0)
-        self.assertEqual(position, (25, 25), "slot B's wrapped level-2 footprint reaches the reserved band")
+        self.assertEqual(position, (97, 97), "slot B's wrapped level-2 footprint reaches the reserved band")
         payload = levels(result.textures["_MainTex"])
-        for level in range(5):
-            np.testing.assert_array_equal(payload[level][0], np.full((self.SIZE >> level, 4), (9, 9, 9, 255), np.uint8),
-                                          f"level {level}: the reserved top row keeps its texels")
-        self.assertEqual(result.reserved_changes["_MainTex"][:5], (0, 0, 0, 0, 0))
-        self.assertTrue(any("keeps off other surfaces' texels at mip levels 0–4 and off the receiver's at mip "
-                            "levels 0–1" in message for message in result.diagnostics), result.diagnostics)
+        for level in range(6):
+            changed = np.any(payload[level] != (9, 9, 9, 255), axis=2)
+            self.assertFalse(np.any(changed & self.reserved_rows(self.SIZE >> level)),
+                             f"level {level}: the reserved texels keep their colour")
+        self.assertEqual(result.reserved_changes["_MainTex"][:6], (0,) * 6)
+        self.assertTrue(any("keeps off other surfaces' texels at mip levels 0–5 and off the receiver's at mip "
+                            "levels 0–1." in message for message in result.diagnostics), result.diagnostics)
 
     def test_clamp_keeps_the_first_free_corner(self):
         result, position = self.place(wrap=1)
-        self.assertEqual(position, (1, 1), "nothing folds onto the reserved band, so bottom-left order decides")
+        self.assertEqual(position, (1, 1), "nothing folds onto the reserved band, and B keeps off the receiver longer")
         self.assertEqual(result.reserved_changes["_MainTex"][:6], (0,) * 6)
+
+    def test_reserved_levels_past_the_priority_levels_never_outrank_the_receiver(self):
+        """A small reserved block meets B's footprint only at level 4 (16 texels across).
+
+        B then keeps off reserved texels through level 3 and A through level 5,
+        but B keeps off the receiver through level 3 and A only through level
+        1. Within the levels compared first (0-3) B is better, so B is used.
+        """
+        reserved = {"rects": self.RESERVED["rects"] + [(44 / 256, 0., 47 / 256, 30 / 256)]}
+        result, position = self.place(wrap=1, reserved=reserved)
+        self.assertEqual(position, (1, 1))
+        self.assertTrue(any("keeps off other surfaces' texels at mip levels 0–3 and off the receiver's at mip "
+                            "levels 0–3." in message for message in result.diagnostics), result.diagnostics)
 
     def test_reserved_changes_are_measured_from_the_written_texels(self):
         result, _ = self.place(wrap=0)
         payload = levels(result.textures["_MainTex"])
-        self.assertEqual(len(result.reserved_changes["_MainTex"]), 7)
+        self.assertEqual(len(result.reserved_changes["_MainTex"]), self.SIZE.bit_length())
         for level, count in enumerate(result.reserved_changes["_MainTex"]):
-            size = self.SIZE >> level
-            # Bilinear support widens the closed band v >= 60/64 by 1.5 texels downwards.
-            rows = size - max(0, int(np.ceil(60 / 64 * size - 1.5)))
-            changed = np.any(payload[level][:rows] != (9, 9, 9, 255), axis=2)
-            self.assertEqual(count, int(changed.sum()), f"level {level}")
-        self.assertGreater(sum(result.reserved_changes["_MainTex"]), 0, "the 2x2 and 1x1 levels cannot avoid the band")
-
+            changed = np.any(payload[level] != (9, 9, 9, 255), axis=2)
+            self.assertEqual(count, int((changed & self.reserved_rows(self.SIZE >> level)).sum()), f"level {level}")
+        self.assertGreater(sum(result.reserved_changes["_MainTex"]), 0, "the smallest levels cannot avoid the band")
 
 
 class CoarseScorerTests(unittest.TestCase):

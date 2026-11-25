@@ -417,6 +417,11 @@ _MIN_GRID_POSITIONS = 16
 # receiving mesh's texels at the most levels. Footprints are folded through
 # the sampler's wrap modes, so a footprint at one edge that reaches the
 # opposite edge counts there. This only picks a position; no pixel changes.
+# Both counts are first compared up to the levels that are still at least
+# this many texels across. Below that, a face region spans only a few texels
+# and is sampled only when the face is a few pixels tall on screen, so a
+# coarser reserved level never outranks a finer receiver level.
+_COARSE_PRIORITY_TEXELS = 32
 
 
 def _grid_level(grid):
@@ -645,6 +650,8 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
             if target_width % (1 << level) or target_height % (1 << level):
                 break
             coarse_levels.append(level)
+        priority_levels = sum(1 for level in coarse_levels
+                              if min(target_width, target_height) >> level >= _COARSE_PRIORITY_TEXELS)
         coarse_receiver = {}
         for level in coarse_levels:
             w, h = target_width >> level, target_height >> level
@@ -709,14 +716,17 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
             # Coarser grids first (more exact authored mips). On each grid the
             # free positions are tried in order of how many coarse levels keep
             # off reserved texels, then how many keep off the receiving mesh's
-            # texels, then bottom-left first; exactness is never traded for it.
+            # texels (both first up to the priority levels), then bottom-left
+            # first; exactness is never traded for it.
             for grid in grids:
                 if chosen is not None or exhausted:
                     break
                 if island_levels and _grid_level(grid):
                     xs, ys = _candidate_arrays(occupied, shape.shape, (left, bottom), grid)
                     reserved_score, receiver_score = scorer.scores(xs - left, ys - bottom)
-                    order = np.lexsort((np.arange(len(xs)), -receiver_score, -reserved_score))
+                    order = np.lexsort((np.arange(len(xs)), -receiver_score, -reserved_score,
+                                        -np.minimum(receiver_score, priority_levels),
+                                        -np.minimum(reserved_score, priority_levels)))
                     positions = zip(xs[order].tolist(), ys[order].tolist())
                 else:
                     positions = _candidate_positions(occupied, shape.shape, (left, bottom), grid)
