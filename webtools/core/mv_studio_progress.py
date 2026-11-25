@@ -13,7 +13,8 @@ import thread with small JSON-ready dicts:
   "skipped" | "failed"}`` whenever a step changes state (``cached``: reused
   without converting). Member steps repeat ``index`` and ``of``.
 - ``{"type": "progress", "step": id, "phase": name, "done": k, "total": n}``
-  while a step works (``textures``, ``animation``), at most every
+  while a step works (``bundle``, ``tracks``, ``effects`` of the timeline;
+  ``motion``, ``textures``, ``animation`` of a member), at most every
   ``interval`` seconds.
 
 Every event carries ``t`` (seconds since the import started) and ``read``
@@ -21,9 +22,15 @@ Every event carries ``t`` (seconds since the import started) and ``read``
 BaseException, so the converters' ``except Exception`` recovery cannot
 swallow it; the import then unwinds and caches nothing of the partial work.
 
-Converters deep inside the import report through ``tick()``. It only does
-something on the thread that runs an import with progress, so other tools
-that share those converters are unaffected.
+Between events the callback also receives ``None`` (at most every
+``interval`` seconds): nothing to report, only the chance to raise
+ImportCancelled. Every deadline check of the converters is such a point
+(``alive()``), so an import stops soon after its client leaves, also in
+the middle of a long step.
+
+Converters deep inside the import report through ``tick()`` and ``alive()``.
+They only do something on the thread that runs an import with progress, so
+other tools that share those converters are unaffected.
 """
 from contextlib import contextmanager
 import threading
@@ -57,6 +64,7 @@ class Progress:
         self._callback, self._interval, self._clock = callback, interval, clock
         self._started = clock()
         self._next = 0.
+        self._next_check = 0.
         self._read = 0
         self._current = None
         self._thread = threading.get_ident()
@@ -100,6 +108,14 @@ class Progress:
         """A new phase of the current step: always reported."""
         self.tick(phase, force=True)
 
+    def alive(self):
+        """Let the callback stop the import here (it receives None), at most every interval."""
+        now = self._clock()
+        if now < self._next_check or threading.get_ident() != self._thread:
+            return
+        self._next_check = now + self._interval
+        self._callback(None)
+
     def tick(self, phase, done=None, total=None, force=False):
         if threading.get_ident() != self._thread or (not force and self._clock() < self._next):
             return
@@ -131,6 +147,9 @@ class _Silent:
     def phase(self, phase):
         pass
 
+    def alive(self):
+        pass
+
     def tick(self, phase, done=None, total=None, force=False):
         pass
 
@@ -158,7 +177,14 @@ def active(progress):
         restore(previous)
 
 
-def tick(phase, done=None, total=None):
+def tick(phase, done=None, total=None, force=False):
     progress = getattr(_LOCAL, "progress", None)
     if progress is not None:
-        progress.tick(phase, done, total)
+        progress.tick(phase, done, total, force)
+
+
+def alive():
+    """A cancellation point for converters: cheap, and a no-op outside an import with progress."""
+    progress = getattr(_LOCAL, "progress", None)
+    if progress is not None:
+        progress.alive()

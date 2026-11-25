@@ -40,6 +40,7 @@ _PREVIEW_KIND = {"stage", "effect", "props", "background", "performer", "outfit"
 _MEMBER_MAX = 12
 _ROLES = _PREVIEW_KIND | {"audio", "timeline", "camera", "lighting", "display", "dance", "mouth", "eyes", "gaze", "cheek", "shader", "crowd", "split", "other"}
 _IMPORT = threading.BoundedSemaphore(1)
+_IMPORT_WAIT_SECONDS = 5
 _ACTOR_PREVIEWS = OrderedDict()
 _STAGE_PREVIEWS = OrderedDict()
 _ACTOR_PREVIEW_ENTRIES = 24
@@ -526,7 +527,10 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
     if on_progress is not None and not callable(on_progress):
         raise TypeError("The progress callback must be callable.")
     progress = mv_studio_progress.Progress(on_progress) if on_progress is not None else mv_studio_progress.SILENT
-    if not _IMPORT.acquire(blocking=False):
+    # An import whose client left stops at its next cancellation point (normally within a
+    # fraction of a second). A new import, usually the same person choosing again, waits
+    # for that instead of being refused.
+    if not _IMPORT.acquire(timeout=_IMPORT_WAIT_SECONDS):
         raise ValueError("An MV is already being prepared. Try again when it finishes.")
     previous_progress = mv_studio_progress.activate(progress)
     previous_textures = model_viewer.set_texture_store(None)

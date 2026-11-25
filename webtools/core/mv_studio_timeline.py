@@ -359,10 +359,28 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
                    preview_stage_sparks_a=False, preview_stage_sparks_b=False, preview_stage_sparks_roop=False,
                    preview_particle_systems=False, preview_control_prefabs=False) -> dict:
     """Return scene tracks, timing and preview samples without changing the bundle."""
+    from . import mv_studio_progress
     from .model_viewer import _remaining
 
+    effects = [flag for flag in (preview_split, preview_stage_motion, preview_stage_title, preview_stage_particles,
+                                 preview_stage_ribbons, preview_stage_spotlight, preview_stage_butterfly, preview_stage_rain,
+                                 preview_stage_leaves, preview_stage_momiji, preview_stage_confetti, preview_stage_glow,
+                                 preview_stage_lens, preview_stage_speed_back, preview_stage_display_lights,
+                                 preview_stage_falling_effects, preview_stage_break, preview_stage_finale_floor,
+                                 preview_stage_sparks_a, preview_stage_sparks_b, preview_stage_sparks_roop,
+                                 preview_particle_systems, preview_control_prefabs) if flag]
+    started = 0
+
+    def part():
+        # Progress of an MV import (a no-op otherwise): stage effect readers begun so far.
+        nonlocal started
+        mv_studio_progress.tick("effects", started, len(effects), force=not started)
+        started += 1
+
+    mv_studio_progress.tick("bundle", force=True)
     deadline = time.monotonic() + 45
     _, objects, source = _read(raw, name, deadline)
+    mv_studio_progress.tick("tracks", force=True)
     warnings = _Warnings()
     mono, roots = {}, {}
     for key, obj in objects.items():
@@ -469,78 +487,91 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
         raise ValueError("The native TimelineAsset has no readable tracks.")
     result = {"duration": duration, "tracks": tracks, "warnings": warnings.result()}
     if preview_split:
+        part()
         from . import mv_studio_split
 
         split = mv_studio_split.read(objects, mono, tracks, deadline)
         if split:
             result["splitScreen"] = split
     if preview_stage_motion:
+        part()
         from . import mv_studio_stage_motion
 
         stage_motion = mv_studio_stage_motion.read(objects, mono, tracks, deadline)
         if stage_motion:
             result["stageMotion"] = stage_motion
     if preview_stage_title:
+        part()
         from . import mv_studio_stage_title
 
         stage_title = mv_studio_stage_title.read(objects, mono, tracks, deadline)
         if stage_title:
             result["stageTitle"] = stage_title
     if preview_stage_particles:
+        part()
         from . import mv_studio_stage_particles
 
         stage_particles = mv_studio_stage_particles.read(objects, mono, tracks, deadline)
         if stage_particles:
             result["stageParticles"] = stage_particles
     if preview_stage_ribbons:
+        part()
         from . import mv_studio_stage_ribbons
 
         stage_ribbons = mv_studio_stage_ribbons.read(objects, mono, tracks, deadline)
         if stage_ribbons:
             result["stageRibbons"] = stage_ribbons
     if preview_stage_spotlight:
+        part()
         from . import mv_studio_stage_spotlight
 
         stage_spotlight = mv_studio_stage_spotlight.read(objects, mono, tracks, deadline)
         if stage_spotlight:
             result["stageSpotlight"] = stage_spotlight
     if preview_stage_butterfly:
+        part()
         from . import mv_studio_butterfly
 
         butterfly = mv_studio_butterfly.read(objects, mono, tracks, deadline)
         if butterfly:
             result["stageButterfly"] = butterfly
     if preview_stage_rain:
+        part()
         from . import mv_studio_rain
 
         rain = mv_studio_rain.read(objects, mono, tracks, deadline)
         if rain:
             result["stageRain"] = rain
     if preview_stage_leaves:
+        part()
         from . import mv_studio_leaves
 
         leaves = mv_studio_leaves.read(objects, mono, tracks, deadline)
         if leaves:
             result["stageLeaves"] = leaves
     if preview_stage_momiji:
+        part()
         from . import mv_studio_momiji
 
         momiji = mv_studio_momiji.read(objects, mono, tracks, deadline)
         if momiji:
             result["stageMomiji"] = momiji
     if preview_stage_confetti:
+        part()
         from . import mv_studio_confetti
 
         confetti = mv_studio_confetti.read(objects, mono, tracks, deadline)
         if confetti:
             result["stageConfetti"] = confetti
     if preview_stage_glow:
+        part()
         from . import mv_studio_stage_glow
 
         glow = mv_studio_stage_glow.read(objects, mono, tracks, deadline)
         if glow:
             result["stageGlow"] = glow
     if preview_stage_lens:
+        part()
         from . import mv_studio_stage_lens
 
         lens = mv_studio_stage_lens.read(objects, mono, tracks, deadline)
@@ -549,48 +580,56 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
     atlas_refs = {} if (preview_stage_falling_effects or preview_stage_break or preview_stage_finale_floor
                         or preview_stage_sparks_a or preview_stage_sparks_b or preview_stage_sparks_roop) else None
     if preview_stage_speed_back:
+        part()
         from . import mv_studio_speed_back
 
         speed_back = mv_studio_speed_back.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if speed_back:
             result["stageSpeedBack"] = speed_back
     if preview_stage_display_lights:
+        part()
         from . import mv_studio_display_lights
 
         display_lights = mv_studio_display_lights.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if display_lights:
             result["stageDisplayLights"] = display_lights
     if preview_stage_falling_effects:
+        part()
         from . import mv_studio_falling_display
 
         falling = mv_studio_falling_display.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if falling:
             result["stageFallingEffects"] = falling
     if preview_stage_break:
+        part()
         from . import mv_studio_stage_break
 
         stage_break = mv_studio_stage_break.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if stage_break:
             result["stageBreak"] = stage_break
     if preview_stage_finale_floor:
+        part()
         from . import mv_studio_finale_floor
 
         finale_floor = mv_studio_finale_floor.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if finale_floor:
             result["stageFinaleFloor"] = finale_floor
     if preview_stage_sparks_a:
+        part()
         from . import mv_studio_sparks_a
 
         sparks_a = mv_studio_sparks_a.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if sparks_a:
             result["stageSparksA"] = sparks_a
     if preview_stage_sparks_b:
+        part()
         from . import mv_studio_sparks_b
 
         sparks_b = mv_studio_sparks_b.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if sparks_b:
             result["stageSparksB"] = sparks_b
     if preview_stage_sparks_roop:
+        part()
         from . import mv_studio_sparks_roop
 
         sparks_roop = mv_studio_sparks_roop.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
@@ -603,6 +642,7 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
 
         legacy = control_prefabs.claims(result)
     if preview_particle_systems:
+        part()
         from . import mv_studio_particle_systems as particle_systems
 
         # One texture table for the particle systems and the prefab meshes of the same clones.
@@ -617,6 +657,7 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
             result["stageParticleSystems"] = systems
             shared = len(systems["textures"])
     if preview_control_prefabs:
+        part()
         # The meshes of the same clones, and one coverage row for every CustomControlClip.
         prefabs, ledger = control_prefabs.read(objects, mono, tracks, deadline, claimed=legacy, outcomes=outcomes,
                                                textures=textures, shared=shared)

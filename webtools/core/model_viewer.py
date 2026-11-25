@@ -70,6 +70,8 @@ def _remaining(deadline):
     if time.monotonic() >= deadline:
         transient_failures.note()
         raise ModelViewerError("Model preview took too long. Try opening fewer model files.")
+    # Every deadline check of an MV import is also a point where it stops for a client that left.
+    mv_studio_progress.alive()
 
 
 def _conversion_get(cache, key, deadline):

@@ -16,7 +16,7 @@ import threading
 import time
 from collections import OrderedDict
 
-from . import transient_failures
+from . import mv_studio_progress, transient_failures
 from .repo import ensure_repo_on_path, repo_root
 
 # (path, mtime) -> PNG bytes; b"" marks a known-failed decode so we don't retry.
@@ -60,6 +60,7 @@ def _remaining(deadline):
     if seconds <= 0:
         transient_failures.note()
         raise TimeoutError("Thumbnail decoding timed out")
+    mv_studio_progress.alive()  # an MV import stops here for a client that left
     return seconds
 
 

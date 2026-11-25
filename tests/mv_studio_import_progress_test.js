@@ -37,6 +37,17 @@ const state = (step, value, extra = {}) => ({ type: 'progress', step, state: val
   view = see(2000);
   assert.deepEqual(view.step, [Progress.STEP_LABELS.timeline, { index: '', count: 2, name: '' }]);
   assert.deepEqual(view.bytes, [1024 * 1024, 4 * 1024 * 1024]);
+  // The timeline parse reports its bundle, tracks and effect readers.
+  const atStart = see(2010).percent;
+  tracker.record({ type: 'progress', step: 'timeline', phase: 'bundle' });
+  assert.deepEqual(see(2020).phase, [Progress.PHASE_LABELS.bundle, { done: '', total: '' }]);
+  tracker.record({ type: 'progress', step: 'timeline', phase: 'tracks' });
+  const afterTracks = see(2030).percent;
+  assert.equal(afterTracks, Math.floor(90 * (3 + 20 * 0.45) / 128));
+  tracker.record({ type: 'progress', step: 'timeline', phase: 'effects', done: 12, total: 23 });
+  view = see(2040);
+  assert.deepEqual(view.phase, [Progress.PHASE_LABELS.effects, { done: 12, total: 23 }]);
+  assert(atStart < afterTracks && afterTracks < view.percent, [atStart, afterTracks, view.percent].join(','));
   tracker.record(state('timeline', 'done'));
   tracker.record(state('stage', 'start'));
   tracker.record({ type: 'progress', step: 'stage', phase: 'textures', done: 30 });
@@ -51,11 +62,11 @@ const state = (step, value, extra = {}) => ({ type: 'progress', step, state: val
   tracker.record({ type: 'progress', step: 'member', index: 1, of: 2, phase: 'motion' });
   view = see(3000);
   assert.deepEqual(view.step, [Progress.STEP_LABELS.member, { index: 1, count: 2, name: '上原歩夢' }]);
-  assert.deepEqual(view.phase, [Progress.PHASE_LABELS.motion, { done: '' }]);
+  assert.deepEqual(view.phase, [Progress.PHASE_LABELS.motion, { done: '', total: '' }]);
   tracker.record({ type: 'progress', step: 'member', index: 1, of: 2, phase: 'textures', done: 12 });
-  assert.deepEqual(see(3100).phase, [Progress.PHASE_LABELS.textures, { done: 12 }]);
+  assert.deepEqual(see(3100).phase, [Progress.PHASE_LABELS.textures, { done: 12, total: '' }]);
   tracker.record({ type: 'progress', step: 'member', index: 1, of: 2, phase: 'animation', done: 40, total: 100 });
-  assert.deepEqual(see(3200).phase, [Progress.PHASE_LABELS.animation, { done: 40 }]);
+  assert.deepEqual(see(3200).phase, [Progress.PHASE_LABELS.animation, { done: 40, total: 100 }]);
   // A late or repeated tick never moves the bar back.
   tracker.record({ type: 'progress', step: 'member', index: 1, of: 2, phase: 'textures', done: 1 });
   see(3300);

@@ -17,6 +17,9 @@
     finish: "Finishing the MV project…",
   });
   const PHASE_LABELS = Object.freeze({
+    bundle: "Opening the timeline bundle…",
+    tracks: "Reading timeline tracks…",
+    effects: "Stage effects {done}/{total}",
     motion: "Reading choreography…",
     textures: "Textures {done}",
     animation: "Building dance motion… {done}%",
@@ -37,9 +40,16 @@
       page: null, percent: 0, cached: false, cancelling: false,
     };
 
-    // Within a member: choreography, then textures (count only), then the dance bake.
+    // Within the timeline: the bundle (about half of a first parse), its tracks, then
+    // the stage effect readers. Within a member: choreography, then textures (count
+    // only), then the dance bake.
     function phaseFraction(key, phase, done, total) {
       const member = key.startsWith("member:");
+      if (key === "timeline") {
+        if (phase === "tracks") return 0.45;
+        if (phase === "effects" && finite(done) && finite(total) && total > 0) return 0.5 + 0.45 * clamp01(done / total);
+        return 0;
+      }
       if (phase === "motion") return member ? 0.05 : 0;
       if (phase === "textures") {
         const curve = 1 - 1 / (1 + Math.max(0, done || 0) / 15);
@@ -159,7 +169,7 @@
         if (state.phase && PHASE_LABELS[state.phase.name]) {
           const done = state.phase.name === "animation" && finite(state.phase.total) && state.phase.total > 0
             ? Math.round(100 * clamp01(state.phase.done / state.phase.total)) : state.phase.done ?? "";
-          phase = [PHASE_LABELS[state.phase.name], { done }];
+          phase = [PHASE_LABELS[state.phase.name], { done, total: state.phase.total ?? "" }];
         }
       } else if (state.stageReady) {
         step = ["Stage is ready. Members are still loading.", {}];

@@ -55,6 +55,74 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(issubclass(mv_studio_progress.ImportCancelled, BaseException))
         self.assertFalse(issubclass(mv_studio_progress.ImportCancelled, Exception))
 
+    def test_deadline_checks_are_throttled_cancellation_points(self):
+        from webtools.core import decode, model_viewer
+        now = [5.]
+        events = []
+        progress = mv_studio_progress.Progress(events.append, interval=.15, clock=lambda: now[0])
+        model_viewer._remaining(time.monotonic() + 10)  # no import on this thread: nothing happens
+        with mv_studio_progress.active(progress):
+            model_viewer._remaining(time.monotonic() + 10)
+            decode._remaining(time.monotonic() + 10)  # inside the interval
+            now[0] += .2
+            decode._remaining(time.monotonic() + 10)
+            other = threading.Thread(target=mv_studio_progress.alive)
+            now[0] += 1
+            other.start()
+            other.join()  # another thread (a mip decode) never reports into this import
+        self.assertEqual(events, [None, None], "a check has nothing to report")
+        progress.tick("textures", 1)
+        self.assertEqual(len(events), 3, "checks do not hold back the next record")
+
+        def leave(event):
+            if event is None:
+                raise mv_studio_progress.ImportCancelled()
+
+        with mv_studio_progress.active(mv_studio_progress.Progress(leave)):
+            with self.assertRaises(mv_studio_progress.ImportCancelled):
+                model_viewer._remaining(time.monotonic() + 10)
+
+
+class TimelineParseProgressTests(unittest.TestCase):
+    """The timeline step reports its bundle, tracks and effect readers, and stops inside the parse."""
+
+    def parse(self, progress=None):
+        from types import SimpleNamespace
+        from webtools.core import mv_studio_timeline
+        files = SimpleNamespace(name="CAB-x")
+
+        def item(path, tree):
+            return SimpleNamespace(type=SimpleNamespace(name="MonoBehaviour"), path_id=path, assets_file=files,
+                                   read_typetree=lambda: deepcopy(tree), peek_name=lambda: tree.get("m_Name"))
+
+        objects = {("cab-x", 2): item(2, {"m_Name": "Timeline", "m_Script": {"m_FileID": 0, "m_PathID": 1},
+                                          "m_Tracks": [{"m_FileID": 0, "m_PathID": 3}], "m_FixedDuration": 2.}),
+                   ("cab-x", 3): item(3, {"m_Name": "Bloom", "m_Script": {"m_FileID": 0, "m_PathID": 4},
+                                          "m_Parent": {"m_FileID": 0, "m_PathID": 2}, "m_Clips": [], "m_Children": []})}
+        source = {"scripts": {("cab-x", 1): "TimelineAsset", ("cab-x", 4): "BloomTrack"}, "name": "x"}
+        flags = {name: True for name in ("preview_split", "preview_stage_motion", "preview_stage_title",
+                                         "preview_particle_systems", "preview_control_prefabs")}
+        with patch.object(mv_studio_timeline, "_read", return_value=(None, objects, source)):
+            if progress is None:
+                return mv_studio_timeline.parse_timeline(b"raw", "x", **flags)
+            with mv_studio_progress.active(progress):
+                return mv_studio_timeline.parse_timeline(b"raw", "x", **flags)
+
+    def test_phases_follow_the_parse_and_leave_it_unchanged(self):
+        events = []
+        parsed = self.parse(mv_studio_progress.Progress(events.append, interval=0))
+        self.assertEqual(parsed, self.parse())
+        phases = [(event["phase"], event.get("done"), event.get("total")) for event in events if event and "phase" in event]
+        self.assertEqual(phases, [("bundle", None, None), ("tracks", None, None)] + [("effects", k, 5) for k in range(5)])
+
+    def test_a_client_that_left_stops_the_parse(self):
+        def leave(event):
+            if event is None:
+                raise mv_studio_progress.ImportCancelled()
+
+        with self.assertRaises(mv_studio_progress.ImportCancelled):
+            self.parse(mv_studio_progress.Progress(leave, interval=0))
+
 
 class LoadGameProgressTests(unittest.TestCase):
     def setUp(self):
@@ -154,9 +222,23 @@ class LoadGameProgressTests(unittest.TestCase):
         self.assertEqual(states[("member", 1)], "done")
         self.assertIn("Original stage: Invalid preview", project["warnings"])
 
+    def test_a_new_import_waits_for_one_that_is_stopping(self):
+        mv_studio._IMPORT.acquire()
+        timer = threading.Timer(.3, mv_studio._IMPORT.release)
+        timer.start()
+        self.addCleanup(timer.join)
+        started = time.monotonic()
+        self.assertEqual(self.import_game()["name"], "Progress fixture")
+        self.assertGreaterEqual(time.monotonic() - started, .25)
+        # One that keeps running past the wait is still refused.
+        mv_studio._IMPORT.acquire()
+        self.addCleanup(mv_studio._IMPORT.release)
+        with patch.object(mv_studio, "_IMPORT_WAIT_SECONDS", .1), self.assertRaisesRegex(ValueError, "already being prepared"):
+            self.import_game()
+
     def test_cancelling_from_a_report_unwinds_and_releases_the_import(self):
         def cancel(event):
-            if event.get("step") == "member" and event.get("state") == "start":
+            if event and event.get("step") == "member" and event.get("state") == "start":
                 raise mv_studio_progress.ImportCancelled()
 
         with self.assertRaises(mv_studio_progress.ImportCancelled):
@@ -235,8 +317,10 @@ class ServerProgressTests(unittest.TestCase):
 
     def fake_import(self, *_args, on_stage, on_progress, **_kwargs):
         on_progress({"type": "plan", "v": 1, "members": 0, "bytes": 0, "steps": [{"id": "resolve", "w": 1}]})
+        on_progress(None)  # a cancellation check: nothing is written
         on_progress({"type": "progress", "step": "stage", "state": "start", "t": .1, "read": 0})
         on_stage(self.stage)
+        on_progress(None)
         on_progress({"type": "progress", "step": "finish", "state": "done", "t": .2, "read": 0})
         return self.project
 

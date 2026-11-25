@@ -378,12 +378,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise _MVStreamClosed() from error
 
         def on_progress(event):
-            # The import stops at its next report once the client has gone, also
-            # when that client did not ask for progress records.
+            # The import stops at its next report or check (event None) once the client
+            # has gone, also when that client did not ask for progress records.
             try:
                 if watch.check():
                     raise _MVStreamClosed()
-                if progress:
+                if progress and event is not None:
                     send(event)
             except _MVStreamClosed as error:
                 raise ImportCancelled() from error
