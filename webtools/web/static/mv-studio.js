@@ -238,11 +238,47 @@
   }
 
   function seek(seconds, changeAudio = true, deferDraw = false) {
+    cancelScrub();
     time = clamp(finite(seconds) ? seconds : 0, 0, project ? project.duration : 0);
     if (changeAudio && audio.hasAttribute("src")) audio.currentTime = Math.max(0, time + audioOffset());
     if (scene && project) scene.seek(time, project, deferDraw);
     syncPosition();
     emitTime();
+  }
+
+  // Scrubbing (the seek slider, a ruler drag) can send more events than the display shows
+  // frames; touch and pen input often arrive at 120-240 Hz. The time, readout and plugins
+  // follow every event, while the scene and the soundtrack seek once per animation frame, to
+  // the latest time, and draw in that frame. Playback keeps the direct seek.
+  let scrubTime = null, scrubFrame = 0;
+  function scrubTo(seconds) {
+    if (playing || !global.requestAnimationFrame) return seek(seconds, true, true);
+    time = clamp(finite(seconds) ? seconds : 0, 0, project ? project.duration : 0);
+    scrubTime = time;
+    if (!scrubFrame) scrubFrame = global.requestAnimationFrame(applyScrub);
+    syncPosition();
+    emitTime();
+  }
+
+  function cancelScrub() {
+    if (scrubFrame) global.cancelAnimationFrame(scrubFrame);
+    scrubFrame = 0;
+    scrubTime = null;
+  }
+
+  // Seeks the scene and the soundtrack to the pending scrub time; false without one.
+  function settleScrub() {
+    scrubFrame = 0;
+    if (scrubTime === null) return false;
+    const target = scrubTime;
+    scrubTime = null;
+    if (audio.hasAttribute("src")) audio.currentTime = Math.max(0, target + audioOffset());
+    if (scene && project) scene.seek(target, project, false);
+    return true;
+  }
+
+  function applyScrub() {
+    settleScrub();
   }
 
   // timeChanged for plugins: after every seek, at most 10 Hz during playback.
@@ -294,6 +330,7 @@
   function togglePlayback() {
     if (playing) return pause();
     if (!project || !project.duration || !visible || previewLoading || gameImport) return;
+    flushScrub();
     if (time >= project.duration) seek(0);
     playing = true;
     lastFrame = performance.now();
@@ -945,11 +982,15 @@
   function scrub(event, deferDraw = false) {
     if (event.target.closest(".mv-clip, .mv-key, .mv-rig-clip")) return;
     const bar = event.currentTarget;
-    seek((event.clientX - bar.getBoundingClientRect().left) / pixelsPerSecond, true, deferDraw);
+    const seconds = (event.clientX - bar.getBoundingClientRect().left) / pixelsPerSecond;
+    if (deferDraw) scrubTo(seconds);
+    else seek(seconds, true, false);
   }
 
+  // The end of a scrub: the latest time is drawn now.
   function flushScrub() {
-    scene?.flushSeekDraw();
+    if (scrubFrame) global.cancelAnimationFrame(scrubFrame);
+    if (!settleScrub()) scene?.flushSeekDraw();
   }
 
   // The lane geometry handed to plugins (laneDecorate, extraLanes).
@@ -1644,6 +1685,7 @@
     const next = checkedProject(value);
     const playhead = preserveTime ? time : 0;
     const before = project;
+    cancelScrub();
     pause();
     ensureScene();
     const source = resource(next.soundtrack && next.soundtrack.url);
@@ -2153,7 +2195,7 @@
       scene.setCamera("orbit");
       scene.frameAll();
     });
-    seekInput.addEventListener("input", (event) => seek(event.target.valueAsNumber, true, true));
+    seekInput.addEventListener("input", (event) => scrubTo(event.target.valueAsNumber));
     seekInput.addEventListener("change", flushScrub);
     byId("mv-zoom").addEventListener("change", renderTimeline);
     byId("mv-game-region").addEventListener("change", loadCatalog);
