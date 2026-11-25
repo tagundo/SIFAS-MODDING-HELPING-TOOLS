@@ -173,8 +173,26 @@ async function removedSource(page, server, panel, song) {
   if (!(await page.locator('#mv-register-songs').evaluate((node) => node.open))) await page.locator('#mv-register-songs > summary').click();
   const row = page.locator(`[data-mv-song="${song.liveId}"]`);
   await row.locator('[data-mv-song-action=remove]').click();
+  // Hold every check from here on: the removal event itself must drop the stale plan (target,
+  // kept timelines), not the check that runs after the job.
+  const held = [];
+  const planRoute = '**/api/mv-studio/registration-plan?*';
+  await page.route(planRoute, (route) => { held.push(route); });
   await page.locator('#mv-register-remove-dialog [data-mv-remove=confirm]').click();
   await page.locator('#mv-register-removed').waitFor({ timeout: 60000 });
+  const dropped = async (when) => {
+    assert.equal(await page.locator('#mv-register-target').count(), 0, `No stale target ${when}`);
+    assert.equal(await page.locator('#mv-register-plan').count(), 0, `No stale plan ${when}`);
+    assert.doesNotMatch(await panel.textContent(), /등록된 타임라인을 그대로 둡니다|타임라인 변경 없음/, `No kept timeline ${when}`);
+  };
+  await dropped('when the removal is shown');
+  // The job ends and checks again: that check waits on the held route.
+  for (let tries = 0; !held.length && tries < 600; tries += 1) await page.waitForTimeout(50);
+  assert(held.length >= 1, 'The check after the job waits on the held route');
+  await page.locator('#mv-register-status').filter({ hasText: '게임 반영 점검 중…' }).waitFor();
+  await dropped('while the next check runs');
+  await page.unroute(planRoute);
+  for (const route of held) await route.continue().catch(() => {});
   await page.locator('#mv-register-plan').filter({ hasText: '이 프로젝트를 연 등록 곡이 삭제되었습니다.' }).waitFor({ timeout: 30000 });
   assert.equal(await page.locator('#mv-register-target').count(), 0, 'The removed song is no longer a target');
   assert.doesNotMatch(await page.locator('#mv-register-plan').textContent(), /등록된 타임라인을 그대로 둡니다|타임라인 변경 없음/);
