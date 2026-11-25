@@ -167,6 +167,19 @@
     return { send: catalogued(plan).filter((platform) => !skipped.includes(platform)), skipped };
   }
 
+  // Another slot: originals the store's check needs from another region's game (GL and JP keep the
+  // source's original timeline in different packs), for the platforms this apply sends.
+  function verifyNeeds(plan, send) {
+    if (!plan.cross) return [];
+    return (plan.cross.verify || []).filter((entry) => send.includes(entry.platform));
+  }
+  function verifyValues(plan, needs) {
+    const bytes = needs.reduce((sum, entry) => sum + (entry.bytes || 0), 0);
+    return { regions: [...new Set(needs.map((entry) => text(entry.region).toUpperCase()))].join(" · "),
+      platform: [...new Set(needs.map((entry) => platformName(entry.platform)))].join(" · "),
+      asset: plan.cross.source.assetId, size: Math.max(0.1, Math.round(bytes / 104857.6) / 10) };
+  }
+
   // Another slot: ask before a platform is left out (convert it from the other platform, apply the
   // available platform only, or cancel).
   function askFor(plan, skipped) {
@@ -217,9 +230,19 @@
       return;
     }
     if (mode !== "restore") {
-      const { skipped } = platformsFor(plan, mode);
+      const { send, skipped } = platformsFor(plan, mode);
       if (skipped.length && !skipped.every((platform) => state.consent.includes(platform))) {
         state.confirm = plan.cross ? askFor(plan, skipped) : { mode, platforms: skipped, message: consentMessage(skipped), consent: true };
+        draw();
+        focus("mv-apply-confirm");
+        return;
+      }
+      const needs = state.download ? [] : verifyNeeds(plan, send);
+      if (needs.length) {
+        // Another region checks the timeline against its own original: download it first, or cancel.
+        state.confirm = { mode, download: true, formatted: true, message: format(
+          "Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game (about {size} MB to download). Download it and apply?",
+          verifyValues(plan, needs)) };
         draw();
         focus("mv-apply-confirm");
         return;
@@ -587,6 +610,17 @@
         item("warn", format("No {platform} timeline yet: it is converted from {from} when you apply.",
           { platform: all.download.map(platformName).join(" · "), from: platformName(plan.cross.platform) }));
       }
+      const needs = verifyNeeds(plan, platformsFor(plan, "all").send);
+      if (needs.length) {
+        const values = verifyValues(plan, needs);
+        const check = make("input", null, { type: "checkbox", id: "mv-apply-verify-download" });
+        check.checked = !!state.download;
+        check.disabled = !!state.job;
+        check.addEventListener("change", () => { state.download = check.checked; draw(); });
+        const label = make("label", null, { class: "mv-register-download" });
+        label.append(check, make("span", format("Download (about {size} MB)", values)));
+        item(state.download ? "ok" : "warn", format("Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game.", values), label);
+      }
     }
     if (plan.source && plan.source.changedSince && !plan.cross) {
       item("warn", t("The game's MV changed after this project was loaded. Apply only the edits keeps those changes; Apply all replaces them."));
@@ -704,7 +738,7 @@
   function confirmBox() {
     const confirm = state.confirm;
     const dialog = make("div", null, { class: "mv-register-confirm", role: "alertdialog", id: "mv-apply-confirm", tabindex: "-1",
-      "aria-label": t(confirm.message) });
+      "aria-label": confirm.formatted ? confirm.message : t(confirm.message) });
     const row = make("div", null, { class: "mv-controls" });
     if (confirm.ask) {
       // Another slot without a timeline for one platform: convert it, apply the other platform only, or cancel.
@@ -726,12 +760,13 @@
       return dialog;
     }
     row.append(button("Continue", () => {
-      const { mode, platforms } = state.confirm;
+      const { mode, platforms, download } = state.confirm;
       state.confirm = null;
       if (platforms) state.consent = platforms;
+      if (download) state.download = true;
       submit(mode, true);
     }, { id: "mv-apply-confirm-yes" }), button("Cancel", () => { state.confirm = null; draw(); }, { id: "mv-apply-confirm-no" }));
-    dialog.append(make("p", t(confirm.message)), row);
+    dialog.append(make("p", confirm.formatted ? confirm.message : t(confirm.message)), row);
     return dialog;
   }
 
@@ -859,7 +894,8 @@
         if (pack && Number.isInteger(pack.targetAssetId) && pack.targetAssetId !== project.source.assetId) {
           state.slot = "other";
           state.otherAsset = String(pack.targetAssetId);
-          state.stage = true;
+          // The pack's own stage goes with it; a pack made without a stage keeps the slot's.
+          state.stage = pack.stage !== false;
         }
         draw();
         if (open()) runPlan();
@@ -921,6 +957,8 @@
     "Open MV timeline pack", "Pack name", "Note", "Target slot: 3D {asset}, with the stage.", "Target slot: 3D {asset}, without the stage.",
     "Target slot: 3D {asset} (the loaded MV).", "Export", "Writing the MV timeline pack…",
     "Not in the pack: {platforms} (its original is not available).",
+    "Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game.",
+    "Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game (about {size} MB to download). Download it and apply?",
   ]);
 
   global.MVStudioApply = Object.freeze({ STRINGS, platformsFor: (plan, mode) => platformsFor(plan, mode) });

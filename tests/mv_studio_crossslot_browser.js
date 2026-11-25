@@ -162,6 +162,33 @@ async function run() {
     assert.deepEqual([job.body.platforms, job.body.download], [['android'], false]);
     await page.unroute('**/api/mv-studio/apply-plan?*');
 
+    // Another region checks the timeline against its own original of the source MV: the plan names the
+    // download, and the panel asks before the job.
+    await page.route('**/api/mv-studio/apply-plan?*', async (route) => {
+      const response = await route.fetch();
+      const json = await response.json();
+      if (json.cross) json.cross.verify = [{ region: 'jp', platform: 'android', bytes: 1048576 }];
+      await route.fulfill({ response, json });
+    });
+    await page.locator('#mv-apply-stage').uncheck();
+    await page.locator('#mv-apply-stage').check();
+    await checked(page, 'JP에서 타임라인을 확인하려면 그 게임에 있는 3D 2101의 Android 원본이 필요합니다.');
+    assert.equal(await page.locator('#mv-apply-verify-download').isChecked(), false);
+    await page.waitForFunction(() => !document.querySelector('#mv-apply-all').disabled);
+    await page.locator('#mv-apply-all').click();
+    await page.locator('#mv-apply-confirm-yes').click();
+    await page.locator('#mv-apply-confirm').filter({ hasText: '내려받아 적용할까요?' }).waitFor();
+    assert.equal(await page.locator('#mv-apply-confirm p').textContent(),
+      'JP에서 타임라인을 확인하려면 그 게임에 있는 3D 2101의 Android 원본이 필요합니다 (약 1 MB 다운로드). 내려받아 적용할까요?');
+    await shot(page, panel, 'crossslot-verify-ko.png');
+    mark = posted.length;
+    await page.locator('#mv-apply-confirm-yes').click();
+    await page.waitForFunction(() => document.querySelector('#mv-apply-result') && !document.querySelector('#mv-apply-job'), null,
+      { timeout: 90000 });
+    job = posted.slice(mark).filter((item) => item.url.endsWith('/apply-job')).pop();
+    assert.deepEqual([job.body.platforms, job.body.download], [['android', 'ios'], true]);
+    await page.unroute('**/api/mv-studio/apply-plan?*');
+
     // Restore that slot (timeline and stage).
     await page.locator('#mv-apply-stage').uncheck();
     await checked(page, '3D 2201 원래대로 되돌리기');
@@ -188,7 +215,7 @@ async function run() {
     assert.match(await page.locator('#mv-pack-result a').textContent(), /\.sifasmv$/);
     const pack = posted.filter((item) => item.url.endsWith('/pack-export')).pop();
     assert.deepEqual({ ...pack.body, project: undefined }, { project: undefined, name: '강당에 넣을 특별 스테이지', note: '',
-      target: { assetId: 2201, stage: false }, platforms: ['android', 'ios'], download: false });
+      target: { assetId: 2201, stage: false }, platforms: ['android', 'ios'], download: true });  // allowed above
     await shot(page, panel, 'crossslot-pack-ko.png');
 
     // Back to the loaded slot: the usual two modes again.

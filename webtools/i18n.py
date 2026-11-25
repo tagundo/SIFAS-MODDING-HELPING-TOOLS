@@ -4028,6 +4028,29 @@ _MV_CROSS_SLOT_TRANSLATIONS = {
     "The live timeline zip has no readable livetimeline.txt or timeline file.": (
         "라이브 타임라인 zip에 읽을 수 있는 livetimeline.txt나 타임라인 파일이 없습니다.",
         "ライブタイムラインzipに読めるlivetimeline.txtかタイムラインファイルがありません。"),
+    "The source MV's original timeline is not on this server. Install the asset editing tools (modtools) so Elichika can download it, then install again.": (
+        "원본 MV의 원래 타임라인이 이 서버에 없습니다. Elichika가 내려받을 수 있도록 에셋 편집툴(modtools)을 설치한 뒤 다시 설치하세요.",
+        "元MVの元のタイムラインがこのサーバーにありません。Elichikaがダウンロードできるようアセット編集ツール（modtools）をインストールしてから、もう一度インストールしてください。"),
+    "The source MV's original timeline could not be downloaded. Check the connection, then install again.": (
+        "원본 MV의 원래 타임라인을 내려받지 못했습니다. 연결을 확인한 뒤 다시 설치하세요.",
+        "元MVの元のタイムラインをダウンロードできませんでした。接続を確認してから、もう一度インストールしてください。"),
+    # Another region checks the timeline against its own original of the source MV
+    "Checking the timeline for the other region needs the source MV's original timeline from that region's game. Allow the download, or apply to this region only.": (
+        "다른 지역에서 타임라인을 확인하려면 그 지역 게임에 있는 원본 MV의 원래 타임라인이 필요합니다. 다운로드를 허용하거나 이 지역에만 적용하세요.",
+        "もう一方の地域でタイムラインを確認するには、その地域のゲームにある元MVの元のタイムラインが必要です。ダウンロードを許可するか、この地域だけに適用してください。"),
+    "Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game.": (
+        "{regions}에서 타임라인을 확인하려면 그 게임에 있는 3D {asset}의 {platform} 원본이 필요합니다.",
+        "{regions}でタイムラインを確認するには、そのゲームにある3D {asset}の{platform}の元データが必要です。"),
+    "Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game (about {size} MB to download). Download it and apply?": (
+        "{regions}에서 타임라인을 확인하려면 그 게임에 있는 3D {asset}의 {platform} 원본이 필요합니다 (약 {size} MB 다운로드). 내려받아 적용할까요?",
+        "{regions}でタイムラインを確認するには、そのゲームにある3D {asset}の{platform}の元データが必要です（約{size} MBのダウンロード）。ダウンロードして適用しますか？"),
+    # A slot that plays another slot's timeline
+    "This slot plays the timeline of 3D {source}, put here from another slot. Load 3D {source} and apply it to this slot, or restore this slot first.": (
+        "이 슬롯은 다른 슬롯에서 넣은 3D {source}의 타임라인을 재생합니다. 3D {source}를 불러와 이 슬롯에 적용하거나, 먼저 이 슬롯을 원래대로 되돌리세요.",
+        "このスロットは別のスロットから入れた3D {source}のタイムラインを再生しています。3D {source}を読み込んでこのスロットに適用するか、先にこのスロットを元に戻してください。"),
+    "This slot plays a timeline put here from another 3D MV. Load that MV and apply it to this slot, or restore this slot first.": (
+        "이 슬롯은 다른 3D MV에서 넣은 타임라인을 재생합니다. 그 MV를 불러와 이 슬롯에 적용하거나, 먼저 이 슬롯을 원래대로 되돌리세요.",
+        "このスロットは別の3D MVから入れたタイムラインを再生しています。そのMVを読み込んでこのスロットに適用するか、先にこのスロットを元に戻してください。"),
 }
 for _source, (_korean, _japanese) in _MV_CROSS_SLOT_TRANSLATIONS.items():
     _TABLES["ko"].setdefault(_source, _korean)

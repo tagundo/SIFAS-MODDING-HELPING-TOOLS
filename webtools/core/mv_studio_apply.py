@@ -38,6 +38,10 @@ live_prop_skeleton_asset_path, quality_setitng_set_id, shader_variant_asset_path
 plan counts the timeline's stage-bound tracks and warns. The write goes through Elichika's
 ``apply_mv_timeline(..., source_asset_id=, stage=)`` per chosen region (dependencies and packages
 from the SOURCE timeline, exact restore of timeline and stage), and restore works per target slot.
+Each region checks the payloads against that region's own original of the source asset (GL and JP
+keep it in different packs): the plan lists the downloads that needs (``cross.verify``) so the
+panel asks first. A slot that already plays another slot's timeline is edited through that source
+MV, not directly (its own stock no longer matches what it plays); restore stays available.
 """
 from contextlib import closing, ExitStack
 import hashlib
@@ -104,10 +108,18 @@ CROSS_MISSING_ANDROID = "No Android timeline can be made for the chosen slot. Ap
 CROSS_MISSING_IOS = "No iOS timeline can be made for the chosen slot. Apply to Android only, or cancel."
 PARTIAL_GL = "Only the GL game was changed. The JP game could not be changed; see the job log."
 PARTIAL_JP = "Only the JP game was changed. The GL game could not be changed; see the job log."
+CROSS_VERIFY_DOWNLOAD = ("Checking the timeline for the other region needs the source MV's original timeline from that "
+                         "region's game. Allow the download, or apply to this region only.")
+# A slot that plays a timeline put there from another slot: it is edited through that source MV.
+SLOT_FROM_OTHER = ("This slot plays the timeline of 3D {source}, put here from another slot. Load 3D {source} and apply "
+                   "it to this slot, or restore this slot first.")
+SLOT_FROM_OTHER_JOB = ("This slot plays a timeline put here from another 3D MV. Load that MV and apply it to this slot, "
+                       "or restore this slot first.")
 MESSAGES = (NO_TARGET, NO_STOCK_STORE, NO_SOURCE, SONG_REMOVED, LAYOUT, CONFLICTS, STALE, PROJECT_STALE, MODE, REQUEST,
             NO_EDITS, NO_RESTORE, SERVED_MISSING_ANDROID, SERVED_MISSING_IOS, PLATFORMS_UNEQUAL, APPLIED, RESTORED,
             CANCELLED, NO_CROSS_STORE, TARGET_REQUEST, TARGET_MISSING, TARGET_SONG, SOURCE_MISSING, CROSS_SONG,
-            CROSS_EDITS, CROSS_MISSING_ANDROID, CROSS_MISSING_IOS, PARTIAL_GL, PARTIAL_JP, *STAGES.values())
+            CROSS_EDITS, CROSS_MISSING_ANDROID, CROSS_MISSING_IOS, PARTIAL_GL, PARTIAL_JP, CROSS_VERIFY_DOWNLOAD,
+            SLOT_FROM_OTHER, SLOT_FROM_OTHER_JOB, *STAGES.values())
 
 # The m_live_3d_asset fields "Change the stage too" copies from the source asset (the legacy tool's
 # set, plus the prop skeleton the legacy tool leaves behind).
@@ -456,6 +468,12 @@ def plan(repo_root, project, *, unbaked=(), language="en", target=None):
         edits["blocked"].append({"message": CONFLICTS})
     if edits["unchanged"]:
         edits["blocked"].append({"message": NO_EDITS})
+    foreign = _foreign_source(target)
+    if foreign is not None:
+        # The slot plays another asset's timeline: edits and Apply all would be checked against this
+        # slot's own stock and refused. Restore stays available.
+        for part in (edits, every):
+            part["blocked"].insert(0, {"message": SLOT_FROM_OTHER, "values": {"source": foreign}})
     if len(served_tracks) == 2 and served_tracks["android"] != served_tracks["ios"]:
         result["warnings"].append({"message": PLATFORMS_UNEQUAL})
     result["source"]["changedSince"] = bool(edits["theirsOnly"] or edits["conflicts"])
@@ -626,6 +644,15 @@ def _merge_edits(job, progress, repo_root, project, target, request):
     return timelines, originals, agreed
 
 
+def _foreign_source(target):
+    """The 3D asset id whose timeline a stock slot plays when it was put there from another slot, else None."""
+    if target.get("kind") != "stock":
+        return None
+    source = (target.get("game") or {}).get("source")
+    asset = source.get("assetId") if isinstance(source, dict) else None
+    return asset if register._identity(asset) and asset != target.get("assetId") else None
+
+
 def _changed(target, timelines):
     """Platforms the store call would change: new bytes, or back to stock from a custom timeline."""
     current = target["game"].get("platforms") or {}
@@ -650,6 +677,8 @@ def _apply(job, repo_root, request, language):
         raise ValueError(register.BASE_UNKNOWN)
     if target["game"].get("timelineKey") != request["expected"]:
         raise ValueError(STALE)
+    if _foreign_source(target) is not None:
+        raise ValueError(SLOT_FROM_OTHER_JOB)
     snapshot = _snapshot(project)
     base, ours, _ = _ours(project, snapshot)
     fingerprints = {}
@@ -811,6 +840,20 @@ def _store_cross(live, repo_root, *, region, asset_id, source_asset_id, timeline
                                   source_asset_id=source_asset_id)
 
 
+def _source_stage(live, repo_root, region, asset_id):
+    """The STAGE_FIELDS "Change the stage too" carries: the source asset's STOCK stage (the store's
+    describe ``stage.stock``), or its current masterdata values with an older store; None when the
+    asset is not in the region."""
+    try:
+        described = live.describe_mv_timeline(repo_root, region=region, asset_id=asset_id)
+    except (ValueError, AttributeError):
+        described = None
+    stock = ((described or {}).get("stage") or {}).get("stock")
+    if isinstance(stock, dict) and set(stock) == set(STAGE_FIELDS):
+        return dict(stock)
+    return stage_fields(repo_root, region, asset_id)
+
+
 def stage_fields(repo_root, region, asset_id):
     """The STAGE_FIELDS of a 3D asset as the region's masterdata has them now, or None."""
     path = Path(repo_root).resolve() / "assets/db" / region / "masterdata.db"
@@ -876,6 +919,9 @@ def _cross_plan(repo_root, project, live, loaded, cross, result, unbaked, langua
     if loaded["kind"] != "stock":
         result["blocked"].append({"message": CROSS_SONG})
         return result
+    foreign = _foreign_source(loaded)
+    if foreign is not None:
+        result["blocked"].append({"message": SLOT_FROM_OTHER, "values": {"source": foreign}})
     supported = _cross_supported(live)
     if not supported:
         result["blocked"].append({"message": NO_CROSS_STORE})
@@ -890,7 +936,7 @@ def _cross_plan(repo_root, project, live, loaded, cross, result, unbaked, langua
         if described.get("song"):
             result["blocked"].append({"message": TARGET_SONG, "values": {"asset": asset_id}})
             continue
-        source_stage = stage_fields(repo_root, region, source_asset)
+        source_stage = _source_stage(live, repo_root, region, source_asset)
         if source_stage is None:
             result["blocked"].append({"message": SOURCE_MISSING, "values": {"asset": source_asset,
                                                                             "region": region.upper()}})
@@ -943,12 +989,63 @@ def _cross_plan(repo_root, project, live, loaded, cross, result, unbaked, langua
         if platform not in result["platforms"] and platform != own_platform:
             result["platforms"][platform] = {"payload": {"status": "missing"}}
             every["missing"].append(platform)
+    verify = _cross_originals(repo_root, loaded, regions, own_region, own_platform, blob, result["platforms"])
     result["cross"] = {"assetId": asset_id, "stage": cross["stage"], "regions": regions, "supported": supported,
+                       "verify": verify,
                        "platform": own_platform, "stageBound": {"count": len(bound), "labels": bound[:12]},
                        "source": {"assetId": source_asset, "region": own_region, "title": loaded["title"],
                                   "stage": loaded["stage"], "stageFields": stage_fields(repo_root, own_region,
                                                                                         source_asset)}}
     return result
+
+
+def _cross_originals(repo_root, loaded, regions, own_region, own_platform, blob, payloads):
+    """Per chosen region, whether the source asset's original timeline of each platform is at hand for
+    the store's check (``regions[region]["originals"]``: {platform: {status: project|local|download|missing,
+    bytes?}}). GL and JP keep the same stock timeline in different packs, so each region has its own.
+
+    Returns the downloads the check needs beyond the conversion's own (the own region's other
+    platform is already ``all.download``): [{region, platform, bytes?}]."""
+    verify = []
+    source_asset = loaded["assetId"]
+    for region, entry in regions.items():
+        if not entry.get("available"):
+            continue
+        statuses = {}
+        for platform in _catalogued(loaded):
+            if region == own_region and platform != own_platform:
+                statuses[platform] = dict(payloads[platform]["payload"])  # the conversion's template
+                continue
+            if region == own_region:
+                raw, status = _stock(repo_root, loaded, platform, blob, download=False)
+                status = "local" if raw is not None and status != "project" else status
+                statuses[platform] = _status(raw, status, loaded["facts"]["timelines"][platform])
+            else:
+                try:
+                    statuses[platform] = platform_conversion.template_status(repo_root, region, source_asset, platform)
+                except ValueError:
+                    statuses[platform] = {"status": "missing"}
+            if statuses[platform]["status"] == "download":
+                verify.append({"region": region, "platform": platform,
+                               **({"bytes": statuses[platform]["bytes"]} if statuses[platform].get("bytes") else {})})
+        entry["originals"] = statuses
+    return verify
+
+
+def _region_originals(repo_root, region, source_asset, payloads, *, download):
+    """{platform: original} of the source asset in another region for the store's check and write
+    (downloaded when allowed); a platform without a catalogued original is left to the store's refusal."""
+    originals = {}
+    for platform in sorted(payloads):
+        try:
+            originals[platform] = platform_conversion.template(repo_root, region, source_asset, platform,
+                                                               download=download)
+        except ValueError as error:
+            if str(error) == platform_conversion.TEMPLATE_DOWNLOAD:
+                raise ValueError(CROSS_VERIFY_DOWNLOAD) from error
+            if str(error) not in (platform_conversion.NO_TEMPLATE, platform_conversion.NO_ASSET):
+                raise
+    return originals
 
 
 def _cross_payloads(repo_root, project, loaded, wanted, *, download, progress=None):
@@ -1002,6 +1099,8 @@ def _apply_cross(job, repo_root, request, language):
         raise ValueError(SONG_REMOVED)
     if loaded["kind"] != "stock":
         raise ValueError(CROSS_SONG)
+    if _foreign_source(loaded) is not None:
+        raise ValueError(SLOT_FROM_OTHER_JOB)
     if not _cross_supported(live):
         raise ValueError(NO_CROSS_STORE)
     asset_id, own_region, source_asset = cross["assetId"], loaded["region"], loaded["assetId"]
@@ -1013,7 +1112,7 @@ def _apply_cross(job, repo_root, request, language):
             raise ValueError(STALE) from error
         if described[region]["timelineKey"] != cross["keys"].get(region) or described[region].get("song"):
             raise ValueError(STALE)
-        stages[region] = stage_fields(repo_root, region, source_asset) if cross["stage"] else None
+        stages[region] = _source_stage(live, repo_root, region, source_asset) if cross["stage"] else None
         if cross["stage"] and stages[region] is None:
             raise ValueError(STALE)
     _ours(project, _snapshot(project))  # structure check before anything is baked
@@ -1027,10 +1126,15 @@ def _apply_cross(job, repo_root, request, language):
         raise ValueError(register.PLATFORMS_CHOICE)
     progress.check()
     progress.stage("validate")
+    # The payloads are the SOURCE asset's timeline: checked against its true stock in each region,
+    # whose originals are that region's own (GL and JP keep them in different packs).
+    checked = {region: (dict(originals) if region == own_region else
+                        _region_originals(repo_root, region, source_asset, payloads, download=request["download"]))
+               for region in cross["regions"]}
     for region in cross["regions"]:
-        # The payloads are the SOURCE asset's timeline: checked against its true stock in each region.
+        progress.check()
         live.validate_mv_timelines(repo_root, region=region, asset_id=source_asset, timelines=payloads,
-                                   originals=(originals or None) if region == own_region else None)
+                                   originals=checked[region] or None)
     # A platform left out with consent plays the source MV's original timeline (the store refuses
     # KEEP while the slot's source changes, and the slot's old timeline would not match the new stage).
     timelines = {platform: payloads.get(platform) for platform in PLATFORMS}
@@ -1040,7 +1144,7 @@ def _apply_cross(job, repo_root, request, language):
         return _store_cross(live, repo_root, region=region, asset_id=asset_id,
                             source_asset_id=source_asset, timelines=timelines,
                             expected_key=described[region]["timelineKey"],
-                            originals=originals if region == own_region else None, stage=stages[region], log=job.log)
+                            originals=checked[region], stage=stages[region], log=job.log)
 
     result, session = register._store_step(job, progress, repo_root, stage="write", stop=is_managed, restart=True,
                                            is_managed=is_managed,

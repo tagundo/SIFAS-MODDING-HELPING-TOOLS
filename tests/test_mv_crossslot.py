@@ -48,24 +48,27 @@ STAGE_2101 = {"live_stage_master_id": 101, "stage_effect_asset_path": "E2101", "
 class FakeStore:
     """Elichika's stock MV store with the cross-slot arguments, on the synthetic GL root (assets 2101, 2201)."""
 
-    def __init__(self, *, cross=True):
-        self.calls, self.overrides = [], {}
+    def __init__(self, *, cross=True, regions=("gl",)):
+        self.calls, self.overrides, self.originals, self.regions = [], {}, [], regions
         if not cross:
             self.apply_mv_timeline = self._legacy_apply
 
     def describe_mv_timeline(self, repo_root, *, region, asset_id):
-        if region != "gl" or asset_id not in (2101, 2201):
+        if region not in self.regions or asset_id not in (2101, 2201):
             raise ValueError("The selected MV has no 3D timeline in this region.")
         record = self.overrides.get((region, asset_id))
+        source = record.get("source") if record else None
         return {"assetId": asset_id, "region": region, "stockKey": f"A{asset_id}",
                 "timelineKey": record["key"] if record else f"A{asset_id}", "override": record is not None,
                 "platforms": {p: "custom" if record and isinstance(record["timelines"].get(p), bytes) else "stock"
                               for p in ("android", "ios")},
                 "revision": 1 if record else 0, "updatedAt": None, "fingerprints": {},
-                "lives": [21] if asset_id == 2101 else [22], "song": False}
+                "lives": [21] if asset_id == 2101 else [22], "song": False,
+                "source": {"assetId": source, "stockKey": f"A{source}"} if source else None}
 
     def validate_mv_timelines(self, repo_root, *, region, asset_id, timelines, originals=None):
         self.calls.append(("validate", region, asset_id, sorted(timelines)))
+        self.originals.append(("validate", region, dict(originals or {})))
         return {"assetId": asset_id, "validated": sorted(timelines)}
 
     def apply_mv_timeline(self, repo_root, *, region, asset_id, timelines, expected_key, originals=None, fingerprints=None,
@@ -73,7 +76,9 @@ class FakeStore:
         if expected_key != self.describe_mv_timeline(repo_root, region=region, asset_id=asset_id)["timelineKey"]:
             raise ValueError("stale")
         self.calls.append(("apply", region, asset_id, source_asset_id, stage, dict(timelines)))
-        self.overrides[(region, asset_id)] = {"key": "X1", "stage": stage, "timelines": dict(timelines)}
+        self.originals.append(("apply", region, dict(originals or {})))
+        self.overrides[(region, asset_id)] = {"key": "X1", "stage": stage, "timelines": dict(timelines),
+                                              "source": source_asset_id}
         return {"changed": True, "parts": sorted(timelines), "backup": "/backup", "warnings": [],
                 "timeline": self.describe_mv_timeline(repo_root, region=region, asset_id=asset_id)}
 
@@ -140,6 +145,11 @@ class ConversionCase(reg_tests.Case):
         output = conversion.convert_timeline(self.edited_android(), "android", "ios", "gl", 2101, root=self.root,
                                              download=True)
         self.assertEqual(json.loads(output[8:].rstrip(b" "))["platform"], "ios")
+        # A template the caller already fetched (Elichika's installer shares one download) is not read again.
+        self.loads.clear()
+        again = conversion.convert_timeline(self.edited_android(), "android", "ios", "gl", 2101, root=self.root,
+                                            template_bytes=self.remote["tl2101i"])
+        self.assertEqual((again, self.loads), (output, []))
 
     def test_stage_bound_tracks(self):
         tracks = reg_tests.base_tracks() + [
@@ -319,6 +329,121 @@ class CrossSlotTests(reg_tests.Case):
                                                    "expected": {"key": "A2201", "keys": plan["expected"]["keys"]}})
         with mock.patch.object(register, "managed", return_value=True), self.assertRaisesRegex(ValueError, apply.STALE):
             apply.run_apply(job, self.root, request)
+        self.assertFalse([call for call in self.store.calls if call[0] == "apply"])
+
+
+def add_jp(root):
+    """A JP copy of the synthetic GL databases whose timeline packs have their own names (j…), as GL and
+    JP keep the same stock timeline in different packs; none of them is local."""
+    import shutil
+    import sqlite3
+    gl, jp = Path(root) / "assets/db/gl", Path(root) / "assets/db/jp"
+    jp.mkdir(parents=True)
+    shutil.copyfile(gl / "masterdata.db", jp / "masterdata.db")
+    for platform in ("a", "i"):
+        target = jp / f"asset_{platform}_ja.db"
+        shutil.copyfile(gl / f"asset_{platform}_en.db", target)
+        with sqlite3.connect(target) as database:
+            for table in ("live_timeline", "m_asset_package_mapping", "m_asset_pack"):
+                columns = {row[1] for row in database.execute(f"PRAGMA table_info({table})")}
+                if "pack_name" in columns:
+                    database.execute(f"UPDATE {table} SET pack_name='j'||pack_name WHERE pack_name LIKE 'tl%'")
+
+
+@NEEDS_STORE
+class TwoRegionCrossSlotTests(reg_tests.Case):
+    """GL and JP: each region checks the payloads against its own original of the source MV."""
+
+    def setUp(self):
+        super().setUp()
+        add_jp(self.root)
+        for name in ("tl2101", "tl2101i", "tl2201", "tl2201i"):
+            self.remote["j" + name] = self.local[name]  # the JP packs: downloadable only
+        self.store = FakeStore(regions=("gl", "jp"))
+        patcher = mock.patch.object(register, "store", return_value=self.store)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def imported(self):
+        project = self.project(source={"kind": "game", "region": "gl", "platform": "android", "liveId": 21,
+                                       "assetId": 2101, "mvOnly": False, "registered": False, "timelineKey": "A2101"})
+        project["tracks"][1]["events"][0]["values"]["intensity"] = 2.5
+        return project
+
+    def apply(self, project, plan, *, download):
+        request = apply.validate_apply(self.root, {"mode": "all", "project": project, "platforms": ["android", "ios"],
+                                                   "download": download, "target": plan["_target"],
+                                                   "expected": {"key": plan["expected"]["key"],
+                                                                "keys": plan["expected"]["keys"]}})
+        with mock.patch.object(register, "managed", return_value=True):
+            return apply.run_apply(FakeJob(), self.root, request)
+
+    def test_the_second_region_downloads_its_own_original_for_the_check(self):
+        project = self.imported()
+        target = {"assetId": 2201, "stage": True, "regions": ["gl", "jp"]}
+        plan = apply.plan(self.root, project, target=target)
+        plan["_target"] = target
+        self.assertEqual(plan["blocked"], [])
+        self.assertEqual(plan["all"]["download"], [])  # GL has both originals: nothing to convert onto
+        self.assertEqual(plan["cross"]["verify"],
+                         [{"region": "jp", "platform": "android", "bytes": reg_tests.TIMELINE_SIZE},
+                          {"region": "jp", "platform": "ios", "bytes": reg_tests.TIMELINE_SIZE}])
+        self.assertEqual(plan["cross"]["regions"]["jp"]["originals"],
+                         {"android": {"status": "download", "bytes": reg_tests.TIMELINE_SIZE},
+                          "ios": {"status": "download", "bytes": reg_tests.TIMELINE_SIZE}})
+        self.assertEqual(plan["cross"]["regions"]["gl"]["originals"],
+                         {"android": {"status": "project"}, "ios": {"status": "local"}})
+        self.assertEqual(plan["cross"]["regions"]["jp"]["stageAfter"], STAGE_2101)
+        # Without the download nothing is checked or written.
+        with self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(apply.CROSS_VERIFY_DOWNLOAD) + "$"):
+            self.apply(project, plan, download=False)
+        self.assertEqual([call for call in self.store.calls if call[0] != "validate" or call[1] == "jp"], [])
+        # Allowed: JP is checked and written with JP's own originals; GL reads its local ones.
+        self.store.calls.clear()
+        self.store.originals.clear()
+        self.apply(project, plan, download=True)
+        self.assertEqual([call[:3] for call in self.store.calls],
+                         [("validate", "gl", 2101), ("validate", "jp", 2101), ("apply", "gl", 2201),
+                          ("apply", "jp", 2201)])
+        jp_originals = {"android": self.local["tl2101"], "ios": self.local["tl2101i"]}
+        gl_originals = {"android": self.local["tl2101"]}  # the project's own snapshot; iOS is read locally
+        self.assertTrue(self.store.originals == [("validate", "gl", gl_originals), ("validate", "jp", jp_originals),
+                                                 ("apply", "gl", gl_originals), ("apply", "jp", jp_originals)],
+                        [(kind, region, sorted(value)) for kind, region, value in self.store.originals])
+        self.assertIn(("jtl2101", True), self.loads)
+        self.assertIn(("jtl2101i", True), self.loads)
+
+
+@NEEDS_STORE
+class ForeignSourceSlotTests(reg_tests.Case):
+    """A slot that plays a timeline put there from another slot is edited through that source MV."""
+
+    def setUp(self):
+        super().setUp()
+        self.store = FakeStore()
+        self.store.overrides[("gl", 2101)] = {"key": "X7", "stage": STAGE_2101, "source": 2201,
+                                              "timelines": {"android": b"x", "ios": None}}
+        patcher = mock.patch.object(register, "store", return_value=self.store)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_editing_it_directly_is_refused_and_restore_stays(self):
+        project = self.project(source={"kind": "game", "region": "gl", "platform": "android", "liveId": 21,
+                                       "assetId": 2101, "mvOnly": False, "registered": False, "timelineKey": "X7"})
+        project["tracks"][1]["events"][0]["values"]["intensity"] = 2.5
+        plan = apply.plan(self.root, project)
+        blocked = {"message": apply.SLOT_FROM_OTHER, "values": {"source": 2201}}
+        self.assertEqual((plan["edits"]["blocked"][0], plan["all"]["blocked"][0]), (blocked, blocked))
+        self.assertEqual(plan["blocked"], [])
+        self.assertTrue(plan["restore"]["available"])
+        for mode in ("all", "edits"):
+            request = apply.validate_apply(self.root, {"mode": mode, "project": project, "platforms": ["android", "ios"],
+                                                       "expected": {"key": "X7"}})
+            with self.subTest(mode=mode), mock.patch.object(register, "managed", return_value=True), \
+                    self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(apply.SLOT_FROM_OTHER_JOB) + "$"):
+                apply.run_apply(FakeJob(), self.root, request)
+        cross = apply.plan(self.root, project, target={"assetId": 2201})
+        self.assertIn(blocked, cross["blocked"])
         self.assertFalse([call for call in self.store.calls if call[0] == "apply"])
 
 

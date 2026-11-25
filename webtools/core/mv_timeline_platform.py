@@ -144,9 +144,11 @@ def convert_parsed(src_bytes, dst_template, *, name="timeline"):
 
 
 def convert_timeline(src_bytes, src_platform, dst_platform, region, asset_id, *, root, download=False, name="timeline",
-                     deadline=None):
+                     deadline=None, template_bytes=None):
     """``src_bytes`` (a ``src_platform`` timeline of 3D asset ``asset_id`` in ``region``) as a
     ``dst_platform`` timeline: the asset's own ``dst_platform`` stock with the source's content.
+    ``template_bytes`` is that stock when the caller already has it (``template()``'s result, e.g.
+    fetched once for both the conversion and a later check); else it is read here.
 
     Raises ValueError (SAME_PLATFORM, WRONG_PLATFORM, NO_TEMPLATE, TEMPLATE_DOWNLOAD, ...) or
     ConversionError (NOT_THIS_ASSET, LOSSY, with track labels)."""
@@ -160,6 +162,8 @@ def convert_timeline(src_bytes, src_platform, dst_platform, region, asset_id, *,
     found = register._blob_platform(src_bytes)
     if found is not None and found != src_platform:
         raise ValueError(WRONG_PLATFORM)
+    if template_bytes is not None:
+        return convert_parsed(src_bytes, template_bytes, name=name)
     deadline = deadline if deadline is not None else time.monotonic() + (240 if download else 60)
     raw = template(root, region, asset_id, dst_platform, download=download, deadline=deadline)
     return convert_parsed(src_bytes, raw, name=name)
