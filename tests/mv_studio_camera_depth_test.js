@@ -234,8 +234,13 @@ testRigidFace();
 function testRasterStateWithoutQueries() {
   const renderer = rendererStub(), gl = renderer.getContext();
   const calls = { scissor: [], clearDepth: [], depthMask: [] };
-  let reads = 0;
-  gl.getParameter = (key) => { reads++; return key === gl.SCISSOR_BOX ? new Int32Array([0, 0, 640, 360]) : key === gl.DEPTH_CLEAR_VALUE ? 1 : true; };
+  let reads = 0, lost = false, defaults = { scissor: [0, 0, 640, 360], clear: 1, mask: true };
+  gl.getParameter = (key) => {
+    reads++;
+    return key === gl.SCISSOR_BOX ? new Int32Array(defaults.scissor) : key === gl.DEPTH_CLEAR_VALUE ? defaults.clear : defaults.mask;
+  };
+  gl.isContextLost = () => lost;
+  gl.canvas = new EventTarget();
   gl.scissor = (...args) => calls.scissor.push(args);
   gl.clearDepth = (value) => calls.clearDepth.push(value);
   gl.depthMask = (value) => calls.depthMask.push(value);
@@ -266,6 +271,37 @@ function testRasterStateWithoutQueries() {
   again.dispose();
   depth.dispose();
   assert.equal(reads, 3, "capture never reads GL state back");
+  // What one capture restores: the clear depth, the depth mask and the scissor box.
+  const third = MVStudioCameraDepth.create(T, renderer);
+  const restoredBy = () => {
+    restored.clear.length = restored.mask.length = restored.scissor.length = 0;
+    assert.ok(third.capture(source, camera));
+    return { clear: restored.clear.at(-1), mask: restored.mask.at(-1), scissor: restored.scissor.at(-1) };
+  };
+  // GL clamps the clear depth to [0, 1].
+  gl.clearDepth(1.7);
+  assert.equal(restoredBy().clear, 1, "a clear depth above 1 is kept as 1");
+  gl.clearDepth(-0.25);
+  assert.equal(restoredBy().clear, 0, "a clear depth below 0 is kept as 0");
+  // Calls on a lost context change nothing.
+  gl.clearDepth(0.5);
+  gl.depthMask(true);
+  gl.scissor(4, 4, 64, 32);
+  lost = true;
+  gl.scissor(1, 1, 8, 8);
+  gl.clearDepth(0.75);
+  gl.depthMask(false);
+  lost = false;
+  assert.deepEqual(restoredBy(), { clear: 0.5, mask: true, scissor: [4, 4, 64, 32] }, "setters on a lost context leave the record");
+  // A restored context starts from its defaults: the record reads them again.
+  gl.clearDepth(0.25);
+  gl.depthMask(false);
+  defaults = { scissor: [0, 0, 800, 600], clear: 1, mask: true };
+  gl.canvas.dispatchEvent(new Event("webglcontextrestored"));
+  assert.equal(reads, 6, "webglcontextrestored reads the three values again");
+  assert.deepEqual(restoredBy(), { clear: 1, mask: true, scissor: [0, 0, 800, 600] });
+  assert.equal(reads, 6);
+  third.dispose();
   console.log("The depth prepass restores the scissor box, depth clear value and depth mask from the setters' record.");
 }
 
