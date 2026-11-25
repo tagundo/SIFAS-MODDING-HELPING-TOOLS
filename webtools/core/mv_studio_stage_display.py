@@ -10,7 +10,8 @@ as the offset) into that bg material.
 
 Initialize(enabled) leaves the renderer's own materials in place while the stage
 display is enabled; only a disabled display shows material2DReference (and a
-display without one is forced enabled).
+display without one is forced enabled). LiveCoreStageDisplayCamera binds its
+render texture to _AdditiveTex of every display bg material that declares it.
 """
 
 import math
@@ -27,13 +28,18 @@ _SHADERS = {name: (path_id, cab) for (cab, path_id), name in KNOWN.items()
             if name in ("AS/General/Opaque", "AS/General/Transparent")}
 
 _OPAQUE, _TRANSPARENT = "AS/General/Opaque", "AS/General/Transparent"
+_ADDITIVE = "AS/Blend/AdditiveOpaque"
+_WAVES = ("AS/Uniq/so1005-DisplayWaveTexture", "AS/Uniq/so2030-DisplayWaveTexture")
 # Keywords that select a program of each shader (its GLES3 keyword space); any other
 # saved keyword has no effect in Unity. SOFTPARTICLES_ON and PROCEDURAL_INSTANCING_ON
 # select particle programs the screens never use, so a material that sets them is refused.
-_KEYWORDS = {_OPAQUE: {"_VERTEX_COLOR_ON"}, _TRANSPARENT: {"_VERTEX_COLOR_ON", "_SATURATE_ON"}}
+_KEYWORDS = {_OPAQUE: {"_VERTEX_COLOR_ON"}, _TRANSPARENT: {"_VERTEX_COLOR_ON", "_SATURATE_ON"},
+             _ADDITIVE: set(), **{wave: set() for wave in _WAVES}}
 _PARTICLE_KEYWORDS = {"SOFTPARTICLES_ON", "PROCEDURAL_INSTANCING_ON"}
-# ShaderLab queue tags: Geometry for AS/General/Opaque, Transparent for AS/General/Transparent.
-_QUEUES = {_OPAQUE: 2000, _TRANSPARENT: 3000}
+# ShaderLab queue tags: Geometry for the opaque screens, Transparent for AS/General/Transparent.
+_QUEUES = {_OPAQUE: 2000, _TRANSPARENT: 3000, _ADDITIVE: 2000, **{wave: 2000 for wave in _WAVES}}
+# ShaderLab Properties defaults of the wave layers (an unsaved property reads these).
+_WAVE_DEFAULT = (2.0, 3.0, 0.5, 0.0)  # _RepeatXn, _RepeatYn, _SpeedXn, _SpeedYn
 
 
 class Unsupported(ValueError):
@@ -59,7 +65,12 @@ def _class(scene, component, tree):
 def binding(scene, component, tree):
     if not tree.get("m_Enabled"):
         return None
-    if _class(scene, component, tree) != "LiveCoreStageDisplay":
+    kind = _class(scene, component, tree)
+    if kind == "LiveCoreStageDisplayCamera":
+        # Its render texture feeds _AdditiveTex of the display bg materials (export below).
+        scene.mv_stage_display_camera = True
+        return None
+    if kind != "LiveCoreStageDisplay":
         return None
     game = viewer._ref(component, tree.get("m_GameObject"))
     renderer = viewer._ref(component, tree.get("renderer"))
@@ -160,6 +171,21 @@ def read(scene, materials, material):
         fields["ambient"] = _color(colors, "_AmbientColor", (1, 1, 1, 0))
     if shader == _OPAQUE:
         fields.update(kind="general", cull=_integer(floats.get("_CullMode", 0), 0, 2, "_CullMode"))
+    elif shader == _ADDITIVE:
+        additive, additive_uv = _texture(materials, material, envs, "_AdditiveTex")
+        fields.update(kind="blendAdditive", cull=_integer(floats.get("_CullMode", 2), 0, 2, "_CullMode"),
+                      additive={"texture": additive, "uv": additive_uv},
+                      displayCamera=bool(getattr(scene, "mv_stage_display_camera", False)))
+        # The program reads COLOR unconditionally (the _VERTEX_COLOR toggle selects no keyword).
+        fields["vertexColor"] = True
+    elif shader in _WAVES:
+        wave, _ = _texture(materials, material, envs, "_WaveTex")  # the program ignores _WaveTex_ST
+        layers = []
+        for layer in "1234":
+            layers.append(_finite([floats.get(f"_{name}{layer}", _WAVE_DEFAULT[index])
+                                   for index, name in enumerate(("RepeatX", "RepeatY", "SpeedX", "SpeedY"))]))
+        fields.update(kind="waveTexture", cull=2, wave={"texture": wave, "layers": layers,
+                                                        "color": _color(colors, "_WaveColor", (1, 1, 1, .5))})
     if "_VERTEX_COLOR_ON" in keywords:
         fields["vertexColor"] = True
     return fields

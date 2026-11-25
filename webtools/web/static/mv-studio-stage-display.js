@@ -4,15 +4,38 @@
   // The screen programs, one per display shader (GLES3 programs of the shader bundles):
   //   GENERAL      AS/General/Opaque        main x COLOR (_VERTEX_COLOR_ON), lerp to _AmbientColor, x _TintColor
   //   TRANSPARENT  AS/General/Transparent   main x _TintColor x COLOR, + main^4 (_SATURATE_ON), blended
+  //   ADDITIVE     AS/Blend/AdditiveOpaque  _AdditiveTex where its rgb sum >= 0.001, else main; then COLOR,
+  //                                         _AmbientColor and _TintColor
+  //   WAVE         AS/Uniq/so1005|so2030-DisplayWaveTexture: main lerped to _AmbientColor x _TintColor plus
+  //                four _WaveTex layers (uv * _RepeatXYn + _Time.y * _SpeedXYn) x _WaveColor, premultiplied
   const vertex = [
     "attribute vec4 _stage_color;",
     "uniform vec4 uTextureST;",
     "uniform bool uVertexColor;",
     "varying vec2 vScreen;",
     "varying vec4 vColor;",
+    "#if defined(ADDITIVE)",
+    "uniform vec4 uSecondST;",
+    "varying vec2 vSecond;",
+    "#elif defined(WAVE)",
+    "uniform float uTime;",
+    "uniform vec4 uWave[4];",
+    "varying vec4 vWaveA;",
+    "varying vec4 vWaveB;",
+    // Unity's uv * repeat + _Time.y * speed, in the glTF V-flipped space.
+    "vec2 wave(vec4 layer) {",
+    "  return uv * layer.xy + vec2(uTime * layer.z, 1.0 - layer.y - uTime * layer.w);",
+    "}",
+    "#endif",
     "void main() {",
     "  vScreen = uv * uTextureST.xy + uTextureST.zw;",
     "  vColor = uVertexColor ? _stage_color : vec4(1.0);",
+    "#if defined(ADDITIVE)",
+    "  vSecond = uv * uSecondST.xy + uSecondST.zw;",
+    "#elif defined(WAVE)",
+    "  vWaveA = vec4(wave(uWave[0]), wave(uWave[1]));",
+    "  vWaveB = vec4(wave(uWave[2]), wave(uWave[3]));",
+    "#endif",
     "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
     "}"
   ].join("\n");
@@ -22,6 +45,19 @@
     "uniform vec4 uAmbient;",
     "varying vec2 vScreen;",
     "varying vec4 vColor;",
+    "#if defined(ADDITIVE)",
+    "uniform sampler2D uSecond;",
+    "varying vec2 vSecond;",
+    "#elif defined(WAVE)",
+    "uniform sampler2D uSecond;",
+    "uniform vec4 uWaveColor;",
+    "varying vec4 vWaveA;",
+    "varying vec4 vWaveB;",
+    "vec3 layer(vec2 at) {",
+    "  vec4 wave = texture2D(uSecond, at) * uWaveColor;",
+    "  return wave.rgb * wave.a;",
+    "}",
+    "#endif",
     "void main() {",
     "#if defined(TRANSPARENT)",
     "  vec4 texel = texture2D(uTexture, vScreen);",
@@ -31,6 +67,20 @@
     "  color.rgb = square * square + color.rgb;",
     "#endif",
     "  gl_FragColor = color;",
+    "#elif defined(ADDITIVE)",
+    "  vec3 feed = texture2D(uSecond, vSecond).rgb;",
+    "  float drawn = feed.y + feed.x + feed.z >= 0.00100000005 ? 1.0 : 0.0;",
+    "  vec4 texel = texture2D(uTexture, vScreen);",
+    "  vec3 base = drawn * (feed - texel.rgb) + texel.rgb;",
+    "  vec3 shaded = base * vColor.rgb;",
+    "  gl_FragColor = vec4(uAmbient.a * (uAmbient.rgb - shaded) + shaded, texel.a * vColor.a) * uTint;",
+    "#elif defined(WAVE)",
+    "  vec4 texel = texture2D(uTexture, vScreen);",
+    "  vec3 color = (uAmbient.a * (uAmbient.rgb - texel.rgb) + texel.rgb) * uTint.rgb + layer(vWaveA.xy);",
+    "  color += layer(vWaveA.zw);",
+    "  color += layer(vWaveB.xy);",
+    "  color += layer(vWaveB.zw);",
+    "  gl_FragColor = vec4(color, texel.a * uTint.a);",
     "#else",
     "  vec4 texel = texture2D(uTexture, vScreen) * vColor;",
     "  gl_FragColor = vec4(mix(texel.rgb, uAmbient.rgb, uAmbient.a), texel.a) * uTint;",
@@ -38,7 +88,7 @@
     "}"
   ].join("\n");
 
-  const DEFINES = { general: null, transparent: "TRANSPARENT" };
+  const DEFINES = { general: null, transparent: "TRANSPARENT", blendAdditive: "ADDITIVE", waveTexture: "WAVE" };
 
   function sample(track, time) {
     const ambient = [0, 0, 0, 0], scroll = [0, 0];
@@ -86,6 +136,9 @@
       T.InvertStencilOp, T.IncrementWrapStencilOp, T.DecrementWrapStencilOp][value] ?? T.KeepStencilOp;
   }
 
+  // `clock` (optional, the scene's game clock): director seconds -> the game's Time.time. The
+  // wave screens read _Time.y (Time.timeSinceLevelLoad); the editor has no level-load time,
+  // so it uses the game run's Time.time when one is set and the director time otherwise.
   async function apply(T, root, parser) {
     const screens = [];
     root.traverse((node) => {
@@ -101,8 +154,9 @@
       texture.needsUpdate = true;
       return texture;
     }
-    // Unity's "white" property default.
-    const white = constant([255, 255, 255, 255]);
+    // Unity's "white" property default, and the display camera's render texture as the
+    // editor has it: cleared to (0, 0, 0, 0) with nothing drawn (no display camera image).
+    const white = constant([255, 255, 255, 255]), cleared = constant([0, 0, 0, 0]);
     function texture(index) {
       if (index === null || index === undefined) return Promise.resolve(white);
       if (!textures.has(index)) textures.set(index, parser.getDependency("texture", index).then((source) => {
@@ -117,7 +171,10 @@
       const uniforms = {
         uTexture: { value: white }, uTextureST: { value: new T.Vector4(1, 1, 0, 0) },
         uVertexColor: { value: false },
-        uTint: { value: new T.Vector4(1, 1, 1, 1) }, uAmbient: { value: new T.Vector4(0, 0, 0, 0) }
+        uTint: { value: new T.Vector4(1, 1, 1, 1) }, uAmbient: { value: new T.Vector4(0, 0, 0, 0) },
+        uSecond: { value: white }, uSecondST: { value: new T.Vector4(1, 1, 0, 0) },
+        uTime: { value: 0 }, uWave: { value: [0, 1, 2, 3].map(() => new T.Vector4()) },
+        uWaveColor: { value: new T.Vector4(1, 1, 1, .5) }
       };
       const defines = {};
       if (DEFINES[kind]) defines[DEFINES[kind]] = 1;
@@ -137,7 +194,7 @@
       if (!screen.programs.has(key)) screen.programs.set(key, shader(fields.kind, fields.saturate === true, logo));
       return screen.programs.get(key);
     }
-    function setPass(node, material, fields, state) {
+    function setPass(node, material, fields, state, shaderTime) {
       const uniforms = material.uniforms;
       const [sx, sy, x, y] = fields.uv, [ox, oy] = state?.offset || [x, y];
       uniforms.uTexture.value = fields.image;
@@ -145,6 +202,16 @@
       uniforms.uTextureST.value.set(sx, sy, ox, 1 - sy - oy);
       uniforms.uAmbient.value.fromArray(state?.ambient || fields.ambient || [0, 0, 0, 0]);
       uniforms.uTint.value.fromArray(fields.tint);
+      if (fields.kind === "blendAdditive") {
+        const [ax, ay, aox, aoy] = fields.additive.uv;
+        uniforms.uSecond.value = fields.secondImage;
+        uniforms.uSecondST.value.set(ax, ay, aox, 1 - ay - aoy);
+      } else if (fields.kind === "waveTexture") {
+        uniforms.uSecond.value = fields.secondImage;
+        uniforms.uTime.value = shaderTime;
+        fields.wave.layers.forEach((layer, index) => uniforms.uWave.value[index].fromArray(layer));
+        uniforms.uWaveColor.value.fromArray(fields.wave.color);
+      }
       const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull] ?? T.DoubleSide;
       const transparent = fields.kind === "transparent";
       const render = {
@@ -176,7 +243,11 @@
     async function load(fields, logo) {
       fields = normalize(fields, logo);
       if (!fields) return fields;
-      return { ...fields, image: await texture(fields.texture) };
+      const loaded = { ...fields, image: await texture(fields.texture) };
+      if (fields.kind === "blendAdditive") {
+        loaded.secondImage = fields.displayCamera ? cleared : await texture(fields.additive.texture);
+      } else if (fields.kind === "waveTexture") loaded.secondImage = await texture(fields.wave.texture);
+      return loaded;
     }
     async function loadVariant(variant) {
       if (!variant) return null;
@@ -191,6 +262,7 @@
       for (const material of owned) material.dispose();
       for (const task of textures.values()) task.then((copy) => copy.dispose(), () => {});
       white.dispose();
+      cleared.dispose();
     }
     try {
       for (const screen of screens) {
@@ -211,7 +283,7 @@
     // `writes`: the mixer state last written into each material this frame (LiveDisplayMixer writes
     // _AmbientColor and _MainTex_ST into the shared Material asset, so every screen drawing that
     // material shows the last write; the mixers run in timeline track order).
-    function show(screen, pass, writes, own) {
+    function show(screen, pass, writes, own, shaderTime) {
       if (!pass || !pass.background) {
         // Nothing native to draw: the screen keeps its own (glTF) material.
         screen.node.material = screen.original;
@@ -224,17 +296,17 @@
         : fields === pass.background ? own : null) || null;
       const background = program(screen, pass.background, false);
       screen.node.material = background;
-      setPass(screen.node, background, pass.background, written(pass.background));
+      setPass(screen.node, background, pass.background, written(pass.background), shaderTime);
       screen.logo.visible = !!pass.logo;
       if (pass.logo) {
         screen.logo.material = program(screen, pass.logo, true);
-        setPass(screen.logo, screen.logo.material, pass.logo, written(pass.logo));
+        setPass(screen.logo, screen.logo.material, pass.logo, written(pass.logo), shaderTime);
       }
     }
     let source, ordered = screens;
     return {
       invalidate() { source = null; },
-      update(time, project) {
+      update(time, project, clock = null) {
         if (source !== project) {
           const tracks = project?.tracks || [];
           for (const screen of screens) {
@@ -246,6 +318,7 @@
           ordered = [...screens].sort((a, b) => a.order - b.order);
           source = project;
         }
+        const shaderTime = typeof clock === "function" ? clock(time) : time;
         const writes = new Map(), passes = new Map();
         for (const screen of ordered) {
           // A disabled stage display shows material2DReference; one without it is forced on.
@@ -265,7 +338,7 @@
         }
         for (const screen of screens) {
           const pass = passes.get(screen);
-          show(screen, pass, writes, screen.variants.includes(pass) ? screen.state : null);
+          show(screen, pass, writes, screen.variants.includes(pass) ? screen.state : null, shaderTime);
         }
       },
       dispose

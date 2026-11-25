@@ -32,6 +32,40 @@ def _read(shader, material, scene=None, materials=None):
 
 
 class DisplayMaterialTests(unittest.TestCase):
+    def test_additive_opaque_reads_both_maps_and_always_vertex_color(self):
+        # mat_dis_bg_so1054_opa_01_oth (11054/3): no _MainTex, _AdditiveTex_ST (.5, 1, .25, 0), _CullMode 2.
+        material = _material(floats=[("_CullMode", 2), ("_StencilPassOp", 2), ("_VERTEX_COLOR", 0)],
+                             colors=[("_AmbientColor", {"r": 0, "g": 0, "b": 0, "a": 0})],
+                             envs=[("_AdditiveTex", _env((.5, 1), (.25, 0))), ("_MainTex", _env())])
+        fields = _read("AS/Blend/AdditiveOpaque", material, _scene(mv_stage_display_camera=True))
+        self.assertEqual(fields, {
+            "material": "CAB-display:7", "kind": "blendAdditive", "texture": None, "uv": [1, 1, 0, 0], "tint": [1, 1, 1, 1], "ambient": [0, 0, 0, 0],
+            "cull": 2, "queue": 2000, "stencil": 2, "stencilComp": 8, "stencilPass": 2, "stencilZFail": 0,
+            "additive": {"texture": None, "uv": [.5, 1, .25, 0]}, "displayCamera": True, "vertexColor": True})
+        # Without LiveCoreStageDisplayCamera nothing replaces the authored _AdditiveTex; _CullMode defaults to Back.
+        material.tree["m_SavedProperties"]["m_Floats"] = []
+        fields = _read("AS/Blend/AdditiveOpaque", material)
+        self.assertEqual((fields["displayCamera"], fields["cull"], fields["stencilPass"]), (False, 2, 0))
+
+    def test_wave_texture_reads_four_layers_with_shader_defaults(self):
+        # mat_dis_shd_so1005_uni_01 (11005/3): _MainTex_ST scale (1, 0), _TintColor black, one layer left at defaults.
+        floats = [("_RepeatX1", .2), ("_RepeatY1", .8), ("_SpeedX1", -.05), ("_SpeedY1", 0),
+                  ("_RepeatX2", .2), ("_RepeatY2", .75), ("_SpeedX2", -.07), ("_SpeedY2", 0),
+                  ("_RepeatX3", .2), ("_RepeatY3", .8), ("_SpeedX3", -.03), ("_StencilPassOp", 2), ("_StencilZFailOp", 2),
+                  ("_CullMode", 0)]
+        material = _material(floats=floats, colors=[("_TintColor", {"r": 0, "g": 0, "b": 0, "a": 1}),
+                                                    ("_WaveColor", {"r": 1, "g": 1, "b": 1, "a": .4})],
+                             envs=[("_MainTex", _env((1, 0))), ("_WaveTex", _env((3, 3), (.5, .5)))])
+        fields = _read("AS/Uniq/so1005-DisplayWaveTexture", material)
+        self.assertEqual(fields["kind"], "waveTexture")
+        self.assertEqual(fields["uv"], [1, 0, 0, 0])
+        self.assertEqual(fields["cull"], 2, "the pass culls back faces; _CullMode is not bound")
+        self.assertEqual((fields["tint"], fields["ambient"]), ([0, 0, 0, 1], [1, 1, 1, 0]))
+        self.assertEqual(fields["wave"], {"texture": None, "color": [1, 1, 1, .4], "layers": [
+            [.2, .8, -.05, 0], [.2, .75, -.07, 0], [.2, .8, -.03, 0.0], [2.0, 3.0, .5, 0.0]]})
+        self.assertEqual((fields["stencilPass"], fields["stencilZFail"]), (2, 2))
+        self.assertNotIn("vertexColor", fields)
+
     def test_transparent_backgrounds_and_logos_keep_their_compiled_state(self):
         # mat_dis_so0122_02 (10122/3): Blend Zero One, ZTest Greater, both keywords.
         material = _material(floats=[("_BlendSrc", 0), ("_BlendDst", 1), ("_ZTestMode", 5), ("_ZWriteParam", 0),
@@ -116,6 +150,34 @@ class ActualDisplayVariantTests(unittest.TestCase):
     def kinds(screen):
         return [(variant["background"]["kind"], variant["logo"] and variant["logo"]["kind"])
                 for variant in screen["variants"]]
+
+    def test_11054_main_switches_to_the_display_camera_screen(self):
+        screens, scene = self.screens(11054)
+        self.assertTrue(scene.mv_stage_display_camera)
+        self.assertEqual(self.kinds(screens["main"]), [("blendAdditive", "transparent"), ("general", "transparent")])
+        additive = screens["main"]["variants"][0]["background"]
+        self.assertEqual((additive["texture"], additive["additive"], additive["displayCamera"]),
+                         (None, {"texture": None, "uv": [.5, 1, .25, 0]}, True))
+        self.assertEqual(self.kinds(screens["sub_01"]), [("general", "transparent")])
+
+    def test_12074_screens_keep_all_six_variants(self):
+        screens, _ = self.screens(12074)
+        for name in ("main_01", "sub_01"):
+            self.assertEqual([kind for kind, _ in self.kinds(screens[name])], ["general"] * 5 + ["blendAdditive"])
+
+    def test_11005_and_12030_wave_screens(self):
+        screens, scene = self.screens(11005)
+        self.assertFalse(getattr(scene, "mv_stage_display_camera", False))
+        wave = screens["main"]["variants"][6]["background"]
+        rounded = lambda values: [round(value, 6) for value in values]  # noqa: E731 (float32 properties)
+        self.assertEqual((wave["kind"], wave["uv"], wave["tint"], rounded(wave["wave"]["color"])),
+                         ("waveTexture", [1, 0, 0, 0], [0, 0, 0, 1], [1, 1, 1, .4]))
+        self.assertEqual(rounded(wave["wave"]["layers"][3]), [.2, .7, -.06, 0])
+        screens, _ = self.screens(12030)
+        for name in ("main_01", "sub_01"):
+            self.assertIsNone(screens[name]["fallback"], "no material2DReference")
+            self.assertEqual(self.kinds(screens[name])[0], ("waveTexture", "transparent"))
+            self.assertEqual(screens[name]["initial"]["logo"]["kind"], "transparent")
 
     def test_logo_and_background_gates(self):
         screens, _ = self.screens(10122)

@@ -1,7 +1,8 @@
 "use strict";
 
-// The stage display screen programs (AS/General/Opaque and Transparent) and LiveCoreStageDisplay's
-// rules for the renderer's own materials and material2DReference.
+// The stage display screen programs (AS/General/Opaque and Transparent, AS/Blend/AdditiveOpaque,
+// so1005/so2030 DisplayWaveTexture) and LiveCoreStageDisplay's rules for the renderer's own
+// materials and material2DReference.
 const assert = require("node:assert/strict");
 const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 global.window = global;
@@ -17,6 +18,13 @@ const logo = (texture, extra = {}) => ({ kind: "transparent", material: `logo${t
   tint: [1, 1, 1, 1], cull: 0,
   queue: 3000, blend: [5, 10], zTest: 4, zWrite: false, stencil: 2, stencilComp: 8, stencilPass: 0, stencilZFail: 0,
   ...extra });
+// mat_dis_bg_so1054_opa_01_oth (11054/3): _AdditiveTex is the display camera's render texture.
+const additive = (texture, extra = {}) => ({ ...general(texture), kind: "blendAdditive", vertexColor: true,
+  additive: { texture: null, uv: [.5, 1, .25, 0] }, displayCamera: true, ...extra });
+// mat_dis_shd_so2030_uni_01 (12030/3).
+const wave = (texture, waveTexture) => ({ ...general(texture), kind: "waveTexture", cull: 2, stencilZFail: 2,
+  ambient: [0, 0, 0, 0], wave: { texture: waveTexture, color: [1.1608, 1.0039, 2, .251],
+    layers: [[.15, 1.75, .05, 0], [.39, 3.82, .05, 0], [.1, .78, .025, 0], [.25, .75, .02, 0]] } });
 const clip = (start, duration, materialIndex, extra = {}) => ({ start, duration, values: {
   playableClass: "LiveDisplayClip", materialIndex, scrollSpeed: { x: 0, y: 0 }, ambientColor: { r: 0, g: 0, b: 0, a: 0 },
   ...extra } });
@@ -36,6 +44,8 @@ async function kinds() {
   const fields = {
     fallback: general(1), initial: { background: general(1), logo: null },
     variants: [
+      { background: additive(2), logo: logo(3) },
+      { background: wave(4, 5), logo: logo(3) },
       // 10122/3 mat_dis_so0122_02: Blend Zero One, ZTest Greater, _SATURATE_ON _VERTEX_COLOR_ON.
       { background: logo(6, { blend: [0, 1], zTest: 5, saturate: true, vertexColor: true }), logo: logo(3) },
       // 12055/3 litE: the logo material is the bg material itself.
@@ -44,12 +54,38 @@ async function kinds() {
   };
   const { node, original, controller } = await build(fields);
   const track = { nativeClass: "LiveDisplayTrack", binding: effect, events: [
-    clip(0, 1, 0), clip(1, 1, 1, { ambientColor: { r: .5, g: .25, b: 0, a: .75 }, scrollSpeed: { x: .25, y: 0 } })] };
+    clip(0, 1, 0), clip(1, 1, 1), clip(2, 1, 2),
+    clip(3, 1, 3, { ambientColor: { r: .5, g: .25, b: 0, a: .75 }, scrollSpeed: { x: .25, y: 0 } })] };
   const project = { tracks: [track], quality: { values: { stage_display: true } } };
   const [logoMesh] = node.children;
 
   controller.update(.5, project);
   let material = node.material;
+  assert.equal(material.defines.ADDITIVE, 1);
+  assert.equal(material.uniforms.uTexture.value.name, "2");
+  const feed = material.uniforms.uSecond.value;
+  assert.deepEqual([...feed.image.data], [0, 0, 0, 0], "the display camera's cleared render texture");
+  assert.deepEqual(material.uniforms.uSecondST.value.toArray(), [.5, 1, .25, 0], "_AdditiveTex_ST, V flipped");
+  assert.equal(material.uniforms.uVertexColor.value, true, "the program always reads COLOR");
+  assert.equal(material.blending, T.NoBlending);
+  assert.equal(material.depthWrite && material.side === T.FrontSide, true);
+  assert.match(material.fragmentShader, /float drawn = feed\.y \+ feed\.x \+ feed\.z >= 0\.00100000005 \? 1\.0 : 0\.0;/);
+  assert.equal(logoMesh.visible, true);
+
+  controller.update(1.5, project, (time) => time + 990);
+  material = node.material;
+  assert.equal(material.defines.WAVE, 1);
+  assert.equal(material.uniforms.uSecond.value.name, "5", "_WaveTex");
+  assert.equal(material.uniforms.uTime.value, 991.5, "_Time.y follows the game clock when one is set");
+  assert.deepEqual(material.uniforms.uWave.value.map((layer) => layer.toArray()), fields.variants[1].background.wave.layers);
+  assert.deepEqual(material.uniforms.uWaveColor.value.toArray(), [1.1608, 1.0039, 2, .251]);
+  assert.equal(material.stencilZFail, T.ReplaceStencilOp);
+  assert.match(material.vertexShader, /return uv \* layer\.xy \+ vec2\(uTime \* layer\.z, 1\.0 - layer\.y - uTime \* layer\.w\);/);
+  controller.update(1.5, project);
+  assert.equal(node.material.uniforms.uTime.value, 1.5, "the director time without a game clock");
+
+  controller.update(2.5, project);
+  material = node.material;
   assert.equal(material.defines.TRANSPARENT, 1);
   assert.equal(material.defines.SATURATE, 1);
   assert.equal(material.transparent, true);
@@ -59,22 +95,19 @@ async function kinds() {
   assert.equal(material.stencilWrite, false, "Always / Keep writes nothing");
   assert.equal(material.uniforms.uVertexColor.value, true);
   assert.equal(node.renderOrder, 3000, "the Transparent queue of AS/General/Transparent");
-  assert.equal(logoMesh.visible, true);
 
-  controller.update(1.5, project);
+  controller.update(3.5, project);
   material = node.material;
   assert.equal(material.defines.TRANSPARENT, undefined);
-  assert.equal(material.blending, T.NoBlending);
-  assert.equal(material.depthWrite && material.side === T.FrontSide, true);
   assert.equal(logoMesh.material.defines.TRANSPARENT, undefined, "an AS/General/Opaque logo");
   assert.deepEqual(logoMesh.material.uniforms.uAmbient.value.toArray(), [.5, .25, 0, .75],
     "the mixer's _AmbientColor lands on the shared material");
-  assert.equal(logoMesh.material.uniforms.uTextureST.value.z, .375);
+  assert.equal(logoMesh.material.uniforms.uTextureST.value.z, .875);
   assert.equal(logoMesh.material.transparent, false);
 
   // A disabled stage display shows material2DReference without its logo.
   project.quality.values.stage_display = false;
-  controller.update(1.5, project);
+  controller.update(3.5, project);
   assert.equal(node.material.uniforms.uTexture.value.name, "1");
   assert.equal(logoMesh.visible, false);
   controller.dispose();
@@ -148,7 +181,7 @@ async function shared() {
   await kinds();
   await rules();
   await shared();
-  console.log("Stage display kinds: transparent and opaque logos, unswitched screens, shared materials.");
+  console.log("Stage display kinds: additive feed, wave layers on _Time.y, transparent and opaque logos, unswitched screens, shared materials.");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

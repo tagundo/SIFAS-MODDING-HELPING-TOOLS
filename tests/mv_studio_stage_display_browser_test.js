@@ -2,7 +2,8 @@
 
 // Renders the stage display screen programs on sample texels (WebGL2, float target) and compares
 // every pixel with the original GLES3 programs transcribed below from the shader bundles:
-// AS/General/Opaque (_VERTEX_COLOR_ON) and AS/General/Transparent (_SATURATE_ON _VERTEX_COLOR_ON).
+// AS/General/Opaque (_VERTEX_COLOR_ON), AS/General/Transparent (_SATURATE_ON _VERTEX_COLOR_ON),
+// AS/Blend/AdditiveOpaque and AS/Uniq/so2030-DisplayWaveTexture (so1005 has the same program).
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { chromium } = require('playwright');
@@ -74,6 +75,29 @@ const { chromium } = require('playwright');
           t = mul(mul(t, f.tint), color);
           return [...add(mul(square, square), t.slice(0, 3)), t[3]];
         },
+        blendAdditive(f, at, feed) {  // AS/Blend/AdditiveOpaque
+          const a = feed ?? fetch(f.additive.texture, ...unity(at, f.additive.uv)).slice(0, 3);
+          const drawn = a[2] + (a[1] + a[0]) >= 0.00100000005 ? 1 : 0;
+          const m = fetch(f.texture, ...unity(at, f.uv));
+          const base = add(scale(add(a, scale(m.slice(0, 3), -1)), drawn), m.slice(0, 3));
+          const alpha = m[3] * color[3];
+          const shaded = mul(base, color.slice(0, 3));
+          const toward = add(mul(scale(base, -1), color.slice(0, 3)), f.ambient.slice(0, 3));
+          return mul([...add(scale(toward, f.ambient[3]), shaded), alpha], f.tint);
+        },
+        waveTexture(f, at, time) {  // AS/Uniq/so2030-DisplayWaveTexture
+          const [u, vg] = at, v = 1 - vg;
+          const layer = ([rx, ry, sx, sy]) => {
+            const w = mul(fetch(f.wave.texture, u * rx + time * sx, 1 - (v * ry + time * sy)), f.wave.color);
+            return scale(w.slice(0, 3), w[3]);
+          };
+          const m = fetch(f.texture, ...unity(at, f.uv));
+          let acc = layer(f.wave.layers[0]);
+          const lit = add(scale(add(scale(m.slice(0, 3), -1), f.ambient.slice(0, 3)), f.ambient[3]), m.slice(0, 3));
+          acc = add(mul(lit, f.tint.slice(0, 3)), acc);
+          for (const index of [1, 2, 3]) acc = add(layer(f.wave.layers[index]), acc);
+          return [...acc, m[3] * f.tint[3]];
+        }
       };
       const stencil = { stencil: 2, stencilComp: 8, stencilPass: 2, stencilZFail: 0, queue: 2000 };
       const cases = [
@@ -81,7 +105,16 @@ const { chromium } = require('playwright');
           tint: [.9, 1.25, .5, .75], ambient: [.2, .4, .6, .35], vertexColor: true, ...stencil } },
         { name: 'transparent', kind: 'transparent', fields: { kind: 'transparent', texture: 1, uv: [1, 2, 0, .25], cull: 0,
           tint: [1.5, .5, 1, .8], blend: [1, 0], zTest: 8, zWrite: false, saturate: true, vertexColor: true,
-          ...stencil, stencilPass: 0, queue: 3000 } }
+          ...stencil, stencilPass: 0, queue: 3000 } },
+        { name: 'additive texture', kind: 'blendAdditive', fields: { kind: 'blendAdditive', texture: 1, uv: [1, 1, 0, 0],
+          cull: 0, tint: [1, .8, 1.2, 1], ambient: [.1, .2, .3, .25], vertexColor: true, displayCamera: false,
+          additive: { texture: 2, uv: [1, 1, .25, 0] }, ...stencil } },
+        { name: 'additive display camera', kind: 'blendAdditive', feed: [0, 0, 0], fields: { kind: 'blendAdditive',
+          texture: 1, uv: [1, 1, 0, 0], cull: 0, tint: [1, 1, 1, 1], ambient: [0, 0, 0, .5], vertexColor: true,
+          displayCamera: true, additive: { texture: 2, uv: [.5, 1, .25, 0] }, ...stencil } },
+        { name: 'wave', kind: 'waveTexture', time: 991.25, fields: { kind: 'waveTexture', texture: 1, uv: [1, 0, 0, .5],
+          cull: 0, tint: [1, .9, .8, 1], ambient: [.5, .1, .2, .25], ...stencil, wave: { texture: 3, color: [1.1608, 1.0039, 2, .251],
+            layers: [[.15, 1.75, .05, 0], [.39, 3.82, .05, .5], [.1, .78, .025, -.25], [2.25, .75, .02, 0]] } } }
       ];
       const out = [];
       for (const test of cases) {
