@@ -88,15 +88,15 @@ const EXPECT = {
   ko: { member: '멤버 변환 중 1/2: 上原歩夢', timeline: '라이브 타임라인을 분석하는 중…', members: '멤버 1/2 완료', data: '게임 데이터 3.0/7.8 MB',
         stageReady: '무대가 준비되었습니다. 멤버를 불러오는 중입니다.', cancel: '불러오기 취소', cancelled: 'MV 불러오기를 취소했습니다.',
         textures: '텍스처 12개', dance: '댄스 모션을 만드는 중… 40%', models: '3D 모델을 불러오는 중 0/1…', preparing: '게임에서 MV 준비 중…',
-        ready: '재생 준비 완료' },
+        ready: '재생 준비 완료', effects: '무대 연출 12/23' },
   ja: { member: 'メンバーを変換中 1/2: 上原歩夢', timeline: 'ライブタイムラインを解析中…', members: 'メンバー 1/2 完了', data: 'ゲームデータ 3.0/7.8 MB',
         stageReady: 'ステージの準備ができました。メンバーを読み込み中です。', cancel: '読み込みをキャンセル', cancelled: 'MVの読み込みをキャンセルしました。',
         textures: 'テクスチャ 12枚', dance: 'ダンスモーションを生成中… 40%', models: '3Dモデルを読み込み中 0/1…', preparing: 'ゲームデータからMVを準備中…',
-        ready: '再生の準備ができました' },
+        ready: '再生の準備ができました', effects: 'ステージ演出 12/23' },
   en: { member: 'Converting member 1/2: 上原歩夢', timeline: 'Reading the live timeline…', members: 'Members done 1/2', data: 'Game data 3.0/7.8 MB',
         stageReady: 'Stage is ready. Members are still loading.', cancel: 'Cancel import', cancelled: 'MV import cancelled.',
         textures: 'Textures 12', dance: 'Building dance motion… 40%', models: 'Loading 3D models 0/1…', preparing: 'Preparing MV from game…',
-        ready: 'Ready to play' },
+        ready: 'Ready to play', effects: 'Stage effects 12/23' },
 };
 
 async function send(page, event, finish = false) {
@@ -166,6 +166,12 @@ async function run() {
       view = await look();
       assert.equal(view.step, expect.timeline);
       assert.equal(view.status, expect.timeline, '#mv-status follows the step');
+      // The parse reports its stage effect readers.
+      await send(page, progress(null, null, { step: 'timeline', phase: 'tracks' }));
+      await send(page, progress(null, null, { step: 'timeline', phase: 'effects', done: 12, total: 23 }));
+      view = await look();
+      assert(view.detail.startsWith(expect.effects), view.detail);
+      if (shots && language === 'ko') await page.screenshot({ path: path.join(shots, 'mv-import-progress-ko-timeline.png') });
       await send(page, progress('timeline', 'done'));
       await send(page, progress('stage', 'start'));
       await send(page, progress('stage', 'done'));
@@ -218,6 +224,10 @@ async function run() {
           .observe(card, { subtree: true, childList: true, characterData: true, attributes: true });
       });
       await page.evaluate(() => mvStreamProbe.finishLoad());
+      if (shots && language === 'ko') {
+        await page.waitForFunction(() => document.querySelector('#mv-import-percent').textContent === '100%');
+        await page.screenshot({ path: path.join(shots, 'mv-import-progress-ko-ready.png') });
+      }
       await settled();
       await page.waitForFunction(() => document.querySelector('#mv-import-progress').hidden);
       const seen = await page.evaluate(() => mvCardSeen);
