@@ -17,7 +17,8 @@ const geometry = new T.PlaneGeometry();
 const programs = new Map();
 let nextProgram = 1;
 
-function surface(name, {program, position = [0, 0, 0], transparent = false, depthWrite = true, renderOrder = 0} = {}) {
+function surface(name, {program, position = [0, 0, 0], transparent = false, depthWrite = true, renderOrder = 0,
+  parent = scene} = {}) {
   const material = new T.MeshBasicMaterial({transparent, depthWrite});
   material.name = name;
   if (program !== undefined) programs.set(material, {id: program});
@@ -26,7 +27,7 @@ function surface(name, {program, position = [0, 0, 0], transparent = false, dept
   node.position.fromArray(position);
   node.renderOrder = renderOrder;
   node.frustumCulled = false;
-  scene.add(node);
+  parent.add(node);
   return node;
 }
 
@@ -54,7 +55,8 @@ const entries = [
 ];
 const records = [{stageMaterial: {opaqueSortEntries: () => entries}}, {}];
 
-let comparator = null, order;
+// keepCulled: list frustum-culled meshes too, so a culled participant that took part would show as moved.
+let comparator = null, order, keepCulled = false;
 const viewProjection = new T.Matrix4(), frustum = new T.Frustum();
 // three.js r128 painterSortStable and WebGLRenderer.projectObject.
 function painter(a, b) {
@@ -74,7 +76,7 @@ const renderer = {
     frustum.setFromProjectionMatrix(viewProjection);
     const items = [];
     source.traverseVisible((object) => {
-      if (!object.isMesh || object.material.transparent || object.frustumCulled && !frustum.intersectsObject(object)) return;
+      if (!object.isMesh || object.material.transparent || !keepCulled && object.frustumCulled && !frustum.intersectsObject(object)) return;
       items.push({object, id: object.id, groupOrder: 0, renderOrder: object.renderOrder, material: object.material,
         program: programs.get(object.material) || {id: -1},
         z: new T.Vector3().setFromMatrixPosition(object.matrixWorld).applyMatrix4(viewProjection).z});
@@ -86,9 +88,9 @@ const renderer = {
 
 const sorter = MVStudioOpaqueSort.create(T, renderer);
 assert.equal(MVStudioOpaqueSort.create(T, {}), null, "a renderer without setOpaqueSort keeps its own order");
-const draw = (view) => {
-  const sorting = sorter.begin(scene, view, records);
-  try { renderer.render(scene, view); } finally { if (sorting) sorter.end(); }
+const draw = (view, source = scene, sources = records) => {
+  const sorting = sorter.begin(source, view, sources);
+  try { renderer.render(source, view); } finally { if (sorting) sorter.end(); }
   return sorting;
 };
 
@@ -125,6 +127,15 @@ dome.frustumCulled = true;
 dome.position.set(0, 0, 50);
 draw(camera);
 assert.ok(!order.includes("dome"));
+// Behind the camera the dome's bounds are the farthest: had it taken part it
+// would move behind the stage's submeshes. Culled, it keeps three.js's place.
+keepCulled = true;
+renderer.render(scene, camera);
+const culledStock = order.slice();
+assert.deepEqual(culledStock.slice(0, 3), ["dome", "unrelated", "stage sky"]);
+assert.equal(draw(camera), false, "a culled participant is never slotted");
+assert.deepEqual(order, culledStock);
+keepCulled = false;
 dome.position.set(0, 0, 0);
 dome.frustumCulled = false;
 
@@ -134,6 +145,46 @@ orthographic.position.set(0, 0, 100);
 orthographic.updateMatrixWorld();
 draw(orthographic);
 assert.ok(order.indexOf("dome") > order.indexOf("stage sky"), "the dome centre is farther along the view axis");
+
+// Where view depth and distance disagree, the orthographic camera follows
+// view depth: "aside" is 10 nearer along the view axis (90 against 100) but
+// farther from the eye (11700 against 10000 squared).
+const flat = new T.Scene();
+const ahead = surface("ahead", {program: 1, parent: flat}), aside = surface("aside", {program: 2, parent: flat});
+const flatEntries = [
+  {node: ahead, material: ahead.material, center: new T.Vector3(0, 0, 0), queue: 2000},
+  {node: aside, material: aside.material, center: new T.Vector3(60, 0, 10), queue: 2000},
+];
+const flatRecords = [{stageMaterial: {opaqueSortEntries: () => flatEntries}}];
+assert.equal(draw(orthographic, flat, flatRecords), true);
+assert.deepEqual(order, ["aside", "ahead"], "view depth: the nearer plane draws first");
+const sideways = new T.PerspectiveCamera(60, 1, .1, 1000);
+sideways.position.set(0, 0, 100);
+sideways.updateMatrixWorld();
+assert.equal(draw(sideways, flat, flatRecords), false, "a perspective camera keeps squared distance");
+assert.deepEqual(order, ["ahead", "aside"]);
+
+// Bounds centres are in the renderer's own frame: a participant under a moved
+// and turned parent sorts by its world centre. "turned" has its centre at
+// local (0, 0, -50); the parent's half turn and offset put it at world
+// (0, 0, 5), 5 in front of the camera, so it draws before "plain" at the origin.
+const rig = new T.Scene(), parent = new T.Group();
+parent.position.set(0, 0, -45);
+parent.rotation.y = Math.PI;
+rig.add(parent);
+const plain = surface("plain", {program: 1, parent: rig}), turned = surface("turned", {program: 2, parent});
+const rigEntries = [
+  {node: plain, material: plain.material, center: new T.Vector3(0, 0, 0), queue: 2000},
+  {node: turned, material: turned.material, center: new T.Vector3(0, 0, -50), queue: 2000},
+];
+const rigRecords = [{stageMaterial: {opaqueSortEntries: () => rigEntries}}];
+const level = new T.PerspectiveCamera(60, 1, .1, 1000);
+level.position.set(0, 1.5, 10);
+level.updateMatrixWorld();
+renderer.render(rig, level);
+assert.deepEqual(order, ["plain", "turned"]);
+assert.equal(draw(level, rig, rigRecords), true);
+assert.deepEqual(order, ["turned", "plain"], "the world centre, through the parent's turn and offset");
 // MVStudioStageMaterial offers its native opaque materials with their bounds centre and queue.
 (async () => {
   const root = new T.Group(), map = new T.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
