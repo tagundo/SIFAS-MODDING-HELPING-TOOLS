@@ -1122,6 +1122,23 @@ class RegisterJobTests(Case):
         self.assertEqual((summary, calls), (register.NO_CHANGES, []))
 
 
+def forbid_real_server_kills(case, serverctl):
+    """Fail ``case`` instead of running serverctl's standalone stop. Without a registered controller,
+    installation_server SIGKILLs every process named like an Elichika server on this machine (pkill,
+    or the /proc scan), which would kill the maintainer's running game server or the test's own shell."""
+    reached = []
+
+    def refuse(*_args, **_kwargs):
+        reached.append(case.id())
+        raise AssertionError("The test reached serverctl's real process kill: register a stand-in controller")
+
+    for name in ("_pkill", "_proc_kill"):
+        patcher = mock.patch.object(serverctl, name, side_effect=refuse)
+        patcher.start()
+        case.addCleanup(patcher.stop)
+    case.addCleanup(lambda: case.assertEqual(reached, [], "The test reached serverctl's real process kill"))
+
+
 class Controller:
     """The app's server controller as adminui.serverctl drives it. ``deferred`` behaves like the
     Android/macOS job reservation: start() inside a job only asks for a restart, finish_job runs it."""
@@ -1176,6 +1193,7 @@ class JobLifecycleTests(Case):
         from adminui import serverctl
         self.serverctl = serverctl
         self.addCleanup(serverctl.register_controller, None)
+        forbid_real_server_kills(self, serverctl)
         for name, value in (("_server_session", REAL_SERVER_SESSION), ("_lifecycle", REAL_LIFECYCLE)):
             patcher = mock.patch.object(register, name, value)
             patcher.start()
@@ -1636,6 +1654,7 @@ class RealSampleUpdateTests(Case):
         from adminui import serverctl
         self.serverctl = serverctl
         self.addCleanup(serverctl.register_controller, None)
+        forbid_real_server_kills(self, serverctl)
         self.exports = []
 
         def export(raw, name, tracks):
@@ -1722,8 +1741,14 @@ class RealSampleUpdateTests(Case):
         # The song removed: the opened project asks for a stock base, and with the song's own base it
         # is a mod of it whose timeline fits that base (no structure or base mismatch).
         review = register.remove_plan(self.root, region="gl", live_id=song["liveId"])
-        register.run_remove(FakeJob(), self.root, register.validate_remove(
-            {"region": "gl", "liveId": song["liveId"], "reviewToken": review["reviewToken"]}))
+        controller = Controller()
+        self.serverctl.register_controller(controller)
+        try:
+            register.run_remove(FakeJob(), self.root, register.validate_remove(
+                {"region": "gl", "liveId": song["liveId"], "reviewToken": review["reviewToken"]}))
+        finally:
+            self.serverctl.register_controller(None)
+        self.assertEqual(controller.calls, ["begin_job", "stop", "start", "finish", "finish_job:True"])
         self.assertEqual(register.plan(self.root, reopened)["blocked"], [{"message": register.SOURCE_REMOVED}])
         plan = register.plan(self.root, reopened, template={"region": "gl", "liveId": 21, "assetId": 2101})
         self.assertEqual((plan["timeline"]["kind"], plan["projectPlatform"], plan["blocked"], plan["timeline"]["bake"]),
