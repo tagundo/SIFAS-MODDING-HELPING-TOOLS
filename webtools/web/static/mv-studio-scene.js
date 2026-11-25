@@ -678,6 +678,31 @@
       if (!disposed && visible && !queuedDraw) queuedDraw = global.requestAnimationFrame(draw);
     }
 
+    // The first frame that shows a material links its program, and the first that samples a
+    // texture uploads it (30-130 ms inside a playback frame on desktop, more on phones). After a
+    // load has drawn its first frame, the rest are prepared at once: renderer.compile links a
+    // program for every material of the scene, hidden ones included, with the same parameters
+    // a draw uses, and every plain 2D texture those materials hold is uploaded.
+    function warmScene() {
+      if (disposed || typeof renderer.compile !== "function" || renderer.getContext?.().isContextLost?.()) return;
+      renderer.compile(scene, liveCamera);
+      const textures = new Set();
+      const take = (value) => {
+        if (Array.isArray(value)) value.forEach(take);
+        else if (value?.isTexture && !value.isCubeTexture && !value.isDepthTexture && !value.isDataTexture3D &&
+            !value.isDataTexture2DArray && !value.isVideoTexture && value.version > 0 && value.image &&
+            value.image.complete !== false) textures.add(value);
+      };
+      scene.traverse((node) => {
+        for (const material of materials(node)) {
+          if (!material) continue;
+          for (const value of Object.values(material)) take(value);
+          if (material.uniforms) for (const uniform of Object.values(material.uniforms)) take(uniform?.value);
+        }
+      });
+      if (typeof renderer.initTexture === "function") for (const texture of textures) renderer.initTexture(texture);
+    }
+
     function resize(forceDraw = true) {
       const width = mount.clientWidth, height = mount.clientHeight;
       if (disposed || !visible || !width || !height) return;
@@ -1537,6 +1562,7 @@
       grid.visible = !stage.children.length;
       frameAll();
       seek(currentTime, project);
+      warmScene();
     }
 
     function poseCamera(event, time, track, camera = liveCamera) {
