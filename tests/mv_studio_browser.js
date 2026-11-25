@@ -548,10 +548,19 @@ async function timelineResize(page) {
   assert.equal(await scroll.evaluate(element => element.style.getPropertyValue('--mv-timeline-height')), '');
 }
 
+// The workbench process ends before its library folder is removed.
+function stopped(child) {
+  return new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    child.once('exit', () => resolve());
+    child.kill();
+  });
+}
+
 async function run() {
-  const server = await startServer();
-  let browser;
+  let server, browser;
   try {
+    server = await startServer();
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const page = await browser.newPage({ locale: 'ko', viewport: { width: 1180, height: 820 } });
@@ -570,7 +579,8 @@ async function run() {
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {
     if (browser) await browser.close();
-    server.processHandle.kill();
+    if (server) await stopped(server.processHandle);
+    fs.rmSync(library, { recursive: true, force: true });
   }
 }
 
