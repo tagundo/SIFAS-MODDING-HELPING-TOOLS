@@ -1990,6 +1990,7 @@
             // Frames the system updated (fewer than frames while culling froze it) and its clock;
             // device: on a game run's own frames (frameGrid), each stepping its Time.deltaTime.
             updates: item.updates, time: main.looping ? elapsed % main.duration : Math.min(elapsed, main.duration),
+            looping: !!main.looping,
             device: item.mode !== "display", culled: !!item.culledNow,
             alive: item.stream ? (item.rows?.length ?? 0) : 0, drawn: item.count,
             positions: (item.rows || []).slice(0, limit).map(row => row.world.map(value => Math.round(value * 1e4) / 1e4))});

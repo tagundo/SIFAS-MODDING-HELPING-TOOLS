@@ -187,6 +187,12 @@ class ParticleTest(unittest.TestCase):
         self.assertAlmostEqual(found[("particles:fx_a/root/kira", "particleTimeS")]["score"], 0.413 / 0.2)
         self.assertAlmostEqual(found[("particles:fx_a/root/wrap", "particleTimeS")]["error"], 0.1, msg="around the loop")
         self.assertNotIn(("particles:fx_a/root/notime", "particleTimeS"), found)
+        # A non-looping system (editor row looping false) holds its duration: no wrap.
+        result = comparison()
+        result.compare_particles({"id": "p", "clock": {"directorTime": 5, "deltaTime": 0.2}, "particles": [
+            {"path": "/fx_a [Timeline]/root/once", "isPlaying": True, "particleCount": 1, "time": 9.95, "duration": 10}]},
+            {"particles": [{"path": "fx_a/root/once", "alive": 1, "time": 0.05, "looping": False}]})
+        self.assertAlmostEqual(next(i for i in result.items if i["metric"] == "particleTimeS")["error"], 9.9)
         # Without a deltaTime one 30 fps frame is the tolerance.
         result = comparison()
         result.compare_particles({"id": "p", "clock": {"directorTime": 5}, "particles": record["particles"][:1]}, partner)
