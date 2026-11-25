@@ -176,7 +176,7 @@ class ReceiptTests(unittest.TestCase):
         for layout in ("zip", "folder"):
             self.assertNotEqual(recipes["a", layout], recipes["b", layout], layout)
 
-    def test_unreadable_code_keeps_every_store_closed(self):
+    def test_unreadable_code_keeps_every_receipt_store_closed(self):
         readable = cache._module_bytes
 
         def unreadable(spec):
@@ -192,7 +192,8 @@ class ReceiptTests(unittest.TestCase):
             self.assertIsNone(cache.recipe())
             self.assertIsNone(cache.open_cache(self.media))
             self.assertIsNone(cache.open_texture_cache(self.media))
-            self.assertIsNone(mv_studio_actor_cache.open_cache(("gl", "android"), self.media))
+            # The actor cache keeps its version-keyed recipe instead (as before the code recipe).
+            self.assertIsNotNone(mv_studio_actor_cache.open_cache(("gl", "android"), self.media))
             with self.assertRaises(ValueError):
                 cache.ImportCache(self.root / "receipts", self.media)
         cache._source_recipe.cache_clear()

@@ -67,6 +67,21 @@ class ActorCacheTests(unittest.TestCase):
         self.assertIsNone(updated.get(self.key))
         self.assertIsNotNone(replay.get(self.key))
 
+    def test_unreadable_code_keeps_the_version_keyed_cache(self):
+        # An importer that cannot hand back module bytes (the APK's packed assets) must not
+        # turn the actor cache off: it falls back to the version and library releases.
+        from webtools.core import mv_studio_import_cache
+        self.put()
+        with patch.object(mv_studio_import_cache, "_source_recipe", return_value=None):
+            fallback = self.reopen()
+            self.assertIsNotNone(fallback)
+            self.assertNotEqual(fallback.recipe, self.cache.recipe)
+            fallback.put(self.identity(fallback), self.name, self.rig, self.motion)
+            again = self.reopen()
+            self.assertEqual(again.get(self.identity(again)), (self.name, self.rig, self.motion))
+            with patch.object(actor_cache, "_PREVIEW_VERSION", actor_cache._PREVIEW_VERSION + 1):
+                self.assertIsNone(self.reopen().get(self.identity(again)))
+
     def test_rebuilds_after_media_or_receipt_corruption(self):
         self.put()
         media, _ = self.media(self.name)
