@@ -395,10 +395,11 @@ MAX_DELTA_TIME = 1 / 3      # Unity Time.maximumDeltaTime: a clamped deltaTime i
 # qa-mvdump sampler 3 (sifas-mv-frame-clock/1): one row per rendered frame (mv_runtime_capture.js FRAME_CLOCK_FIELDS).
 FRAME_CLOCK_FIELDS = ["frameCount", "directorTime", "musicTime", "unityTime", "deltaTime", "realtimeSinceStartup", "source"]
 # Rendered frames a dump5 screencap shows: the newest frames whose successor had started (ticked) before the capture
-# began. Unity presents frame N while frame N+1 runs (the render thread draws the frame the main thread just ended),
-# so the frame whose tick the 'before' record read is never on screen yet; and the composition can still hold the
-# frame before (render work outlasting the grab). 12035 dump5: frame before-1 in 31 shots, before-2 in 16, none
-# other in the 47 shots with distinct frames (12023 dump5: see the lane report).
+# began. Measured, not derived from client code: on the dump device the frame whose tick the 'before' record read was
+# never on screen yet when the capture began, and the screen still held the frame before it or the one before that
+# (a frame is presented after its successor's tick, later when its render work is longer). Best-matching editor
+# frame per screencap: 12035 dump5 before-1 in 31 shots and before-2 in 16; 12023 dump5 41 and 11; none other in
+# the 99 shots whose frames differ.
 SHOT_PRESENTED_DEPTH = 2
 
 
