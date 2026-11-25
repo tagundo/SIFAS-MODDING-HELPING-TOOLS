@@ -495,9 +495,16 @@
     shortcut = document.createElement("button");
     shortcut.type = "button";
     shortcut.id = "mv-apply-open";
+    shortcut.className = "mv-icon-btn";
     shortcut.hidden = true;
-    shortcut.dataset.i18n = "Apply to game";
-    shortcut.textContent = t("Apply to game");
+    shortcut.title = t("Apply to game");
+    shortcut.dataset.i18nTitle = "Apply to game";
+    // An icon button like its toolbar neighbours (the label is visually hidden there).
+    shortcut.innerHTML = '<svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" ' +
+      'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<rect x="6" y="3" width="12" height="18" rx="2"/><path d="M12 7v7m0 0-3-3m3 3 3-3"/></svg>' +
+      '<span class="mv-label" data-i18n="Apply to game"></span>';
+    shortcut.querySelector(".mv-label").textContent = t("Apply to game");
     shortcut.addEventListener("click", () => {
       const panel = document.getElementById("mv-panel-" + KEY);
       if (!panel) return;
@@ -542,7 +549,10 @@
             if (panel.open && (!state.plan || stale()) && !state.planning) runPlan();
           });
         }
-        if (shortcut) shortcut.textContent = t("Apply to game");
+        if (shortcut) {
+          shortcut.title = t("Apply to game");
+          shortcut.querySelector(".mv-label").textContent = t("Apply to game");
+        }
         draw();
       },
     }],
