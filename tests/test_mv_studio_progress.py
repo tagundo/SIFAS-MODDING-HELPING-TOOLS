@@ -401,6 +401,30 @@ class ServerProgressTests(unittest.TestCase):
         self.assertEqual([json.loads(line) for line in legacy.split(b"\n") if line],
                          [{"type": "stage", "preview": self.stage}, {"type": "complete", "project": self.project}])
 
+    def test_the_stream_ends_before_the_deferred_receipt_writes(self):
+        # The page waits for the end of the stream; slow deferred writes must not hold it.
+        written = threading.Event()
+
+        def slow_write():
+            time.sleep(2)
+            written.set()
+
+        def fake_import(*args, later, **kwargs):
+            later.append(slow_write)
+            return self.fake_import(*args, **kwargs)
+
+        with patch.object(mv_studio, "load_game", side_effect=fake_import):
+            for query in ("&progress=1", ""):
+                written.clear()
+                with self.subTest(query=query):
+                    started = time.monotonic()
+                    with self.connect(query) as response:
+                        lines = [json.loads(line) for line in response.read().split(b"\n") if line]
+                    self.assertLess(time.monotonic() - started, 1.)
+                    self.assertFalse(written.is_set())
+                    self.assertEqual(lines[-1], {"type": "complete", "project": self.project})
+                    self.assertTrue(written.wait(5), "the deferred writes still run")
+
     def test_a_closed_client_releases_the_real_import_at_its_next_report(self):
         reports, released = [], threading.Event()
 

@@ -408,6 +408,12 @@ class Handler(BaseHTTPRequestHandler):
                                 on_stage=lambda preview: send({"type": "stage", "preview": preview}))
             try:
                 send({"type": "complete", "project": project})
+                # The page reads this stream to its end (Connection: close, no length)
+                # before it shows the project: end it now, not after the receipt writes.
+                try:
+                    self.connection.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
             finally:
                 _run_later(later)
         except (_MVStreamClosed, ImportCancelled):
