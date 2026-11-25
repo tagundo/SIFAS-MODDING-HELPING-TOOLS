@@ -1160,9 +1160,16 @@ _CLIP_FIELDS = ("start", "duration", "label")
 
 
 def _float32(value):
-    """``value`` with every float rounded to float32, the precision a native timeline stores."""
+    """``value`` with every float rounded to float32, the precision a native timeline stores, and every
+    integer as the same float: a project posted by the page has lost the difference (JSON numbers), and
+    Python compares 1 == 1.0 too. Booleans stay booleans."""
     import struct
 
+    if type(value) is int:
+        try:
+            return float(value)
+        except OverflowError:
+            return value
     if type(value) is float:
         try:
             return struct.unpack("<f", struct.pack("<f", value))[0]

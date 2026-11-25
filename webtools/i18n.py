@@ -3399,6 +3399,131 @@ for _source, (_korean, _japanese) in _MV_REGISTER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 
+# Apply to game (mv-studio-apply.js, core/mv_studio_apply.py, Elichika's mv_studio_stock): the panel,
+# the job stages and every message the plan, the jobs and the stock MV store can show. Strings the
+# registration panel already has (server notes, download, backup, confirm buttons) are not repeated.
+_MV_APPLY_TRANSLATIONS = {
+    # Panel
+    "Apply to game": ("게임에 적용", "ゲームに適用"),
+    "Apply only the edits": ("수정 사항만 적용", "修正だけを適用"),
+    "Apply all": ("전체 적용", "全体を適用"),
+    "Restore the original MV": ("원래대로 되돌리기", "元のMVに戻す"),
+    "Checking the game's timeline…": ("게임의 타임라인 확인 중…", "ゲームのタイムラインを確認中…"),
+    "Open this panel to check the game's timeline.": (
+        "이 패널을 열면 게임의 타임라인을 확인합니다.", "このパネルを開くとゲームのタイムラインを確認します。"),
+    "Load the MV from the game to apply it.": (
+        "게임에 적용하려면 게임에서 MV를 불러오세요.", "ゲームに適用するには、ゲームからMVを読み込んでください。"),
+    "Register as a new MV-only song…": ("새 MV 전용 곡으로 등록…", "新しいMV専用曲として登録…"),
+    "MV-only song: {title} ({id})": ("MV 전용 곡: {title} ({id})", "MV専用曲: {title}（{id}）"),
+    "Game MV: {title} ({id})": ("게임 MV: {title} ({id})", "ゲームのMV: {title}（{id}）"),
+    "In the game: MV Studio version {revision} ({date})": (
+        "게임: MV Studio 버전 {revision} ({date})", "ゲーム: MV Studio版 {revision}（{date}）"),
+    "In the game: the original MV": ("게임: 원본 MV", "ゲーム: 元のMV"),
+    "Loaded from: the registered song": ("불러온 것: 등록된 곡", "読み込み元: 登録済みの曲"),
+    "Loaded from: MV Studio version {revision}": ("불러온 것: MV Studio 버전 {revision}", "読み込み元: MV Studio版 {revision}"),
+    "Loaded from: an MV Studio version": ("불러온 것: MV Studio 버전", "読み込み元: MV Studio版"),
+    "Loaded from: the original MV": ("불러온 것: 원본 MV", "読み込み元: 元のMV"),
+    "This MV also plays in the 3D live of {count} songs: {titles}": (
+        "이 MV는 곡 {count}개의 3D 라이브에서도 재생됩니다: {titles}", "このMVは{count}曲の3Dライブでも再生されます: {titles}"),
+    "The song's 3D live plays this MV too.": (
+        "이 곡의 3D 라이브에서도 이 MV가 재생됩니다.", "この曲の3DライブでもこのMVが再生されます。"),
+    "The game's MV changed after this project was loaded. Apply only the edits keeps those changes; Apply all replaces them.": (
+        "이 프로젝트를 불러온 뒤 게임의 MV가 바뀌었습니다. '수정 사항만 적용'은 그 변경을 유지하고, '전체 적용'은 덮어씁니다.",
+        "このプロジェクトを読み込んだ後にゲームのMVが変わりました。「修正だけを適用」はその変更を残し、「全体を適用」は置き換えます。"),
+    "Edits: none since the last apply": ("수정 사항: 마지막 적용 이후 없음", "修正: 前回の適用以降なし"),
+    "Edits: none since loading": ("수정 사항: 불러온 뒤 없음", "修正: 読み込み以降なし"),
+    "Edits since the last apply: {clips} clips (camera {camera} · values {values} · timing {timing})": (
+        "마지막 적용 이후 수정: 클립 {clips}개 (카메라 {camera} · 값 {values} · 타이밍 {timing})",
+        "前回の適用以降の修正: クリップ{clips}個（カメラ{camera}・値{values}・タイミング{timing}）"),
+    "Edits since loading: {clips} clips (camera {camera} · values {values} · timing {timing})": (
+        "불러온 뒤 수정: 클립 {clips}개 (카메라 {camera} · 값 {values} · 타이밍 {timing})",
+        "読み込み以降の修正: クリップ{clips}個（カメラ{camera}・値{values}・タイミング{timing}）"),
+    "Apply all: the game already plays this project.": (
+        "전체 적용: 게임이 이미 이 프로젝트대로 재생합니다.", "全体を適用: ゲームはすでにこのプロジェクトのとおり再生しています。"),
+    "Apply all: the game plays the original MV again.": (
+        "전체 적용: 게임이 원본 MV를 다시 재생합니다.", "全体を適用: ゲームは元のMVを再び再生します。"),
+    "Apply all: {clips} clips differ from the original MV": (
+        "전체 적용: 원본 MV와 다른 클립 {clips}개", "全体を適用: 元のMVと異なるクリップ{clips}個"),
+    "Changed differently in the game ({count})": ("게임에서 다르게 바뀐 항목 ({count})", "ゲームで別の内容に変わった項目（{count}）"),
+    "{where}: loaded {loaded} → project {project}, game {game}": (
+        "{where}: 불러온 값 {loaded} → 프로젝트 {project}, 게임 {game}", "{where}: 読み込み時 {loaded} → プロジェクト {project}、ゲーム {game}"),
+    "Nothing was overwritten. Use Apply all to replace the game's version with this project, or load the MV from the game again.": (
+        "아무것도 덮어쓰지 않았습니다. 게임의 버전을 이 프로젝트로 바꾸려면 '전체 적용'을 쓰거나, 게임에서 MV를 다시 불러오세요.",
+        "何も上書きしていません。ゲームの版をこのプロジェクトで置き換えるには「全体を適用」を使うか、ゲームからMVを読み込み直してください。"),
+    "The game server stops for a moment while the game catalog is written.": (
+        "게임 목록에 쓰는 동안 게임 서버가 잠시 멈춥니다.", "ゲームの一覧に書き込む間、ゲームサーバーが少し止まります。"),
+    "Restart the game server after applying.": ("적용한 뒤 게임 서버를 다시 시작하세요.", "適用した後にゲームサーバーを再起動してください。"),
+    "Restore the original MV? The MV Studio version {revision} stays in a backup.": (
+        "원본 MV로 되돌릴까요? MV Studio 버전 {revision}은 백업에 남습니다.", "元のMVに戻しますか？ MV Studio版 {revision}はバックアップに残ります。"),
+    "Apply all replaces the game's MV Studio version {revision} with this project. A backup is made first. Continue?": (
+        "'전체 적용'은 게임의 MV Studio 버전 {revision}을 이 프로젝트로 바꿉니다. 먼저 백업합니다. 계속할까요?",
+        "「全体を適用」はゲームのMV Studio版 {revision}をこのプロジェクトで置き換えます。先にバックアップします。続けますか？"),
+    "Apply all writes this whole project over the game's original MV. A backup is made first. Continue?": (
+        "'전체 적용'은 이 프로젝트 전체를 게임의 원본 MV 위에 씁니다. 먼저 백업합니다. 계속할까요?",
+        "「全体を適用」はこのプロジェクト全体をゲームの元のMVに書き込みます。先にバックアップします。続けますか？"),
+    "Android and iOS keep the MV they play now. Continue?": (
+        "Android와 iOS는 지금 재생하는 MV를 그대로 둡니다. 계속할까요?", "AndroidとiOSは今再生しているMVのままです。続けますか？"),
+    "iOS keeps the MV it plays now. Continue?": ("iOS는 지금 재생하는 MV를 그대로 둡니다. 계속할까요?", "iOSは今再生しているMVのままです。続けますか？"),
+    "Android keeps the MV it plays now. Continue?": (
+        "Android는 지금 재생하는 MV를 그대로 둡니다. 계속할까요?", "Androidは今再生しているMVのままです。続けますか？"),
+    "Restored the original MV: {title}.": ("원본 MV로 되돌렸습니다: {title}.", "元のMVに戻しました: {title}。"),
+    "Applied to the game: {title}.": ("게임에 적용했습니다: {title}.", "ゲームに適用しました: {title}。"),
+    "Applying to the game was cancelled.": ("게임에 적용하는 작업을 취소했습니다.", "ゲームへの適用を取り消しました。"),
+    # Job stages
+    "Checking the game's timeline": ("게임의 타임라인 확인", "ゲームのタイムラインを確認"),
+    "Applying the edits to the Android timeline": ("Android 타임라인에 수정 사항 적용 중", "Androidのタイムラインに修正を適用中"),
+    "Applying the edits to the iOS timeline": ("iOS 타임라인에 수정 사항 적용 중", "iOSのタイムラインに修正を適用中"),
+    "Checking the timelines against the original MV": ("원본 MV와 타임라인 대조", "元のMVとタイムラインを照合"),
+    "Restoring the original MV": ("원본 MV로 되돌리는 중", "元のMVに戻している途中"),
+    # Plan and job messages (core/mv_studio_apply.py, mv_studio_timeline.merge_changes)
+    "This Elichika version cannot change stock MVs. Update the Elichika server app.": (
+        "이 Elichika 버전은 게임 기본 MV를 바꿀 수 없습니다. Elichika 서버 앱을 업데이트하세요.",
+        "このバージョンのElichikaではゲーム標準のMVを変更できません。Elichikaサーバーアプリを更新してください。"),
+    "The timeline this project was loaded from is unavailable. Load the MV from the game again.": (
+        "이 프로젝트를 불러온 타임라인을 찾을 수 없습니다. 게임에서 MV를 다시 불러오세요.",
+        "このプロジェクトの読み込み元のタイムラインが見つかりません。ゲームからMVを読み込み直してください。"),
+    "The MV-only song this project was loaded from was removed. Register the project as a new song.": (
+        "이 프로젝트를 불러온 MV 전용 곡이 삭제되었습니다. 프로젝트를 새 곡으로 등록하세요.",
+        "このプロジェクトの読み込み元のMV専用曲は削除されました。プロジェクトを新しい曲として登録してください。"),
+    "The MV in the game has a different track layout. Use Apply all.": (
+        "게임의 MV는 트랙 구성이 다릅니다. '전체 적용'을 쓰세요.", "ゲームのMVはトラック構成が異なります。「全体を適用」を使ってください。"),
+    "Some edits were also changed differently in the game since this project was loaded. Use Apply all, or load the MV from the game again.": (
+        "일부 수정 항목이 이 프로젝트를 불러온 뒤 게임에서 다르게 바뀌었습니다. '전체 적용'을 쓰거나, 게임에서 MV를 다시 불러오세요.",
+        "一部の修正項目は、このプロジェクトを読み込んだ後にゲームで別の内容に変わりました。「全体を適用」を使うか、ゲームからMVを読み込み直してください。"),
+    "The game's timeline changed after the check. Check it again, then apply.": (
+        "확인한 뒤 게임의 타임라인이 바뀌었습니다. 다시 확인한 다음 적용하세요.",
+        "確認の後にゲームのタイムラインが変わりました。確認し直してから適用してください。"),
+    "The project changed after the last check. Check it again, then apply.": (
+        "마지막 확인 뒤 프로젝트가 바뀌었습니다. 다시 확인한 다음 적용하세요.",
+        "前回の確認の後にプロジェクトが変わりました。確認し直してから適用してください。"),
+    "Choose Apply all or Apply only the edits.": (
+        "'전체 적용' 또는 '수정 사항만 적용'을 고르세요.", "「全体を適用」か「修正だけを適用」を選んでください。"),
+    "The apply request is invalid.": ("적용 요청이 올바르지 않습니다.", "適用のリクエストが正しくありません。"),
+    "There are no edits since this project was loaded.": (
+        "이 프로젝트를 불러온 뒤 수정한 것이 없습니다.", "このプロジェクトを読み込んだ後の修正はありません。"),
+    "The MV already plays its original timeline.": ("이 MV는 이미 원본 타임라인을 재생합니다.", "このMVはすでに元のタイムラインを再生しています。"),
+    "The Android timeline the game plays now is not available. Allow the download, or apply to iOS only.": (
+        "게임이 지금 재생하는 Android 타임라인을 찾을 수 없습니다. 다운로드를 허용하거나 iOS에만 적용하세요.",
+        "ゲームが今再生しているAndroidのタイムラインが見つかりません。ダウンロードを許可するか、iOSだけに適用してください。"),
+    "The iOS timeline the game plays now is not available. Allow the download, or apply to Android only.": (
+        "게임이 지금 재생하는 iOS 타임라인을 찾을 수 없습니다. 다운로드를 허용하거나 Android에만 적용하세요.",
+        "ゲームが今再生しているiOSのタイムラインが見つかりません。ダウンロードを許可するか、Androidだけに適用してください。"),
+    "The Android and iOS timelines the game plays now differ. Each platform keeps its own changes.": (
+        "게임이 지금 재생하는 Android와 iOS 타임라인이 서로 다릅니다. 플랫폼마다 각자의 변경을 유지합니다.",
+        "ゲームが今再生しているAndroidとiOSのタイムラインが異なります。プラットフォームごとにそれぞれの変更を残します。"),
+    # Elichika's stock MV store (mv_studio_stock.MESSAGES)
+    "Choose a 3D MV of this region.": ("이 지역의 3D MV를 고르세요.", "この地域の3D MVを選んでください。"),
+    "The selected MV has no 3D timeline in this region.": (
+        "고른 MV는 이 지역에 3D 타임라인이 없습니다.", "選んだMVにはこの地域の3Dタイムラインがありません。"),
+    "This MV belongs to an MV-only song. Update the song instead.": (
+        "이 MV는 MV 전용 곡의 것입니다. 곡을 업데이트하세요.", "このMVはMV専用曲のものです。曲を更新してください。"),
+    "Fingerprints must be short text values for android or ios.": (
+        "지문 값은 android 또는 ios용 짧은 문자열이어야 합니다.", "フィンガープリントはandroidかios用の短い文字列にしてください。"),
+}
+for _source, (_korean, _japanese) in _MV_APPLY_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
 # Texture authoring labels shared with the viewer save form.
 _TABLES["ko"].update({
     "Open texture editor": "텍스쳐 편집기 열기",
