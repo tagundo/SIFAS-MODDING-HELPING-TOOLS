@@ -54,17 +54,28 @@ class _PeerWatch:
     def __init__(self, connection, interval=.1):
         self._connection, self._interval, self._next, self.closed = connection, interval, 0., False
 
+    def _readable(self):
+        # poll() has no descriptor limit; select() cannot watch descriptors above
+        # FD_SETSIZE, which a long-running server can reach.
+        if hasattr(select, "poll"):
+            poller = select.poll()
+            poller.register(self._connection, select.POLLIN | select.POLLPRI)
+            return bool(poller.poll(0))
+        readable, _, _ = select.select([self._connection], [], [], 0)
+        return bool(readable)
+
     def check(self):
         now = time.monotonic()
         if self.closed or now < self._next:
             return self.closed
         self._next = now + self._interval
         try:
-            readable, _, _ = select.select([self._connection], [], [], 0)
-            if readable:
+            if self._readable():
                 self.closed = not self._connection.recv(1, socket.MSG_PEEK)
-        except (OSError, ValueError):
-            self.closed = True
+        except OSError:
+            self.closed = True  # reset by the peer
+        except ValueError:
+            pass  # this descriptor cannot be watched: keep importing
         return self.closed
 
 

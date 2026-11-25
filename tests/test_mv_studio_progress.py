@@ -170,6 +170,42 @@ class LoadGameProgressTests(unittest.TestCase):
         self.assertIsNone(getattr(mv_studio_progress._LOCAL, "progress", None))
 
 
+class PeerWatchTests(unittest.TestCase):
+    def test_open_closed_and_reset_peers(self):
+        from webtools.server import _PeerWatch
+        for how in ("open", "close", "reset", "data"):
+            with self.subTest(how=how):
+                server, client = socket.socketpair()
+                try:
+                    watch = _PeerWatch(server, interval=0)
+                    self.assertFalse(watch.check())
+                    if how == "close":
+                        client.close()
+                    elif how == "reset":
+                        client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\1\0\0\0\0\0\0\0")
+                        client.close()
+                    elif how == "data":
+                        client.sendall(b"x")  # unexpected bytes are not a disconnect, and stay unread
+                    self.assertEqual(watch.check(), how in ("close", "reset"))
+                    if how == "data":
+                        self.assertEqual(server.recv(1), b"x")
+                finally:
+                    server.close()
+                    if how in ("open", "data"):
+                        client.close()
+
+    def test_checks_are_throttled(self):
+        from webtools.server import _PeerWatch
+        server, client = socket.socketpair()
+        try:
+            watch = _PeerWatch(server, interval=60)
+            self.assertFalse(watch.check())
+            client.close()
+            self.assertFalse(watch.check(), "the next look is not due yet")
+        finally:
+            server.close()
+
+
 class ServerProgressTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
