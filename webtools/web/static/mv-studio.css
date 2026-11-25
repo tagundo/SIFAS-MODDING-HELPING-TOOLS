@@ -160,6 +160,9 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
   /* The splitter's target reaches over the panel's edge (hit - band - reach); the panel's
      fields and names start a pixel past it (after a panel's 1 px border and 8 px padding). */
   padding-inline: max(2px, calc(var(--mv-split-hit) - var(--mv-split) - var(--mv-split-reach) - 8px)) 2px;
+  /* An open panel's name sticks to the top (below). A field that gets focus above the view
+     (Shift+Tab) scrolls in under the name, its focus ring (2 px, 2 px out) included. */
+  scroll-padding-block-start: calc(var(--mv-control-h-sm) + 4px);
 }
 /* Stage / side panel splitter (setupInspectorResizer in mv-studio.js). The band is narrow;
    its pointer target (--mv-split-hit across) reaches --mv-split-reach over the stage, inside
@@ -222,7 +225,8 @@ body:has(#tab-mv.active) > .tools-console-layout > main { padding: 6px; }
 .mv-inspector > details[open] > summary { position: sticky; top: 0; z-index: 1; border-radius: 8px 8px 0 0; background: var(--panel); }
 /* The panel list scrolls: a ring outside a panel name would be clipped at its edges. */
 #tab-mv .mv-inspector > details > summary:focus-visible { outline-offset: -2px; }
-.mv-panel-content { display: grid; gap: 4px; padding: 0 8px 8px; font-size: .75rem; overflow-wrap: anywhere; }
+/* The top padding leaves room for the first field's focus ring under the panel name. */
+.mv-panel-content { display: grid; gap: 4px; padding: 4px 8px 8px; font-size: .75rem; overflow-wrap: anywhere; }
 /* Panel fields (built-in and plugin panels) use the secondary control size. */
 #tab-mv .mv-inspector :is(select, button), #tab-mv .mv-inspector input:not([type=checkbox], [type=range], [type=color]) {
   min-height: var(--mv-control-h-sm);

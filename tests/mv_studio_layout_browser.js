@@ -11,7 +11,9 @@
    splitter's limits (a too narrow window, the stage's 320 px minimum on a tablet, a short
    phone where folding and Home come back to the layout it loaded with), panel open states
    kept across a reload, every panel hidden, and the selected tab kept in view in a phone's
-   tab strip. Korean UI, with screenshots in EVIDENCE_DIR. */
+   tab strip. Shift+Tab back through the side panel (side by side and stacked) never leaves
+   the focused field under a panel name that sticks to its top. Korean UI, with screenshots
+   in EVIDENCE_DIR. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -231,6 +233,39 @@ function targets() {
     bottoms: { stage: name(document.elementFromPoint(stage.left + stage.width / 2, stage.bottom - 1)),
       panel: panel.height ? name(document.elementFromPoint(panel.left + panel.width / 2, panel.bottom - 1)) : null },
   };
+}
+
+// With a clip selected, Shift+Tab from the side panel's last control to its first. The browser
+// scrolls each field above the view into it: the field, focus ring included, shows whole
+// below the open panel's name that sticks to the top, and a tap at its centre reaches it.
+async function focusWalk(page) {
+  await page.locator('#mv-timeline-grid .mv-clip').first().click();
+  await settle(page);
+  const count = await page.evaluate(() => {
+    const focusable = [...document.querySelectorAll('#mv-inspector :is(button, select, input, textarea, summary, [tabindex])')]
+      .filter((node) => node.tabIndex >= 0 && !node.disabled && node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden');
+    focusable[focusable.length - 1].focus();
+    return focusable.length;
+  });
+  const seen = [], hidden = [];
+  for (let step = 0; step < 200; step++) {
+    await page.keyboard.press('Shift+Tab');
+    const field = await page.evaluate(() => {
+      const node = document.activeElement, inspector = document.getElementById('mv-inspector');
+      if (!inspector.contains(node) || node === inspector) return null;
+      const box = node.getBoundingClientRect(), style = getComputedStyle(node);
+      const ring = style.outlineStyle === 'none' ? 0 : Math.max(0, parseFloat(style.outlineOffset) + parseFloat(style.outlineWidth));
+      const name = node.closest('#mv-inspector > details')?.querySelector(':scope > summary');
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return { id: node.id || `${node.tagName}.${node.className}`, tag: node.tagName, reached: !!hit && node.contains(hit),
+        by: hit ? `${hit.tagName}${hit.id ? '#' + hit.id : ''} ${hit.textContent.trim().slice(0, 20)}` : null,
+        clear: name && name !== node ? box.top - ring - name.getBoundingClientRect().bottom : Infinity };
+    });
+    if (!field) break;
+    seen.push(field.id);
+    if (!field.reached || field.clear < -.5) hidden.push(field);
+  }
+  return { count, seen, fields: seen.length, hidden };
 }
 
 async function desktop(browser, url) {
@@ -469,6 +504,11 @@ async function desktop(browser, url) {
   state = await read(page);
   assert.equal(state.inspector.width, initial.inspector.width, 'the default again with the room');
 
+  // ---- Focus stays in view below the panel names ---------------------------------------
+  const walk = await focusWalk(page);
+  assert(walk.fields >= 10 && walk.seen.some((id) => !id.startsWith('SUMMARY')), `Shift+Tab walks the panel's fields (${walk.seen.join(' ')})`);
+  assert.deepEqual(walk.hidden, [], 'a field Shift+Tab reaches is never under a panel name');
+
   // ---- Kept across a reload ---------------------------------------------------------------
   await grip.focus();
   await grip.press('Shift+ArrowLeft');
@@ -626,6 +666,11 @@ async function phonePortrait(browser, url) {
   assert(shown.inside, 'the selected tab is all in view');
   assert.deepEqual(shown.page, [0, 0, 0], 'the page itself does not scroll');
   await page.screenshot({ path: path.join(evidence, 'layout-phone-portrait-tab-ko.png') });
+
+  // Focus stays in view below the panel names in the stacked panel too.
+  const walk = await focusWalk(page);
+  assert(walk.fields >= 10 && walk.seen.some((id) => !id.startsWith('SUMMARY')), `Shift+Tab walks the panel's fields (${walk.seen.join(' ')})`);
+  assert.deepEqual(walk.hidden, [], 'a field Shift+Tab reaches is never under a panel name');
   assert.deepEqual(errors, []);
   await context.close();
 }
