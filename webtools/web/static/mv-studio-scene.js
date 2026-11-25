@@ -867,8 +867,11 @@
       if (vector(move.scale, 3)) record.root.scale.fromArray(move.scale);
     }
 
+    // How game_motion_timeline imports a MemberLipSyncClip index 0: the vowel of its paramName.
+    const lipSyncVowels = { a: 1, i: 2, u: 3, e: 4, o: 5, n: 6, m: 6 };
+
     function updateMotion(record) {
-      let changed = false;
+      let changed = false, facialChanged = false;
       const assign = (object, key, value) => {
         if (object[key] === value) return;
         object[key] = value;
@@ -878,6 +881,23 @@
         const bound = nativeEvents.get(segment.nativeEventId);
         if (!bound) continue;
         const event = bound.event, values = event.values;
+        if (segment.kind === "eyes" || segment.kind === "mouth") {
+          // Facial clips are bound once per controller. An edited eye or mouth index
+          // (the clip's index differs from its native one, kept in project.editor.originals
+          // once edited) rebuilds the controller below; the imported index is used otherwise.
+          if (!("importIndex" in segment)) {
+            const native = project?.editor?.originals?.[event.id]?.values?.index;
+            segment.nativeIndex = Number.isInteger(native) ? native : values.index;
+            segment.importIndex = segment.index;
+          }
+          const edited = Number.isInteger(values.index) && values.index !== segment.nativeIndex;
+          const index = !edited ? segment.importIndex : segment.kind === "mouth" && values.index === 0
+            ? lipSyncVowels[String(values.paramName ?? "").toLowerCase()] ?? 0 : values.index;
+          if (segment.index !== index) {
+            segment.index = index;
+            facialChanged = true;
+          }
+        }
         assign(segment, "start", event.start);
         assign(segment, "duration", event.duration);
         const weight = segment.kind === "gaze" ? values.weightForDirection : values.weight;
@@ -911,6 +931,17 @@
             if (Number.isFinite(edited)) assign(segment.timing, side + field, edited);
           }
         }
+      }
+      if (facialChanged && record.motionSource) {
+        // The controller holds interpolants and no mixer: a new one over the loaded pose
+        // (as the first was created) replaces it, then takes the current timing.
+        const source = record.motionSource;
+        if (record.initialPose) restoreActorPose(record.initialPose);
+        record.motion = global.ViewerMotionTimeline.create(source.scene, source.animations, source.rig,
+          { ...source.motion, bodySegments: record.segments, facial: { ...source.motion.facial, events: record.facialEvents } },
+          { indexTiming: true });
+        updateMotion(record);
+        return;
       }
       if (changed && record.motion.invalidateTiming) record.motion.invalidateTiming();
     }
@@ -1144,6 +1175,7 @@
               ...event, timing: { ...event.timing }
             }));
             record.motionEvents = record.segments.concat(record.facialEvents);
+            record.motionSource = { scene: gltf.scene, animations: gltf.animations, rig: entry.spec.rig || {}, motion: entry.spec.motion };
             record.motion = global.ViewerMotionTimeline.create(gltf.scene, gltf.animations,
               entry.spec.rig || {}, { ...entry.spec.motion, bodySegments: record.segments,
                 facial: { ...entry.spec.motion.facial, events: record.facialEvents } },

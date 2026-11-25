@@ -639,30 +639,59 @@ _EDITABLE_VALUES = {
     "MemberGazeClip": {"target", "weightForDirection"},
     "MemberCheekClip": {"cheekType", "intensity"},
     "LiveBloomClip": {"intensity", "threshold", "softKnee", "radius", "antiFlicker"},
-    "LiveDepthOfFieldClip": {"focusDistance", "aperture", "focalLength", "useCameraFov", "antiAura"},
+    "LiveDepthOfFieldClip": {"focusDistance", "aperture", "focalLength", "useCameraFov", "antiAura",
+                             "kernelSize", "useMemberDistance", "bodyPart"},
     "LiveBaseLightClip": {"ambientColor", "ambientTintColor", "rimlightColor", "rimlightIntensity",
                          "rimlightSharpness", "rimlightDirection"},
-    "LiveMemberAmbientClip": {"color", "tintColor"},
-    "LiveStageAmbientClip": {"color", "tintColor", "blendColor"},
-    "LiveStageSingleAmbientClip": {"color", "tintColor", "blendColor"},
-    "LiveStageEmissiveClip": {"color", "intensity"},
-    "LiveMemberSpotLightAreaClip": {"color"},
-    "LiveMemberSpotLightShaftClip": {"color", "scale", "offsetHeight", "smoothTime"},
-    "LiveRimlightClip": {"color", "intensity", "sharpness", "direction"},
-    "LiveFlareClip": {"color", "center", "intensity", "smoothness", "roundness", "rounded"},
-    "LiveFlashLightClip": {"tintColor", "speed"},
-    "LiveDisplayClip": {"scrollSpeed", "ambientColor"},
-    "LiveColoringClip": {"shift", "tintColor", "speed"},
+    "LiveMemberAmbientClip": {"color", "tintColor", "colorSpecifiedType"},
+    "LiveStageAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType"},
+    "LiveStageSingleAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType"},
+    "LiveStageEmissiveClip": {"color", "intensity", "colorSpecifiedType"},
+    "LiveMemberSpotLightAreaClip": {"color", "colorSpecifiedType"},
+    "LiveMemberSpotLightShaftClip": {"color", "scale", "offsetHeight", "smoothTime", "colorSpecifiedType",
+                                     "drawObjectIndex"},
+    "LiveRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType"},
+    "LiveFlareClip": {"color", "center", "intensity", "smoothness", "roundness", "rounded", "colorSpecifiedType"},
+    "LiveFlashLightClip": {"tintColor", "speed", "colorSpecifiedType", "status"},
+    "LiveDisplayClip": {"scrollSpeed", "ambientColor", "materialIndex"},
+    "LiveColoringClip": {"shift", "tintColor", "speed", "textureIndex"},
     "LiveCameraOffsetClip": {"intensity"},
     "LivePenlightClip": {"tintColor", "fogIntensity", "randomBrightness", "beatLength", "beatOffset",
                          "randomDelay", "randomUp", "randomSwingIntensity"},
     "CustomControlClip": {"weight", "offset"},
+    "LiveMemberScalingClip": {"intensity"},
+    "LivePropAmbientClip": {"color", "tintColor", "colorSpecifiedType"},
+    "LivePropRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType"},
 }
+# Every class above whose clips pick their colour source with colorSpecifiedType
+# (0 custom, 1 member, 2 original member) is resolved by the preview's
+# MVStudioLighting.memberColor, so the choice previews as it exports.
+_COLOR_SOURCE_CLASSES = frozenset(native for native, fields in _EDITABLE_VALUES.items() if "colorSpecifiedType" in fields)
 _LIMITED_VALUES = {
     ("MemberLipSyncClip", "index"): (0, 4096),
     ("MemberEyeClip", "index"): (0, 4096),
     ("MemberGazeClip", "target"): (0, 256),
     ("MemberCheekClip", "cheekType"): (0, 1),
+    **{(native, "colorSpecifiedType"): (0, 2) for native in _COLOR_SOURCE_CLASSES},
+    ("LiveDepthOfFieldClip", "kernelSize"): (0, 3),
+    ("LiveDepthOfFieldClip", "useMemberDistance"): (0, 1),
+    ("LiveFlashLightClip", "status"): (0, 2),
+}
+# Indices into game-side lists the bundle does not describe (coloring textures,
+# display materials, shaft draw objects, BodyPartManager parts): a revision may
+# only pick a value the original MV already uses for that field, on the same
+# track or anywhere in the timeline.
+_OBSERVED_VALUES = {
+    ("LiveColoringClip", "textureIndex"): "track",
+    ("LiveDisplayClip", "materialIndex"): "track",
+    ("LiveMemberSpotLightShaftClip", "drawObjectIndex"): "track",
+    ("LiveDepthOfFieldClip", "bodyPart"): "timeline",
+}
+# Changed values that only work for a clip whose own (read-only) memberPosition is a member slot.
+_MEMBER_SLOT_VALUES = {
+    **{(native, "colorSpecifiedType"): ({1, 2}, "This colour source needs the clip's member position to be 1 to 12.")
+       for native in _COLOR_SOURCE_CLASSES},
+    ("LiveDepthOfFieldClip", "useMemberDistance"): ({1}, "Member focus needs the clip's member position to be 1 to 12."),
 }
 _TIMING_NATIVE = {label: field for field, label in _CLIP_TIMING.items()}
 
@@ -748,9 +777,58 @@ def _set_playable_value(tree, native, field, value):
     bounds = _LIMITED_VALUES.get((native, field))
     if bounds and (type(value) is not int or not bounds[0] <= value <= bounds[1]):
         raise ValueError(f"'{field}' is outside the supported native range.")
-    if field in ("weight", "weightForDirection") or native == "MemberCheekClip" and field == "intensity":
+    if (field in ("weight", "weightForDirection")
+            or native in ("MemberCheekClip", "LiveMemberScalingClip") and field == "intensity"):
         value = _time(value, field, minimum=0, maximum=1)
     tree[field] = _replace_value(tree[field], value, field)
+
+
+def _value_key(value):
+    import json
+
+    return json.dumps(value, sort_keys=True)
+
+
+def _check_values(original, revised):
+    """Rules on changed values that one field alone cannot check.
+
+    A field of _OBSERVED_VALUES must take a value the original timeline already
+    uses for it (on the same track, or anywhere), and a member colour or member
+    focus needs the clip's own read-only memberPosition to be a member slot.
+    Malformed revisions are left to _changes."""
+    if not isinstance(revised, dict) or not isinstance(revised.get("tracks"), list):
+        return
+    revised_events = {}
+    for track in revised["tracks"]:
+        for event in track.get("events", []) if isinstance(track, dict) and isinstance(track.get("events"), list) else []:
+            if isinstance(event, dict) and isinstance(event.get("id"), str) and isinstance(event.get("values"), dict):
+                revised_events.setdefault(event["id"], event["values"])
+    observed = {}
+    for track in original["tracks"]:
+        for event in track["events"]:
+            values = event["values"]
+            for (native, field), scope in _OBSERVED_VALUES.items():
+                if values.get("playableClass") == native and field in values:
+                    key = (native, field, track["id"] if scope == "track" else None)
+                    observed.setdefault(key, set()).add(_value_key(values[field]))
+    for track in original["tracks"]:
+        for event in track["events"]:
+            before, after = event["values"], revised_events.get(event["id"])
+            native = before.get("playableClass")
+            if after is None:
+                continue
+            for field in before.keys() & after.keys():
+                value = after[field]
+                if value == before[field] and type(value) is type(before[field]):
+                    continue
+                scope = _OBSERVED_VALUES.get((native, field))
+                if scope and _value_key(value) not in observed.get(
+                        (native, field, track["id"] if scope == "track" else None), ()):
+                    raise ValueError(f"Choose a value this MV already uses for '{field}'.")
+                rule = _MEMBER_SLOT_VALUES.get((native, field))
+                slot = before.get("memberPosition")
+                if rule and type(value) is int and value in rule[0] and not (type(slot) is int and 1 <= slot <= 12):
+                    raise ValueError(rule[1])
 
 
 def _camera_sample_order(tree):
@@ -882,6 +960,75 @@ def restore_emissive_track_metadata(tracks, originals):
     return restored
 
 
+def shared_playables(tracks):
+    """Asset ids that more than one saved clip references.
+
+    The parser lists value fields as editable only for a playable that one clip
+    references, so a clip of a shared playable never needs an editableValues sync."""
+    counts = Counter()
+    for track in tracks if isinstance(tracks, list) else ():
+        events = track.get("events") if isinstance(track, dict) else None
+        for event in events if isinstance(events, list) else ():
+            values = event.get("values") if isinstance(event, dict) else None
+            asset = values.get("asset") if isinstance(values, dict) else None
+            if isinstance(asset, str):
+                counts[asset] += 1
+    return frozenset(asset for asset, count in counts.items() if count > 1)
+
+
+def needs_editable_values_sync(track, shared=None):
+    """A saved track with an event whose whitelisted fields are not all in its editableValues.
+
+    `shared` is shared_playables() of the whole project; by default the clips of this
+    track alone tell which playables are shared."""
+    if not isinstance(track, dict) or not isinstance(track.get("events"), list):
+        return False
+    if shared is None:
+        shared = shared_playables([track])
+    for event in track["events"]:
+        values = event.get("values") if isinstance(event, dict) else None
+        saved = event.get("editableValues") if isinstance(event, dict) else None
+        native = values.get("playableClass") if isinstance(values, dict) else None
+        asset = values.get("asset") if isinstance(values, dict) else None
+        if (isinstance(native, str) and isinstance(saved, list) and not (isinstance(asset, str) and asset in shared)
+                and (_EDITABLE_VALUES.get(native, set()) & values.keys()) - set(saved)):
+            return True
+    return False
+
+
+def sync_editable_values(tracks, originals):
+    """Give events saved with an older field whitelist the current editableValues.
+
+    An event takes the fresh parse's list only when its asset and playable class
+    are the original's and its saved list is a subset of the fresh one, so a
+    project saved before the whitelist grew exports again (_changes compares the
+    lists) and nothing else changes."""
+    native = {}
+    for track in originals:
+        for event in track["events"]:
+            native[event["id"]] = event
+    result = []
+    for track in tracks:
+        if not isinstance(track, dict) or not isinstance(track.get("events"), list):
+            result.append(track)
+            continue
+        events, touched = [], False
+        for event in track["events"]:
+            source = native.get(event.get("id")) if isinstance(event, dict) and isinstance(event.get("id"), str) else None
+            values = event.get("values") if source is not None else None
+            saved = event.get("editableValues") if source is not None else None
+            fresh = source["editableValues"] if source is not None else None
+            if (isinstance(values, dict) and isinstance(saved, list) and saved != fresh
+                    and all(isinstance(field, str) for field in saved) and set(saved) <= set(fresh)
+                    and values.get("asset") == source["values"].get("asset")
+                    and values.get("playableClass") == source["values"].get("playableClass")):
+                event = {**event, "editableValues": list(fresh)}
+                touched = True
+            events.append(event)
+        result.append({**track, "events": events} if touched else track)
+    return result
+
+
 # Before camera Euler bindings honoured their Unity RotationOrder, every camera
 # sample was composed in the default ZXY order. Projects saved then carry those
 # rotations; a point that still equals that legacy evaluation was never edited.
@@ -982,6 +1129,7 @@ def export_timeline(raw: bytes, name: str, tracks: list) -> bytes:
     original = parse_timeline(raw, name)
     if isinstance(tracks, list):
         tracks = restore_emissive_track_metadata(tracks, original["tracks"])
+        tracks = sync_editable_values(tracks, original["tracks"])
         tracks = restore_legacy_camera_keyframes(raw, name, tracks, original["tracks"])
         # Shaft targets are derived preview metadata, independent of any clip's
         # member color selector. The original track identity remains read-only.
@@ -997,6 +1145,7 @@ def export_timeline(raw: bytes, name: str, tracks: list) -> bytes:
 
 
 def _rewrite_timeline(raw, original, revised):
+    _check_values(original, revised)
     changes = _changes(original, revised)
     if not changes:
         return raw

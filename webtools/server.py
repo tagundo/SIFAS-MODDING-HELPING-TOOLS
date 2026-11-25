@@ -275,10 +275,12 @@ class Handler(BaseHTTPRequestHandler):
             if action in {"register", "charts"}:
                 return self._api_mv_song_update(action)
             return self._send_json({"error": "not found"}, status=404)
+        # The fixed MV messages are translated here, in the request's ?lang=: the page shows
+        # this reason inside ElichikaPlatform's wrapped request error, where it cannot match.
         except PermissionError as error:
-            return self._send_json({"error": str(error)}, status=403)
+            return self._send_json({"error": i18n.tr(str(error), self._lang())}, status=403)
         except (OSError, ValueError, TypeError, OverflowError, SQLiteError) as error:
-            return self._send_json({"error": str(error)}, status=400)
+            return self._send_json({"error": i18n.tr(str(error), self._lang())}, status=400)
 
     def _stream_mv_game(self, load_game, **options):
         started = False
