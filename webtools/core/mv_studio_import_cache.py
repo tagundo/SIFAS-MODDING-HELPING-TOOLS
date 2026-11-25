@@ -9,9 +9,9 @@ is keyed by sha256 over all of those:
 - a recipe: the receipt format, the bytes of every module of this tool
   (all of webtools and the top-level modules beside it, read through the
   import system so packed code counts too) and its resource files, the
-  Elichika modules the import reads with, the interpreter and library
-  releases, the machine, and the identity (path, inode, size, mtime, ctime)
-  of every decoder executable or library a step may run.
+  Elichika modules the import reads with, the interpreter, library releases
+  and zlib builds, the machine, and the identity (path, inode, size, mtime,
+  ctime) of every decoder executable or library a step may run.
 
 Any change to any of them is a different key, so a receipt can never be
 served for other inputs or other code. When the code cannot be read, no
@@ -167,6 +167,17 @@ def _library(name):
             None if spec is None else _file_identity(spec.origin)]
 
 
+def _compression():
+    """zlib builds: the PNG and receipt bytes depend on them, not only the pixels."""
+    versions = [zlib.ZLIB_VERSION, getattr(zlib, "ZLIB_RUNTIME_VERSION", None)]
+    try:
+        from PIL import features
+        versions.append(features.version("zlib"))
+    except (ImportError, OSError, ValueError, AttributeError):
+        versions.append(None)
+    return versions
+
+
 @lru_cache(maxsize=1)
 def _source_recipe():
     """sha256 of the code that shapes an import, read once per process; None when it cannot be read.
@@ -210,7 +221,7 @@ def _source_recipe():
         digest.update(name.encode() + b"\0" + (sha256(data).digest() if data is not None else b"-"))
     digest.update(json.dumps({"python": sys.version, "implementation": sys.implementation.cache_tag,
                               "machine": platform.machine(), "system": platform.system(),
-                              "libraries": [_library(name) for name in _LIBRARIES]},
+                              "libraries": [_library(name) for name in _LIBRARIES], "zlib": _compression()},
                              sort_keys=True).encode())
     return digest.hexdigest()
 

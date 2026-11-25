@@ -178,7 +178,7 @@ class ReceiptTests(unittest.TestCase):
             self.assertIsNotNone(cache.open_cache(self.media))
             self.assertIsNotNone(mv_studio_actor_cache.open_cache(("gl", "android"), self.media))
 
-    def test_recipe_holds_the_format_and_library_releases(self):
+    def test_recipe_holds_the_format_library_releases_and_zlib_builds(self):
         cache._source_recipe.cache_clear()
         self.addCleanup(cache._source_recipe.cache_clear)
         first = cache._source_recipe()
@@ -191,6 +191,11 @@ class ReceiptTests(unittest.TestCase):
         cache._source_recipe.cache_clear()
         with patch.object(cache, "_library", side_effect=lambda name: [name, "0.0", None, None]):
             self.assertNotEqual(cache._source_recipe(), first)
+        cache._source_recipe.cache_clear()
+        with patch.object(cache, "_compression", return_value=["1.3", "zlib-ng 2.2", None]):
+            self.assertNotEqual(cache._source_recipe(), first)
+        import zlib
+        self.assertEqual(cache._compression()[:2], [zlib.ZLIB_VERSION, zlib.ZLIB_RUNTIME_VERSION])
 
     def test_actor_cache_recipe_does_not_depend_on_what_is_imported(self):
         directory = self.root / "actors"
