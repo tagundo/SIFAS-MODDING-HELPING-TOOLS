@@ -97,12 +97,14 @@ def _uv_placement_field(default):
             {"value": "same_position", "label": "Reuse original UV positions",
              "help": "Match corresponding main, rimlight and other UV textures to the larger resolution "
                      "and keep the original UV positions. If those positions are occupied, use a new atlas. "
-                     "No padding is added."},
+                     "Head meshes are never combined into an atlas. No padding is added."},
             {"value": "move_to_empty", "label": "Move into empty UV areas",
-             "help": "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures "
-                     "and UVs together into unused space. If no space fits, use a new atlas. No padding is added."},
+             "help": "Keep main-texture resolution, match auxiliary-map ratios, and move each selected UV island "
+                     "with its textures into unused space. If no space fits, use a new atlas. Head meshes are "
+                     "never combined into an atlas. No padding is added."},
             {"value": "atlas", "label": "Build a new texture atlas",
-             "help": "Combine textures into a new atlas and remap UVs. No padding is added."},
+             "help": "Combine textures into a new atlas and remap UVs. Not available for head meshes. "
+                     "No padding is added."},
         ],
     }
 

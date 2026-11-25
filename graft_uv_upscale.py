@@ -16,6 +16,27 @@ from graft_texture_atlas import (
 )
 
 
+class ReceiverMapsLocked(AtlasCompatibilityError):
+    """A donor map needs more texels than the unchangeable receiver map has.
+
+    ``slot``, ``part`` and ``head`` (donor and receiver map sizes) say which map
+    and by how much; ``part_main``/``head_main`` are their Main sizes when the
+    maps are compared by texel density (relocation), otherwise None.
+    """
+
+    def __init__(self, slot, part, head, part_main=None, head_main=None):
+        self.slot, self.part, self.head = slot, tuple(part), tuple(head)
+        self.part_main = tuple(part_main) if part_main else None
+        self.head_main = tuple(head_main) if head_main else None
+        size = lambda value: f"{value[0]}×{value[1]}"  # noqa: E731
+        if self.part_main:
+            detail = (f"{size(self.part)} for a {size(self.part_main)} main texture, while the receiver keeps "
+                      f"{size(self.head)} for {size(self.head_main)}")
+        else:
+            detail = f"{size(self.part)}, while the receiver keeps {size(self.head)}"
+        super().__init__(f"{slot} of the donor needs {detail}; receiver maps are not enlarged.")
+
+
 def _chain_bytes(width, height, count):
     return sum(max(1, width >> level) * max(1, height >> level) * 4
                for level in range(count))
@@ -75,12 +96,15 @@ class _UpscaledTexture:
 
 
 def prepare_upscaled_sources(sources, *, image_decoder, max_pixels, max_total_bytes,
-                             preserve_main=False):
+                             preserve_main=False, fixed_receiver=False):
     """Return enlarged source views, diagnostics and their reserved byte budget.
 
     With ``preserve_main``, Main images stay native and auxiliary maps are
     enlarged only enough to share the same texel-density ratio to Main across
     sources. This allows native Main pixels to move together with their maps.
+    With ``fixed_receiver`` the receiver (source 0) keeps every map at its own
+    size; only smaller donor maps are enlarged to match it, and a donor map
+    that needs more texels raises ReceiverMapsLocked (nothing is downscaled).
     Returns None when no enlargement is necessary. Unsupported combinations
     raise AtlasCompatibilityError before decoding or changing any Unity object.
     Full authored mip chains require an isotropic power-of-two enlargement so
@@ -95,22 +119,38 @@ def prepare_upscaled_sources(sources, *, image_decoder, max_pixels, max_total_by
         main_sizes = [_texture_key(obj)[:2] for obj in main_objects]
     plans, normalized_bytes, receiver_bytes = [], 0, 0
     largest_original, reserved = 0, 0
+    # Island groups repeat one donor material. Each distinct texture object and
+    # size is read, budgeted and enlarged once, then shared by those sources.
+    key_cache, counted, view_ids = {}, set(), {}
+    def texture_key(obj):
+        if id(obj) not in key_cache:
+            key_cache[id(obj)] = (obj, _texture_key(obj))
+        return key_cache[id(obj)][1]
     for slot in slots:
         objects = [_texture(source, slot) for source in sources]
         if any(obj is None for obj in objects):
             raise AtlasCompatibilityError(slot + " needs a local texture on every source for enlargement")
-        keys = [_texture_key(obj) for obj in objects]
+        keys = [texture_key(obj) for obj in objects]
         if not preserve_main:
-            sizes = [(max(key[0] for key in keys), max(key[1] for key in keys))] * len(sources)
+            sizes = [keys[0][:2] if fixed_receiver else
+                     (max(key[0] for key in keys), max(key[1] for key in keys))] * len(sources)
         elif slot == "_MainTex":
             sizes = main_sizes
         else:
-            density = [max(Fraction(key[axis], main[axis]) for key, main in zip(keys, main_sizes))
+            density = [Fraction(keys[0][axis], main_sizes[0][axis]) if fixed_receiver else
+                       max(Fraction(key[axis], main[axis]) for key, main in zip(keys, main_sizes))
                        for axis in (0, 1)]
             exact_sizes = [tuple(main[axis] * density[axis] for axis in (0, 1)) for main in main_sizes]
             if any(value.denominator != 1 for size in exact_sizes for value in size):
                 raise AtlasCompatibilityError(slot + " cannot share the Main pixel ratio at integer texture dimensions")
             sizes = [tuple(int(value) for value in size) for size in exact_sizes]
+        if fixed_receiver:
+            for index, (key, size) in enumerate(zip(keys, sizes)):
+                if key[0] > size[0] or key[1] > size[1]:
+                    density = preserve_main and slot != "_MainTex"
+                    raise ReceiverMapsLocked(slot, key[:2], keys[0][:2],
+                                             main_sizes[index] if density else None,
+                                             main_sizes[0] if density else None)
         for key in keys:
             if key[4:6] != keys[0][4:6] or key[5][1] > 1:
                 raise AtlasCompatibilityError(slot + " sampler/color-space settings are incompatible")
@@ -123,7 +163,10 @@ def prepare_upscaled_sources(sources, *, image_decoder, max_pixels, max_total_by
                 raise AtlasCompatibilityError(slot + " enlargement exceeds the configured pixel budget or dimension limit")
             count = max(width, height).bit_length() if key[3] > 1 else 1
             size_bytes = _chain_bytes(width, height, count)
-            normalized_bytes += size_bytes
+            first_use = (id(obj), width, height) not in counted
+            counted.add((id(obj), width, height))
+            if first_use:
+                normalized_bytes += size_bytes
             if index == 0:
                 receiver_bytes += size_bytes
             old_width, old_height, _, old_count = key[:4]
@@ -138,7 +181,8 @@ def prepare_upscaled_sources(sources, *, image_decoder, max_pixels, max_total_by
                     raise AtlasCompatibilityError(slot + " authored mip enlargement requires a uniform power-of-two scale")
                 shift = factor.bit_length() - 1
             plans.append((index, slot, obj, (width, height), count, shift))
-            reserved += size_bytes
+            if first_use:
+                reserved += size_bytes
     if not plans:
         return None
     # Reserve lazy expanded payloads in addition to the reuse baker's decoded
@@ -148,15 +192,19 @@ def prepare_upscaled_sources(sources, *, image_decoder, max_pixels, max_total_by
     enlarged = [replace(source, tree=copy.deepcopy(source.tree), objects=dict(source.objects)) for source in sources]
     messages, target_views = [], {}
     decoder = image_decoder or _decode_default
+    lowest = min([0, *(pid for source in sources for pid in source.objects)])
     for index, slot, obj, size, count, shift in plans:
         source = enlarged[index]
-        path_id = min([0, *source.objects]) - 1
-        view = _UpscaledTexture(obj, size, count, shift, decoder)
+        identity = (id(obj), size, count, shift)
+        if identity not in view_ids:
+            lowest -= 1
+            view_ids[identity] = (lowest, _UpscaledTexture(obj, size, count, shift, decoder))
+            old = obj.read()
+            messages.append(f"{source.name}: enlarged {slot} from {old.m_Width}x{old.m_Height} to {size[0]}x{size[1]} for UV reuse with nearest pixels and no padding.")
+        path_id, view = view_ids[identity]
         source.objects[path_id] = view
         env = _pairs(source.tree, "m_TexEnvs")[slot]
         env["m_Texture"] = {"m_FileID": 0, "m_PathID": path_id}
-        old = obj.read()
-        messages.append(f"{source.name}: enlarged {slot} from {old.m_Width}x{old.m_Height} to {size[0]}x{size[1]} for UV reuse with nearest pixels and no padding.")
         if index == 0:
             target_views[slot] = view
     return enlarged, messages, reserved, target_views

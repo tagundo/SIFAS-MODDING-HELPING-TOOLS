@@ -169,6 +169,13 @@ def _match_to_target(job, params, donor, target, out_path):
 
 
 # ------------------------------------------------- costume part transplant
+def _face_companions(value):
+    """Facial bundle paths, or a callable the graft calls only for a head-mesh target."""
+    if callable(value):
+        return value
+    return [str(path) for path in value or ()] or None
+
+
 def run_costume_part_transplant(job, params):
     uv_placement = params.get("uv_placement")
     if "uv_placement" in params and (not isinstance(uv_placement, str) or
@@ -209,6 +216,7 @@ def run_costume_part_transplant(job, params):
         triangle_indices=triangle_indices,
         donor_renderer=params.get("donor_renderer") or None,
         target_renderer=params.get("target_renderer") or None,
+        face_companions=_face_companions(params.get("face_companions")),
         preserve_physics=bool(params.get("preserve_physics", True)),
         restore_collision=bool(params.get("restore_collision", True)),
         new_submesh=new_submesh,
