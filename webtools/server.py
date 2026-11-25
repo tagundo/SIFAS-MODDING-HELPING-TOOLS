@@ -43,6 +43,15 @@ class _MVStreamClosed(Exception):
     """Stop the import when the stream can no longer deliver its preview."""
 
 
+def _run_later(tasks):
+    """Run work an MV import deferred until its result was delivered; it only saves time later."""
+    for task in tasks:
+        try:
+            task()
+        except Exception:  # never let deferred cache writes fail a delivered response
+            pass
+
+
 class _PeerWatch:
     """Notice, without writing, that the client of a long request went away.
 
@@ -323,12 +332,16 @@ class Handler(BaseHTTPRequestHandler):
                 def cancelled(_event):
                     if watch.check():
                         raise ImportCancelled()
+                later = []
                 try:
-                    project = mv_studio.load_game(Path.cwd(), **options, on_progress=cancelled)
+                    project = mv_studio.load_game(Path.cwd(), **options, on_progress=cancelled, later=later)
                 except ImportCancelled:
                     self.close_connection = True
                     return None
-                return self._send_json(project)
+                try:
+                    return self._send_json(project)
+                finally:
+                    _run_later(later)
             if action == "open":
                 data = self._viewer_feature_request({"path"}, token=False)
                 return self._send_json(mv_studio.open_project(data["path"]))
@@ -388,10 +401,15 @@ class Handler(BaseHTTPRequestHandler):
             except _MVStreamClosed as error:
                 raise ImportCancelled() from error
 
+        # Restart-safe receipt writes of a finished import, run once the project went out.
+        later = []
         try:
-            project = load_game(Path.cwd(), **options, on_progress=on_progress,
+            project = load_game(Path.cwd(), **options, on_progress=on_progress, later=later,
                                 on_stage=lambda preview: send({"type": "stage", "preview": preview}))
-            send({"type": "complete", "project": project})
+            try:
+                send({"type": "complete", "project": project})
+            finally:
+                _run_later(later)
         except (_MVStreamClosed, ImportCancelled):
             return
         except Exception as error:

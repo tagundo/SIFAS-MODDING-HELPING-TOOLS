@@ -44,6 +44,28 @@ class ReceiptTests(unittest.TestCase):
         self.assertIs(type(found["a"][0]), float)
         self.assertEqual(json.dumps(found), json.dumps(payload))
 
+    def test_deferred_puts_keep_a_snapshot_and_write_at_flush(self):
+        pending = []
+        store = cache.ImportCache(self.store.directory, self.media, pending=pending)
+        payload = {"tracks": [{"id": "t", "values": (1.5, -0.0, True)}], "n": 3}
+        key = store.key("timeline", "deferred")
+        self.assertTrue(store.put(key, payload))
+        payload["tracks"][0]["id"] = "edited after the put"
+        payload["n"] = 4
+        self.assertIsNone(store.get(key), "nothing is written before flush()")
+        store.flush()
+        found = store.get(key)
+        self.assertTrue(cache._same(found, {"tracks": [{"id": "t", "values": (1.5, -0.0, True)}], "n": 3}))
+        self.assertEqual(pending, [])
+        # Inexact values are still refused, only later.
+        bad = store.key("timeline", "inexact")
+        for value in ({"x": float("nan")}, {1: "int key"}, {"x": {1, 2}}):
+            store.put(bad, value)
+        store.put(bad, {"x": object()})  # not even a snapshot
+        store.flush()
+        self.assertIsNone(store.get(bad))
+        store.flush()  # nothing pending
+
     def test_values_that_cannot_round_trip_exactly_are_not_stored(self):
         key = self.store.key("timeline", "abc", "x")
         for payload in ({"x": float("nan")}, {"x": float("inf")}, {1: "int key"}, {"x": {1, 2}},

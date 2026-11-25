@@ -99,6 +99,8 @@ class MVStudioStreamTests(unittest.TestCase):
         # Both routes stop the import when their client leaves (see the progress tests).
         self.assertTrue(callable(options.pop("on_progress")))
         self.assertTrue(callable(legacy_options.pop("on_progress")))
+        # Both run the import's deferred receipt writes after answering.
+        self.assertEqual((options.pop("later"), legacy_options.pop("later")), ([], []))
         self.assertEqual(stream.args, legacy.args)
         self.assertEqual(stream.args, (Path.cwd(),))
         self.assertEqual(options, legacy_options)

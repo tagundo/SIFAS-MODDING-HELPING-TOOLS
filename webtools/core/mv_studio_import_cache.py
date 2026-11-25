@@ -19,15 +19,22 @@ store opens. A receipt is a file holding its own
 key, recipe and payload checksum; a hit is re-verified (checksum, key, recipe,
 and the sha256 of every media file it names) and anything that does not match
 is a miss. Payloads are stored as JSON with tuples tagged, and admitted only
-when decoding gives back an equal value of the same types (only str/int/
-float/bool/None, lists, tuples and string-keyed dicts; no non-finite floats),
-so a hit returns exactly what the step returned. The store is bounded and
-evicts the least recently used receipts.
+when they hold nothing but str/int/float/bool/None, lists, tuples and
+string-keyed dicts (no non-finite floats). JSON gives exactly such values back
+with the same types, key order and float bits, so a hit returns exactly what
+the step returned. The store is bounded and evicts the least recently used
+receipts.
+
+An import opens its store with ``pending``: put() then only takes a snapshot
+(marshal, which keeps those types exactly) and flush() writes the receipts
+once the project has gone to the page, off the import's critical path. A
+flush that never runs only loses a speedup.
 """
 from functools import lru_cache
 from hashlib import sha256
 import importlib.util
 import json
+import marshal
 import os
 from pathlib import Path
 import pkgutil
@@ -235,29 +242,36 @@ def recipe():
 
 
 _TUPLE = "\u0000tuple"
+_INFINITIES = (float("inf"), float("-inf"))
 
 
-def _strict(value):
-    """True when value is data that _dumps/_loads reproduce exactly, types included."""
-    if value is None or type(value) in (bool, int, str):
-        return True
-    if type(value) is float:
-        return value == value and value not in (float("inf"), float("-inf"))
-    if type(value) in (list, tuple):
-        return all(_strict(item) for item in value)
-    if type(value) is dict:
-        return _TUPLE not in value and all(type(key) is str and _strict(item) for key, item in value.items())
-    return False
+class _Inexact(ValueError):
+    """A value JSON would not give back with the same type or bits."""
 
 
 def _tagged(value):
-    if type(value) is tuple:
-        return {_TUPLE: [_tagged(item) for item in value]}
-    if type(value) is list:
+    """The JSON-ready form of exact data (tuples tagged), in one pass; raises _Inexact for anything else."""
+    kind = type(value)
+    if value is None or kind is str or kind is bool or kind is int:
+        return value
+    if kind is float:
+        if value != value or value in _INFINITIES:
+            raise _Inexact()
+        return value
+    if kind is list:
         return [_tagged(item) for item in value]
-    if type(value) is dict:
-        return {key: _tagged(item) for key, item in value.items()}
-    return value
+    if kind is tuple:
+        return {_TUPLE: [_tagged(item) for item in value]}
+    if kind is dict:
+        if _TUPLE in value:
+            raise _Inexact()
+        tagged = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise _Inexact()
+            tagged[key] = _tagged(item)
+        return tagged
+    raise _Inexact()
 
 
 def _untag(item):
@@ -304,9 +318,11 @@ def digest(data):
 
 
 class ImportCache:
-    def __init__(self, directory, media, max_entries=None, max_bytes=None):
+    def __init__(self, directory, media, max_entries=None, max_bytes=None, pending=None):
         self.directory = directory
         self.media = media
+        # A list: put() records snapshots here and flush() writes them (see the module notes).
+        self.pending = pending
         self.max_entries = _MAX_ENTRIES if max_entries is None else max_entries
         self.max_bytes = _MAX_BYTES if max_bytes is None else max_bytes
         self.recipe = recipe()
@@ -401,15 +417,41 @@ class ImportCache:
             return None
 
     def put(self, key, payload):
-        """Store payload when it is exact JSON data whose media are in place. Never raises."""
+        """Store payload when it is exact JSON data, now or (with pending) at flush(). Never raises.
+
+        The media a payload names must exist, but are not hashed again here:
+        they were just written under their own sha256, and every get()
+        verifies them anyway.
+        """
+        if self.pending is None:
+            return self._store(key, payload)
         try:
-            if not _strict(payload):
-                return False
+            # A snapshot, so the import may go on editing the payload; marshal keeps the types exactly.
+            self.pending.append((key, marshal.dumps(payload)))
+            return True
+        except (*_ERRORS, EOFError):
+            return False
+
+    def flush(self):
+        """Write the receipts put since the last flush. Never raises."""
+        if not self.pending:
+            return
+        pending = list(self.pending)
+        del self.pending[:]
+        for key, snapshot in pending:
+            try:
+                payload = marshal.loads(snapshot)
+            except (*_ERRORS, EOFError):
+                continue
+            self._store(key, payload)
+
+    def _store(self, key, payload):
+        try:
             text = _dumps(payload)
-            if not _same(_loads(text), payload) or not self._media_current(_media_names(payload)):
+            if not all(self.media(name)[0].is_file() for name in _media_names(payload)):
                 return False
             return self._write(key, zlib.compress(text.encode(), 6))
-        except _ERRORS:
+        except (*_ERRORS, _Inexact):
             return False
 
     def _evict(self):
@@ -429,7 +471,10 @@ class ImportCache:
 
 
 def open_cache(media, folder="imports", **limits):
-    """A private receipt store, or None when ELICHIKA_MV_PRIVATE_CACHE is not a private folder."""
+    """A private receipt store, or None when ELICHIKA_MV_PRIVATE_CACHE is not a private folder.
+
+    ``pending`` (a list) defers its writes to flush().
+    """
     value = os.environ.get("ELICHIKA_MV_PRIVATE_CACHE")
     effective_uid = getattr(os, "geteuid", None)
     if not value or effective_uid is None or folder not in ("imports", "textures"):

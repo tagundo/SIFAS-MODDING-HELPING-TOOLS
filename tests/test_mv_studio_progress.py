@@ -222,6 +222,53 @@ class LoadGameProgressTests(unittest.TestCase):
         self.assertEqual(states[("member", 1)], "done")
         self.assertIn("Original stage: Invalid preview", project["warnings"])
 
+    def test_receipts_are_written_only_after_a_complete_import(self):
+        from webtools.core import mv_studio_import_cache
+        directory = self.root / "receipts"
+        directory.mkdir(mode=0o700)
+        parsed = {"duration": 12.0, "tracks": [{"id": "t", "kind": "camera", "label": "camera", "events": []}]}
+
+        def open_cache(media, folder="imports", **limits):
+            return mv_studio_import_cache.ImportCache(directory, media, **limits) if folder == "imports" else None
+
+        def timeline(path, store=None, reused=None):
+            if store is not None:
+                store.put(store.key("timeline", path.read_bytes().decode()), parsed)
+            # The import edits what it parsed; the receipt keeps it as parsed.
+            return path.read_bytes(), deepcopy(parsed)
+
+        receipts = lambda: sorted(directory.glob("*.receipt"))
+        with (patch.object(mv_studio_import_cache, "open_cache", side_effect=open_cache),
+              patch.object(mv_studio, "_timeline", side_effect=timeline)):
+            later = []
+            self.import_game(later=later)
+            self.assertEqual(receipts(), [], "nothing is written while the project is on its way")
+            self.assertEqual(len(later), 1)
+            later[0]()
+            written = receipts()
+            self.assertEqual(len(written), 2, "the timeline and the soundtrack")
+            store = open_cache(mv_studio.media)
+            self.assertEqual(store.get(store.key("timeline", "timeline")), parsed)
+            for path in written:
+                path.unlink()
+            # Without a list the receipts are written before the import returns.
+            self.import_game()
+            self.assertEqual(receipts(), written)
+            for path in written:
+                path.unlink()
+
+            # A cancelled or failed import writes none.
+            def cancel(event):
+                if event and event.get("step") == "audio":
+                    raise mv_studio_progress.ImportCancelled()
+
+            later = []
+            with self.assertRaises(mv_studio_progress.ImportCancelled):
+                self.import_game(on_progress=cancel, later=later)
+            self.assertEqual((later, receipts()), ([], []))
+            with self.assertRaises(TypeError):
+                self.import_game(later=())
+
     def test_a_new_import_waits_for_one_that_is_stopping(self):
         mv_studio._IMPORT.acquire()
         timer = threading.Timer(.3, mv_studio._IMPORT.release)

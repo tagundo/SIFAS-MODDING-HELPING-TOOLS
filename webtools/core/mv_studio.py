@@ -509,14 +509,20 @@ def _progress_plan(selected):
 
 
 def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None, costumes=None,
-              deck=None, on_progress=None):
+              deck=None, on_progress=None, later=None):
     """Import the complete project, optionally publishing its renderable stage first.
 
     Performers follow the client's MV deck chain (mv_studio_suits); `deck` gives the
     player state (deck type, local Elichika player). `costumes` ({position: suit id or
     {"suit", "viewStatus"}}) dresses members in explicit suits instead, e.g. the suits a
     recorded game performance wore. `on_progress` receives the events that
-    mv_studio_progress describes and may raise its ImportCancelled."""
+    mv_studio_progress describes and may raise its ImportCancelled.
+
+    The restart-safe receipts of the timeline, clips, stage and soundtrack are
+    written after the project is complete: given a list `later`, as a callable
+    appended to it for the caller to run once the project has been delivered,
+    otherwise before this returns. An import that fails or is cancelled
+    writes none of them."""
     from . import (mv_studio_actor_cache, mv_studio_game, mv_studio_import_cache, mv_studio_progress, mv_studio_quality,
                    mv_studio_suits)
 
@@ -526,6 +532,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         raise TypeError("The stage preview callback must be callable.")
     if on_progress is not None and not callable(on_progress):
         raise TypeError("The progress callback must be callable.")
+    if later is not None and type(later) is not list:
+        raise TypeError("Deferred receipt writes need a list.")
     progress = mv_studio_progress.Progress(on_progress) if on_progress is not None else mv_studio_progress.SILENT
     # An import whose client left stops at its next cancellation point (normally within a
     # fraction of a second). A new import, usually the same person choosing again, waits
@@ -556,7 +564,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                                                              quality_set=selected.get("qualitySet"))
         deadline = time.monotonic() + 210
         warnings = project["warnings"]
-        receipts = mv_studio_import_cache.open_cache(media)
+        # Receipts are only written once the whole import has succeeded (flush below).
+        receipts = mv_studio_import_cache.open_cache(media, pending=[])
         with tempfile.TemporaryDirectory(prefix="import-", dir=_root()) as name:
             directory = Path(name)
             local, rows = {}, {}
@@ -841,7 +850,13 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             # After the assets: only an attached performer prop plays its tracks.
             mv_studio_import_coverage.apply(project, prop_gap, shadow_gap)
         with progress.step("finish"):
-            return _register(project, native)
+            result = _register(project, native)
+        if receipts is not None:
+            if later is None:
+                receipts.flush()
+            else:
+                later.append(receipts.flush)
+        return result
     finally:
         model_viewer.set_texture_store(previous_textures)
         mv_studio_progress.restore(previous_progress)
