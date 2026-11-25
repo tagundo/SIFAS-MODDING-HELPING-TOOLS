@@ -1,14 +1,17 @@
 /* Curve view of the MV Studio camera editor (MVStudioCameraCurves): a small SVG
    graph of one shot's channels. The faint line is the baked dense curve, the
    solid line the key curve; keys can be dragged (frame-snapped, value), the
-   selected key's Bezier handles can be dragged (the key becomes "free"), and a
-   click on the plot moves the playhead. Vertical auto-fit, frozen during a drag.
+   active key's Bezier handles can be dragged (the key becomes "free"), a click on
+   the plot moves the playhead and a drag on it draws a box that selects the keys
+   inside (Shift: added). Shift/Ctrl/Cmd+click or Shift+Space/Enter on a key adds
+   or removes it. Vertical auto-fit, frozen during a drag.
 
    create(container, handlers) → { update(model), element }
-     handlers: onSelectKey(frame), onSeek(frame),
+     handlers: onSelectKey(frame, { toggle }), onSelectKeys(frames, { add }), onSeek(frame),
                onDragKey(phase "begin"|"move"|"end", { from, frame, channel, value }) → current frame,
                onDragHandle(phase, { frame, channel, side "in"|"out", handle: [dFrames, dValue] }), t(label)
-     model:    { count, keys, mode, channels, dense: { channel: Float64Array }, playhead, selected, labels } */
+     model:    { count, keys, mode, channels, dense: { channel: Float64Array }, playhead, selected (the active
+                key), selection (selected frames), labels } */
 (function (global) {
   "use strict";
 
@@ -34,7 +37,8 @@
     const t = typeof handlers.t === "function" ? handlers.t : (label) => label;
     svg.setAttribute("aria-label", t("Camera curves"));
     container.replaceChildren(svg);
-    let model = null, layout = null, drag = null, frozen = null, drawn = null, playheadLine = null;
+    let model = null, layout = null, drag = null, frozen = null, drawn = null, playheadLine = null, boxNode = null;
+    const coarse = () => !!global.matchMedia && global.matchMedia("(pointer: coarse)").matches;
     // The container's width, kept by a ResizeObserver (read after layout, where it costs
     // nothing): reading clientWidth on every playhead update forced a style and layout pass.
     let width = null;
@@ -151,23 +155,42 @@
           }
         }
       }
+      const chosen = new Set(selectionOf(model));
+      // Touch screens: a 32 px circle under each point takes the tap or drag for it.
+      if (coarse()) {
+        for (const channel of model.channels) {
+          for (const key of model.keys) {
+            parts.push(node("circle", { class: "mv-cam-curve-hit", cx: x(key.frame), cy: y(key.values[channel]), r: 16,
+              "aria-hidden": "true", "data-frame": key.frame, "data-channel": channel }));
+          }
+        }
+      }
       for (const channel of model.channels) {
         for (const key of model.keys) {
-          const cx = x(key.frame), cy = y(key.values[channel]);
-          const diamond = node("path", { class: "mv-cam-curve-key" + (key.frame === model.selected ? " mv-selected" : ""),
+          const cx = x(key.frame), cy = y(key.values[channel]), on = chosen.has(key.frame);
+          const diamond = node("path", { class: "mv-cam-curve-key" + (on ? " mv-selected" : "") + (key.frame === model.selected ? " mv-cam-curve-active" : ""),
             d: `M${cx} ${cy - 5}L${cx + 5} ${cy}L${cx} ${cy + 5}L${cx - 5} ${cy}Z`, fill: COLORS[channel], tabindex: 0, role: "button",
-            "data-frame": key.frame, "data-channel": channel,
+            "aria-pressed": String(on), "data-frame": key.frame, "data-channel": channel,
             "aria-label": `${model.labels?.[channel] || channel} · ${t("Frame")} ${key.frame} · ${shortNumber(key.values[channel])}` });
           parts.push(diamond);
         }
       }
+      if (boxNode && drag && drag.kind === "box") parts.push(boxNode);
       svg.replaceChildren(...parts);
       drawn = { model, width: layout.width };
+    }
+
+    // The selected frames: the selection and the active key (always one of them).
+    function selectionOf(current) {
+      const frames = new Set(Array.isArray(current.selection) ? current.selection : []);
+      if (finite(current.selected)) frames.add(current.selected);
+      return [...frames].sort((a, b) => a - b);
     }
 
     // The graph drawn for `previous` also shows `next` when only the playhead differs.
     function samePlot(previous, next) {
       if (!previous || previous.count !== next.count || previous.mode !== next.mode || previous.selected !== next.selected ||
+          selectionOf(previous).join(",") !== selectionOf(next).join(",") ||
           finite(previous.playhead) !== finite(next.playhead) || previous.channels.join(",") !== next.channels.join(",") ||
           JSON.stringify(previous.keys) !== JSON.stringify(next.keys) || JSON.stringify(previous.labels) !== JSON.stringify(next.labels)) return false;
       for (const channel of next.channels) {
@@ -193,31 +216,46 @@
       if (event.button !== 0 || !model || !layout) return;
       const target = event.target;
       const data = target && target.dataset ? target.dataset : {};
-      if (target.classList?.contains("mv-cam-curve-key")) {
-        drag = { kind: "key", from: Number(data.frame), current: Number(data.frame), channel: data.channel, x: event.clientX, y: event.clientY, moved: false };
+      const toggle = event.shiftKey || event.ctrlKey || event.metaKey;
+      if (target.classList?.contains("mv-cam-curve-key") || target.classList?.contains("mv-cam-curve-hit")) {
+        drag = { kind: "key", from: Number(data.frame), current: Number(data.frame), channel: data.channel, x: event.clientX, y: event.clientY, moved: false, toggle };
+        // Where on the point it was taken (a finger target is wider than the point): the key keeps
+        // that distance to the pointer instead of jumping under it.
+        const key = model.keys.find((item) => item.frame === drag.from), at = pointer(event);
+        drag.grab = key ? { x: layout.x(key.frame) - at.x, y: layout.y(key.values[drag.channel]) - at.y } : { x: 0, y: 0 };
       } else if (target.classList?.contains("mv-cam-handle")) {
         drag = { kind: "handle", frame: Number(data.frame), channel: data.channel, side: data.side, x: event.clientX, y: event.clientY, moved: false };
       } else if (data.plot) {
-        handlers.onSeek?.(Math.round(layout.frame(pointer(event).x)));
-        return;
+        // A click seeks; a drag draws a selection box.
+        drag = { kind: "box", start: pointer(event), x: event.clientX, y: event.clientY, moved: false, add: event.shiftKey };
       } else return;
       frozen = { low: layout.low, high: layout.high };
       svg.setPointerCapture?.(event.pointerId);
       drag.pointer = event.pointerId;
+      drag.touch = event.pointerType === "touch" || event.pointerType === "pen";
       event.preventDefault();
     });
 
     svg.addEventListener("pointermove", (event) => {
       if (!drag || drag.pointer !== event.pointerId || !layout) return;
-      if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 3) return;
+      if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < (drag.touch ? 8 : 3)) return;
       const point = pointer(event);
       if (!drag.moved) {
         drag.moved = true;
         if (drag.kind === "key") handlers.onDragKey?.("begin", { from: drag.from });
-        else handlers.onDragHandle?.("begin", { frame: drag.frame, channel: drag.channel, side: drag.side });
+        else if (drag.kind === "handle") handlers.onDragHandle?.("begin", { frame: drag.frame, channel: drag.channel, side: drag.side });
+        else { boxNode = node("rect", { class: "mv-cam-box" }); svg.append(boxNode); }
       }
-      if (drag.kind === "key") {
-        const frame = Math.round(layout.frame(point.x)), value = layout.value(point.y);
+      if (drag.kind === "box") {
+        const clip = (value, low, high) => Math.max(low, Math.min(high, value));
+        const left = clip(Math.min(drag.start.x, point.x), layout.plot.left, layout.plot.left + layout.plot.width);
+        const right = clip(Math.max(drag.start.x, point.x), layout.plot.left, layout.plot.left + layout.plot.width);
+        const top = clip(Math.min(drag.start.y, point.y), layout.plot.top, layout.plot.top + layout.plot.height);
+        const bottom = clip(Math.max(drag.start.y, point.y), layout.plot.top, layout.plot.top + layout.plot.height);
+        drag.rect = { left, right, top, bottom };
+        for (const [name, value] of Object.entries({ x: left, y: top, width: right - left, height: bottom - top })) boxNode.setAttribute(name, String(value));
+      } else if (drag.kind === "key") {
+        const frame = Math.round(layout.frame(point.x + drag.grab.x)), value = layout.value(point.y + drag.grab.y);
         const next = handlers.onDragKey?.("move", { from: drag.current, frame, channel: drag.channel, value });
         if (Number.isInteger(next)) drag.current = next;
       } else {
@@ -233,19 +271,35 @@
       const ended = drag;
       drag = null;
       frozen = null;
+      boxNode = null;
       if (ended.kind === "key") {
         if (ended.moved) handlers.onDragKey?.("end", { from: ended.current });
-        else handlers.onSelectKey?.(ended.from);
+        else handlers.onSelectKey?.(ended.from, { toggle: ended.toggle });
+      } else if (ended.kind === "box") {
+        if (event.type === "pointerup" && ended.moved && ended.rect) handlers.onSelectKeys?.(boxed(ended.rect), { add: ended.add });
+        else if (event.type === "pointerup" && !ended.moved) handlers.onSeek?.(Math.round(layout.frame(ended.start.x)));
       } else if (ended.moved) handlers.onDragHandle?.("end", {});
       draw();
     };
+    // The keys whose point (any shown channel) is inside a box of the plot.
+    function boxed(rect) {
+      const frames = new Set();
+      for (const channel of model.channels) {
+        for (const key of model.keys) {
+          const px = layout.x(key.frame), py = layout.y(key.values[channel]);
+          if (px >= rect.left && px <= rect.right && py >= rect.top && py <= rect.bottom) frames.add(key.frame);
+        }
+      }
+      return [...frames].sort((a, b) => a - b);
+    }
+
     svg.addEventListener("pointerup", finish);
     svg.addEventListener("pointercancel", finish);
     svg.addEventListener("keydown", (event) => {
       const target = event.target;
-      if ((event.key === "Enter" || event.key === " ") && target.classList?.contains("mv-cam-curve-key")) {
+      if ((event.key === "Enter" || event.key === " ") && !event.ctrlKey && !event.metaKey && !event.altKey && target.classList?.contains("mv-cam-curve-key")) {
         event.preventDefault();
-        handlers.onSelectKey?.(Number(target.dataset.frame));
+        handlers.onSelectKey?.(Number(target.dataset.frame), { toggle: event.shiftKey });
       }
     });
 

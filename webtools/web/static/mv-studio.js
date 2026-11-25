@@ -1439,14 +1439,21 @@
   function undo() { if (project && !ctx.locked()) history.undo(); }
   function redo() { if (project && !ctx.locked()) history.redo(); }
 
+  // The shortcut shown in the undo/redo tooltips (⌘ on Apple keyboards).
+  const appleKeys = /mac|iphone|ipad|ipod/i.test((global.navigator && (global.navigator.userAgentData?.platform || global.navigator.platform)) || "");
+  const HISTORY_SHORTCUTS = appleKeys ? { Undo: "⌘Z", Redo: "⇧⌘Z" } : { Undo: "Ctrl+Z", Redo: "Ctrl+Shift+Z" };
+
+  // Tooltip: "Undo (Ctrl+Z)" and, on the next line, what it undoes.
   function updateHistoryButtons() {
     const locked = !project || !!pending || !!gameImport;
     for (const [id, peek, label] of [["mv-undo", history.peekUndo(), "Undo"], ["mv-redo", history.peekRedo(), "Redo"]]) {
       const control = byId(id);
       control.disabled = locked || !peek;
-      control.title = peek ? format(label + ": {label}", { label: t(peek.label) + (peek.detail ? ` (${peek.detail})` : "") })
-        : t(label === "Undo" ? "Nothing to undo" : "Nothing to redo");
+      control.title = `${t(label)} (${HISTORY_SHORTCUTS[label]})\n` + (peek ? t(peek.label) + (peek.detail ? ` (${peek.detail})` : "")
+        : t(label === "Undo" ? "Nothing to undo" : "Nothing to redo"));
       control.setAttribute("aria-label", t(label));
+      const name = control.querySelector(".mv-history-text");
+      if (name && name.textContent !== t(label)) name.textContent = t(label);
     }
   }
 

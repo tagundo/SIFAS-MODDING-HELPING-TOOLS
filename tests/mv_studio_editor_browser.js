@@ -539,7 +539,7 @@ async function run() {
     assert.equal((await laneLabels(page))[0], 'Member1/LipSync', 'the edited track comes first');
     assert(await page.locator('#mv-timeline-grid .mv-lane-label.mv-lane-edited').first().isVisible());
     assert.equal(await page.locator('#mv-event-fields .mv-edited-badge').textContent(), '편집됨');
-    assert.equal(await page.locator('#mv-undo').getAttribute('title'), '실행 취소: 값 편집 (weight)');
+    assert.equal(await page.locator('#mv-undo').getAttribute('title'), '실행 취소 (Ctrl+Z)\n값 편집 (weight)');
     await page.screenshot({ path: path.join(evidence, 'edit-tab-after-edit-ko.png') });
 
     // ---- Undo/redo: keyboard and buttons ---------------------------------------------------
@@ -552,7 +552,7 @@ async function run() {
     assert.equal(Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent()), 0);
     assert.equal(await page.locator('#mv-timeline-grid .mv-lane-hint').count(), 1);
     assert(await page.locator('#mv-undo').isDisabled());
-    assert.equal(await page.locator('#mv-redo').getAttribute('title'), '다시 실행: 값 편집 (weight)');
+    assert.equal(await page.locator('#mv-redo').getAttribute('title'), '다시 실행 (Ctrl+Shift+Z)\n값 편집 (weight)');
     await page.screenshot({ path: path.join(evidence, 'undo-ko.png') });
     await page.keyboard.press('Control+Shift+z');
     await page.waitForFunction((id) => document.querySelector(`.mv-clip[data-event="${id}"]`)?.dataset.edited === 'true', lip.id);

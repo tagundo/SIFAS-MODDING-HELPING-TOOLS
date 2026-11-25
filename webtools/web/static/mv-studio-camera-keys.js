@@ -45,9 +45,10 @@
   function stateOf(ctx) {
     let state = states.get(ctx);
     if (!state) {
+      // selected: { event, frames (sorted), frame (the active key) } — see "key selection".
       state = { selected: null, channels: ["x"], autoKey: false, space: "view", pending: null, controller: null, events: undefined,
         scene: null, unsubscribe: null, panel: null, curves: null, differs: new WeakMap(), lastShot: null, helper: false,
-        toggle: null, echo: null, refreshed: null, dense: null };
+        toggle: null, echo: null, refreshed: null, dense: null, clipboard: null, memory: new Map(), multi: false };
       states.set(ctx, state);
     }
     return state;
@@ -500,7 +501,9 @@
     }) };
   }
 
-  function commit(ctx, shot, record, label, detail) {
+  // selection: the keys selected once the edit is applied ({ frames, frame } of this shot,
+  // null for none, undefined to keep the selection as it is).
+  function commit(ctx, shot, record, label, detail, selection) {
     if (ctx.locked() || !ctx.history) return false;
     const editor = ctx.editor(false);
     const changes = [];
@@ -514,7 +517,13 @@
       if (baked.keyframes) changes.push({ target: { kind: "event", track: shot.track.id, event: shot.event.id }, path: ["values", "keyframes"], after: baked.keyframes });
     }
     changes.push(...orphanChanges(ctx, shot.event.id));
-    return ctx.history.apply({ label, detail: detail || shot.event.label || "", changes });
+    // The selection is kept with the record it was made on, before and after the edit, so an
+    // undo or redo brings back the keys that were selected then (restoreSelection).
+    noteSelection(ctx);
+    if (selection !== undefined) setSelection(ctx, selection ? shot.event.id : null, selection ? selection.frames : [], selection && selection.frame);
+    const changed = ctx.history.apply({ label, detail: detail || shot.event.label || "", changes });
+    noteSelection(ctx);
+    return changed;
   }
 
   // Records whose clip is gone (deleted on the timeline) leave with the next camera command,
@@ -569,8 +578,151 @@
     return key;
   }
 
+  // ---- key selection ----------------------------------------------------------------------------
+  // state.selected = { event, frames (sorted), frame }: the selected keys of one shot and the
+  // active one (its fields, Bezier handles and keyboard focus). One shot at a time: a record, its
+  // frame grid and its mode belong to one shot, so every group command edits one record in one
+  // undo step.
+  const ONE_SHOT = "Keys can be selected in one camera shot at a time.";
+
+  function setSelection(ctx, eventId, frames, active) {
+    const state = stateOf(ctx), previous = state.selected;
+    const list = [...new Set((frames || []).filter(Number.isInteger))].sort((a, b) => a - b);
+    if (eventId === null || eventId === undefined || !list.length) state.selected = null;
+    else {
+      const kept = previous && previous.event === eventId && list.includes(previous.frame) ? previous.frame : list[list.length - 1];
+      state.selected = { event: eventId, frames: list, frame: list.includes(active) ? active : kept };
+    }
+    return state.selected;
+  }
+
   function select(ctx, shot, frame) {
-    stateOf(ctx).selected = frame === null || frame === undefined ? null : { event: shot.event.id, frame };
+    setSelection(ctx, shot ? shot.event.id : null, frame === null || frame === undefined ? [] : [frame], frame);
+  }
+
+  // The selected keys the shot's record holds ([] when the selection is in another shot).
+  function selectedFrames(ctx, shot) {
+    const selected = stateOf(ctx).selected;
+    if (!shot || !shot.record || !selected || selected.event !== shot.event.id) return [];
+    const held = new Set(shot.record.keys.map((key) => key.frame));
+    return selected.frames.filter((frame) => held.has(frame));
+  }
+
+  // The shot of the selection and its selected keys, or null.
+  function selectionTarget(ctx) {
+    const selected = stateOf(ctx).selected;
+    const shot = selected ? findShot(ctx, selected.event, ctx.time()) : null;
+    const frames = selectedFrames(ctx, shot);
+    return frames.length ? { shot, frames } : null;
+  }
+
+  // Shift/Ctrl/Cmd+click and Shift+Space: a key joins or leaves the selection. A key of
+  // another shot starts a new selection there.
+  function toggleKey(ctx, shot, frame) {
+    const selected = stateOf(ctx).selected;
+    if (selected && selected.event !== shot.event.id) {
+      ctx.report(t(ctx, ONE_SHOT));
+      return setSelection(ctx, shot.event.id, [frame], frame);
+    }
+    const frames = selectedFrames(ctx, shot);
+    if (frames.includes(frame)) return setSelection(ctx, shot.event.id, frames.filter((item) => item !== frame));
+    return setSelection(ctx, shot.event.id, [...frames, frame], frame);
+  }
+
+  // Keys found by a box (lane or curve view): { eventId: [frames] } in time order. With add,
+  // they join the selection of its shot; otherwise the shot with the most keys in the box wins.
+  function selectBoxed(ctx, hits, add) {
+    const selected = stateOf(ctx).selected;
+    let eventId = null, frames = [];
+    if (add && selected) {
+      eventId = selected.event;
+      frames = [...selectedFrames(ctx, findShot(ctx, eventId)), ...(hits.get(eventId) || [])];
+    } else {
+      for (const [id, list] of hits) if (list.length > frames.length) { eventId = id; frames = list; }
+    }
+    if ([...hits.keys()].some((id) => id !== eventId && hits.get(id).length)) ctx.report(t(ctx, ONE_SHOT));
+    setSelection(ctx, eventId, frames);
+    selectionChanged(ctx);
+    return stateOf(ctx).selected;
+  }
+
+  function selectAllKeys(ctx, shot = playheadShot(ctx)) {
+    if (!shot || !shot.record || !shot.record.keys.length) return false;
+    const selected = stateOf(ctx).selected;
+    setSelection(ctx, shot.event.id, shot.record.keys.map((key) => key.frame), selected && selected.event === shot.event.id ? selected.frame : undefined);
+    selectionChanged(ctx);
+    return true;
+  }
+
+  function clearSelection(ctx) {
+    if (!stateOf(ctx).selected) return false;
+    setSelection(ctx, null);
+    selectionChanged(ctx);
+    return true;
+  }
+
+  // "Select several" (for touch, where there is no Shift or Ctrl): while it is on, a tap on a key
+  // adds or removes it, a box adds to the selection, and a sideways touch or pen drag on the camera
+  // lane draws a box instead of scrolling the timeline (CSS lets only vertical panning and pinch
+  // zoom through there; the other lanes and the ruler still scroll sideways).
+  function setMulti(ctx, on) {
+    const state = stateOf(ctx);
+    state.multi = !!on;
+    if (global.document) for (const lane of document.querySelectorAll(".mv-lane.mv-cam-lane")) lane.classList.toggle("mv-cam-multi", state.multi);
+    renderPanel(ctx);
+    return state.multi;
+  }
+
+  // After a selection change that is not an edit: remembered, drawn on the diamonds, the panel.
+  function selectionChanged(ctx) {
+    noteSelection(ctx);
+    paintSelection(ctx);
+    renderPanel(ctx);
+  }
+
+  // The selection made on each record state (its JSON), so undo and redo restore it.
+  function recordText(ctx, eventId) {
+    const raw = recordOf(ctx, eventId);
+    return raw === undefined ? "" : JSON.stringify(raw);
+  }
+
+  function noteSelection(ctx) {
+    const state = stateOf(ctx), selected = state.selected;
+    if (!selected || !ctx.project()) return;
+    const key = selected.event + "\n" + recordText(ctx, selected.event);
+    state.memory.delete(key);
+    state.memory.set(key, { frames: selected.frames.slice(), frame: selected.frame });
+    if (state.memory.size > 256) state.memory.delete(state.memory.keys().next().value);
+  }
+
+  // After an undo or redo: the selection made on the records the step brought back (the
+  // selected shot first), else the selection without the keys that are gone.
+  function restoreSelection(ctx, ids) {
+    const state = stateOf(ctx), selected = state.selected;
+    const order = selected && ids.includes(selected.event) ? [selected.event, ...ids] : ids;
+    for (const id of order) {
+      const hit = state.memory.get(id + "\n" + recordText(ctx, id));
+      if (!hit) continue;
+      const shot = findShot(ctx, id);
+      const held = new Set(shot && shot.record ? shot.record.keys.map((key) => key.frame) : []);
+      const frames = hit.frames.filter((frame) => held.has(frame));
+      if (frames.length) { setSelection(ctx, id, frames, hit.frame); return true; }
+    }
+    if (selected) setSelection(ctx, selected.event, selectedFrames(ctx, findShot(ctx, selected.event)));
+    return false;
+  }
+
+  // The diamonds on the lanes show the selection (aria-selected for screen readers).
+  function paintSelection(ctx) {
+    if (!global.document) return;
+    const selected = stateOf(ctx).selected;
+    for (const diamond of document.querySelectorAll(".mv-cam-key")) {
+      const frame = Number(diamond.dataset.frame);
+      const on = !!selected && selected.event === diamond.dataset.event && selected.frames.includes(frame);
+      if (diamond.getAttribute("aria-selected") !== String(on)) diamond.setAttribute("aria-selected", String(on));
+      diamond.classList.toggle("mv-selected", on);
+      diamond.classList.toggle("mv-cam-key-active", on && selected.frame === frame);
+    }
   }
 
   function selectedKey(ctx, shot) {
@@ -655,8 +807,7 @@
     upsertKey(record, frame, values);
     const channel = Object.keys(patch)[0];
     showChannel(ctx, channel);
-    select(ctx, shot, frame);
-    const changed = commit(ctx, shot, record, "Edit camera key", channel);
+    const changed = commit(ctx, shot, record, "Edit camera key", channel, { frames: [frame], frame });
     renderPanel(ctx);
     return changed;
   }
@@ -701,8 +852,7 @@
         new Set(["position", "rotation", "fov"]), current);
     }
     upsertKey(record, frame, limitValues(shot, record, frame, values));
-    select(ctx, shot, frame);
-    const changed = commit(ctx, shot, record, "Key current view");
+    const changed = commit(ctx, shot, record, "Key current view", "", { frames: [frame], frame });
     // The playhead lands on the keyed frame, where the game camera now shows the view.
     ctx.seek(frameTime(shot, frame), { audio: false });
     renderPanel(ctx);
@@ -715,12 +865,15 @@
     const { shot, record } = editStart(ctx, found, ctx.time());
     const frame = shot.frame;
     let changed = false;
-    select(ctx, shot, frame);
     // Claiming an added clip is itself the edit, even when its keys already hold this frame.
     if (shot.claimed || !record.keys.some((key) => key.frame === frame)) {
       upsertKey(record, frame, channelValues(shot, record, frame));
-      changed = commit(ctx, shot, record, "Add camera key");
-    } else ctx.refreshLane(shot.track.id);
+      changed = commit(ctx, shot, record, "Add camera key", "", { frames: [frame], frame });
+    } else {
+      select(ctx, shot, frame);
+      noteSelection(ctx);
+      ctx.refreshLane(shot.track.id);
+    }
     renderPanel(ctx);
     return changed;
   }
@@ -740,8 +893,7 @@
     if (!found || !found.shot.editable) return false;
     const record = clone(found.shot.record);
     record.keys = record.keys.filter((key) => key.frame !== found.key.frame);
-    stateOf(ctx).selected = null;
-    const changed = commit(ctx, found.shot, record, "Delete camera key");
+    const changed = commit(ctx, found.shot, record, "Delete camera key", "", null);
     renderPanel(ctx);
     return changed;
   }
@@ -755,8 +907,7 @@
     record.keys = record.keys.filter((key) => key.frame !== shot.frame);
     record.keys.push({ ...clone(source), frame: shot.frame });
     record.keys.sort((a, b) => a.frame - b.frame);
-    select(ctx, shot, shot.frame);
-    const changed = commit(ctx, shot, record, "Duplicate camera key");
+    const changed = commit(ctx, shot, record, "Duplicate camera key", "", { frames: [shot.frame], frame: shot.frame });
     renderPanel(ctx);
     return changed;
   }
@@ -771,6 +922,7 @@
       : keys.find((item) => shot.source[item.frame].time > local + 1e-9);
     if (!key) return false;
     select(ctx, shot, key.frame);
+    noteSelection(ctx);
     ctx.seek(frameTime(shot, key.frame), { audio: false });
     ctx.refreshLane(shot.track.id);
     renderPanel(ctx);
@@ -787,10 +939,9 @@
     const low = index > 0 ? record.keys[index - 1].frame + 1 : 0;
     const high = index + 1 < record.keys.length ? record.keys[index + 1].frame - 1 : shot.count - 1;
     const frame = clamp(Math.round(to), low, high);
-    select(ctx, shot, frame);
-    if (frame === from) return false;
+    if (frame === from) { select(ctx, shot, frame); noteSelection(ctx); return false; }
     record.keys[index].frame = frame;
-    const changed = commit(ctx, shot, record, "Move camera key");
+    const changed = commit(ctx, shot, record, "Move camera key", "", { frames: [frame], frame });
     renderPanel(ctx);
     return changed;
   }
@@ -809,8 +960,7 @@
       key.frame = clamp(Math.round(frame), low, high);
     }
     if (channel && finite(value)) key.values[channel] = limitValues(shot, record, key.frame, { [channel]: value })[channel];
-    select(ctx, shot, key.frame);
-    commit(ctx, shot, record, "Move camera key", channel);
+    commit(ctx, shot, record, "Move camera key", channel, { frames: [key.frame], frame: key.frame });
     return key.frame;
   }
 
@@ -832,46 +982,283 @@
     return commit(ctx, shot, record, "Edit camera handle", channel);
   }
 
+  // The keys a key setting applies to: the selected keys when the target key is one of them,
+  // else the target key alone.
+  function targetKeys(ctx, found) {
+    const frames = selectedFrames(ctx, found.shot);
+    return frames.includes(found.key.frame) ? frames : [found.key.frame];
+  }
+
   function setKeyProperty(ctx, property, value) {
     const found = targetKey(ctx);
     if (!found || !found.shot.editable) return false;
+    const frames = targetKeys(ctx, found);
+    if (property === "frame") {
+      return !!moveKeys(ctx, found.shot.event.id, frames, Math.round(value) - found.key.frame, { active: found.key.frame });
+    }
+    if (!(property === "interp" && M.INTERPOLATIONS.includes(value)) && !(property === "handle" && M.HANDLES.includes(value))) return false;
     const record = clone(found.shot.record);
-    const index = record.keys.findIndex((key) => key.frame === found.key.frame);
-    const key = record.keys[index];
-    if (property === "interp" && M.INTERPOLATIONS.includes(value)) key.interp = value;
-    else if (property === "handle" && M.HANDLES.includes(value)) {
-      if (value === "free" && key.handle !== "free") {
-        key.handles = Object.fromEntries(CHANNELS.map((channel) => [channel, M.handles(record.keys, index, channel)]));
+    const chosen = new Set(frames);
+    // Free handles start from the handles every key has now, before any key changes.
+    const handles = new Map();
+    record.keys.forEach((key, index) => {
+      if (chosen.has(key.frame) && property === "handle" && value === "free" && key.handle !== "free") {
+        handles.set(key, Object.fromEntries(CHANNELS.map((channel) => [channel, M.handles(record.keys, index, channel)])));
       }
+    });
+    for (const key of record.keys) {
+      if (!chosen.has(key.frame)) continue;
+      if (property === "interp") { key.interp = value; continue; }
+      if (handles.has(key)) key.handles = handles.get(key);
       key.handle = value;
       if (value !== "free") delete key.handles;
-    } else if (property === "frame") {
-      return moveKey(ctx, found.shot.event.id, key.frame, value);
-    } else return false;
+    }
     const changed = commit(ctx, found.shot, record, property === "interp" ? "Change interpolation" : "Change handle type");
     renderPanel(ctx);
     return changed;
   }
 
-  // Ease presets on the selected key's outgoing segment.
+  // Ease presets on the outgoing segment of each selected key, in time order (a key both ends one
+  // segment and starts the next: the later segment's preset wins on it).
   function ease(ctx, preset) {
     const found = targetKey(ctx);
-    if (!found || !found.shot.editable) return false;
+    if (!found || !found.shot.editable || !["linear", "ease-in-out", "ease-in", "ease-out"].includes(preset)) return false;
     const record = clone(found.shot.record);
-    const index = record.keys.findIndex((key) => key.frame === found.key.frame);
-    const key = record.keys[index], next = record.keys[index + 1];
+    const chosen = new Set(targetKeys(ctx, found));
     const handle = (item, type) => { if (item) { item.handle = type; delete item.handles; } };
-    if (preset === "linear") key.interp = "linear";
-    else {
+    record.keys.forEach((key, index) => {
+      if (!chosen.has(key.frame)) return;
+      const next = record.keys[index + 1];
+      if (preset === "linear") { key.interp = "linear"; return; }
       key.interp = "bezier";
       if (preset === "ease-in-out") { handle(key, "flat"); handle(next, "flat"); }
       else if (preset === "ease-in") { handle(key, "flat"); handle(next, "auto-clamped"); }
-      else if (preset === "ease-out") { handle(key, "auto-clamped"); handle(next, "flat"); }
-      else return false;
-    }
+      else { handle(key, "auto-clamped"); handle(next, "flat"); }
+    });
     const changed = commit(ctx, found.shot, record, "Apply ease preset", preset);
     renderPanel(ctx);
     return changed;
+  }
+
+  // ---- group edits (the selected keys of one shot, one undo step each) ---------------------------
+  // How far a group of keys can move in time: inside the shot, never onto or past a key that is
+  // not in the group. Returns { low, high } (frames; low <= 0 <= high).
+  function moveBounds(keys, frames, count) {
+    const chosen = new Set(frames);
+    const all = [...new Set(keys.map((key) => key.frame))].sort((a, b) => a - b);
+    let low = -Infinity, high = Infinity, below = null, above = null;
+    for (const frame of all) {
+      if (!chosen.has(frame)) { below = frame; continue; }
+      low = Math.max(low, -frame, below === null ? -Infinity : below + 1 - frame);
+      high = Math.min(high, count - 1 - frame);
+    }
+    for (let index = all.length - 1; index >= 0; index--) {
+      const frame = all[index];
+      if (!chosen.has(frame)) { above = frame; continue; }
+      if (above !== null) high = Math.min(high, above - 1 - frame);
+    }
+    return { low: Math.min(0, low), high: Math.max(0, high) };
+  }
+
+  // A time stretch of a group, scaled around its first key so its last key lands on `target`,
+  // each key snapped to a frame and one frame after the previous one at least. When that puts a
+  // key on or past a key outside the group, or outside the shot, the target is pulled back toward
+  // the last key until it fits. Returns { end, mapping: Map(frame → new frame) } or null.
+  function planScale(keys, frames, target, count) {
+    const group = [...new Set(frames)].sort((a, b) => a - b);
+    if (group.length < 2 || !finite(target)) return null;
+    const first = group[0], last = group[group.length - 1], chosen = new Set(group);
+    const all = [...new Set(keys.map((key) => key.frame))].sort((a, b) => a - b);
+    const map = (end) => {
+      const scale = (end - first) / (last - first), mapping = new Map();
+      let previous = -Infinity;
+      for (const frame of group) {
+        const next = Math.max(first + Math.round((frame - first) * scale), previous + 1);
+        mapping.set(frame, next);
+        previous = next;
+      }
+      return mapping;
+    };
+    const fits = (mapping) => {
+      let previous = -1;
+      for (const frame of all) {
+        const next = chosen.has(frame) ? mapping.get(frame) : frame;
+        if (next <= previous || next > count - 1) return false;
+        previous = next;
+      }
+      return true;
+    };
+    const start = Math.max(first + 1, Math.min(Math.round(target), count - 1));
+    const step = start > last ? -1 : 1;
+    for (let end = start; end !== last; end += step) {
+      const mapping = map(end);
+      if (fits(mapping)) return { end, mapping };
+    }
+    return null;
+  }
+
+  // Moves keys of a shot by `delta` frames together (clamped by moveBounds) and, for a curve-view
+  // drag, adds `change` to one channel of each (free handles are relative and follow). `base` is
+  // the record the gesture started from. Returns the frames moved, or false.
+  function moveKeys(ctx, eventId, frames, delta, { channel = null, change = 0, base = null, active } = {}) {
+    const shot = findShot(ctx, eventId, ctx.time());
+    if (!shot || !shot.editable || !shot.record) return false;
+    const record = clone(base ? normalizeRecord(base, shot.count) : shot.record);
+    const group = [...new Set(frames)].filter((frame) => record.keys.some((key) => key.frame === frame));
+    if (!group.length) return false;
+    const { low, high } = moveBounds(record.keys, group, shot.count);
+    const applied = clamp(Math.round(finite(delta) ? delta : 0), low, high);
+    const value = !!channel && CHANNELS.includes(channel) && finite(change);
+    const chosen = new Set(group), selected = stateOf(ctx).selected;
+    const lead = group.includes(active) ? active : selected && selected.event === eventId && group.includes(selected.frame) ? selected.frame : group[group.length - 1];
+    const selection = { frames: group.map((frame) => frame + applied), frame: lead + applied };
+    if (!applied && !value && !base) {
+      setSelection(ctx, eventId, selection.frames, selection.frame);
+      noteSelection(ctx);
+      return 0;
+    }
+    for (const key of record.keys) {
+      if (!chosen.has(key.frame)) continue;
+      key.frame += applied;
+      if (value) key.values[channel] = limitValues(shot, record, key.frame, { [channel]: key.values[channel] + change })[channel];
+    }
+    record.keys.sort((a, b) => a.frame - b.frame);
+    commit(ctx, shot, record, group.length > 1 ? "Move camera keys" : "Move camera key", value ? channel : "", selection);
+    renderPanel(ctx);
+    return applied;
+  }
+
+  // Stretches or compresses the timing of keys around the first of them (planScale). Free
+  // handles scale their time offsets with the keys.
+  function stretchKeys(ctx, eventId, frames, target) {
+    const shot = findShot(ctx, eventId, ctx.time());
+    if (!shot || !shot.editable || !shot.record) return false;
+    const record = clone(shot.record);
+    const group = [...new Set(frames)].filter((frame) => record.keys.some((key) => key.frame === frame)).sort((a, b) => a - b);
+    const plan = planScale(record.keys, group, target, shot.count);
+    if (!plan) return false;
+    const first = group[0], last = group[group.length - 1];
+    const scale = (plan.mapping.get(last) - first) / (last - first);
+    for (const key of record.keys) {
+      if (!plan.mapping.has(key.frame)) continue;
+      key.frame = plan.mapping.get(key.frame);
+      if (key.handles) for (const pair of Object.values(key.handles)) for (const side of ["in", "out"]) pair[side][0] *= scale;
+    }
+    record.keys.sort((a, b) => a.frame - b.frame);
+    const selected = stateOf(ctx).selected;
+    const lead = selected && selected.event === eventId && plan.mapping.has(selected.frame) ? selected.frame : last;
+    commit(ctx, shot, record, "Scale camera key timing", `${Math.round(scale * 100)}%`,
+      { frames: [...plan.mapping.values()], frame: plan.mapping.get(lead) });
+    renderPanel(ctx);
+    return plan;
+  }
+
+  // The panel's time scale: factor 0.5 = half the spacing, 2 = twice (around the first selected key).
+  function scaleKeys(ctx, factor) {
+    const target = selectionTarget(ctx);
+    if (!target || target.frames.length < 2) { ctx.report(t(ctx, "Select at least two keys to scale their timing."), true); return false; }
+    if (!finite(factor) || factor <= 0) return false;
+    const { shot, frames } = target, first = frames[0], last = frames[frames.length - 1];
+    const wanted = first + Math.round((last - first) * factor);
+    if (wanted === last) return false;
+    const plan = stretchKeys(ctx, shot.event.id, frames, wanted);
+    if (!plan || plan.end !== wanted) ctx.report(t(ctx, "The timing stops at a neighbouring key or the end of the shot."), !plan);
+    return plan;
+  }
+
+  // Adds the same amount to channels of every selected key ({ x: 0.5, pan: -10, … }; m, °).
+  function offsetKeys(ctx, deltas) {
+    const target = selectionTarget(ctx);
+    if (!target || !target.shot.editable) return false;
+    const channels = CHANNELS.filter((channel) => finite(deltas && deltas[channel]) && deltas[channel] !== 0);
+    if (!channels.length) return false;
+    const { shot, frames } = target, record = clone(shot.record), chosen = new Set(frames);
+    for (const key of record.keys) {
+      if (!chosen.has(key.frame)) continue;
+      const values = { ...key.values };
+      for (const channel of channels) values[channel] += deltas[channel];
+      key.values = limitValues(shot, record, key.frame, values);
+    }
+    const changed = commit(ctx, shot, record, "Offset camera keys", channels.join(", "));
+    renderPanel(ctx);
+    return changed;
+  }
+
+  // Deletes the selected keys (or, with none selected, the key under the playhead).
+  function deleteKeys(ctx) {
+    const target = selectionTarget(ctx);
+    if (!target) return deleteKey(ctx);
+    if (!target.shot.editable) return false;
+    const { shot, frames } = target, record = clone(shot.record), chosen = new Set(frames);
+    record.keys = record.keys.filter((key) => !chosen.has(key.frame));
+    const changed = commit(ctx, shot, record, frames.length > 1 ? "Delete camera keys" : "Delete camera key", "", null);
+    renderPanel(ctx);
+    return changed;
+  }
+
+  // Copy: the selected keys with their timing relative to the first one, their stored values and
+  // the camera pose each one gives (so a paste into a shot of another mode keeps the pose).
+  function copyKeys(ctx) {
+    const target = selectionTarget(ctx);
+    if (!target) return false;
+    const { shot, frames } = target, record = shot.record;
+    let near = null;
+    const keys = frames.map((frame) => {
+      const key = record.keys.find((item) => item.frame === frame);
+      const pose = absoluteOf(basePose(shot, record, frame), near);
+      near = pose;
+      if (!finite(pose.fov)) pose.fov = shot.fallbackFov;
+      const item = { offset: frame - frames[0], values: { ...key.values }, interp: key.interp, handle: key.handle, pose };
+      if (key.handles) item.handles = clone(key.handles);
+      return item;
+    });
+    stateOf(ctx).clipboard = { mode: record.mode, space: record.space, keys };
+    ctx.report(format(ctx, "Camera keys copied: {count}.", { count: keys.length }));
+    renderPanel(ctx);
+    return true;
+  }
+
+  // Offset deltas of one space in the other, at a frame of the shot.
+  function otherSpace(shot, frame, values, space) {
+    const q = M.normalize(shot.source[frame].rotation);
+    const moved = space === "world" ? M.rotateVector(q, [-values.x, values.y, -values.z]) : M.rotateVector(M.conjugate(q), [values.x, values.y, values.z]);
+    return space === "world" ? { x: moved[0], y: moved[1], z: moved[2] } : { x: -moved[0], y: moved[1], z: -moved[2] };
+  }
+
+  // Paste at the playhead (the same or another camera shot): the first copied key lands on the
+  // playhead frame, the others keep their spacing, keys past the shot's ends are left out, and a
+  // pasted key replaces a key on the same frame. A shot with no keys takes the copied keys' mode;
+  // offset keys keep their offsets (turned into the shot's offset space); between offset and
+  // keyframe shots the copied camera pose is kept.
+  function pasteKeys(ctx, { time } = {}) {
+    const clip = stateOf(ctx).clipboard;
+    if (!clip || !clip.keys.length) { ctx.report(t(ctx, "Copy camera keys first."), true); return false; }
+    const at = finite(time) ? time : ctx.time();
+    const found = requireShot(ctx, playheadShot(ctx, at));
+    if (!found) return false;
+    const { shot, record: start } = editStart(ctx, found, at);
+    const record = shot.claimed || shot.record ? start : { mode: clip.mode, space: clip.space, keys: [] };
+    const placed = clip.keys.map((key) => ({ key, frame: shot.frame + key.offset })).filter((item) => item.frame >= 0 && item.frame < shot.count);
+    if (!placed.length) { ctx.report(t(ctx, "The copied keys do not fit in this shot."), true); return false; }
+    const frames = new Set(placed.map((item) => item.frame));
+    record.keys = record.keys.filter((key) => !frames.has(key.frame));
+    let near = zeros();
+    for (const { key, frame } of placed) {
+      let values;
+      if (record.mode === clip.mode && (record.mode === "keys" || record.space === clip.space)) values = { ...key.values };
+      else if (record.mode === "offset" && clip.mode === "offset") values = { ...key.values, ...otherSpace(shot, frame, key.values, record.space) };
+      else if (record.mode === "keys") values = { ...key.pose };
+      else values = deltasFor(shot, record, frame, key.pose, new Set(["position", "rotation", "fov"]), near);
+      near = values;
+      const item = { frame, values: limitValues(shot, record, frame, values), interp: key.interp, handle: key.handle };
+      if (key.handle === "free" && key.handles) item.handles = clone(key.handles);
+      record.keys.push(item);
+    }
+    record.keys.sort((a, b) => a.frame - b.frame);
+    const changed = commit(ctx, shot, record, "Paste camera keys", String(placed.length), { frames: [...frames], frame: placed[0].frame });
+    if (placed.length < clip.keys.length) ctx.report(format(ctx, "Keys outside this shot were left out: {count}.", { count: clip.keys.length - placed.length }));
+    renderPanel(ctx);
+    return changed ? placed.length : false;
   }
 
   // Keys (absolute) at the given frames of the current base pose, Euler unwrapped key to key.
@@ -900,12 +1287,7 @@
     if (record.mode === "offset") {
       if (record.space === space) return record;
       // Same deltas in the other space, at each key.
-      const keys = record.keys.map((key) => {
-        const q = M.normalize(shot.source[key.frame].rotation), v = key.values;
-        const moved = space === "world" ? M.rotateVector(q, [-v.x, v.y, -v.z]) : M.rotateVector(M.conjugate(q), [v.x, v.y, v.z]);
-        const position = space === "world" ? { x: moved[0], y: moved[1], z: moved[2] } : { x: -moved[0], y: moved[1], z: -moved[2] };
-        return { ...clone(key), values: { ...v, ...position } };
-      });
+      const keys = record.keys.map((key) => ({ ...clone(key), values: { ...key.values, ...otherSpace(shot, key.frame, key.values, space) } }));
       return { mode: "offset", space, keys };
     }
     // keys -> offset: deltas at the key frames.
@@ -994,8 +1376,9 @@
       }
     }
     if (!changes.length) return false;
+    noteSelection(ctx);
     const changed = ctx.history.apply({ label: "Revert shot", detail: event.label || "", changes });
-    if (stateOf(ctx).selected && stateOf(ctx).selected.event === event.id) stateOf(ctx).selected = null;
+    if (stateOf(ctx).selected && stateOf(ctx).selected.event === event.id) setSelection(ctx, null);
     renderPanel(ctx, true);
     return changed;
   }
@@ -1074,111 +1457,296 @@
   }
 
   // ---- timeline: key diamonds on the MainCamera lane ------------------------------------------
+  // The diamonds of a lane are the options of one multi-select list box (aria-selected), so a
+  // screen reader hears which keys are selected.
   function decorate(ctx, track, lane, layout) {
     if (!mainTrack(track) || !global.document) return;
-    const state = stateOf(ctx);
+    attachLane(ctx, lane);
+    lane.classList.toggle("mv-cam-multi", stateOf(ctx).multi);
+    const selected = stateOf(ctx).selected;
+    let list = null;
     for (const event of track.events) {
       const shot = shotInfo(ctx, track, event);
       if (!shot || !shot.record || !shot.record.keys.length) continue;
       for (const key of shot.record.keys) {
         const time = frameTime(shot, key.frame);
-        const selected = !!state.selected && state.selected.event === event.id && state.selected.frame === key.frame;
-        const diamond = ctx.make("button", null, { type: "button", class: "mv-key mv-cam-key", "data-event": event.id, "data-frame": String(key.frame),
-          "aria-label": format(ctx, "Key {time}", { time: formatTime(time) }), title: format(ctx, "Key {time}", { time: formatTime(time) }),
-          "aria-pressed": String(selected) });
+        const on = !!selected && selected.event === event.id && selected.frames.includes(key.frame);
+        const label = format(ctx, "Key {time}", { time: formatTime(time) });
+        const diamond = ctx.make("button", null, { type: "button", class: "mv-key mv-cam-key", role: "option", "data-event": event.id,
+          "data-frame": String(key.frame), "aria-label": label, title: label, "aria-selected": String(on) });
         diamond.style.left = `${time * layout.pixelsPerSecond}px`;
         diamond.style.setProperty("--mv-clip-row", layout.rowOf.get(event.id) || 0);
-        if (selected) diamond.classList.add("mv-selected");
+        if (on) diamond.classList.add("mv-selected");
+        if (on && selected.frame === key.frame) diamond.classList.add("mv-cam-key-active");
         attachDiamond(ctx, diamond, shot.event.id, key.frame, layout);
-        lane.append(diamond);
+        if (!list) {
+          list = ctx.make("div", null, { class: "mv-cam-keylist", role: "listbox", "aria-multiselectable": "true",
+            "aria-orientation": "horizontal", "aria-label": t(ctx, "Camera keys") });
+          lane.append(list);
+        }
+        list.append(diamond);
       }
     }
   }
 
+  // Keys pressed on a key (a lane diamond or a curve-view point); true when handled.
+  // Shift+Space / Shift+Enter add or remove the key; ←/→ (also with Alt; Shift: 10 frames) move
+  // the selection, or this key alone when it is not selected; Delete removes the selection.
+  function keyOnKey(ctx, event, shot, frame, refocus) {
+    const key = shortcutKey(event), command = event.ctrlKey || event.metaKey;
+    if (!command && !event.altKey && event.shiftKey && (key === " " || key === "enter")) {
+      toggleKey(ctx, shot, frame);
+      selectionChanged(ctx);
+      return true;
+    }
+    if (!command && (key === "arrowleft" || key === "arrowright")) {
+      if (ctx.locked()) return true;
+      let frames = selectedFrames(ctx, shot);
+      if (!frames.includes(frame)) frames = [frame];
+      const step = (key === "arrowleft" ? -1 : 1) * (event.shiftKey ? 10 : 1);
+      const moved = moveKeys(ctx, shot.event.id, frames, step, { active: frame });
+      if (moved) {
+        const now = findShot(ctx, shot.event.id);
+        if (now) ctx.seek(frameTime(now, frame + moved), { audio: false });
+        refocus(frame + moved);
+      }
+      return true;   // owned even when refused: Alt+← is the browser's Back otherwise
+    }
+    if (!command && !event.altKey && (key === "delete" || key === "backspace")) {
+      if (!selectedFrames(ctx, shot).includes(frame)) select(ctx, shot, frame);
+      deleteKeys(ctx);
+      return true;
+    }
+    return selectionShortcut(ctx, event, shot);
+  }
+
+  // Ctrl/Cmd+A (all keys of the shot), Ctrl/Cmd+C, Ctrl/Cmd+V and Escape while the camera lane
+  // or the curve view has the focus; true when handled.
+  function selectionShortcut(ctx, event, shot) {
+    const key = shortcutKey(event);
+    const command = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey;
+    if (command && key === "a") { selectAllKeys(ctx, shot); return true; }
+    if (command && key === "c") return copyKeys(ctx);
+    if (command && key === "v" && stateOf(ctx).clipboard) { pasteKeys(ctx); return true; }
+    if (!command && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === "escape") return clearSelection(ctx);
+    return false;
+  }
+
+  // Once per lane element: shortcuts on its clips, and box selection by dragging on empty lane
+  // space (Shift: added to the selection; Shift+drag also starts on a shot, which then does not
+  // move). Touch and pen draw a box only in "Select several" (setMulti), from anywhere on the lane
+  // but a key, and the box then adds to the selection; otherwise they scroll the timeline.
+  function attachLane(ctx, lane) {
+    if (lane.mvCameraKeys) return;
+    lane.mvCameraKeys = true;
+    lane.classList.add("mv-cam-lane");
+    lane.addEventListener("keydown", (event) => {
+      if (event.defaultPrevented || event.isComposing || ctx.locked() || event.target.closest?.(".mv-cam-key")) return;
+      const clip = event.target.closest?.(".mv-clip");
+      const shot = clip ? findShot(ctx, clip.dataset.event) : null;
+      if (shot && selectionShortcut(ctx, event, shot)) { event.preventDefault(); event.stopPropagation(); }
+    });
+    let box = null, swallow = false;
+    lane.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !event.isPrimary || ctx.locked()) return;
+      const multi = stateOf(ctx).multi;
+      if ((event.pointerType === "touch" || event.pointerType === "pen") && !multi) return;
+      const target = event.target;
+      if (target.closest?.(".mv-cam-key")) return;
+      const onClip = !!target.closest?.(".mv-clip");
+      if (onClip ? !(event.shiftKey || multi) : target !== lane && !target.classList?.contains("mv-cam-keylist")) return;
+      if (onClip) event.stopPropagation();
+      box = { id: event.pointerId, x: event.clientX, y: event.clientY, add: event.shiftKey || multi, element: null };
+    }, true);
+    lane.addEventListener("pointermove", (event) => {
+      if (!box || box.id !== event.pointerId) return;
+      if (!box.element) {
+        if (Math.hypot(event.clientX - box.x, event.clientY - box.y) < 4) return;
+        try { lane.setPointerCapture(event.pointerId); } catch (_) {}
+        box.element = ctx.make("div", null, { class: "mv-cam-box", "aria-hidden": "true" });
+        lane.append(box.element);
+      }
+      // The box spans whole clip rows (the rows it crosses): a sideways finger drag gives next to no
+      // height, and still takes the keys of the row it runs along.
+      const rect = lane.getBoundingClientRect(), height = lane.mvLayout ? lane.mvLayout.rowHeight : 30;
+      const rows = Math.max(1, Math.round(rect.height / height));
+      const row = (y) => clamp(Math.floor((y - rect.top) / height), 0, rows - 1);
+      const left = Math.min(box.x, event.clientX), right = Math.max(box.x, event.clientX);
+      const first = row(Math.min(box.y, event.clientY)), last = row(Math.max(box.y, event.clientY));
+      const top = first * height, bottom = Math.min(rect.height, (last + 1) * height);
+      Object.assign(box.element.style, { left: `${left - rect.left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px` });
+      box.rect = { left, right, first, last };
+    });
+    const finish = (event) => {
+      if (!box || box.id !== event.pointerId) return;
+      const ended = box;
+      box = null;
+      if (!ended.element) return;
+      ended.element.remove();
+      if (event.type !== "pointerup" || !ended.rect) return;
+      swallow = true;
+      setTimeout(() => { swallow = false; }, 0);
+      // A key is inside when its time is and its clip row is one the box spans.
+      const hits = new Map();
+      for (const diamond of lane.querySelectorAll(".mv-cam-key")) {
+        const shape = diamond.getBoundingClientRect(), x = shape.left + shape.width / 2;
+        const row = Number(diamond.style.getPropertyValue("--mv-clip-row")) || 0;
+        if (x < ended.rect.left || x > ended.rect.right || row < ended.rect.first || row > ended.rect.last) continue;
+        if (!hits.has(diamond.dataset.event)) hits.set(diamond.dataset.event, []);
+        hits.get(diamond.dataset.event).push(Number(diamond.dataset.frame));
+      }
+      selectBoxed(ctx, hits, ended.add);
+    };
+    lane.addEventListener("pointerup", finish);
+    lane.addEventListener("pointercancel", finish);
+    // Only the lane's own capture: a touch starts captured to the shot under it, which loses that
+    // capture (and the event bubbles here) when the lane takes it over.
+    lane.addEventListener("lostpointercapture", (event) => {
+      if (event.target === lane && box && box.element) finish({ type: "pointercancel", pointerId: event.pointerId });
+    });
+    // A box drag is not a click: the lane would seek, a shot would be chosen.
+    lane.addEventListener("click", (event) => {
+      if (!swallow) return;
+      swallow = false;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+  }
+
+  // Lane diamonds: a click selects one key (Shift/Ctrl/Cmd+click, or a tap in "Select several",
+  // adds or removes it); a drag moves the selected keys together (a key outside the selection
+  // moves alone); Alt+drag on the last selected key stretches the selection's timing around its
+  // first key. A touch or pen long-press (HOLD_MS, still) turns "Select several" on and adds the key.
+  const HOLD_MS = 500;
   function attachDiamond(ctx, diamond, eventId, frame, layout) {
-    let drag = null;
-    const locate = (event) => {
+    let drag = null, keyboardToggle = false;
+    const pps = () => layout.pixelsPerSecond;
+    const laneOf = () => diamond.closest?.(".mv-lane");
+    // The dragged key's frame under the pointer: playhead snap within 6 px (Alt: frames only).
+    const locate = (event, shot) => {
+      let time = frameTime(shot, frame) + (event.clientX - drag.x) / pps();
+      if (!event.altKey && Math.abs(ctx.time() - time) * pps() <= 6) time = ctx.time();
+      return clamp(Math.round((time - shot.event.start) * FRAME_RATE), 0, shot.count - 1);
+    };
+    // Preview: every key of the group at its new place.
+    const place = (shot, mapping) => {
+      const lane = laneOf();
+      for (const [from, to] of mapping) {
+        const element = from === frame ? diamond : lane?.querySelector(`.mv-cam-key[data-event="${CSS.escape(eventId)}"][data-frame="${from}"]`);
+        if (!element) continue;
+        element.style.left = `${frameTime(shot, to) * pps()}px`;
+        element.classList.add("mv-dragging");
+      }
+    };
+    const hold = () => {
+      if (!drag || drag.moved) return;
+      drag.held = true;
       const shot = findShot(ctx, eventId);
-      if (!shot) return null;
-      const pps = layout.pixelsPerSecond;
-      let time = frameTime(shot, frame) + (event.clientX - drag.x) / pps;
-      // Playhead snap within 6 px (Alt: frames only).
-      if (!event.altKey && Math.abs(ctx.time() - time) * pps <= 6) time = ctx.time();
-      return { shot, frame: clamp(Math.round((time - shot.event.start) * FRAME_RATE), 0, shot.count - 1) };
+      if (!shot) return;
+      if (!stateOf(ctx).multi) setMulti(ctx, true);
+      if (!selectedFrames(ctx, shot).includes(frame)) toggleKey(ctx, shot, frame);
+      selectionChanged(ctx);
     };
     diamond.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || ctx.locked()) return;
       event.stopPropagation();
-      drag = { x: event.clientX, id: event.pointerId, moved: false, frame };
+      const touch = event.pointerType === "touch" || event.pointerType === "pen";
+      drag = { x: event.clientX, id: event.pointerId, moved: false, touch, alt: event.altKey,
+        toggle: event.shiftKey || event.ctrlKey || event.metaKey || stateOf(ctx).multi };
+      if (touch) drag.timer = setTimeout(hold, HOLD_MS);
       diamond.setPointerCapture?.(event.pointerId);
     });
+    // A finger wobbles: a touch drag starts past 8 px (a mouse past 3).
     diamond.addEventListener("pointermove", (event) => {
-      if (!drag || drag.id !== event.pointerId) return;
-      if (!drag.moved && Math.abs(event.clientX - drag.x) < 3) return;
-      drag.moved = true;
-      const found = locate(event);
-      if (!found) return;
-      drag.frame = found.frame;
-      diamond.style.left = `${frameTime(found.shot, found.frame) * layout.pixelsPerSecond}px`;
-      diamond.classList.add("mv-dragging");
+      if (!drag || drag.id !== event.pointerId || drag.held) return;
+      if (!drag.moved && Math.abs(event.clientX - drag.x) < (drag.touch ? 8 : 3)) return;
+      clearTimeout(drag.timer);
+      const shot = findShot(ctx, eventId);
+      if (!shot || !shot.record) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        const frames = selectedFrames(ctx, shot);
+        drag.frames = frames.includes(frame) ? frames : [frame];
+        drag.stretch = drag.alt && drag.frames.length > 1 && frame === drag.frames[drag.frames.length - 1];
+      }
+      const target = locate(event, shot);
+      if (drag.stretch) {
+        drag.plan = planScale(shot.record.keys, drag.frames, target, shot.count);
+        place(shot, drag.plan ? drag.plan.mapping : new Map(drag.frames.map((item) => [item, item])));
+      } else {
+        const { low, high } = moveBounds(shot.record.keys, drag.frames, shot.count);
+        drag.delta = clamp(target - frame, low, high);
+        place(shot, new Map(drag.frames.map((item) => [item, item + drag.delta])));
+      }
     });
     const finish = (event) => {
       if (!drag || drag.id !== event.pointerId) return;
       const ended = drag;
       drag = null;
+      clearTimeout(ended.timer);
+      for (const element of laneOf()?.querySelectorAll(".mv-cam-key.mv-dragging") || []) element.classList.remove("mv-dragging");
       diamond.classList.remove("mv-dragging");
-      if (event.type === "pointercancel") { ctx.refreshLane(diamond.closest?.(".mv-lane")?.dataset.track); return; }
+      if (event.type === "pointercancel") { ctx.refreshLane(laneOf()?.dataset.track); return; }
       const shot = findShot(ctx, eventId);
       if (!shot) return;
       let at = frame;
-      if (ended.moved && ended.frame !== frame) {
-        moveKey(ctx, eventId, frame, ended.frame);
-        const moved = selectedFrame(ctx, eventId);
-        if (moved !== null) at = moved;
-        ctx.seek(frameTime(shot, at), { audio: false });
-      } else {
+      if (ended.held) {
+        // The long-press did its work (selectionChanged); the release only redraws.
+      } else if (ended.moved && ended.stretch && ended.plan) {
+        stretchKeys(ctx, eventId, ended.frames, ended.plan.end);
+        at = ended.plan.mapping.get(frame);
+      } else if (ended.moved && ended.delta) {
+        at = frame + (moveKeys(ctx, eventId, ended.frames, ended.delta, { active: frame }) || 0);
+      } else if (ended.toggle && !ended.moved) {
+        toggleKey(ctx, shot, frame);
+        noteSelection(ctx);
+      } else if (!ended.moved || !selectedFrames(ctx, shot).includes(frame)) {
         select(ctx, shot, frame);
-        ctx.seek(frameTime(shot, frame), { audio: false });
+        noteSelection(ctx);
       }
+      if (!ended.held && (!ended.toggle || ended.moved)) ctx.seek(frameTime(findShot(ctx, eventId) || shot, at), { audio: false });
       ctx.refreshLane(shot.track.id);
       renderPanel(ctx);
       focusDiamond(shot.track.id, eventId, at);
     };
     diamond.addEventListener("pointerup", finish);
     diamond.addEventListener("pointercancel", finish);
+    // A long-press is the selection gesture, not a context menu.
+    diamond.addEventListener("contextmenu", (event) => event.preventDefault());
     diamond.addEventListener("click", (event) => {
       event.stopPropagation();
-      // Keyboard activation (pointer clicks were handled on release).
-      if (event.detail === 0) {
-        const shot = findShot(ctx, eventId);
-        if (!shot) return;
-        select(ctx, shot, frame);
-        ctx.seek(frameTime(shot, frame), { audio: false });
-        ctx.refreshLane(shot.track.id);
-        renderPanel(ctx);
-        focusDiamond(shot.track.id, eventId, frame);
-      }
+      // Keyboard activation (pointer clicks were handled on release); Shift+Enter/Space toggled.
+      if (event.detail !== 0) return;
+      if (keyboardToggle) { keyboardToggle = false; return; }
+      const shot = findShot(ctx, eventId);
+      if (!shot) return;
+      select(ctx, shot, frame);
+      noteSelection(ctx);
+      ctx.seek(frameTime(shot, frame), { audio: false });
+      ctx.refreshLane(shot.track.id);
+      renderPanel(ctx);
+      focusDiamond(shot.track.id, eventId, frame);
     });
     diamond.addEventListener("keydown", (event) => {
       // Undo/redo is the host's shortcut (on the document, after this): the diamond is noted
       // first, since the host may redraw the lane before projectChanged runs.
       const key = String(event.key || "").toLowerCase();
       if ((event.ctrlKey || event.metaKey) && !event.altKey && (key === "z" || key === "y")) { noteKeyFocus(ctx, eventId, frame); return; }
-      if (!event.altKey || (event.key !== "ArrowLeft" && event.key !== "ArrowRight") || ctx.locked()) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const step = (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 10 : 1);
-      if (moveKey(ctx, eventId, frame, frame + step)) {
-        const shot = findShot(ctx, eventId), moved = selectedFrame(ctx, eventId);
-        if (shot && moved !== null) ctx.seek(frameTime(shot, moved), { audio: false });
-        if (shot && moved !== null) focusDiamond(shot.track.id, eventId, moved);
+      if (event.isComposing) return;
+      const shot = findShot(ctx, eventId);
+      if (!shot) return;
+      if (keyOnKey(ctx, event, shot, frame, (moved) => focusDiamond(shot.track.id, eventId, moved))) {
+        if (event.shiftKey && (key === " " || key === "enter")) keyboardToggle = true;
+        event.preventDefault();
+        event.stopPropagation();
       }
     });
+    diamond.addEventListener("keyup", () => { if (keyboardToggle) setTimeout(() => { keyboardToggle = false; }, 0); });
   }
 
   // A lane refresh replaces the diamonds, and the host then hands the focus to the clip with
-  // the same data-event: the selected key's diamond takes it back, so Alt+Arrow keeps moving
-  // the key, not the shot.
+  // the same data-event: the selected key's diamond takes it back, so the arrow keys keep moving
+  // the keys, not the shot.
   function focusDiamond(trackId, eventId, frame) {
     if (!global.document || typeof CSS === "undefined") return;
     const lane = document.querySelector(`.mv-lane[data-track="${CSS.escape(trackId)}"]`);
@@ -1202,16 +1770,20 @@
   }
 
   // After an undo or redo with a key diamond focused, the lane redraws hand the focus to the
-  // clip: the same key's diamond takes it back, so Alt+Arrow keeps moving a key. When that key is
-  // gone (its move was undone), the nearest key of the same shot takes the focus and the selection.
+  // clip: the same key's diamond takes it back, so the arrow keys keep moving keys. When that key
+  // is gone (its move was undone), the active key of the restored selection takes the focus, else
+  // the nearest key of the same shot takes the focus and the selection.
   function refocusKey(ctx, focused) {
     const shot = findShot(ctx, focused.event);
     const keys = shot && shot.record ? shot.record.keys : [];
     if (!keys.length) return;
     let key = keys.find((item) => item.frame === focused.frame);
+    const selected = stateOf(ctx).selected;
+    if (!key && selected && selected.event === shot.event.id) key = keys.find((item) => item.frame === selected.frame);
     if (!key) {
       key = keys.reduce((best, item) => Math.abs(item.frame - focused.frame) < Math.abs(best.frame - focused.frame) ? item : best);
       select(ctx, shot, key.frame);
+      noteSelection(ctx);
       ctx.refreshLane(shot.track.id);
       renderPanel(ctx);
     }
@@ -1231,6 +1803,9 @@
   const HANDLE_LABELS = { "auto-clamped": "Auto clamped", auto: "Automatic", flat: "Flat", free: "Free" };
   const EASES = [["linear", "Linear"], ["ease-in-out", "Ease in-out"], ["ease-in", "Ease in"], ["ease-out", "Ease out"]];
   const STEP = { x: .01, y: .01, z: .01, pan: .1, tilt: .1, roll: .1, fov: .1 };
+  const SELECTION_HINT = "Shift or Ctrl+click adds a key. Drag on empty lane or graph space to box-select (Shift adds). Drag a selected key to move them all; Alt+drag the last one to stretch.";
+  const TOUCH_HINT = "Touch: turn on Select several (or long-press a key) and tap keys; drag sideways on the camera lane or on the graph to box-select. Drag a selected key to move them all.";
+  const MULTI_TITLE = "While this is on, a tap adds or removes a key and a sideways drag on the camera lane selects the keys in a box. A long-press on a key also turns it on.";
   const round = (value, digits) => finite(value) ? Number(value.toFixed(digits)) : "";
 
   function panelAvailable(ctx) {
@@ -1335,7 +1910,7 @@
     refs.keyView.classList.add("mv-cam-primary");
     refs.addKey = tool("mv-cam-add-key", "Add key", "I", () => addKey(ctx));
     refs.duplicate = tool("mv-cam-duplicate-key", "Duplicate key", "Ctrl/Cmd+D", () => duplicateKey(ctx));
-    refs.remove = tool("mv-cam-delete-key", "Delete key", "Delete", () => deleteKey(ctx));
+    refs.remove = tool("mv-cam-delete-key", "Delete key", "Delete", () => deleteKeys(ctx));
     refs.previous = tool("mv-cam-prev-key", "Previous key", "[", () => stepKey(ctx, -1));
     refs.next = tool("mv-cam-next-key", "Next key", "]", () => stepKey(ctx, 1));
     tool("mv-cam-align", "Align view to game camera", "", () => alignView(ctx));
@@ -1349,6 +1924,78 @@
     auto.title = t(ctx, "Keys the free camera view every time you finish moving it.");
     bar.append(auto);
     root.append(bar);
+
+    // Key selection: commands on every selected key, one undo step each. Right under the key tools,
+    // so on a phone (the panel stacked over the timeline) it is in reach while tapping keys; the
+    // commands that need a selection, the time scale and the offset show while keys are selected.
+    {
+      const box = ctx.make("fieldset", null, { class: "mv-cam-selection", id: "mv-cam-selection" });
+      box.append(ctx.make("legend", t(ctx, "Key selection")));
+      refs.selectionCount = ctx.make("p", null, { class: "mv-cam-selection-count", id: "mv-cam-selection-count", "aria-live": "polite" });
+      const tools = ctx.make("div", null, { class: "mv-cam-toolbar", role: "group", "aria-label": t(ctx, "Key selection") });
+      const action = (id, label, shortcut, run) => {
+        const control = ctx.button(t(ctx, label), run, { id, class: "mv-cam-tool", title: `${t(ctx, label)} (${shortcut})` });
+        control.setAttribute("aria-keyshortcuts", shortcut.replace("Ctrl/Cmd+", "Control+").replace("Esc", "Escape"));
+        tools.append(control);
+        return control;
+      };
+      refs.multi = ctx.button(t(ctx, "Select several"), () => setMulti(ctx, !stateOf(ctx).multi),
+        { id: "mv-cam-multi", class: "mv-cam-tool mv-cam-multi-toggle", title: t(ctx, MULTI_TITLE), "aria-pressed": String(state.multi) });
+      tools.append(refs.multi);
+      refs.selectAll = action("mv-cam-select-all", "Select all keys", "Ctrl/Cmd+A", () => selectAllKeys(ctx));
+      refs.clearSelection = action("mv-cam-clear-selection", "Clear selection", "Esc", () => clearSelection(ctx));
+      refs.deleteSelected = action("mv-cam-delete-keys", "Delete selected keys", "Delete", () => deleteKeys(ctx));
+      refs.copy = action("mv-cam-copy-keys", "Copy keys", "Ctrl/Cmd+C", () => copyKeys(ctx));
+      refs.paste = action("mv-cam-paste-keys", "Paste keys", "Ctrl/Cmd+V", () => pasteKeys(ctx));
+      const enter = (input, run) => input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); run(); }
+      });
+      // Time scale around the first selected key.
+      const scaleRow = ctx.make("div", null, { class: "mv-cam-batch-row" });
+      const scaleLabel = ctx.make("label", null, { class: "mv-cam-number" });
+      refs.scale = ctx.make("input", null, { type: "number", id: "mv-cam-scale", min: "1", step: "10", value: "100", "aria-label": t(ctx, "Time scale (%)") });
+      scaleLabel.append(ctx.make("span", t(ctx, "Time scale (%)")), refs.scale);
+      const scaleNow = () => { const value = refs.scale.valueAsNumber; if (finite(value) && value > 0) scaleKeys(ctx, value / 100); };
+      refs.scaleApply = ctx.button(t(ctx, "Scale timing"), scaleNow, { id: "mv-cam-scale-apply", class: "mv-cam-tool",
+        title: t(ctx, "Scales the spacing of the selected keys around the first selected key (Alt+drag the last selected key on the timeline does the same).") });
+      enter(refs.scale, scaleNow);
+      scaleRow.append(scaleLabel, refs.scaleApply);
+      // The same amount added to every selected key.
+      const offsets = ctx.make("div", null, { class: "mv-cam-row mv-cam-deltas" });
+      offsets.append(ctx.make("p", t(ctx, "Add to selected keys"), { class: "mv-cam-row-title" }));
+      refs.deltas = {};
+      const offsetNow = () => {
+        const deltas = {};
+        for (const [channel, input] of Object.entries(refs.deltas)) if (input.value !== "" && finite(input.valueAsNumber)) deltas[channel] = input.valueAsNumber;
+        if (offsetKeys(ctx, deltas)) for (const input of Object.values(refs.deltas)) input.value = "";
+      };
+      const space = shot.record ? shot.record.space : state.space;
+      for (const set of [M.POSITION, M.ROTATION, ["fov"]]) {
+        const line = ctx.make("div", null, { class: "mv-cam-vector" });
+        for (const channel of set) {
+          const name = mode === "offset" && M.POSITION.includes(channel) && space === "view" ? VIEW_LABELS[channel] : LABELS[channel];
+          // The unit (m, °) shows in the empty box and in the name read out.
+          const unit = M.POSITION.includes(channel) ? "m" : "°", text = `Δ${t(ctx, name)}`;
+          const input = ctx.make("input", null, { type: "number", step: String(STEP[channel]), placeholder: unit === "m" ? "0 m" : "0°",
+            id: `mv-cam-delta-${channel}`, "data-mv-cam-delta": channel, "aria-label": `${text} (${unit})`, title: `${text} (${unit})` });
+          enter(input, offsetNow);
+          const wrap = ctx.make("label", null, { class: "mv-cam-number" });
+          wrap.append(ctx.make("span", text), input);
+          line.append(wrap);
+          refs.deltas[channel] = input;
+        }
+        offsets.append(line);
+      }
+      refs.offsetApply = ctx.button(t(ctx, "Apply offset"), offsetNow, { id: "mv-cam-offset-apply", class: "mv-cam-tool" });
+      offsets.append(refs.offsetApply);
+      refs.batch = ctx.make("div", null, { class: "mv-cam-batch", id: "mv-cam-batch" });
+      refs.batch.append(scaleRow, offsets);
+      // The hint for the pointer in hand (CSS: a coarse pointer gets the touch one).
+      box.append(refs.selectionCount, tools, refs.batch, ctx.make("p", t(ctx, SELECTION_HINT), { class: "mv-field-note mv-cam-selection-hint mv-cam-hint-mouse" }),
+        ctx.make("p", t(ctx, TOUCH_HINT), { class: "mv-field-note mv-cam-selection-hint mv-cam-hint-touch" }));
+      for (const control of box.querySelectorAll("input, button")) control.disabled = locked;
+      root.append(box);
+    }
 
     // At-playhead fields.
     const values = ctx.make("fieldset", null, { class: "mv-cam-values" });
@@ -1415,6 +2062,7 @@
       }
       refs.chips = chips;
       const view = ctx.make("div", null, { class: "mv-cam-curves", id: "mv-cam-curves" });
+      view.addEventListener("keydown", (event) => curveKeydown(ctx, event));
       root.append(chips, view);
       refs.curves = global.MVStudioCameraCurves.create(view, curveHandlers(ctx));
     }
@@ -1430,26 +2078,57 @@
     const end = () => { if (token) ctx.history.end(token); token = null; };
     return {
       t: (label) => t(ctx, label),
-      onSelectKey(frame) {
+      // A click selects one key and seeks to it; Shift/Ctrl/Cmd+click (and Shift+Space), or a tap
+      // in "Select several", adds or removes it.
+      onSelectKey(frame, { toggle = false } = {}) {
         const shot = playheadShot(ctx);
         if (!shot) return;
-        select(ctx, shot, frame);
-        ctx.seek(frameTime(shot, frame), { audio: false });
+        if (toggle || stateOf(ctx).multi) toggleKey(ctx, shot, frame);
+        else {
+          select(ctx, shot, frame);
+          ctx.seek(frameTime(shot, frame), { audio: false });
+        }
+        noteSelection(ctx);
         ctx.refreshLane(shot.track.id);
         renderPanel(ctx);
+      },
+      // A box dragged on the plot (added to the selection with Shift or in "Select several").
+      onSelectKeys(frames, { add = false } = {}) {
+        const shot = playheadShot(ctx);
+        if (shot) selectBoxed(ctx, new Map([[shot.event.id, frames]]), add || stateOf(ctx).multi);
       },
       onSeek(frame) {
         const shot = playheadShot(ctx);
         if (shot) ctx.seek(frameTime(shot, frame), { audio: false });
       },
+      // Dragging a selected key moves every selected key by the same frames and changes the
+      // dragged channel of each by the same amount (one undo step); an unselected key moves alone.
       onDragKey(phase, { from, frame, channel, value }) {
-        const shot = dragging ? findShot(ctx, dragging.event) : playheadShot(ctx);
-        if (!shot) return null;
-        if (phase === "begin") { dragging = { event: shot.event.id, frame: from }; begin("Move camera key"); return from; }
-        if (phase === "end") { end(); const done = dragging; dragging = null; if (done) ctx.refreshLane(shot.track.id); return null; }
-        const next = setKeyValue(ctx, shot.event.id, dragging.frame, { frame, channel, value });
-        if (next !== null) dragging.frame = next;
-        return dragging.frame;
+        if (phase === "begin") {
+          const shot = playheadShot(ctx);
+          const key = shot && shot.record && shot.record.keys.find((item) => item.frame === from);
+          if (!key) return null;
+          const frames = selectedFrames(ctx, shot);
+          dragging = { event: shot.event.id, from, current: from, frames: frames.includes(from) ? frames : [from], base: clone(shot.record),
+            channel: null, value: null };
+          begin(dragging.frames.length > 1 ? "Move camera keys" : "Move camera key");
+          return from;
+        }
+        if (phase === "end") {
+          end();
+          const done = dragging;
+          dragging = null;
+          const shot = done && findShot(ctx, done.event);
+          if (shot) ctx.refreshLane(shot.track.id);
+          return null;
+        }
+        if (!dragging) return null;
+        const key = dragging.base.keys.find((item) => item.frame === dragging.from);
+        const change = channel && finite(value) && key ? value - key.values[channel] : 0;
+        const moved = moveKeys(ctx, dragging.event, dragging.frames, finite(frame) ? Math.round(frame) - dragging.from : 0,
+          { channel, change, base: dragging.base, active: dragging.from });
+        if (moved !== false) dragging.current = dragging.from + moved;
+        return dragging.current;
       },
       onDragHandle(phase, { frame, channel, side, handle }) {
         if (phase === "begin") { begin("Edit camera handle"); return; }
@@ -1458,6 +2137,18 @@
         if (shot) setHandle(ctx, shot.event.id, frame, channel, side, handle);
       },
     };
+  }
+
+  // Keys pressed in the curve view (the points are its focusable keys).
+  function curveKeydown(ctx, event) {
+    if (event.defaultPrevented || event.isComposing || ctx.locked()) return;
+    const shot = playheadShot(ctx);
+    if (!shot) return;
+    const target = event.target, point = target.classList?.contains("mv-cam-curve-key") ? Number(target.dataset.frame) : null;
+    const channel = point === null ? null : target.dataset.channel;
+    const refocus = (frame) => document.querySelector(`#mv-cam-curves .mv-cam-curve-key[data-frame="${frame}"][data-channel="${channel}"]`)?.focus({ preventScroll: true });
+    const handled = point === null ? selectionShortcut(ctx, event, shot) : keyOnKey(ctx, event, shot, point, refocus);
+    if (handled) { event.preventDefault(); event.stopPropagation(); }
   }
 
   function alignView(ctx) {
@@ -1551,7 +2242,21 @@
       if (refs.handle && refs.handle !== focused) refs.handle.value = key.handle;
     }
     const keys = record ? record.keys : [];
-    if (refs.remove) refs.remove.disabled = ctx.locked() || !(key || atKey);
+    const chosen = selectionTarget(ctx), count = chosen ? chosen.frames.length : 0, locked = ctx.locked();
+    if (refs.selectionCount) {
+      setText(refs.selectionCount, !count ? t(ctx, "No keys selected") : chosen.shot.event === shot.event
+        ? format(ctx, "Keys selected: {count}", { count }) : format(ctx, "Keys selected in shot {index}: {count}", { count, index: chosen.shot.index + 1 }));
+      refs.multi.setAttribute("aria-pressed", String(state.multi));
+      refs.selectAll.disabled = !keys.length;
+      refs.clearSelection.hidden = refs.deleteSelected.hidden = refs.copy.hidden = refs.batch.hidden = !count;
+      refs.clearSelection.disabled = refs.copy.disabled = !count;
+      refs.deleteSelected.disabled = locked || !count;
+      refs.paste.disabled = locked || !(state.clipboard && state.clipboard.keys.length);
+      refs.scale.disabled = refs.scaleApply.disabled = locked || count < 2;
+      for (const input of Object.values(refs.deltas)) input.disabled = locked || !count;
+      refs.offsetApply.disabled = locked || !count;
+    }
+    if (refs.remove) refs.remove.disabled = locked || !(count || key || atKey);
     if (refs.duplicate) refs.duplicate.disabled = ctx.locked() || !key || key.frame === frame;
     if (refs.previous) refs.previous.disabled = !keys.some((item) => item.frame < frame);
     if (refs.next) refs.next.disabled = !keys.some((item) => item.frame > frame);
@@ -1563,7 +2268,7 @@
     if (refs.curves) {
       refs.curves.update({ count: shot.count, keys, mode: record ? record.mode : "original", channels: state.channels,
         dense: denseCurvesOf(ctx, shot, state.channels), playhead: (ctx.time() - shot.event.start) * FRAME_RATE,
-        selected: key ? key.frame : null, labels: Object.fromEntries(CHANNELS.map((channel) => [channel, t(ctx, LABELS[channel])])) });
+        selected: key ? key.frame : null, selection: selectedFrames(ctx, shot), labels: Object.fromEntries(CHANNELS.map((channel) => [channel, t(ctx, LABELS[channel])])) });
     }
     if (refs.note) {
       const notes = [];
@@ -1643,7 +2348,7 @@
   // The shortcut a key press names. event.key wins when it is one of the Latin shortcut
   // characters; otherwise (Korean or Japanese input on, where K gives "ㅏ" or "Process", or
   // another non-Latin layout) the physical key in event.code decides.
-  const SHORTCUT_CODES = { KeyK: "k", KeyI: "i", KeyD: "d", BracketLeft: "[", BracketRight: "]" };
+  const SHORTCUT_CODES = { KeyK: "k", KeyI: "i", KeyD: "d", KeyA: "a", KeyC: "c", KeyV: "v", BracketLeft: "[", BracketRight: "]" };
   function shortcutKey(event) {
     const key = String(event.key || "").toLowerCase();
     if (/^[a-z[\]]$/.test(key) || key === "delete" || key === "backspace") return key;
@@ -1665,6 +2370,7 @@
       // A project as opened or saved already holds its bakes: nothing is rebaked on load.
       if (info.reason === "load") {
         state.selected = null;
+        state.memory = new Map();
         state.differs = new WeakMap();
         state.panel = null;
         renderPanel(ctx);
@@ -1676,6 +2382,8 @@
       else if (info.reason === "history") {
         const focused = focusedKey(ctx);
         const scope = bakeScope(ctx, info.command);
+        // Undo/redo: the keys selected with the records it brought back, before the lanes redraw.
+        if (scope && info.direction && info.direction !== "do") restoreSelection(ctx, scope.records);
         if (scope) {
           state.refreshed = new Set();
           try { requestBake(ctx, { events: scope.events, reason: "history" }); } finally {
@@ -1721,16 +2429,23 @@
       return true;
     },
     keydown(ctx, event) {
+      const state = stateOf(ctx);
       const tab = typeof ctx.activeTab === "function" ? ctx.activeTab() : "";
       if (!panelOpen() && tab !== "camera" && tab !== "edit") return false;
       const key = shortcutKey(event);
       const command = event.ctrlKey || event.metaKey;
-      if (command && !event.altKey && !event.shiftKey && key === "d") { duplicateKey(ctx); return true; }
+      const plain = command && !event.altKey && !event.shiftKey;
+      if (plain && key === "d") { duplicateKey(ctx); return true; }
+      // Copy/paste of keys, unless text on the page is selected (its copy stays the browser's).
+      const text = global.getSelection ? String(global.getSelection() || "") : "";
+      if (plain && key === "c") return !text && copyKeys(ctx);
+      if (plain && key === "v" && state.clipboard) { pasteKeys(ctx); return true; }
       if (command || event.altKey) return false;
+      if (key === "escape") return !event.shiftKey && clearSelection(ctx);
       switch (key) {
         case "k": keyView(ctx); return true;
         case "i": addKey(ctx); return true;
-        case "delete": case "backspace": return deleteKey(ctx) || !!targetKey(ctx);
+        case "delete": case "backspace": return deleteKeys(ctx) || !!targetKey(ctx);
         case "[": stepKey(ctx, -1); return true;
         case "]": stepKey(ctx, 1); return true;
         default: return false;
@@ -1765,6 +2480,15 @@
     "Restore the original length of camera shots with camera edits before exporting.", "The camera could not be baked.",
     "Edit camera key", "Move camera key", "Delete camera key", "Duplicate camera key", "Edit camera handle", "Change interpolation",
     "Change handle type", "Apply ease preset", "Change camera mode", "Change offset space", "New camera shot", "Add camera key",
+    // Multi-key editing.
+    ONE_SHOT, "Key selection", "Select all keys", "Clear selection", "Copy keys", "Paste keys", "No keys selected",
+    "Keys selected: {count}", "Keys selected in shot {index}: {count}", "Time scale (%)", "Scale timing",
+    "Scales the spacing of the selected keys around the first selected key (Alt+drag the last selected key on the timeline does the same).",
+    "Add to selected keys", "Apply offset", SELECTION_HINT, "Move camera keys", "Delete camera keys", "Scale camera key timing",
+    "Offset camera keys", "Paste camera keys", "Camera keys copied: {count}.", "Copy camera keys first.",
+    "The copied keys do not fit in this shot.", "Keys outside this shot were left out: {count}.",
+    "Select at least two keys to scale their timing.", "The timing stops at a neighbouring key or the end of the shot.",
+    "Select several", MULTI_TITLE, TOUCH_HINT, "Delete selected keys",
     ...Object.values(CONFIRM),
   ]);
 
@@ -1778,9 +2502,16 @@
     setChannels, keyView, addKey, deleteKey, duplicateKey, stepKey, moveKey, setKeyValue, setHandle, setKeyProperty, ease,
     setMode, setSpace, convertToKeys, revertShot, newShotAtPlayhead, selectKey: (ctx, eventId, frame) => {
       const shot = findShot(ctx, eventId);
-      if (shot) select(ctx, shot, frame);
+      if (shot) { select(ctx, shot, frame); noteSelection(ctx); }
     },
-    selected: (ctx) => stateOf(ctx).selected && { ...stateOf(ctx).selected },
+    // Multi-key editing: the selection (one shot at a time) and the group commands.
+    selectKeys: (ctx, eventId, frames, { add = false } = {}) => selectBoxed(ctx, new Map([[eventId, frames]]), add),
+    toggleKey: (ctx, eventId, frame) => {
+      const shot = findShot(ctx, eventId);
+      if (shot) { toggleKey(ctx, shot, frame); selectionChanged(ctx); }
+    },
+    selectAllKeys, clearSelection, moveKeys, stretchKeys, scaleKeys, offsetKeys, deleteKeys, copyKeys, pasteKeys, moveBounds, planScale,
+    selected: (ctx) => stateOf(ctx).selected && { ...stateOf(ctx).selected, frames: stateOf(ctx).selected.frames.slice() },
     pending: (ctx) => stateOf(ctx).pending || Promise.resolve(),
   });
 })(typeof window !== "undefined" ? window : globalThis);

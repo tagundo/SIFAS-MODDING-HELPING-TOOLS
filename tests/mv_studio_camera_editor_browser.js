@@ -199,8 +199,10 @@ async function curveViewCache(page) {
   assert.deepEqual(result, { first: true, playhead: true, keys: true, dense: true, selected: true, equalCopies: true, resize: true, plainWidth: true });
 }
 
-async function newPage(browser, errors) {
-  const page = await browser.newPage({ locale: 'ko', viewport: { width: 1400, height: 1000 } });
+async function newPage(browser, errors, options = {}) {
+  const context = await browser.newContext({ locale: 'ko', viewport: { width: 1400, height: 1000 }, ...options });
+  const page = await context.newPage();
+  page.on('close', () => context.close().catch(() => {}));
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('dialog', (dialog) => dialog.accept());
   // A probe plugin hands the test the editor context (seek, scene) the camera editor gets.
@@ -336,7 +338,7 @@ async function synthetic(browser, url) {
   assert(Number.isInteger(moved) && Math.abs(moved - 61) <= 2, `dragged about one second, frame-snapped (${moved})`);
   assert.equal(current.history.undoLabel, 'Move camera key');
   near(current.time, moved / 60, 1e-9, 'the playhead follows the key');
-  assert.equal(await page.locator(`.mv-lane[data-track="cam"] .mv-cam-key[data-frame="${moved}"]`).getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator(`.mv-lane[data-track="cam"] .mv-cam-key[data-frame="${moved}"]`).getAttribute('aria-selected'), 'true');
   // The lane refresh replaces the diamonds (and the host would hand the focus to the clip): the
   // key's diamond keeps the focus, after a drag and after Enter, so Alt+Arrow nudges the key.
   const focusedKey = () => page.evaluate(() => {
@@ -680,6 +682,388 @@ async function synthetic(browser, url) {
   await page.close();
 }
 
+// Several camera keys at once, in the Korean UI: Shift/Ctrl+click, Shift+Space, a Shift+drag box on
+// the camera lane and a box in the curve view, Ctrl+A (not in a text field), Escape; a group drag
+// (stopped by the next key), arrow keys, a curve-view drag of a selected key's value, Alt+drag and
+// the time scale box, Delete, copy and paste into another shot (clipped to it), the offset box; each
+// one undo step, and Ctrl+Z / Ctrl+Shift+Z give back the records, the baked samples and the
+// selection exactly. Also the undo/redo buttons' shortcut tooltips and their names on a wide screen.
+async function multiKeys(browser, url) {
+  const errors = [];
+  const page = await newPage(browser, errors);
+  await page.goto(url + '/#mv');
+  await page.waitForFunction(() => MVStudio.getState().visible);
+  const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
+  const project = gameProject(local);
+  project.name = 'Camera keys MV';
+  await importGame(page, project);
+  await page.locator('#mv-camera-mode').waitFor();
+  await page.locator('#mv-zoom').selectOption('96');
+  // Keys on cam:0 at 0, 30, 60, 90 and 150 (Pedestal 0.1 … 0.5) and on cam:1 at 0 and 100.
+  await page.evaluate(() => {
+    const K = MVStudioCameraKeys, ctx = window.probeCtx;
+    [[0, .1], [30, .2], [60, .3], [90, .4], [150, .5]].forEach(([frame, y]) => K.setChannels(ctx, 'offset', { y }, { time: frame / 60 }));
+    [[0, .1], [100, .2]].forEach(([frame, y]) => K.setChannels(ctx, 'offset', { y }, { time: 241 / 60 + frame / 60 }));
+    K.selectKey(ctx, 'cam:0', 0);
+  });
+  await page.locator('.mv-clip[data-event="cam:0"]').click();
+  await page.locator('#mv-panel-camera').evaluate((panel) => { panel.open = true; });
+  const K = (method, ...args) => page.evaluate(([name, rest]) => MVStudioCameraKeys[name](window.probeCtx, ...rest), [method, args]);
+  const selected = async () => { const value = await K('selected'); return value ? [value.event, ...value.frames] : []; };
+  const record = (id = 'cam:0') => page.evaluate((key) => MVStudio.getState().project.editor.camera.shots[key], id);
+  const frames = async (id = 'cam:0') => (await record(id)).keys.map((key) => key.frame);
+  const diamond = (frame, id = 'cam:0') => page.locator(`.mv-lane[data-track="cam"] .mv-cam-key[data-event="${id}"][data-frame="${frame}"]`);
+  const undoCount = async () => (await state(page)).history.undo;
+  const ariaSelected = () => page.locator('.mv-lane[data-track="cam"] .mv-cam-key[aria-selected="true"]').evaluateAll((list) => list.map((item) => Number(item.dataset.frame)));
+  const center = async (locator) => { const box = await locator.boundingBox(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; };
+  const drag = async (from, dx, dy = 0, { modifiers = [] } = {}) => {
+    for (const key of modifiers) await page.keyboard.down(key);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + dx / 2, from.y + dy / 2, { steps: 4 });
+    await page.mouse.move(from.x + dx, from.y + dy, { steps: 4 });
+    await page.mouse.up();
+    for (const key of modifiers) await page.keyboard.up(key);
+  };
+  const shortcut = async (keys) => { await page.locator('#mv-timeline-label').click(); for (const key of [].concat(keys)) await page.keyboard.press(key); };
+
+  // The list box of keys and its options.
+  assert.equal(await page.locator('.mv-lane[data-track="cam"] .mv-cam-keylist').first().getAttribute('role'), 'listbox');
+  assert.equal(await page.locator('.mv-lane[data-track="cam"] .mv-cam-keylist').first().getAttribute('aria-multiselectable'), 'true');
+  assert.equal(await diamond(30).getAttribute('role'), 'option');
+  // Click, Shift+click, Ctrl+click (toggle).
+  await diamond(30).click();
+  assert.deepEqual(await selected(), ['cam:0', 30]);
+  await diamond(60).click({ modifiers: ['Shift'] });
+  await diamond(90).click({ modifiers: ['Control'] });
+  assert.deepEqual(await selected(), ['cam:0', 30, 60, 90]);
+  assert.deepEqual(await ariaSelected(), [30, 60, 90], 'aria-selected on every selected diamond');
+  await diamond(60).click({ modifiers: ['Control'] });
+  assert.deepEqual(await selected(), ['cam:0', 30, 90], 'Ctrl+click removes');
+  assert.equal(await page.locator('#mv-cam-selection-count').textContent(), '키 2개 선택됨');
+  // Shift+Space adds the focused key; Escape clears.
+  await diamond(150).focus();
+  await page.keyboard.press('Shift+Space');
+  assert.deepEqual(await selected(), ['cam:0', 30, 90, 150], 'Shift+Space adds the focused key');
+  await page.keyboard.press('Escape');
+  assert.deepEqual(await selected(), [], 'Escape clears the selection');
+  assert.deepEqual(await ariaSelected(), []);
+  // Ctrl+A on the lane: every key of that shot; in a text field it stays the field's.
+  await diamond(30).focus();
+  await page.keyboard.press('Control+a');
+  assert.deepEqual(await selected(), ['cam:0', 0, 30, 60, 90, 150]);
+  assert.equal(await page.evaluate(() => String(getSelection())), '', 'no page text selected');
+  await page.locator('#mv-track-search').fill('cam');
+  await page.locator('#mv-track-search').press('Control+a');
+  assert.deepEqual(await page.locator('#mv-track-search').evaluate((input) => [input.selectionStart, input.selectionEnd]), [0, 3]);
+  assert.deepEqual(await selected(), ['cam:0', 0, 30, 60, 90, 150], 'Ctrl+A in a text field leaves the keys alone');
+  await page.locator('#mv-track-search').fill('');
+  await diamond(30).focus();
+  await page.keyboard.press('Escape');
+  // Shift+drag over the shot: a box that adds keys, and the shot does not move.
+  const start = (await state(page)).project.tracks[0].events[0].start;
+  const k30 = await center(diamond(30)), k60 = await center(diamond(60));
+  await drag({ x: k30.x - 20, y: k30.y + 8 }, k60.x - k30.x + 40, -14, { modifiers: ['Shift'] });
+  assert.deepEqual(await selected(), ['cam:0', 30, 60], 'the box selects the keys inside it');
+  assert.equal((await state(page)).project.tracks[0].events[0].start, start, 'the shot stays put');
+  assert.equal(await page.locator('.mv-cam-box').count(), 0, 'the box is gone');
+
+  // Group drag by 10 frames (96 px/s: 16 px), then stopped one frame before the key at 90.
+  const initial = await record(), initialBaked = (await state(page)).project.tracks[0].events[0].values.keyframes;
+  let undo = await undoCount();
+  await drag(await center(diamond(30)), 16);
+  assert.deepEqual(await frames(), [0, 40, 70, 90, 150], 'both keys moved by 10 frames');
+  assert.deepEqual(await selected(), ['cam:0', 40, 70]);
+  assert.equal(await undoCount(), undo + 1, 'one undo step');
+  assert.equal((await state(page)).history.undoLabel, 'Move camera keys');
+  await drag(await center(diamond(40)), 64);
+  assert.deepEqual(await frames(), [0, 59, 89, 90, 150], 'stopped before the key at 90, never merged');
+  // Arrow keys move the selection (Shift: 10 frames), one step each.
+  await diamond(89).focus();
+  await page.keyboard.press('ArrowLeft');
+  assert.deepEqual(await frames(), [0, 58, 88, 90, 150]);
+  await page.keyboard.press('Shift+ArrowLeft');
+  assert.deepEqual(await frames(), [0, 48, 78, 90, 150]);
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.frame), '78', 'the moved key keeps the focus');
+  assert.equal(await undoCount(), undo + 4);
+  // Curve view: dragging a selected key's Pedestal moves both by the same amount.
+  const before = await record();
+  const point = page.locator('#mv-cam-curves .mv-cam-curve-key[data-frame="48"][data-channel="y"]');
+  await point.scrollIntoViewIfNeeded();
+  await drag(await center(point), 0, -15);
+  const after = await record();
+  const delta = after.keys[1].values.y - before.keys[1].values.y;
+  assert(delta > .01, `the dragged key moved up (${delta})`);
+  near(after.keys[2].values.y - before.keys[2].values.y, delta, 1e-12, 'the other selected key by the same amount');
+  for (const index of [0, 3, 4]) assert.deepEqual(after.keys[index], before.keys[index], 'unselected keys unchanged');
+  assert.deepEqual(after.keys.map((key) => key.frame), before.keys.map((key) => key.frame));
+  assert.equal(await undoCount(), undo + 5, 'a curve drag is one undo step');
+  // A box in the curve view replaces the selection; Shift adds.
+  const graph = await page.locator('#mv-cam-curves svg').boundingBox();
+  const width = Number(await page.locator('#mv-cam-curves svg').getAttribute('width'));
+  const graphX = (frame) => graph.x + (44 + frame / 240 * (width - 52)) * graph.width / width;
+  await drag({ x: graphX(80), y: graph.y + 10 }, graphX(95) - graphX(80), 120);
+  assert.deepEqual(await selected(), ['cam:0', 90], 'a curve-view box selects the keys inside it');
+  await drag({ x: graphX(140), y: graph.y + 10 }, graphX(160) - graphX(140), 120, { modifiers: ['Shift'] });
+  assert.deepEqual(await selected(), ['cam:0', 90, 150], 'Shift adds');
+  // Stretch: Alt+drag the last selected key (around the first one), then the time scale box.
+  await diamond(0).click({ modifiers: ['Shift'] });
+  await diamond(48).click({ modifiers: ['Shift'] });
+  assert.deepEqual(await selected(), ['cam:0', 0, 48, 90, 150]);
+  await drag(await center(diamond(150)), 48, 0, { modifiers: ['Alt'] });
+  assert.deepEqual(await frames(), [0, 58, 78, 108, 180], 'Alt+drag stretches 0…150 to 0…180');
+  assert.equal((await state(page)).history.undoLabel, 'Scale camera key timing');
+  await page.locator('#mv-cam-scale').fill('50');
+  await page.locator('#mv-cam-scale-apply').click();
+  // 50 % would put the key at 108 on 54, past the unselected key at 78: the scale stops just after it.
+  assert.deepEqual(await frames(), [0, 42, 78, 79, 131], 'the time scale box compresses until the next key');
+  assert.match(await page.locator('#mv-status').textContent(), /멈췄습니다/);
+  assert.deepEqual(await selected(), ['cam:0', 0, 42, 79, 131]);
+  assert.equal(await undoCount(), undo + 7);
+  // Undo all of it: the record and the baked samples are the ones before, with the selection then.
+  const edited = await record(), editedBaked = (await state(page)).project.tracks[0].events[0].values.keyframes;
+  await shortcut(Array(7).fill('Control+z'));
+  assert.deepEqual(await record(), initial, 'undo restores the keys exactly');
+  assert.deepEqual((await state(page)).project.tracks[0].events[0].values.keyframes, initialBaked, 'and the baked samples');
+  assert.deepEqual(await selected(), ['cam:0', 30, 60], 'and the selection made then');
+  await shortcut(Array(7).fill('Control+Shift+z'));
+  assert.deepEqual(await record(), edited, 'redo too');
+  assert.deepEqual((await state(page)).project.tracks[0].events[0].values.keyframes, editedBaked);
+  assert.deepEqual(await selected(), ['cam:0', 0, 42, 79, 131]);
+
+  // Delete: both selected keys in one step; undo brings them back.
+  await diamond(0).click();
+  await diamond(42).click({ modifiers: ['Shift'] });
+  undo = await undoCount();
+  await diamond(42).focus();
+  await page.keyboard.press('Delete');
+  assert.deepEqual(await frames(), [78, 79, 131]);
+  assert.equal(await undoCount(), undo + 1);
+  assert.equal((await state(page)).history.undoLabel, 'Delete camera keys');
+  await shortcut('Control+z');
+  assert.deepEqual(await frames(), [0, 42, 78, 79, 131]);
+  assert.deepEqual(await selected(), ['cam:0', 0, 42]);
+
+  // Copy on the lane, paste at the playhead of the other shot: relative timing, clipped to it.
+  await diamond(0).focus();
+  await page.keyboard.press('Control+a');
+  await page.keyboard.press('Control+c');
+  const copied = (await record()).keys;
+  await seek(page, 241 / 60 + 230 / 60);
+  undo = await undoCount();
+  await shortcut('Control+v');
+  await page.waitForFunction(() => MVStudio.getState().project.editor.camera.shots['cam:1'].keys.length > 2);
+  assert.deepEqual(await frames('cam:1'), [0, 100, 230, 272], 'pasted at 230 + 0/42; the keys 78, 79 and 131 frames later fall past 300');
+  assert.equal(await undoCount(), undo + 1);
+  assert.equal((await state(page)).history.undoLabel, 'Paste camera keys');
+  assert.match(await page.locator('#mv-status').textContent(), /키 3개는 제외했습니다/);
+  assert.deepEqual((await record('cam:1')).keys.slice(2).map((key) => key.values), copied.slice(0, 2).map((key) => key.values), 'the same offsets');
+  assert.deepEqual(await selected(), ['cam:1', 230, 272]);
+  assert.equal(await page.locator('#mv-cam-selection-count').textContent(), '키 2개 선택됨');
+  // The offset box adds to every selected key.
+  const pasted = await record('cam:1');
+  await page.locator('#mv-cam-delta-y').fill('0.5');
+  await page.locator('#mv-cam-delta-pan').fill('-5');
+  await page.locator('#mv-cam-offset-apply').click();
+  const offset = await record('cam:1');
+  offset.keys.forEach((key, index) => {
+    const was = pasted.keys[index].values;
+    if (index < 2) assert.deepEqual(key.values, was, 'unselected keys unchanged');
+    else { near(key.values.y, was.y + .5, 1e-12, 'Δ pedestal'); near(key.values.pan, was.pan - 5, 1e-12, 'Δ pan'); near(key.values.x, was.x, 0, 'x unchanged'); }
+  });
+  assert.equal((await state(page)).history.undoLabel, 'Offset camera keys');
+  assert.equal(await page.locator('#mv-cam-delta-y').inputValue(), '', 'the boxes are emptied after the offset');
+  await shortcut('Control+z');
+  assert.deepEqual(await record('cam:1'), pasted, 'undo of the offset');
+  await shortcut('Control+z');
+  assert.deepEqual(await frames('cam:1'), [0, 100], 'undo of the paste');
+
+  // Korean labels, the undo/redo tooltips with their shortcut, and their names on a wide screen.
+  assert.equal(await page.locator('#mv-cam-selection > legend').textContent(), '키 선택');
+  assert.deepEqual(await page.locator('#mv-cam-selection .mv-cam-toolbar button').evaluateAll((list) => list.map((item) => item.textContent)),
+    ['여러 개 선택', '모든 키 선택', '선택 해제', '선택한 키 삭제', '키 복사', '키 붙여넣기']);
+  assert.equal(await page.locator('#mv-cam-multi').getAttribute('aria-pressed'), 'false');
+  assert(await page.locator('#mv-cam-selection .mv-cam-hint-mouse').isVisible(), 'the mouse hint with a fine pointer');
+  assert(!(await page.locator('#mv-cam-selection .mv-cam-hint-touch').isVisible()));
+  assert.equal(await page.locator('#mv-cam-scale-apply').textContent(), '간격 배율 적용');
+  assert.equal(await page.locator('#mv-cam-offset-apply').textContent(), '오프셋 적용');
+  assert.match(await page.locator('#mv-undo').getAttribute('title'), /^실행 취소 \(Ctrl\+Z\)\n/);
+  assert.match(await page.locator('#mv-redo').getAttribute('title'), /^다시 실행 \(Ctrl\+Shift\+Z\)\n/);
+  assert.equal(await page.locator('#mv-undo .mv-history-text').textContent(), '실행 취소');
+  assert(await page.locator('#mv-undo .mv-history-text').isVisible(), 'the name shows next to the icon at 1400 px');
+  await page.setViewportSize({ width: 412, height: 900 });
+  assert(!(await page.locator('#mv-undo .mv-history-text').isVisible()), 'icon only on a narrow phone');
+  await page.setViewportSize({ width: 880, height: 1000 });
+  assert(await page.locator('#mv-redo .mv-history-text').isVisible(), 'the name shows on a foldable\'s inner screen');
+  await page.setViewportSize({ width: 1400, height: 1000 });
+  await page.locator('#mv-panel-camera').scrollIntoViewIfNeeded();
+  await page.locator('#mv-panel-camera').screenshot({ path: path.join(evidence, 'camera-multikeys-panel-ko.png') });
+  await page.screenshot({ path: path.join(evidence, 'camera-multikeys-ko.png') });
+  assert.deepEqual(errors, []);
+  await page.close();
+}
+
+// A touch drag (real touch input through the browser, so touch-action applies): `hold` ms still
+// first, then `steps` moves to `to`.
+async function touchDrag(page, from, to, { steps = 6, hold = 0 } = {}) {
+  const cdp = await page.context().newCDPSession(page);
+  const at = (point) => [{ x: point.x, y: point.y, id: 1, radiusX: 4, radiusY: 4, force: 1 }];
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: at(from) });
+  if (hold) await page.waitForTimeout(hold);
+  for (let step = 1; step <= steps; step++) {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: at({ x: from.x + (to.x - from.x) * step / steps, y: from.y + (to.y - from.y) * step / steps }) });
+    await page.waitForTimeout(16);
+  }
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await cdp.detach();
+}
+
+// Several camera keys by touch on a foldable (Galaxy Z Fold class): the cover screen (412x900 and
+// 900x412) and the inner screen (880x1000 and 1000x880), touch only, DPR 2.6, Korean UI. On each:
+// no sideways overflow; undo/redo reachable (named where there is room, the icon on the narrow
+// cover screen); "여러 개 선택" and every selection command visible, 32 px or more and the top
+// element at its centre once scrolled to; then by touch alone: turn "여러 개 선택" on, tap three keys,
+// drag one (all three move, one undo step), delete them with the button, undo with the button
+// (keys and selection back), drag a selected key's value in the curve view (all three change),
+// long-press a key (the mode turns on, the key joins) and drag sideways along the camera lane (a
+// box that adds keys, the timeline does not scroll).
+async function multiKeysTouch(browser, url) {
+  for (const viewport of [{ width: 412, height: 900 }, { width: 900, height: 412 }, { width: 880, height: 1000 }, { width: 1000, height: 880 }]) {
+    const name = `${viewport.width}x${viewport.height}`;
+    const errors = [];
+    const page = await newPage(browser, errors, { viewport, isMobile: true, hasTouch: true, deviceScaleFactor: 2.6 });
+    await page.goto(url + '/#mv');
+    await page.waitForFunction(() => MVStudio.getState().visible);
+    const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
+    const project = gameProject(local);
+    project.name = 'Camera keys touch';
+    await importGame(page, project);
+    await page.locator('#mv-camera-mode').waitFor({ state: 'attached' });
+    await page.locator('#mv-zoom').selectOption('96');
+    await page.evaluate(() => {
+      const K = MVStudioCameraKeys, ctx = window.probeCtx;
+      [[0, .1], [30, .2], [60, .3], [90, .4], [150, .5]].forEach(([frame, y]) => K.setChannels(ctx, 'offset', { y }, { time: frame / 60 }));
+      K.clearSelection(ctx);
+      ctx.seek(0, { audio: false });
+      const panel = document.getElementById('mv-panel-camera');
+      panel.open = true;
+    });
+    await page.waitForFunction(() => document.querySelector('#mv-cam-multi'));
+    const K = (method, ...args) => page.evaluate(([key, rest]) => MVStudioCameraKeys[key](window.probeCtx, ...rest), [method, args]);
+    const selected = async () => { const value = await K('selected'); return value ? value.frames : []; };
+    const frames = () => page.evaluate(() => MVStudio.getState().project.editor.camera.shots['cam:0'].keys.map((key) => key.frame));
+    const ys = () => page.evaluate(() => MVStudio.getState().project.editor.camera.shots['cam:0'].keys.map((key) => key.values.y));
+    const undoCount = async () => (await state(page)).history.undo;
+    const diamond = (frame) => page.locator(`.mv-lane[data-track="cam"] .mv-cam-key[data-event="cam:0"][data-frame="${frame}"]`);
+    // Scrolled into view (centred in its scroller), its size, and whether a tap at its centre lands on it.
+    const reach = (locator) => locator.evaluate((node) => {
+      node.scrollIntoView({ block: 'center', inline: 'nearest' });
+      const box = node.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      return { x, y, width: box.width, height: box.height, shown: box.width > 0 && box.height > 0 && x >= 0 && x <= innerWidth && y >= 0 && y <= innerHeight,
+        hit: !!hit && (hit === node || node.contains(hit)), on: hit ? (hit.id || hit.className || hit.tagName) : null };
+    });
+    const tap = async (locator, what) => {
+      const spot = await reach(locator);
+      assert(spot.shown && spot.hit, `${name}: ${what} can be tapped (${JSON.stringify(spot)})`);
+      await page.touchscreen.tap(spot.x, spot.y);
+      return spot;
+    };
+    const centre = async (locator) => { const box = await locator.boundingBox(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; };
+    const overflow = () => page.evaluate(() => ({ page: document.scrollingElement.scrollWidth - innerWidth,
+      panel: (() => { const box = document.querySelector('#mv-panel-camera .mv-cam-editor'); return box ? box.scrollWidth - box.clientWidth : 0; })() }));
+
+    assert.deepEqual(await overflow(), { page: 0, panel: 0 }, `${name}: no sideways overflow`);
+    // Undo and redo: reachable; named where the row has room (touch has no tooltip).
+    for (const id of ['#mv-undo', '#mv-redo']) {
+      const spot = await reach(page.locator(id));
+      assert(spot.shown && spot.hit && spot.width >= 31.5 && spot.height >= 31.5, `${name}: ${id} reachable, 32 px (${JSON.stringify(spot)})`);
+      assert.equal(await page.locator(`${id} .mv-history-text`).isVisible(), viewport.width >= 600, `${name}: ${id} named only with room`);
+    }
+    assert.equal(await page.locator('#mv-undo').getAttribute('aria-label'), '실행 취소');
+    // The selection section, the touch hint.
+    assert(await page.locator('#mv-cam-selection .mv-cam-hint-touch').isVisible(), `${name}: the touch hint`);
+    assert(!(await page.locator('#mv-cam-selection .mv-cam-hint-mouse').isVisible()));
+    assert.equal(await page.locator('#mv-cam-batch').isVisible(), false, 'the batch commands wait for a selection');
+
+    // "여러 개 선택" on, then three taps.
+    let undo = await undoCount();
+    await tap(page.locator('#mv-cam-multi'), '여러 개 선택');
+    assert.equal(await page.locator('#mv-cam-multi').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('.mv-lane[data-track="cam"]').evaluate((lane) => [lane.classList.contains('mv-cam-multi'), getComputedStyle(lane).touchAction].join()),
+      'true,pan-y pinch-zoom', `${name}: the camera lane takes sideways drags`);
+    for (const frame of [30, 60, 90]) await tap(diamond(frame), `key ${frame}`);
+    assert.deepEqual(await selected(), [30, 60, 90], `${name}: three taps, three keys`);
+    assert.deepEqual(await page.locator('.mv-lane[data-track="cam"] .mv-cam-key[aria-selected="true"]').evaluateAll((list) => list.map((node) => Number(node.dataset.frame))), [30, 60, 90]);
+    assert.equal(await page.locator('#mv-cam-selection-count').textContent(), '키 3개 선택됨');
+    await tap(diamond(60), 'a selected key');
+    assert.deepEqual(await selected(), [30, 90], `${name}: a second tap takes a key out`);
+    await tap(diamond(60), 'key 60 again');
+    assert.equal(await undoCount(), undo, 'selecting is no edit');
+    // Every command for the selection is shown, 32 px or more, and takes a tap.
+    for (const id of ['#mv-cam-select-all', '#mv-cam-clear-selection', '#mv-cam-delete-keys', '#mv-cam-copy-keys', '#mv-cam-paste-keys',
+      '#mv-cam-scale', '#mv-cam-scale-apply', '#mv-cam-delta-x', '#mv-cam-delta-pan', '#mv-cam-delta-fov', '#mv-cam-offset-apply']) {
+      const spot = await reach(page.locator(id));
+      assert(spot.shown && spot.hit && spot.height >= 31.5 && spot.width >= 31.5, `${name}: ${id} shown and reachable (${JSON.stringify(spot)})`);
+    }
+    assert.deepEqual(await overflow(), { page: 0, panel: 0 }, `${name}: no sideways overflow with the batch commands shown`);
+    const keyHit = await reach(diamond(60));
+    assert(keyHit.hit, `${name}: a key diamond takes the tap`);
+    // The diamond's tap target is 32 px: a tap 12 px beside its centre still lands on it.
+    assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x + 12, y)?.dataset.frame, keyHit), '60', `${name}: 32 px key target`);
+
+    // Group drag by touch: 16 px at 96 px/s is 10 frames.
+    await touchDrag(page, await centre(diamond(30)), { x: (await centre(diamond(30))).x + 16, y: (await centre(diamond(30))).y });
+    assert.deepEqual(await frames(), [0, 40, 70, 100, 150], `${name}: the three keys moved together`);
+    assert.deepEqual(await selected(), [40, 70, 100]);
+    assert.equal(await undoCount(), undo + 1, 'one undo step');
+    // Delete with the button, undo with the button.
+    await tap(page.locator('#mv-cam-delete-keys'), '선택한 키 삭제');
+    assert.deepEqual(await frames(), [0, 150], `${name}: the three keys deleted`);
+    assert.equal((await state(page)).history.undoLabel, 'Delete camera keys');
+    await tap(page.locator('#mv-undo'), '실행 취소');
+    assert.deepEqual(await frames(), [0, 40, 70, 100, 150], `${name}: undo brings them back`);
+    assert.deepEqual(await selected(), [40, 70, 100], `${name}: and their selection`);
+    // The curve view by touch: a selected key's Pedestal dragged up changes all three by the same amount.
+    const before = await ys();
+    const point = page.locator('#mv-cam-curves .mv-cam-curve-key[data-frame="70"][data-channel="y"]');
+    const from = await reach(point);
+    assert(from.shown, `${name}: the curve point is on screen`);
+    assert.equal(await page.locator('#mv-cam-curves .mv-cam-curve-hit').count() > 0, true, 'finger targets in the curve view');
+    await touchDrag(page, from, { x: from.x, y: from.y - 24 });
+    const after = await ys(), delta = after[2] - before[2];
+    assert(delta > .01, `${name}: the dragged key went up (${delta})`);
+    for (const index of [1, 3]) near(after[index] - before[index], delta, 1e-12, `${name}: key ${index} by the same amount`);
+    for (const index of [0, 4]) assert.equal(after[index], before[index], 'unselected keys unchanged');
+    assert.deepEqual(await frames(), [0, 40, 70, 100, 150], 'a vertical drag keeps the times');
+    assert.equal(await undoCount(), undo + 2, 'the curve drag is one undo step (the delete was undone)');
+
+    // Long-press: with the mode off and nothing selected, it turns the mode on and adds the key.
+    await tap(page.locator('#mv-cam-clear-selection'), '선택 해제');
+    await tap(page.locator('#mv-cam-multi'), '여러 개 선택 off');
+    assert.equal(await page.locator('#mv-cam-multi').getAttribute('aria-pressed'), 'false');
+    await reach(diamond(150));
+    const hold = await centre(diamond(150));
+    await touchDrag(page, hold, hold, { steps: 1, hold: 700 });
+    assert.equal(await page.locator('#mv-cam-multi').getAttribute('aria-pressed'), 'true', `${name}: a long-press turns 여러 개 선택 on`);
+    assert.deepEqual(await selected(), [150], `${name}: and selects the key`);
+    // A sideways drag along the camera lane (over the shot) draws a box that adds keys; the
+    // timeline keeps its scroll position and the shot does not move.
+    const scroll = await page.evaluate(() => { const box = document.getElementById('mv-timeline-grid').parentElement; return [box.scrollLeft, box.scrollTop]; });
+    const k40 = await centre(diamond(40)), k100 = await centre(diamond(100));
+    // From frame 20, halfway to the key at 0 (outside both keys' 32 px targets), past the key at 100.
+    await touchDrag(page, { x: k40.x - 32, y: k40.y }, { x: k100.x + 12, y: k40.y + 2 }, { steps: 8 });
+    assert.deepEqual(await selected(), [40, 70, 100, 150], `${name}: the box adds the keys inside it`);
+    assert.deepEqual(await page.evaluate(() => { const box = document.getElementById('mv-timeline-grid').parentElement; return [box.scrollLeft, box.scrollTop]; }), scroll, 'no scroll');
+    assert.equal((await state(page)).project.tracks[0].events[0].start, 0, 'the shot stays put');
+    assert.equal(await page.locator('.mv-cam-box').count(), 0);
+    assert.deepEqual(await overflow(), { page: 0, panel: 0 }, `${name}: still no sideways overflow`);
+    await page.screenshot({ path: path.join(evidence, `camera-multikeys-touch-${name}-ko.png`) });
+    assert.deepEqual(errors, [], `${name}: page errors`);
+    await page.close();
+  }
+}
+
 function near(actual, expected, tolerance, message) {
   assert(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} != ${expected}`);
 }
@@ -725,6 +1109,19 @@ async function exportRoundTrip(browser, url) {
   await page.locator('#mv-camera-fields [data-mv-cam="offset.pan"]').fill('6');
   await page.locator('#mv-camera-fields [data-mv-cam="offset.pan"]').press('Tab');
   await page.waitForFunction((id) => MVStudio.getState().project.editor?.camera?.shots?.[id]?.keys?.length === 2, shot.id);
+  // Both keys at once (the group commands bake through the same path): Δtilt 2°, then 5 frames later.
+  const group = await page.evaluate(async (id) => {
+    const K = MVStudioCameraKeys, ctx = window.probeCtx, keys = () => MVStudio.getState().project.editor.camera.shots[id].keys;
+    K.selectKeys(ctx, id, keys().map((key) => key.frame));
+    const tilt = keys().map((key) => key.values.tilt);
+    K.offsetKeys(ctx, { tilt: 2 });
+    const moved = K.moveKeys(ctx, id, K.selected(ctx).frames, 5);
+    await K.pending(ctx);
+    return { moved, frames: keys().map((key) => key.frame), tilt: keys().map((key, index) => key.values.tilt - tilt[index]) };
+  }, shot.id);
+  assert.equal(group.moved, 5);
+  assert.deepEqual(group.frames, [5, 205]);
+  group.tilt.forEach((delta) => near(delta, 2, 1e-9, 'Δtilt on both keys'));
   const edited = (await state(page)).project;
   const baked = edited.tracks.find((track) => track.id === main.id).events[0].values.keyframes;
   assert.notDeepEqual(baked, shot.values.keyframes);
@@ -755,6 +1152,8 @@ async function run() {
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     await synthetic(browser, server.url);
+    await multiKeys(browser, server.url);
+    await multiKeysTouch(browser, server.url);
     const roundTrip = await exportRoundTrip(browser, server.url);
     console.log(JSON.stringify({ status: 'PASS', evidence, roundTrip }));
   } finally {

@@ -2664,6 +2664,53 @@ _MV_EDITOR_C_TRANSLATIONS = {
     "Turn the keys into offsets over the original motion at the same frames?": (
         "같은 프레임에서 키를 원래 움직임에 대한 오프셋으로 바꿀까요?",
         "同じフレームで、キーを元の動きに対するオフセットに変えますか？"),
+    # Several keys at once ("Clear selection" is translated above).
+    "Keys can be selected in one camera shot at a time.": (
+        "키는 한 번에 한 카메라 샷 안에서만 선택할 수 있습니다.", "キーは一度に1つのカメラショットの中でだけ選択できます。"),
+    "Key selection": ("키 선택", "キーの選択"),
+    "Select all keys": ("모든 키 선택", "すべてのキーを選択"),
+    "Copy keys": ("키 복사", "キーをコピー"),
+    "Paste keys": ("키 붙여넣기", "キーを貼り付け"),
+    "No keys selected": ("선택한 키 없음", "選択したキーはありません"),
+    "Keys selected: {count}": ("키 {count}개 선택됨", "{count}個のキーを選択中"),
+    "Keys selected in shot {index}: {count}": ("샷 {index}의 키 {count}개 선택됨", "ショット {index} のキーを{count}個選択中"),
+    "Time scale (%)": ("간격 배율 (%)", "間隔の倍率 (%)"),
+    "Scale timing": ("간격 배율 적용", "間隔を伸縮"),
+    "Scales the spacing of the selected keys around the first selected key (Alt+drag the last selected key on the timeline does the same).": (
+        "첫 번째로 선택한 키를 기준으로 선택한 키 사이의 간격을 늘리거나 줄입니다. 타임라인에서 마지막으로 선택한 키를 Alt+드래그해도 됩니다.",
+        "最初に選択したキーを基準に、選択したキーの間隔を伸縮します。タイムラインで最後に選択したキーを Alt+ドラッグしても同じです。"),
+    "Add to selected keys": ("선택한 키에 더하기", "選択したキーに加算"),
+    "Apply offset": ("오프셋 적용", "オフセットを適用"),
+    "Shift or Ctrl+click adds a key. Drag on empty lane or graph space to box-select (Shift adds). Drag a selected key to move them all; Alt+drag the last one to stretch.": (
+        "Shift 또는 Ctrl+클릭으로 키를 추가합니다. 레인이나 그래프의 빈 곳을 드래그하면 상자로 선택합니다(Shift: 추가). "
+        "선택한 키를 드래그하면 함께 움직이고, 마지막 키를 Alt+드래그하면 간격을 늘이거나 줄입니다.",
+        "Shift または Ctrl+クリックでキーを追加します。レーンやグラフの空いた所をドラッグすると範囲選択します（Shift: 追加）。"
+        "選択したキーをドラッグするとまとめて動き、最後のキーを Alt+ドラッグすると間隔を伸縮します。"),
+    "Move camera keys": ("선택한 카메라 키 이동", "選択したカメラキーを移動"),
+    "Delete camera keys": ("선택한 카메라 키 삭제", "選択したカメラキーを削除"),
+    "Scale camera key timing": ("카메라 키 간격 배율", "カメラキーの間隔を伸縮"),
+    "Offset camera keys": ("카메라 키에 오프셋 더하기", "カメラキーにオフセットを加算"),
+    "Paste camera keys": ("카메라 키 붙여넣기", "カメラキーを貼り付け"),
+    "Camera keys copied: {count}.": ("카메라 키 {count}개를 복사했습니다.", "カメラキーを{count}個コピーしました。"),
+    "Copy camera keys first.": ("먼저 카메라 키를 복사하세요.", "先にカメラキーをコピーしてください。"),
+    "The copied keys do not fit in this shot.": ("복사한 키가 이 샷 안에 들어가지 않습니다.", "コピーしたキーはこのショットに収まりません。"),
+    "Keys outside this shot were left out: {count}.": (
+        "이 샷 범위를 벗어난 키 {count}개는 제외했습니다.", "このショットの範囲外のキー{count}個は除外しました。"),
+    "Select at least two keys to scale their timing.": (
+        "간격을 바꾸려면 키를 두 개 이상 선택하세요.", "間隔を変えるには、キーを2つ以上選択してください。"),
+    "The timing stops at a neighbouring key or the end of the shot.": (
+        "이웃한 키나 샷 끝에서 멈췄습니다.", "隣のキーかショットの端で止まりました。"),
+    # Touch: "Select several" (no Shift or Ctrl on a phone).
+    "Select several": ("여러 개 선택", "複数選択"),
+    "While this is on, a tap adds or removes a key and a sideways drag on the camera lane selects the keys in a box. A long-press on a key also turns it on.": (
+        "켜 두면 키를 탭할 때마다 선택에 더하거나 빼고, 카메라 레인을 가로로 드래그하면 상자 안의 키를 선택합니다. 키를 길게 눌러도 켜집니다.",
+        "オンの間は、キーをタップするたびに選択に追加・解除し、カメラレーンを横にドラッグすると範囲内のキーを選択します。キーを長押ししてもオンになります。"),
+    "Touch: turn on Select several (or long-press a key) and tap keys; drag sideways on the camera lane or on the graph to box-select. Drag a selected key to move them all.": (
+        "터치: '여러 개 선택'을 켜거나 키를 길게 누른 뒤 키를 탭하세요. 카메라 레인이나 그래프를 가로로 드래그하면 상자로 선택합니다. "
+        "선택한 키를 드래그하면 함께 움직입니다.",
+        "タッチ: 「複数選択」をオンにするかキーを長押しして、キーをタップします。カメラレーンやグラフを横にドラッグすると範囲選択します。"
+        "選択したキーをドラッグするとまとめて動きます。"),
+    "Delete selected keys": ("선택한 키 삭제", "選択したキーを削除"),
 }
 for _source, (_korean, _japanese) in _MV_EDITOR_C_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
