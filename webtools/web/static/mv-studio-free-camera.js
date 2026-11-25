@@ -10,6 +10,8 @@
      widens or narrows the lens (Shift+wheel does too).
    - Follow member (off by default, so the view stays where it was put): while a member is the
      target, the free camera moves with that member as the MV plays or the playhead moves.
+   - A short preview (a phone) that the bar would mostly cover keeps it folded behind a Views
+     toggle; opened, it folds again once a view button turns the camera, so the view shows.
 
    Preview only: nothing here writes the project, a timeline, the game camera or an export.
    "Key current view" (mv-studio-camera-keys.js) keys whatever the free camera shows. */
@@ -36,7 +38,7 @@
   const round = (value, digits) => Number(value.toFixed(digits));
 
   const STRINGS = Object.freeze([
-    "Free camera views", "Target", "Stage centre", "The free camera looks at this point and turns around it.",
+    "Free camera views", "Views", "Show or hide the free camera views. A short preview keeps them folded so the view stays visible.", "Target", "Stage centre", "The free camera looks at this point and turns around it.",
     "View direction", ...VIEWS.flatMap(([, label, title]) => [label, title]),
     "Distance", "Distance from the target (m). The mouse wheel also moves the camera forward and back.",
     "FOV", "Vertical field of view (°). Shift+mouse wheel also changes it.",
@@ -44,8 +46,12 @@
   ]);
 
   // Gap (px) between the bar and the preview controls, the bar's margin from the preview's edge
-  // (mv-studio-free-camera.css) and the narrowest bar placed beside the controls.
+  // (mv-studio-free-camera.css) and the narrowest bar placed beside the controls (a folded bar,
+  // only its toggle, goes there whenever the toggle fits).
   const GAP = 6, EDGE = 8, MIN_BESIDE = 160;
+  // The share of the preview's height the bar below the controls has to leave clear; a shorter
+  // preview folds the bar.
+  const MIN_CLEAR = .4;
   // A bar that does not fit drops its sliders (the number boxes stay), then its captions.
   const COMPACT = Object.freeze(["mv-freecam-compact", "mv-freecam-tight"]);
 
@@ -53,6 +59,8 @@
   // The member target a reload left out: it comes back when that member slot loads again, until
   // another target is picked.
   let missingTarget = null;
+  // The bar opened on a short preview (folded again when it hides or a view button is used).
+  let unfolded = false, openHeight = 0;
 
   const t = (label) => ctx && typeof ctx.t === "function" ? ctx.t(label) : label;
   const freeView = () => scene && scene.freeView ? scene.freeView : null;
@@ -75,6 +83,10 @@
     bar.hidden = true;
     const box = {};
 
+    box.toggle = make("button", { text: "Views", type: "button", id: "mv-freecam-toggle", class: "mv-freecam-toggle", "aria-expanded": "true",
+      title: "Show or hide the free camera views. A short preview keeps them folded so the view stays visible." });
+    box.toggle.addEventListener("click", () => { unfolded = !unfolded; place(); });
+
     const target = make("label", { class: "mv-freecam-field", title: "The free camera looks at this point and turns around it." });
     box.target = make("select", { id: "mv-freecam-target" });
     box.target.append(make("option", { text: "Stage centre", value: "stage" }));
@@ -84,7 +96,15 @@
     const views = make("div", { class: "mv-freecam-views", role: "group", aria: "View direction" });
     for (const [id, label, title] of VIEWS) {
       const control = make("button", { text: label, title, type: "button", "data-mv-freecam-view": id });
-      control.addEventListener("click", () => orbit(id));
+      control.addEventListener("click", () => {
+        orbit(id);
+        // On a short preview the bar folds again, so the new view shows.
+        if (unfolded && refs.bar.classList.contains("mv-freecam-short")) {
+          unfolded = false;
+          place();
+          refs.toggle.focus({ preventScroll: true });
+        }
+      });
       views.append(control);
     }
 
@@ -101,7 +121,7 @@
     box.follow.addEventListener("change", () => { freeView()?.setFollow(box.follow.checked); sync(); });
     follow.append(box.follow, make("span", { text: "Follow member" }));
 
-    bar.append(target, views, box.distance.wrap, box.fov.wrap, follow);
+    bar.append(box.toggle, target, views, box.distance.wrap, box.fov.wrap, follow);
     controls.after(bar);
     box.bar = bar;
     return box;
@@ -208,6 +228,7 @@
     // Place the bar when it appears or goes (size changes reach place() through the observer).
     if (wasHidden !== refs.bar.hidden) {
       wasHidden = refs.bar.hidden;
+      if (wasHidden) unfolded = false;
       place();
     }
     refreshTargets();
@@ -224,9 +245,10 @@
 
   // The bar never covers the preview controls, and the view keeps the game camera's canvas, so
   // "Key current view" keys the lens as shown. The bar is one row at the bottom of the view,
-  // below the controls. A preview too short for both gets the bar beside the controls (a phone
-  // in landscape); with no room beside them either (a phone held upright), the preview keeps
-  // the height both need while the bar shows (see holdPreview).
+  // below the controls. A preview it would mostly cover folds it behind its toggle (unless it
+  // was opened). A preview too short for the controls and the bar gets the bar beside the
+  // controls (a phone in landscape); with no room beside them either (a phone held upright), the
+  // preview keeps the height both need while the bar shows (see holdPreview).
   function place() {
     placed = 0;
     if (!refs) return;
@@ -234,10 +256,16 @@
     bar.classList.remove("mv-freecam-beside");
     let needed = 0;
     if (bar.offsetParent !== null && preview && controls && controls.offsetParent === preview) {
-      compact(bar);
       const below = controls.offsetTop + controls.offsetHeight + GAP;
+      // Whether the preview is short, from the height of the open bar (so folding cannot change it).
+      if (!bar.classList.contains("mv-freecam-folded")) openHeight = bar.offsetHeight;
+      const short = preview.clientHeight - below - openHeight - EDGE < preview.clientHeight * MIN_CLEAR;
+      bar.classList.toggle("mv-freecam-short", short);
+      bar.classList.toggle("mv-freecam-folded", short && !unfolded);
+      refs.toggle.setAttribute("aria-expanded", String(!short || unfolded));
+      compact(bar);
       const start = controls.offsetLeft + controls.offsetWidth + GAP;
-      if (preview.clientWidth - start - GAP < MIN_BESIDE) needed = below + bar.offsetHeight + EDGE;
+      if (preview.clientWidth - start - GAP < Math.min(MIN_BESIDE, bar.scrollWidth)) needed = below + bar.offsetHeight + EDGE;
       else if (bar.offsetTop < below) {
         bar.style.setProperty("--mv-freecam-top", `${controls.offsetTop}px`);
         bar.style.setProperty("--mv-freecam-start", `${start}px`);

@@ -23,13 +23,15 @@
    - on a phone, a tablet, a phone in landscape and a laptop screen the bar never covers the
      preview controls, stays one row, and every control is where a tap lands; where it goes
      (below or beside the controls, or below with the preview held taller) follows from where
-     the host put the preview and its controls.
+     the host put the preview and its controls; a preview the open bar would mostly cover
+     shows it folded behind its Views toggle, and it folds again after a view button.
 
    Real 12035 MV (skipped unless MV_FREECAM_SERVER_ROOT is an Elichika server root that imports
    GL Android 12035 with its member; no game data in Git): the four views around the member pass
    the same checks, Korean screenshots of the bar and the four views are taken, the native
    timeline export is byte-identical before and after using the free camera, and on a phone
-   (touch) the bar stays clear of the preview controls with every control reachable.
+   (touch) the bar starts folded, opens clear of the preview controls with every control
+   reachable, and folds again after a view button.
 
    Screenshots go to EVIDENCE_DIR (a temporary folder otherwise). */
 'use strict';
@@ -216,7 +218,8 @@ const frames = (page) => page.evaluate(() => new Promise((resolve) => requestAni
 
 // Where the preview, the view, the preview controls and the bar are, and whether a tap at the
 // centre of each control reaches it. The target list and the view buttons are hit where they
-// are (or, with `swipe`, after a sideways scroll); the rest of the bar may need that scroll.
+// are (or, with `swipe`, after a sideways scroll); the rest of the bar may need that scroll. A
+// folded bar has only its toggle to hit.
 function layoutProbe(swipe = false) {
   const box = (element) => {
     const rect = element.getBoundingClientRect();
@@ -228,14 +231,23 @@ function layoutProbe(swipe = false) {
     const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     return !!top && (top === element || element.contains(top));
   };
-  const bar = document.getElementById('mv-free-camera');
-  const controls = ['mv-camera-mode', 'mv-screen-fade', 'mv-frame-scene', 'mv-freecam-target'].map((id) => [id, document.getElementById(id)]);
-  const views = [...bar.querySelectorAll('[data-mv-freecam-view]')].map((element) => [element.dataset.mvFreecamView, element]);
+  const bar = document.getElementById('mv-free-camera'), folded = bar.classList.contains('mv-freecam-folded');
+  const toggle = document.getElementById('mv-freecam-toggle'), toggled = toggle.getClientRects().length > 0;
+  const controls = ['mv-camera-mode', 'mv-screen-fade', 'mv-frame-scene', ...(folded ? [] : ['mv-freecam-target'])].map((id) => [id, document.getElementById(id)]);
+  const views = folded ? [] : [...bar.querySelectorAll('[data-mv-freecam-view]')].map((element) => [element.dataset.mvFreecamView, element]);
+  // Bar controls cut off by the bar's edge as it shows (before any sideways scroll).
+  const outer = bar.getBoundingClientRect(), shownLeft = outer.left + bar.clientLeft, shownRight = shownLeft + bar.clientWidth;
+  const clipped = [...controls, ...views].filter(([, element]) => bar.contains(element)).filter(([, element]) => {
+    const rect = element.getBoundingClientRect();
+    return rect.left < shownLeft - .5 || rect.right > shownRight + .5;
+  }).map(([name]) => name);
   const result = { preview: box(document.querySelector('.mv-preview')), scene: box(document.getElementById('mv-scene')),
-    controls: box(document.getElementById('mv-preview-controls')), bar: box(bar), classes: [...bar.classList],
+    controls: box(document.getElementById('mv-preview-controls')), bar: box(bar), barScroll: bar.scrollWidth, classes: [...bar.classList],
+    folded, toggle: toggled ? toggle.getAttribute('aria-expanded') : null, clipped,
     rows: [...bar.children].filter((child) => child.getClientRects().length).map(box),
-    hits: Object.fromEntries([...controls, ...views].map(([name, element]) => [name, hit(element, swipe && bar.contains(element))])) };
-  result.scrolled = Object.fromEntries(['mv-freecam-distance', 'mv-freecam-fov', 'mv-freecam-follow'].map((id) => [id, hit(document.getElementById(id), true)]));
+    hits: Object.fromEntries([...controls, ...(toggled ? [['mv-freecam-toggle', toggle]] : []), ...views]
+      .map(([name, element]) => [name, hit(element, swipe && bar.contains(element))])) };
+  result.scrolled = folded ? {} : Object.fromEntries(['mv-freecam-distance', 'mv-freecam-fov', 'mv-freecam-follow'].map((id) => [id, hit(document.getElementById(id), true)]));
   bar.scrollLeft = 0;
   return result;
 }
@@ -264,16 +276,20 @@ const inside = (a, b) => a.left >= b.left - .5 && a.right <= b.right + .5 && a.t
 // so its preview starts at its least height. The bar never covers the preview controls, stays in
 // the preview, is one row, and the view keeps the whole preview (the game camera's canvas). The
 // preview controls, the target list and every view button are where a tap lands (beside the
-// controls, after a sideways swipe), and a tap on a view button turns the free camera there.
+// controls, after a sideways swipe), and a tap on a view button turns the free camera there. A
+// preview the open bar would mostly cover shows it folded behind its Views toggle; opened, it
+// folds again after a view button, so the new view shows.
 const LAYOUTS = [
   { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, squeeze: true },
   { name: 'tablet', viewport: { width: 768, height: 1024 }, touch: true },
   { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true },
   { name: 'laptop', viewport: { width: 1280, height: 720 }, touch: false },
 ];
-// The bar's gap below the preview controls, its margin from the preview's edge, and the
-// narrowest bar worth placing beside the controls (mv-studio-free-camera.js / .css).
-const GAP = 6, EDGE = 8, MIN_BESIDE = 160;
+// The bar's gap below the preview controls, its margin from the preview's edge, the narrowest
+// bar worth placing beside the controls (a folded bar goes there whenever it fits), and the share
+// of the preview the open bar below the controls leaves clear, under which the bar folds
+// (mv-studio-free-camera.js / .css).
+const GAP = 6, EDGE = 8, MIN_BESIDE = 160, MIN_CLEAR = .4;
 
 // Where the bar belongs, from where the host put the preview and its controls (so it holds for
 // any host layout): below the controls when it fits there; otherwise beside them when there is
@@ -283,12 +299,13 @@ const GAP = 6, EDGE = 8, MIN_BESIDE = 160;
 function checkPlacement(label, shown, held, own, least) {
   const below = shown.controls.bottom - shown.preview.top + GAP + shown.bar.height + EDGE;
   const room = shown.preview.right - shown.controls.right - 2 * GAP;
+  const besideRoom = Math.min(MIN_BESIDE, shown.barScroll);
   const beside = shown.classes.includes('mv-freecam-beside');
   const place = beside ? 'beside' : held ? 'bottom, preview held' : 'bottom';
   const facts = `${place}: needs ${below} px below the controls, ${room} px beside them, preview ${least} -> ${shown.preview.height} px, least ${own} px, held ${JSON.stringify(held)}`;
   if (beside) {
     assert(below > least + .5, `${label}: beside the controls only when the bar does not fit below them (${facts})`);
-    assert(room >= MIN_BESIDE - .5, `${label}: beside the controls only with room there (${facts})`);
+    assert(room >= besideRoom - .5, `${label}: beside the controls only with room there (${facts})`);
     assert(shown.bar.left >= shown.controls.right, `${label}: right of the preview controls`);
     assert.equal(held, '', `${label}: beside the controls, the preview keeps its height (${facts})`);
   } else {
@@ -296,7 +313,7 @@ function checkPlacement(label, shown, held, own, least) {
     assert(shown.bar.top >= shown.controls.bottom + GAP - .5, `${label}: below the preview controls (${facts})`);
     // With room beside the controls the preview is never held; without it, it is held exactly
     // when the host's least height is too short for the controls and the bar.
-    const hold = room < MIN_BESIDE - .5 && below > own + .5;
+    const hold = room < besideRoom - .5 && below > own + .5;
     if (hold) {
       assert(held && Math.abs(parseFloat(held) - Math.ceil(below)) <= 1, `${label}: the preview's least height becomes what the bar needs (${facts})`);
       assert(shown.preview.height >= below - .5, `${label}: the preview grows for the bar (${facts})`);
@@ -306,6 +323,28 @@ function checkPlacement(label, shown, held, own, least) {
     }
   }
   return { place, below, room };
+}
+
+// Whether the preview is short for the open bar (it would leave less than MIN_CLEAR of the
+// preview clear below the controls), from measured geometry; null within 2 px of the line.
+function shortPreview(shown) {
+  const clear = shown.preview.bottom - (shown.controls.bottom + GAP) - (shown.bar.height + EDGE);
+  const margin = clear - shown.preview.height * MIN_CLEAR;
+  return Math.abs(margin) <= 2 ? null : margin < 0;
+}
+
+// The checks every placement of the bar meets: clear of the preview controls, inside the
+// preview, one row, the view keeps the whole preview, and every control is where a tap lands;
+// below the controls the target list and the view buttons show whole, without a swipe.
+function checkShown(label, shown) {
+  if (!shown.classes.includes('mv-freecam-beside')) assert.deepEqual(shown.clipped, [], `${label}: the target list and the view buttons show whole`);
+  assert(apart(shown.bar, shown.controls), `${label}: the bar does not cover the preview controls (${JSON.stringify([shown.bar, shown.controls])})`);
+  assert(inside(shown.bar, shown.preview), `${label}: the bar stays inside the preview`);
+  assert.deepEqual(shown.scene, shown.preview, `${label}: the view keeps the whole preview`);
+  const missed = Object.entries({ ...shown.hits, ...shown.scrolled }).filter(([, reached]) => !reached).map(([name]) => name);
+  assert.deepEqual(missed, [], `${label}: every control is where a tap lands`);
+  const row = shown.rows[0];
+  assert(shown.rows.every((item) => item.top < row.bottom && item.bottom > row.top), `${label}: one row`);
 }
 
 async function layouts(browser, url) {
@@ -334,24 +373,49 @@ async function layouts(browser, url) {
     await setMode(page, 'orbit');
     await page.locator('#mv-free-camera').waitFor({ state: 'visible' });
     await frames(page);
+    const tap = (locator) => layout.touch ? locator.tap() : locator.click();
+    const toggle = page.locator('#mv-freecam-toggle');
     let shown = await page.evaluate(layoutProbe, false);
-    const held = await page.evaluate(() => document.getElementById('mv-workspace').style.getPropertyValue('--mv-preview-min'));
-    const placement = checkPlacement(label, shown, held, own, least);
+    // A short preview folds the bar behind its toggle, which keeps the view visible: the folded
+    // bar is one button, placed like the bar.
+    const short = shortPreview(shown);
+    if (short !== null) assert.equal(shown.folded, short, `${label}: ${short ? 'folded' : 'open'} (${JSON.stringify([shown.preview, shown.controls, shown.bar])})`);
+    const folding = shown.folded;
+    let held = await page.evaluate(() => document.getElementById('mv-workspace').style.getPropertyValue('--mv-preview-min'));
+    let placement;
+    if (folding) {
+      assert.equal(shown.rows.length, 1, `${label}: folded, only the toggle shows`);
+      assert.equal(shown.toggle, 'false');
+      assert(shown.bar.width * shown.bar.height <= .1 * shown.preview.width * shown.preview.height, `${label}: the folded bar leaves the view visible (${shown.bar.width}x${shown.bar.height})`);
+      placement = checkPlacement(`${label} folded`, shown, held, own, least);
+      checkShown(`${label} folded`, shown);
+      await page.screenshot({ path: path.join(evidence, `freecam-layout-${layout.name}-folded-ko.png`) });
+      await tap(toggle);
+      await frames(page);
+      shown = await page.evaluate(layoutProbe, false);
+      assert(!shown.folded && shown.toggle === 'true', `${label}: the toggle opens the bar`);
+      held = await page.evaluate(() => document.getElementById('mv-workspace').style.getPropertyValue('--mv-preview-min'));
+    } else {
+      assert.equal(shown.toggle, null, `${label}: an open preview has no toggle`);
+    }
+    placement = checkPlacement(label, shown, held, own, least);
     // Beside the controls the view buttons may need a sideways swipe.
     if (placement.place === 'beside') shown = await page.evaluate(layoutProbe, true);
-    assert(apart(shown.bar, shown.controls), `${label}: the bar does not cover the preview controls (${JSON.stringify([shown.bar, shown.controls])})`);
-    assert(inside(shown.bar, shown.preview), `${label}: the bar stays inside the preview`);
-    assert.deepEqual(shown.scene, shown.preview, `${label}: the view keeps the whole preview`);
-    const missed = Object.entries({ ...shown.hits, ...shown.scrolled }).filter(([, reached]) => !reached).map(([name]) => name);
-    assert.deepEqual(missed, [], `${label}: every control is where a tap lands`);
-    const row = shown.rows[0];
-    assert(shown.rows.every((item) => item.top < row.bottom && item.bottom > row.top), `${label}: one row`);
+    checkShown(label, shown);
     await page.screenshot({ path: path.join(evidence, `freecam-layout-${layout.name}-ko.png`) });
-    // A tap on a view button turns the view; the preview controls still switch the camera.
-    const left = page.locator('[data-mv-freecam-view="left"]');
-    if (layout.touch) await left.tap(); else await left.click();
+    // A tap on a view button turns the view (and folds a short preview's bar again, so the view
+    // shows); the preview controls still switch the camera.
+    await tap(page.locator('[data-mv-freecam-view="left"]'));
     const view = await measure(page);
     assert(sideError(view.unity, SIDES.left) < 1 && Math.abs(view.ndc[0]) < 1e-4 && Math.abs(view.ndc[1]) < 1e-4, `${label}: the Left view`);
+    await frames(page);
+    assert.equal(await page.evaluate(() => document.getElementById('mv-free-camera').classList.contains('mv-freecam-folded')), folding,
+      `${label}: ${folding ? 'folded again after a view button' : 'still open after a view button'}`);
+    if (folding) {
+      assert.equal(await toggle.evaluate((node) => node === document.activeElement), true, `${label}: the toggle keeps the focus`);
+      await tap(toggle);
+      await frames(page);
+    }
     // After each language switch the bar is as compact as it needs to be and no more; back in
     // Korean the target list and the view buttons are where a tap lands again.
     for (const [lang, front] of [['en', 'Front'], ['ja', '正面'], ['ko', '정면']]) {
@@ -364,6 +428,12 @@ async function layouts(browser, url) {
     const again = await page.evaluate(layoutProbe, placement.place === 'beside');
     const lost = Object.entries(again.hits).filter(([, reached]) => !reached).map(([name]) => name);
     assert.deepEqual(lost, [], `${label}: after the language switches, every view button is where a tap lands`);
+    // Shown again, a short preview's bar starts folded.
+    await setMode(page, 'live');
+    await setMode(page, 'orbit');
+    await frames(page);
+    assert.equal(await page.evaluate(() => document.getElementById('mv-free-camera').classList.contains('mv-freecam-folded')), folding,
+      `${label}: ${folding ? 'folded' : 'open'} when shown again`);
     await setMode(page, 'live');
     await page.locator('#mv-free-camera').waitFor({ state: 'hidden' });
     assert.equal(await page.evaluate(() => document.getElementById('mv-workspace').style.getPropertyValue('--mv-preview-min')), '',
@@ -371,7 +441,7 @@ async function layouts(browser, url) {
     assert.equal(await page.evaluate(() => document.elementFromPoint(...(({ left, top, width, height }) => [left + width / 2, top + height / 2])(
       document.getElementById('mv-camera-mode').getBoundingClientRect())) === document.getElementById('mv-camera-mode')), true, `${label}: back to the game camera`);
     assert.deepEqual(errors, []);
-    results[layout.name] = { ...placement, compact: shown.classes.filter((name) => /compact|tight/.test(name)),
+    results[layout.name] = { ...placement, folded: folding, compact: shown.classes.filter((name) => /compact|tight/.test(name)),
       preview: [shown.preview.width, shown.preview.height], previewBefore: least, own, held, bar: [shown.bar.left - shown.preview.left, shown.bar.top - shown.preview.top, shown.bar.width, shown.bar.height] };
     await page.context().close();
   }
@@ -406,6 +476,7 @@ async function synthetic(browser, url) {
   await setMode(page, 'orbit');
   await bar.waitFor({ state: 'visible' });
   assert.equal(await bar.getAttribute('aria-label'), '자유 카메라 시점');
+  assert.equal(await page.locator('#mv-freecam-toggle').isVisible(), false, 'a tall preview shows the bar open, without its Views toggle');
   assert.deepEqual(await page.locator('[data-mv-freecam-view]').allTextContents(), LABELS_KO);
   assert.equal(await page.locator('[data-mv-freecam-view="front"]').getAttribute('title'), '관객석 쪽(멤버가 바라보는 쪽)에서 봅니다.');
   assert.deepEqual(await page.locator('#mv-freecam-target option').allTextContents(), ['무대 중앙', '1 · Honoka Kousaka', '2 · Kotori Minami']);
@@ -835,29 +906,44 @@ async function real(browser) {
     assert.deepEqual(errors, []);
     await page.context().close();
 
-    // The same MV on a phone (touch, 390x844): the bar is clear of the preview controls and
-    // every control is where a tap lands; a Korean screenshot of the preview.
+    // The same MV on a phone (touch, 390x844): the bar starts folded behind its Views toggle,
+    // so the view stays visible; opened, every control is where a tap lands, clear of the
+    // preview controls, and after 정면 it folds again over the new view. Korean screenshots of
+    // the preview folded and open.
     const phone = await newPage(browser, errors, { width: 390, height: 844 }, { isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
     await phone.goto(server.url + '/#mv');
     await capture.importOriginal(phone, { region: 'gl', platform: 'android', liveId: 12035, assetId: 1203503 }, true);
     await phone.waitForFunction(() => window.probeCtx.scene()?.freeView.targets().some((item) => item.kind === 'member'), null, { timeout: 600000 });
     await seek(phone, time);
     await setMode(phone, 'orbit');
+    await frames(phone);
+    const folded = await phone.evaluate(layoutProbe);
+    const phoneShort = shortPreview(folded);
+    if (phoneShort !== null) assert.equal(folded.folded, phoneShort, `12035 phone: ${phoneShort ? 'folded' : 'open'} (${JSON.stringify([folded.preview, folded.controls, folded.bar])})`);
+    checkShown('12035 phone', folded);
+    if (folded.folded) await phone.locator('#mv-freecam-toggle').tap();
+    await frames(phone);
     await phone.locator('#mv-freecam-target').selectOption(member.id);
+    const shown = await phone.evaluate(layoutProbe);
+    assert(!shown.folded, '12035 phone: the toggle opens the bar');
+    checkShown('12035 phone, open', shown);
+    await phone.waitForTimeout(300);
+    await phone.locator('.mv-preview').screenshot({ path: path.join(evidence, 'freecam-12035-phone-open-ko.png') });
     await phone.locator('[data-mv-freecam-view="front"]').tap();
     await frames(phone);
-    const shown = await phone.evaluate(layoutProbe);
-    assert(apart(shown.bar, shown.controls) && inside(shown.bar, shown.preview),
-      `12035 phone: the bar is clear of the preview controls, inside the preview (${JSON.stringify([shown.preview, shown.controls, shown.bar, shown.classes])})`);
-    const missed = Object.entries({ ...shown.hits, ...shown.scrolled }).filter(([, reached]) => !reached).map(([name]) => name);
-    assert.deepEqual(missed, [], '12035 phone: every control is where a tap lands');
+    const front = await measure(phone);
+    assert(sideError(front.unity, SIDES.front) < 1 && Math.abs(front.ndc[0]) < 1e-4 && Math.abs(front.ndc[1]) < 1e-4, '12035 phone: the Front view');
+    const after12035 = await phone.evaluate(layoutProbe);
+    assert.equal(after12035.folded, folded.folded, '12035 phone: folded again over the new view');
+    if (after12035.folded) assert(after12035.bar.width * after12035.bar.height <= .1 * after12035.preview.width * after12035.preview.height, '12035 phone: the folded bar leaves the view visible');
     await phone.waitForTimeout(300);
     await phone.locator('.mv-preview').screenshot({ path: path.join(evidence, 'freecam-12035-phone-ko.png') });
     await setMode(phone, 'live');
     assert.deepEqual(errors, []);
     await phone.context().close();
     return { member: label, views, exportBytes: exportedAfter.length,
-      phone: { preview: [shown.preview.width, shown.preview.height], bar: [shown.bar.width, shown.bar.height], compact: shown.classes.filter((name) => /compact|tight/.test(name)) } };
+      phone: { preview: [shown.preview.width, shown.preview.height], folded: folded.folded, foldedBar: [folded.bar.width, folded.bar.height],
+        bar: [shown.bar.width, shown.bar.height], compact: shown.classes.filter((name) => /compact|tight/.test(name)) } };
   } finally {
     server.child.kill();
   }
