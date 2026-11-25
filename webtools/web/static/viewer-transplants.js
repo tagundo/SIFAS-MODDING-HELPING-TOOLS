@@ -179,7 +179,8 @@
     "{slot} is already used at the part's original UV position.",
     "Island {island} of {islands} ({width}×{height} px) found no free texels in {slot}.",
     "The search stopped after {count} positions for island {island} of {islands}.",
-    "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}."
+    "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}.",
+    "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show."
   ];
   TEXT[REASON_TEMPLATES[0]] = ["{slot} — 이식할 부분: {part} (메인 텍스처 {part_main} 기준), 머리 텍스처: {head} (메인 텍스처 {head_main} 기준).",
     "{slot}：パーツは{part_main}のメインテクスチャに対して{part}、頭は{head_main}に対して{head}を使います。"];
@@ -193,6 +194,8 @@
     "UVアイランド{islands}個中{island}番目の位置を{count}か所まで探して停止しました。"];
   TEXT[REASON_TEMPLATES[5]] = ["{donor}의 _CullMode: {donor_value}, {receiver}의 _CullMode: {receiver_value}.",
     "{donor}：_CullModeは{donor_value}ですが、{receiver}は{receiver_value}です。"];
+  TEXT[REASON_TEMPLATES[6]] = ["{donor}(_CullMode {donor_value})는 {receiver}(_CullMode 0)처럼 앞뒷면 모두 그려지므로 뒷면이 보일 수 있습니다.",
+    "{donor}（_CullMode {donor_value}）は{receiver}（_CullMode 0）と同じく両面が描画されるため、裏面が見えることがあります。"];
   TEXT["Selected bones"] = ["선택 본", "選択ボーン"];
   TEXT["Selected faces"] = ["이식할 면", "移植する面"];
   function selectedBoneManifest(parts, selected) {

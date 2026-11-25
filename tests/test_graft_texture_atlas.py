@@ -156,11 +156,25 @@ class GameAtlasTests(unittest.TestCase):
             bake_game_atlas(wearer, [donor])
 
     def test_cull_mismatch_keeps_guard_and_names_values_and_matching_target(self):
+        # A two-sided donor would lose its back faces on a culled receiver: still refused.
+        wearer = source("Body", [image((4, 4), "red")], floats={"_CullMode": 2})
+        donor = source("Head accessory", [image((4, 4), "blue")], floats={"_CullMode": 0})
+        before = copy.deepcopy(wearer.tree), copy.deepcopy(donor.tree)
+        with self.assertRaisesRegex(AtlasCompatibilityError, r"Head accessory: _CullMode is 0, while Body uses 2.*Hair"):
+            bake_game_atlas(wearer, [donor])
+        self.assertEqual((wearer.tree, donor.tree), before)
+        front = source("Head accessory", [image((4, 4), "blue")], floats={"_CullMode": 1})
+        with self.assertRaisesRegex(AtlasCompatibilityError, r"_CullMode is 1, while Body uses 2"):
+            bake_game_atlas(wearer, [front])
+
+    def test_culled_donor_on_two_sided_receiver_bakes_with_a_note(self):
+        # A culled head accessory on a Body that draws both sides keeps every triangle it drew.
         wearer = source("Body", [image((4, 4), "red")], floats={"_CullMode": 0})
         donor = source("Head accessory", [image((4, 4), "blue")], floats={"_CullMode": 2})
         before = copy.deepcopy(wearer.tree), copy.deepcopy(donor.tree)
-        with self.assertRaisesRegex(AtlasCompatibilityError, r"Head accessory: _CullMode is 2, while Body uses 0.*Hair"):
-            bake_game_atlas(wearer, [donor])
+        baked = bake_game_atlas(wearer, [donor])
+        self.assertIn("Head accessory (_CullMode 2) is drawn from both sides like Body (_CullMode 0); its back faces can show.",
+                      baked.diagnostics)
         self.assertEqual((wearer.tree, donor.tree), before)
 
     def test_registered_stock_character_outline_stencil_uses_wearer_state_only(self):

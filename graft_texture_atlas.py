@@ -68,6 +68,9 @@ CULL_MODE_HINT = ("One game material holds one culling setting, so the donor's a
                   "match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.")
 # Template detail before CULL_MODE_HINT; UIs translate it with its values kept.
 CULL_MODE_DETAIL = "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}."
+# A culled donor part on a receiving material that culls nothing (_CullMode 0) keeps every
+# triangle it had; it is only drawn from both sides as well, like the rest of that mesh.
+CULL_MODE_BOTH_SIDES = "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show."
 
 
 def _pairs(tree, key):
@@ -187,6 +190,12 @@ def _check_profiles(sources, diagnostics):
                     diagnostics.append(
                         f"{source.name}: outline stencil {floats[name]:g} -> {tf[name]:g} from wearer material "
                         f"{sources[0].name}; its registered original character rimlight controller owns the 3/8 stencil state.")
+                    continue
+                if name == "_CullMode" and _equal(tf[name], 0.) and floats[name] in (1., 2.):
+                    # The receiving material draws both sides, so every donor triangle
+                    # still draws; nothing the donor showed is lost.
+                    diagnostics.append(CULL_MODE_BOTH_SIDES.format(
+                        donor=source.name, donor_value=f"{floats[name]:g}", receiver=sources[0].name))
                     continue
                 if name == "_CullMode":
                     # A material-state rule, not a head rule: the client keeps one

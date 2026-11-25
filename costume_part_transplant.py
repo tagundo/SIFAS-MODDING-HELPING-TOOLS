@@ -164,6 +164,8 @@ _TRANSLATIONS = {
             "UV 섬 {islands}개 중 {island}번째의 위치를 {count}곳까지 찾아보고 멈췄습니다.",
         "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}.":
             "{donor}의 _CullMode: {donor_value}, {receiver}의 _CullMode: {receiver_value}.",
+        "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show.":
+            "{donor}(_CullMode {donor_value})는 {receiver}(_CullMode 0)처럼 앞뒷면 모두 그려지므로 뒷면이 보일 수 있습니다.",
         "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.":
             "머리 메시에 이식하려면 머리의 BodyPartManager.headMaterial이 의상 파일 안에 저장되어 있어야 합니다.",
         "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.":
@@ -257,6 +259,8 @@ _TRANSLATIONS = {
             "UVアイランド{islands}個中{island}番目の位置を{count}か所まで探して停止しました。",
         "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}.":
             "{donor}：_CullModeは{donor_value}ですが、{receiver}は{receiver_value}です。",
+        "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show.":
+            "{donor}（_CullMode {donor_value}）は{receiver}（_CullMode 0）と同じく両面が描画されるため、裏面が見えることがあります。",
         "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.":
             "頭のメッシュに移植するには、頭のBodyPartManager.headMaterialが衣装ファイル内に保存されている必要があります。",
         "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.":
