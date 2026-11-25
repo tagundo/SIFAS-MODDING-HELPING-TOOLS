@@ -44,6 +44,7 @@ _MAX_BYTES = 96 * 1024 * 1024
 _MAX_TEXTURES = 1024
 _MAX_TEXTURE_BYTES = 192 * 1024 * 1024
 _MAX_RECEIPT_BYTES = 32 * 1024 * 1024
+_EVICT_EVERY = 32
 _KEY = re.compile(r"[a-f0-9]{64}\Z")
 _KINDS = {"timeline", "clips", "preview", "audio", "texture"}
 _MEDIA_URL = "/api/mv-studio/media/"
@@ -209,6 +210,7 @@ class ImportCache:
         self.max_entries = _MAX_ENTRIES if max_entries is None else max_entries
         self.max_bytes = _MAX_BYTES if max_bytes is None else max_bytes
         self.recipe = recipe()
+        self._writes = 0
 
     def key(self, kind, *parts):
         if kind not in _KINDS:
@@ -252,7 +254,11 @@ class ImportCache:
             os.replace(name, path)
         finally:
             Path(name).unlink(missing_ok=True)
-        self._evict()
+        # Listing the folder on every write would cost a stat per receipt per
+        # texture; bound it on the first write of each import, then every 32nd.
+        if self._writes % _EVICT_EVERY == 0:
+            self._evict()
+        self._writes += 1
         return True
 
     def get_bytes(self, key):

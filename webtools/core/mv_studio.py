@@ -520,13 +520,14 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         raise TypeError("The stage preview callback must be callable.")
     if on_progress is not None and not callable(on_progress):
         raise TypeError("The progress callback must be callable.")
+    progress = mv_studio_progress.Progress(on_progress) if on_progress is not None else mv_studio_progress.SILENT
     if not _IMPORT.acquire(blocking=False):
         raise ValueError("An MV is already being prepared. Try again when it finishes.")
-    progress = mv_studio_progress.Progress(on_progress) if on_progress is not None else mv_studio_progress.SILENT
     previous_progress = mv_studio_progress.activate(progress)
-    # Decoded textures are reused across MVs: a costume's are the same in every song.
-    previous_textures = model_viewer.set_texture_store(mv_studio_import_cache.open_texture_cache(media))
+    previous_textures = model_viewer.set_texture_store(None)
     try:
+        # Decoded textures are reused across MVs: a costume's are the same in every song.
+        model_viewer.set_texture_store(mv_studio_import_cache.open_texture_cache(media))
         selected = mv_studio_game.resolve(repo_root, region=region, platform=platform,
                                           live_id=live_id, asset_id=asset_id, language=language, costumes=costumes,
                                           deck=deck)
