@@ -3454,9 +3454,9 @@ _MV_APPLY_TRANSLATIONS = {
         "게임 목록에 쓰는 동안 게임 서버가 잠시 멈춥니다.", "ゲームの一覧に書き込む間、ゲームサーバーが少し止まります。"),
     "Restart the game server after applying.": ("적용한 뒤 게임 서버를 다시 시작하세요.", "適用した後にゲームサーバーを再起動してください。"),
     "Restore the original MV? The MV Studio version {revision} stays in a backup.": (
-        "원본 MV로 되돌릴까요? MV Studio 버전 {revision}은 백업에 남습니다.", "元のMVに戻しますか？ MV Studio版 {revision}はバックアップに残ります。"),
+        "원본 MV로 되돌릴까요? 지금의 MV Studio 버전({revision})은 백업에 남습니다.", "元のMVに戻しますか？ MV Studio版 {revision}はバックアップに残ります。"),
     "Apply all replaces the game's MV Studio version {revision} with this project. A backup is made first. Continue?": (
-        "'전체 적용'은 게임의 MV Studio 버전 {revision}을 이 프로젝트로 바꿉니다. 먼저 백업합니다. 계속할까요?",
+        "'전체 적용'은 게임의 MV Studio 버전({revision})을 이 프로젝트로 바꿉니다. 먼저 백업합니다. 계속할까요?",
         "「全体を適用」はゲームのMV Studio版 {revision}をこのプロジェクトで置き換えます。先にバックアップします。続けますか？"),
     "Apply all writes this whole project over the game's original MV. A backup is made first. Continue?": (
         "'전체 적용'은 이 프로젝트 전체를 게임의 원본 MV 위에 씁니다. 먼저 백업합니다. 계속할까요?",

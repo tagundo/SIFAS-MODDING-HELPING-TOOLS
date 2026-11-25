@@ -195,7 +195,7 @@ async function run() {
     await page.locator('#mv-apply-all').click();
     const confirm = page.locator('#mv-apply-confirm');
     await confirm.waitFor();
-    assert.match(await confirm.textContent(), /'전체 적용'은 게임의 MV Studio 버전 3을 이 프로젝트로 바꿉니다\. 먼저 백업합니다\. 계속할까요\?/);
+    assert.match(await confirm.textContent(), /'전체 적용'은 게임의 MV Studio 버전\(3\)을 이 프로젝트로 바꿉니다\. 먼저 백업합니다\. 계속할까요\?/);
     await shot(page, panel, 'apply-all-confirm-ko.png');
     await page.locator('#mv-apply-confirm-yes').click();
     await page.locator('#mv-apply-result').filter({ hasText: '게임에 적용했습니다' }).waitFor({ timeout: 90000 });
@@ -208,7 +208,7 @@ async function run() {
     mark = log().length;
     await page.locator('#mv-apply-restore').click();
     await confirm.waitFor();
-    assert.match(await confirm.textContent(), /원본 MV로 되돌릴까요\? MV Studio 버전 4은 백업에 남습니다\./);
+    assert.match(await confirm.textContent(), /원본 MV로 되돌릴까요\? 지금의 MV Studio 버전\(4\)은 백업에 남습니다\./);
     await page.locator('#mv-apply-confirm-yes').click();
     await page.locator('#mv-apply-result').filter({ hasText: '원본 MV로 되돌렸습니다: Base song.' }).waitFor({ timeout: 90000 });
     assert.match(await page.locator('#mv-apply-result').textContent(), /백업: \S+mv-studio-restore-2101/);
