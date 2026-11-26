@@ -160,7 +160,17 @@ async function main() {
     // Above Apply only what changes the choice: the status, one line counting
     // the notes, the types and the levels; then Apply with its save line in
     // normal flow, the notes about other files, the explanations and Advanced.
-    assert.deepStrictEqual(layout.order.slice(0, 7), ['viewer-texture-blush-target', 'viewer-texture-blush-status', 'viewer-texture-blush-alert-link', 'viewer-texture-blush-types', 'viewer-texture-blush-levels', 'viewer-texture-blush-commit', 'viewer-texture-blush-alerts']);
+    assert.deepStrictEqual(layout.order.slice(0, 8), ['viewer-texture-blush-target', 'viewer-texture-blush-status', 'viewer-texture-blush-alert-link', 'viewer-texture-blush-types', 'viewer-texture-blush-levels', 'viewer-texture-blush-commit', 'viewer-texture-blush-fine', 'viewer-texture-blush-alerts']);
+    // The fine slider sits under the levels, shows the chosen k and moves in 0.05 steps between them.
+    assert.equal(await page.locator('#viewer-texture-blush-k-range').inputValue(), '1.65');
+    assert.equal(await page.locator('#viewer-texture-blush-k-value').textContent(), 'k 1.65');
+    await page.locator('#viewer-texture-blush-k-range').fill('1.85');
+    assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Preview, not applied: Custom \(k 1\.85\) · Cheeks \(Ppo\)$/);
+    assert.equal(await page.locator('#viewer-texture-blush-level-medium').getAttribute('aria-checked'), 'false');
+    assert.equal(await page.locator('#viewer-texture-blush-k').inputValue(), '1.85');
+    await page.locator('#viewer-texture-blush-level-medium').click();
+    assert.equal(await page.locator('#viewer-texture-blush-k-range').inputValue(), '1.65');
+    assert.equal(await page.locator('#viewer-texture-blush-k-value').textContent(), 'k 1.65');
     assert.equal(await page.locator('#viewer-texture-blush-alert-link').textContent(), '2 notes — see below');
     assert.equal(await page.locator('#viewer-texture-blush-alert-link').getAttribute('aria-controls'), 'viewer-texture-blush-alerts');
     // Where the game's own blush is, right under the strength heading.

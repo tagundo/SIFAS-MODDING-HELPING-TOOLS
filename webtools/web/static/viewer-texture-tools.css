@@ -196,3 +196,9 @@
 .viewer-texture-blush-commit > .viewer-texture-actions > button { flex: 0 1 auto; min-width: 0; }
 .viewer-texture-blush-save-mode { display: block; }
 .viewer-texture-blush-advanced > .viewer-texture-blush-heading { display: block; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+
+/* Blush fine strength: one row under the level buttons. */
+.viewer-texture-blush-fine { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.viewer-texture-blush-fine > .viewer-texture-blush-heading { flex: 0 0 auto; }
+.viewer-texture-blush-fine input[type=range] { flex: 1 1 auto; min-width: 80px; }
+.viewer-texture-blush-k-value { min-width: 4.5em; text-align: end; font-variant-numeric: tabular-nums; }

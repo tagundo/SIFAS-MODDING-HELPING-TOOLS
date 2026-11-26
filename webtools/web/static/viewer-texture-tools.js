@@ -211,6 +211,7 @@
     // The Advanced summary names what is inside it.
     "Advanced: strength value, keep ASTC": ["고급 설정: 세기 값·ASTC 유지", "詳細設定: 強さの値・ASTCの保持"], "Advanced: strength value": ["고급 설정: 세기 값", "詳細設定: 強さの値"],
     "Strength value": ["세기 값", "強さの値"],
+    "Fine-tune": ["세부 조절", "微調整"],
     "1 = the strongest blush the game uses in songs.": ["1은 게임 곡에서 쓰는 가장 진한 홍조와 같습니다.", "1 はゲームの楽曲で使われる最も濃い頬紅と同じです。"],
     // Saving: exact pixels by default; keeping the ASTC compression is the opt-in choice.
     "Saved as exact pixels by default (lossless RGBA32): only the blush pixels change, but a compressed face texture gets larger.": ["기본 저장은 정확한 픽셀(무손실 RGBA32)입니다. 홍조 픽셀만 바뀌지만, 압축된 얼굴 텍스쳐는 용량이 커집니다.", "既定では正確なピクセル（可逆RGBA32）で保存します。頬紅のピクセルだけが変わりますが、圧縮された顔テクスチャは容量が大きくなります。"],
@@ -255,7 +256,7 @@
     "The blush bake takes only a blush type, a strength and a save mode.": ["홍조 굽기에는 홍조 종류, 세기, 저장 방식만 들어갈 수 있습니다.", "頬紅の焼き込みに指定できるのは種類、強さ、保存方法だけです。"],
     "This model has no head texture that can take a baked blush.": ["이 모델에는 홍조를 구울 수 있는 머리 텍스쳐가 없습니다.", "このモデルには頬紅を焼き込める頭テクスチャがありません。"]
   };
-  var LOCAL_FIRST = { "Light": true, "Remove": true };
+  var LOCAL_FIRST = { "Light": true, "Remove": true, "Medium": true };
   function create(options) {
     options = options || {};
     var document = global.document, holder = options.holder || document && document.getElementById("viewer-texture-tool-slot");
@@ -268,7 +269,8 @@
     var modelRebindOwner = {}, rebindingModel = false;
     var statusText = "", error = "", performance = { previewsStarted: 0, previewsDiscarded: 0, textureUploads: 0, maskOverlays: 0, encodes: 0 };
     function t(text) {
-      // "Light" is also the viewer's background-brightness label and "Remove"
+      // "Light" is also the viewer's background-brightness label, "Medium" a DOF
+      // kernel size (中) in MV Studio and "Remove"
       // a generic viewer word; the blush panel keeps its own wording for both.
       var translated = !LOCAL_FIRST[text] && options.translate && options.translate(text); if (translated && translated !== text) return translated;
       var lang = document.documentElement.lang || global.SIFAS_LANG || "en", pair = WORDS[text];
@@ -441,6 +443,15 @@
     var removeBlushButton = button(blushActions, "Remove", function () { removeBlush(); }, "viewer-texture-blush-remove");
     // How Save writes this face, in one line: always visible, filled in refreshBlush.
     var blushSaveMode = node("output", blushCommit, null, "viewer-texture-hint viewer-texture-blush-save-mode"); blushSaveMode.id = "viewer-texture-blush-save-mode";
+    // Fine strength: any k between the named levels (0.05 steps), ticks at the levels.
+    // Below Apply, so the levels, the status and Apply still fit one screen.
+    var blushFine = node("label", blushPanel, null, "viewer-texture-blush-fine"); blushFine.id = "viewer-texture-blush-fine";
+    node("span", blushFine, "Fine-tune", "viewer-texture-blush-heading");
+    var blushKRange = node("input", blushFine); blushKRange.type = "range"; blushKRange.id = "viewer-texture-blush-k-range";
+    blushKRange.min = "0.05"; blushKRange.max = String(B ? B.MAX_K : 4); blushKRange.step = "0.05"; blushKRange.value = String(blushChoice.k);
+    var blushKTicks = node("datalist", blushFine); blushKTicks.id = "viewer-texture-blush-k-ticks"; blushKRange.setAttribute("list", blushKTicks.id);
+    (B ? B.LEVELS : []).forEach(function (level) { var tick = node("option", blushKTicks); tick.value = String(level.k); });
+    var blushKValue = node("output", blushFine, null, "viewer-texture-blush-k-value"); blushKValue.id = "viewer-texture-blush-k-value"; blushKValue.htmlFor = blushKRange.id;
     // The notes about other files to bake, right under the save line.
     var blushAlerts = node("ul", blushPanel, null, "viewer-texture-blush-notes viewer-texture-blush-alerts"); blushAlerts.id = "viewer-texture-blush-alerts"; blushAlerts.tabIndex = -1;
     blushAlertLink.setAttribute("aria-controls", blushAlerts.id);
@@ -1297,12 +1308,12 @@
     function initBlushChoice(entry) {
       if (!B) return;
       blushPending = false; blushChoice = baseBlush(entry); blushPending = !(entry && entry.blush) && !!blushRule(entry);
-      blushBefore = false; blushSwatches = null; blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep";
+      blushBefore = false; blushSwatches = null; blushKField.value = blushKRange.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep";
     }
     // One change (a level, a type, a strength or the save mode) on top of the shown state.
     function changeBlush(change) {
       blushChoice = Object.assign(baseBlush(active), change); blushPending = true; blushBefore = false;
-      blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; if (active) upload(active); refreshButtons(); return true;
+      blushKField.value = String(blushChoice.k); if (document.activeElement !== blushKRange) blushKRange.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; if (active) upload(active); refreshButtons(); return true;
     }
     function chooseBlushLevel(id) { if (!blushEditable(active)) return false; return changeBlush({ k: B.levelK(id), level: id }); }
     function chooseBlushType(layer) { if (!blushEditable(active)) return false; return changeBlush({ layer: B.checkedLayer(layer) }); }
@@ -1322,7 +1333,7 @@
     function setBlushBefore(value) { blushBefore = !!value && !!blushRule(active); if (active) upload(active); refreshButtons(); return blushBefore; }
     function setEntryBlush(entry, value) {
       entry.blush = copyBlush(value);
-      if (entry === active) { blushPending = false; blushBefore = false; settleBlushChoice(); blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; }
+      if (entry === active) { blushPending = false; blushBefore = false; settleBlushChoice(); blushKField.value = blushKRange.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; }
       entry.modified = !!entry.pixelModified || !!entry.blush;
       if (!entry.modified) { entry.encodeGeneration = (entry.encodeGeneration || 0) + 1; entry.encoding = false; entry.encodeError = null; entry.png = null; }
       else if (!entry.png && !entry.encoding && entry.engine) encodeEntry(entry);
@@ -1400,6 +1411,8 @@
       blushCustomSwatch.style.background = colours ? rgbText(colours[colours.length - 1]) : "";
       var block = astcBlock(entry);
       blushKField.disabled = !editable; blushKeep.disabled = !editable || !block; if (document.activeElement !== blushKField) blushKField.value = String(base.k);
+      blushKRange.disabled = !editable; if (document.activeElement !== blushKRange) blushKRange.value = String(base.k);
+      blushKValue.value = blushKValue.textContent = "k " + Math.round(base.k * 100) / 100;
       blushKeep.checked = base.encoding === "astc-keep";
       blushSaveMode.hidden = !rule; blushSaveMode.textContent = rule ? blushSaveText(entry, base) : "";
       blushAdvancedSummary.textContent = t(!rule || block ? "Advanced: strength value, keep ASTC" : "Advanced: strength value");
@@ -2026,6 +2039,7 @@
     listen(layerOpacity, "change", function () { var value = +layerOpacity.value / 100; layerOperation(function () { var state = active.engine.getState(); return active.engine.setLayerOpacity(state.activeLayerId || state.activeLayer, value); }); });
     listen(colorMode, "change", function () { targetLabel.hidden = colorMode.value !== "colorize"; schedulePreview(); }); listen(targetColor, "input", schedulePreview);
     listen(blushKField, "change", function () { if (!setBlushStrength(blushKField.value)) blushKField.value = String(blushChoice.k); });
+    listen(blushKRange, "input", function () { setBlushStrength(Number(blushKRange.value)); });
     listen(blushKeep, "change", function () { setBlushEncoding(blushKeep.checked ? "astc-keep" : "exact"); });
     listen(blushKField, "input", function () { var value = Number(blushKField.value); if (blushKField.value.trim() && Number.isFinite(value) && value > 0 && value <= (B ? B.MAX_K : 4)) setBlushStrength(value); });
     [sourceTone, targetTone].forEach(function (item) { listen(item, "change", schedulePreview); });
