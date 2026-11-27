@@ -521,12 +521,14 @@ async function nonNativeBlends(browser, url) {
   }
 }
 
-/* Lane labels on a phone (390 x 844, touch). Group rows stay headings: bold, as high as their
+/* Lane labels on narrow touch screens, where the label column is at most 7.5rem: a phone in
+   either orientation (390 x 844, 844 x 390). Group rows stay headings: bold, as high as their
    text lines (their 16 px marks do not raise a line), wrapping only after a "/" or a space. No
    label breaks a word that fits its width (the mute toggle and the badge sit in the text flow),
-   and every toggle and badge keeps a 32 px touch target. */
-async function phoneLanes(browser, url, project) {
-  const page = await browser.newPage({ locale: 'ko', viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+   track rows draw small marks (a 20 px toggle, a 16 px badge), and every toggle and badge keeps
+   a 32 px touch target. */
+async function narrowLanes(browser, url, project, name, viewport) {
+  const page = await browser.newPage({ locale: 'ko', viewport, isMobile: true, hasTouch: true });
   try {
     await page.route('**/api/mv-studio/catalog?*', (route) => route.fulfill({ json: { region: 'gl', platform: 'android',
       regions: [{ id: 'gl', label: 'Global (GL)' }], platforms: [{ id: 'android', label: 'Android' }],
@@ -568,24 +570,27 @@ async function phoneLanes(browser, url, project) {
         weight: Number(getComputedStyle(body).fontWeight), broken, marks };
     }));
     const groups = rows.filter((row) => row.group);
-    assert(groups.length >= 5, 'group rows');
+    assert(groups.length >= 5, `${name}: group rows`);
     // A category's quality badge shows on its tracks' rows; the group heading leaves it out here.
-    assert(rows.some((row) => !row.group && row.marks.some((mark) => mark.quality)), 'track rows keep their quality badges');
-    assert(!groups.some((row) => row.marks.some((mark) => mark.quality)), 'no badge line on a group heading');
-    assert(rows.filter((row) => !row.group).every((row) => row.marks.some((mark) => !mark.quality)), 'every track row has its mute toggle');
+    assert(rows.some((row) => !row.group && row.marks.some((mark) => mark.quality)), `${name}: track rows keep their quality badges`);
+    assert(!groups.some((row) => row.marks.some((mark) => mark.quality)), `${name}: no badge line on a group heading`);
+    assert(rows.filter((row) => !row.group).every((row) => row.marks.some((mark) => !mark.quality)), `${name}: every track row has its mute toggle`);
     for (const row of rows) {
-      assert.deepEqual(row.broken, [], `${row.label}: no word that fits is broken`);
-      for (const mark of row.marks) assert(mark.target >= 32, `${row.label}: a 32 px touch target (${mark.target})`);
+      assert.deepEqual(row.broken, [], `${name} ${row.label}: no word that fits is broken`);
+      for (const mark of row.marks) assert(mark.target >= 32, `${name} ${row.label}: a 32 px touch target (${mark.target})`);
+    }
+    for (const row of rows.filter((item) => !item.group)) {
+      for (const mark of row.marks) assert(mark.height <= (mark.quality ? 16 : 20), `${name} ${row.label}: a small mark (${mark.height})`);
     }
     for (const row of groups) {
-      assert(row.weight >= 600, `${row.label}: a group row keeps its heading weight`);
+      assert(row.weight >= 600, `${name} ${row.label}: a group row keeps its heading weight`);
       assert(row.height <= Math.max(row.minHeight, row.lines * row.lineHeight + 1) + 1.5,
-        `${row.label}: ${row.height} px for ${row.lines} line(s) of ${row.lineHeight} px`);
-      for (const mark of row.marks) assert(mark.height <= 16, `${row.label}: a small mark (${mark.height})`);
+        `${name} ${row.label}: ${row.height} px for ${row.lines} line(s) of ${row.lineHeight} px`);
+      for (const mark of row.marks) assert(mark.height <= 16, `${name} ${row.label}: a small mark (${mark.height})`);
     }
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, 'no horizontal page scroll');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, `${name}: no horizontal page scroll`);
     await page.locator('#mv-timeline-grid .mv-lane-group').filter({ hasText: 'Coloring' }).first().scrollIntoViewIfNeeded();
-    await page.screenshot({ path: path.join(evidence, 'lanes-phone-ko.png') });
+    await page.screenshot({ path: path.join(evidence, `lanes-${name}-ko.png`) });
   } finally {
     await page.close();
   }
@@ -1213,7 +1218,9 @@ async function run() {
     await page.waitForFunction(() => document.querySelector('#mv-tab-all')?.firstChild.textContent.trim() === '전체');
 
     assert.deepEqual(errors, []);
-    await phoneLanes(browser, server.url, original);
+    for (const [name, viewport] of [['phone', { width: 390, height: 844 }], ['landscape', { width: 844, height: 390 }]]) {
+      await narrowLanes(browser, server.url, original, name, viewport);
+    }
     await nonNativeBlends(browser, server.url);
     await pluginContract(browser, server.url);
     console.log(JSON.stringify({ status: 'PASS', evidence }));

@@ -129,10 +129,12 @@
   /* Every mark takes a 32 px touch target, centred on it, whatever it draws. */
   #tab-mv :is(.mv-lane-mute, .mv-lane-quality)::before { content: ""; position: absolute; inset: calc(50% - 16px); }
 }
-/* Narrow label columns (6rem on touch screens up to 800 px wide, where 12vw is less; phones):
-   small marks, so a name keeps the width. A group heading leaves its quality badge to its
-   tracks' rows (it would take a line of its own). */
-@media (max-width: 480px), (pointer: coarse) and (max-width: 800px) {
+/* Narrow label columns: on a touch screen the column is clamp(6rem, 12vw, 12rem)
+   (mv-studio.css --mv-track-label), so up to 1000 px wide it is at most 7.5rem (120 px), the
+   narrowest a desktop column gets; phones in either orientation and tablets. Small marks, so
+   a name keeps the width. A group heading leaves its quality badge to its tracks' rows (it
+   would take a line of its own). */
+@media (max-width: 480px), (pointer: coarse) and (max-width: 1000px) {
   #tab-mv .mv-lane-label:not(.mv-lane-group) .mv-lane-mute { width: 20px; height: 20px; }
   #tab-mv .mv-lane-label:not(.mv-lane-group) .mv-lane-quality { width: 16px; height: 16px; }
   #tab-mv .mv-lane-group .mv-lane-quality { display: none; }
