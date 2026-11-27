@@ -5,6 +5,7 @@ selection; write_selected must then leave a shared source exactly as it found it
 mv_studio_game.shared_downloads() keeps a downloaded pack for the import's other
 sections of the same pack. Outside these blocks nothing is kept.
 """
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -62,6 +63,31 @@ class SharedReadTests(unittest.TestCase):
                 self.assertEqual(len(reads), 4)
             selection._read(self.path, self.deadline)
             self.assertEqual(len(reads), 5)
+
+    def test_a_rewrite_that_changes_only_the_size_or_only_the_mtime_is_read_again(self):
+        read, reads = _environment(["a"])
+        original = os.stat(self.path)
+        with patch.object(model_viewer, "_environment", side_effect=read), selection.shared_reads():
+            shared = selection._read(self.path, self.deadline)
+            # The same size and inode; only the mtime moves.
+            self.path.write_bytes(b"two")
+            os.utime(self.path, ns=(original.st_atime_ns, original.st_mtime_ns + 10**9))
+            info = os.stat(self.path)
+            self.assertEqual((info.st_size, info.st_ino), (original.st_size, original.st_ino))
+            moved = selection._read(self.path, self.deadline)
+            self.assertIsNot(moved, shared)
+            self.assertEqual(len(reads), 2)
+            # Another size on the same inode, with the original mtime put back.
+            self.path.write_bytes(b"longer")
+            os.utime(self.path, ns=(original.st_atime_ns, original.st_mtime_ns))
+            info = os.stat(self.path)
+            self.assertEqual((info.st_mtime_ns, info.st_ino), (original.st_mtime_ns, original.st_ino))
+            self.assertNotEqual(info.st_size, original.st_size)
+            resized = selection._read(self.path, self.deadline)
+            self.assertIsNot(resized, shared)
+            self.assertIsNot(resized, moved)
+            self.assertEqual(len(reads), 3)
+            self.assertIs(selection._read(self.path, self.deadline), resized)
 
     def test_expired_deadline_still_refuses_a_kept_read(self):
         read, _ = _environment(["a"])
