@@ -3173,6 +3173,77 @@ for _source, (_korean, _japanese) in _MV_EDITOR_A_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 
+# MV Studio timeline host (mv-studio.js): derived blends, timing fields per clip type,
+# track mute and quality badges.
+_MV_EDITOR_E2_TRANSLATIONS = {
+    "Set by the overlap with the next or previous clip": (
+        "앞뒤 클립과 겹치는 길이로 정해집니다", "前後のクリップと重なる長さで決まります"),
+    "The game does not use these timing fields of this clip type: {fields}.": (
+        "이 클립 종류에서 게임이 쓰지 않는 시간 항목: {fields}.", "このクリップの種類でゲームが使わない時間項目: {fields}。"),
+    "Before and after the clip": ("클립 앞뒤", "クリップの前後"),
+    "Clip offset": ("클립 오프셋", "クリップオフセット"),
+    "Playback speed": ("재생 속도", "再生速度"),
+    "Ease and blend": ("이즈와 블렌드", "イーズとブレンド"),
+    "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows.": (
+        "카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.",
+        "カメラショットはオフセットと速度を変えられず、プレビューに出る「なし」と「保持」だけを選べます。"),
+    "Camera shots keep their offset and speed: the preview plays the samples read from the shot.": (
+        "카메라 샷은 오프셋과 속도를 바꿀 수 없습니다. 미리보기는 샷에서 읽은 샘플을 그대로 재생합니다.",
+        "カメラショットはオフセットと速度を変えられません。プレビューはショットから読んだサンプルをそのまま再生します。"),
+    "Restore original value": ("원래 값으로 되돌리기", "元の値に戻す"),
+    # The extrapolation mode after None, Hold (and before Ping-pong, Continue), which have theirs.
+    "Loop": ("반복", "ループ"),
+    "This shot overlaps another: the game crossfades them, the preview cuts to the later shot.": (
+        "이 샷은 다른 샷과 겹칩니다. 게임은 두 샷을 겹쳐 전환하지만, 미리보기는 뒤의 샷으로 바로 바뀝니다.",
+        "このショットは別のショットと重なっています。ゲームでは重ねて切り替わりますが、プレビューは後のショットにすぐ切り替わります。"),
+    "{tracks} tracks · {clips} clips · {edited} edited · {follow} with recomputed blends or times": (
+        "트랙 {tracks}개 · 클립 {clips}개 · 편집 {edited}개 · 블렌드나 시간만 다시 계산된 클립 {follow}개",
+        "トラック{tracks}件 · クリップ{clips}件 · 編集{edited}件 · ブレンドや時間だけ再計算されたクリップ{follow}件"),
+    "Mute track": ("트랙 음소거", "トラックをミュート"),
+    "Unmute track": ("트랙 음소거 해제", "トラックのミュートを解除"),
+    "Muted": ("음소거됨", "ミュート中"),
+    "Muted group": ("음소거된 그룹", "ミュート中のグループ"),
+    "This track is muted. The preview skips it.": (
+        "이 트랙은 음소거되어 미리보기에서 재생되지 않습니다.", "このトラックはミュート中で、プレビューでは再生されません。"),
+    "A group's mute does not reach the game: the game plays each track in it by its own mute.": (
+        "그룹 음소거는 게임에 반영되지 않습니다. 게임은 그룹 안의 각 트랙을 그 트랙의 음소거 설정대로 재생합니다.",
+        "グループのミュートはゲームに反映されません。ゲームはグループ内の各トラックを、そのトラック自身のミュート設定で再生します。"),
+    "The game sets this track's mute from the {option} quality setting when the MV starts.": (
+        "이 트랙의 음소거는 MV가 시작될 때 게임이 '{option}' 그래픽 설정에 따라 정합니다.",
+        "このトラックのミュートは、MVの開始時にゲームが「{option}」のグラフィック設定に合わせて決めます。"),
+    "The game sets this track's mute from the MV quality settings when the MV starts.": (
+        "이 트랙의 음소거는 MV가 시작될 때 게임이 MV 그래픽 설정에 따라 정합니다.",
+        "このトラックのミュートは、MVの開始時にゲームがMVのグラフィック設定に合わせて決めます。"),
+    "The game sets the mute of eye and mouth tracks itself when the MV starts.": (
+        "눈과 입 트랙의 음소거는 MV가 시작될 때 게임이 직접 정합니다.",
+        "目と口のトラックのミュートは、MVの開始時にゲームが自分で決めます。"),
+    # English names of the stage quality flags (core/mv_studio_quality._FIELDS) for a project without options.
+    "Stage ambient lighting": ("무대 환경광", "ステージ環境光"),
+    "Stage animation": ("무대 애니메이션", "ステージアニメーション"),
+    "Stage coloring": ("무대 색상 연출", "ステージの色演出"),
+    "Stage controls": ("무대 제어", "ステージ制御"),
+    "Stage overlay effects": ("무대 오버레이 효과", "ステージのオーバーレイ効果"),
+    "Stage flash lighting": ("무대 점멸 조명", "ステージの点滅照明"),
+    "Stage displays": ("무대 화면", "ステージのスクリーン"),
+    "Post-processing effects": ("후처리 효과", "ポストエフェクト"),
+    "Stage emissive surfaces": ("무대 발광 표면", "ステージの発光面"),
+    # "Audience" (관객/観客) comes from the editor lane B table.
+    "Plays only while {option} is on in the MV quality settings.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 켜져 있을 때만 재생됩니다.", "MVのグラフィック設定で「{option}」がオンのときだけ再生されます。"),
+    "Its tracks play only while {option} is on in the MV quality settings.": (
+        "이 그룹의 트랙은 MV 그래픽 설정에서 '{option}'이(가) 켜져 있을 때만 재생됩니다.",
+        "このグループのトラックは、MVのグラフィック設定で「{option}」がオンのときだけ再生されます。"),
+    "{option} is off in the MV quality settings, so the game mutes this track.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 꺼져 있어 게임은 이 트랙을 재생하지 않습니다.",
+        "MVのグラフィック設定で「{option}」がオフなので、ゲームはこのトラックを再生しません。"),
+    "{option} is off in the MV quality settings, so the game mutes its tracks.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 꺼져 있어 게임은 이 그룹의 트랙을 재생하지 않습니다.",
+        "MVのグラフィック設定で「{option}」がオフなので、ゲームはこのグループのトラックを再生しません。"),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_E2_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
 # MV Studio free camera views (mv-studio-free-camera.js). Front, Back, Left side, Right side
 # and FOV are the 3D model tab's and the camera editor's strings.
 _MV_FREE_CAMERA_TRANSLATIONS = {

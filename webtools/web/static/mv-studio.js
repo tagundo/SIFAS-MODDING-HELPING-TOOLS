@@ -53,7 +53,7 @@
   const searchKey = "elichika.mv.timelineSearch.v1", editableKey = "elichika.mv.timelineEditableOnly.v1";
   let history, ctx, plugins = [], panelList = [], lastPlan = null, lastTimeEmit = 0, renderQueued = 0;
   let preferredTab = "all", activeTab = "all", preferredMember = null, searchText = "", editableOnly = false, groupFilter = "";
-  let extrapolationGates = new Map(), trackControls = null;
+  let extrapolationGates = new Map(), blendGates = new Map(), trackControls = null;
   const timelineLanes = new Map(), timelineLabels = new Map();
   const audio = document.createElement("audio");
   audio.preload = "metadata";
@@ -526,11 +526,37 @@
     replaceOptions(trackControls.group, lastPlan.groups.map((id) => ({ id, label: id })), lastPlan.group, t("All groups"));
     trackControls.editable.disabled = activeTab === "edit";
     trackControls.editable.title = activeTab === "edit" ? t("The Edit tab already lists edited and editable tracks.") : "";
-    const edited = history.editedEvents();
-    let clips = 0, changed = 0;
-    for (const track of lastPlan.tracks) for (const event of track.events) { clips++; if (edited.has(event.id)) changed++; }
-    trackControls.summary.textContent = format("{tracks} tracks · {clips} clips · {edited} edited",
-      { tracks: lastPlan.tracks.length, clips, edited: changed });
+    const edited = history.editedEvents(), follow = followingClips();
+    let clips = 0, changed = 0, following = 0;
+    for (const track of lastPlan.tracks) {
+      for (const event of track.events) { clips++; if (edited.has(event.id)) changed++; else if (follow.has(event.id)) following++; }
+    }
+    const values = { tracks: lastPlan.tracks.length, clips, edited: changed, follow: following };
+    trackControls.summary.textContent = following
+      ? format("{tracks} tracks · {clips} clips · {edited} edited · {follow} with recomputed blends or times", values)
+      : format("{tracks} tracks · {clips} clips · {edited} edited", values);
+  }
+
+  /* Clips whose only change from their original is a blend or extrapolation time recomputed
+     after a neighbour's edit. They are not "edited" (compareView leaves those fields out), but
+     the export writes them, so the register and apply plans count them among changed clips:
+     the Tracks summary lists them beside the edited ones. */
+  let followCache = null;
+  function followingClips() {
+    if (!history || !project) return new Set();
+    if (followCache && followCache.version === history.version && followCache.project === project) return followCache.ids;
+    const ids = new Set(), edited = history.editedEvents(), originals = project.editor && project.editor.originals;
+    const { stable, editedView } = global.MVStudioEditHistory;
+    if (originals && typeof originals === "object") {
+      for (const track of project.tracks) {
+        for (const event of track.events) {
+          const original = Object.prototype.hasOwnProperty.call(originals, event.id) ? originals[event.id] : null;
+          if (original && !edited.has(event.id) && stable(editedView(event)) !== stable(editedView(original))) ids.add(event.id);
+        }
+      }
+    }
+    followCache = { version: history.version, project, ids };
+    return ids;
   }
 
   function activeEvent() {
@@ -562,8 +588,14 @@
     return control;
   }
 
+  const EXTRAPOLATION_LABELS = ["None", "Hold", "Loop", "Ping-pong", "Continue"];
+  // ClipCaps groups (MVStudioTimelineInteract.TIMING_CAPS) as the caps note names them.
+  const CAP_FIELDS = [["extrapolation", "Before and after the clip"], ["clipIn", "Clip offset"], ["timeScale", "Playback speed"],
+    ["blending", "Ease and blend"]];
+
   // write(segments, next) records the edit; segments is the key path under event.values.
-  function eventField(object, key, path, editable, depth = 0, segments = [key], write = () => {}) {
+  // modes: the extrapolation modes the clip offers (all five when not given).
+  function eventField(object, key, path, editable, depth = 0, segments = [key], write = () => {}, modes = null) {
     const value = object[key];
     const title = eventLabels[key] || String(key);
     const data = { "data-mv-field": path };
@@ -572,7 +604,10 @@
     if (editable && finite(value)) {
       if (key === "preExtrapolationMode" || key === "postExtrapolationMode") {
         const control = make("select", null, data);
-        replaceOptions(control, ["None", "Hold", "Loop", "Ping-pong", "Continue"].map((label, id) => ({ id, label })), value);
+        // A mode the clip already holds stays listed, so opening the clip never changes it.
+        const offered = EXTRAPOLATION_LABELS.map((label, id) => ({ id, label }))
+          .filter(({ id }) => !modes || modes.includes(id) || id === value);
+        replaceOptions(control, offered, value);
         control.addEventListener("change", () => update(Number(control.value)));
         return field(title, control);
       }
@@ -601,6 +636,9 @@
       }
       return group;
     }
+    if ((key === "preExtrapolationMode" || key === "postExtrapolationMode") && Number.isInteger(value) && EXTRAPOLATION_LABELS[value]) {
+      return field(title, make("output", t(EXTRAPOLATION_LABELS[value]), { "data-mv-readonly": path }));
+    }
     return field(title, make("output", typeof value === "object" ? JSON.stringify(value).slice(0, 240) : text(value)));
   }
 
@@ -619,34 +657,58 @@
     return extrapolationGates.get(id) === true;
   }
 
-  // Recomputed extrapolation times of a gated track, as history changes.
-  function extrapolationWrites(track, overrides) {
-    if (!autoExtrapolation(track)) return [];
-    return Interact.extrapolationChanges(track, overrides).map((write) => ({
-      target: eventTarget(track, write.event), path: ["values", write.key], after: write.value }));
+  // Blends of a track whose stored blendIn/blendOut follow the overlaps (the Unity
+  // editor's rule) are derived from the clip timing.
+  function autoBlend(track) {
+    const id = track && typeof track === "object" ? track.id : track;
+    return blendGates.get(id) === true;
   }
 
+  // Recomputed extrapolation times and blends of a gated track, as history changes.
+  function derivedWrites(track, overrides) {
+    const writes = [];
+    if (autoExtrapolation(track)) writes.push(...Interact.extrapolationChanges(track, overrides));
+    if (autoBlend(track)) writes.push(...Interact.blendChanges(track, overrides));
+    return writes.map((write) => ({ target: eventTarget(track, write.event), path: ["values", write.key], after: write.value }));
+  }
+
+  const derivedKey = (track, key) => (autoExtrapolation(track) && (key === "preExtrapolationTime" || key === "postExtrapolationTime")) ||
+    (autoBlend(track) && (key === "blendIn" || key === "blendOut"));
+
+  // A timing field the game does not use for this clip type (its ClipCaps) is read only.
   function writableValue(track, event, key) {
     const editable = track.editable !== false && event.editable !== false;
     if (!editable || (Array.isArray(event.editableValues) && !event.editableValues.includes(key))) return false;
-    return !((key === "preExtrapolationTime" || key === "postExtrapolationTime") && autoExtrapolation(track));
+    return !derivedKey(track, key) && Interact.timingField(Interact.clipCaps(track, event), key);
   }
 
-  function setEventValue(track, event, segments, next) {
+  // A saved edit of a timing field this clip type does not use (made before the field
+  // became read only) can be put back to the clip's original value.
+  function restoreControl(track, event, key, original) {
+    const before = original && original.values ? original.values[key] : undefined;
+    if (before === undefined || global.MVStudioEditHistory.stable(before) === global.MVStudioEditHistory.stable(event.values[key])) return null;
+    if (track.editable === false || event.editable === false) return null;
+    // The inspector is rebuilt: the field has no edit left to put back.
+    return button(t("Restore original value"), () => setEventValue(track, event, [key], copy(before), null),
+      { class: "mv-restore-value", "data-mv-restore": key });
+  }
+
+  // quiet: see edit(); the inspector keeps its controls unless it is null.
+  function setEventValue(track, event, segments, next, quiet = "events") {
     const changes = [{ target: eventTarget(track, event), path: ["values", ...segments], after: next }];
     if (segments.length === 1 && segments[0] === "postExtrapolationMode" && finite(next)) {
-      changes.push(...extrapolationWrites(track, new Map([[event.id, { postMode: next }]])));
+      changes.push(...derivedWrites(track, new Map([[event.id, { postMode: next }]])));
     }
-    return edit({ label: "Edit value", detail: segments.join("."), changes }, "events");
+    return edit({ label: "Edit value", detail: segments.join("."), changes }, quiet);
   }
 
-  // Start/duration change as one command, with the recomputed extrapolation times.
+  // Start/duration change as one command, with the recomputed extrapolation times and blends.
   function timingCommand(track, event, next, label) {
     const target = eventTarget(track, event), changes = [];
     if (finite(next.start) && next.start !== event.start) changes.push({ target, path: ["start"], after: next.start });
     if (finite(next.duration) && next.duration !== event.duration) changes.push({ target, path: ["duration"], after: next.duration });
     if (!changes.length) return null;
-    changes.push(...extrapolationWrites(track, new Map([[event.id, { start: next.start, duration: next.duration }]])));
+    changes.push(...derivedWrites(track, new Map([[event.id, { start: next.start, duration: next.duration }]])));
     return { label, changes };
   }
 
@@ -695,6 +757,9 @@
     const header = make("div", null, { class: "mv-event-header", id: "mv-event-header" });
     renderEventHeader(header, track, event);
     box.append(header);
+    if (track.muted) box.append(make("p", t("This track is muted. The preview skips it."), { class: "mv-field-note", "data-mv-note": "muted" }));
+    const option = Tabs.qualityBadge(track);
+    if (option) box.append(make("p", qualityText(track, option), { class: "mv-field-note", "data-mv-note": "quality" }));
     if (editable) {
       const name = make("input", null, { type: "text", maxlength: 240, "data-mv-field": "label" });
       name.value = text(event.label);
@@ -722,7 +787,8 @@
     if (rules.reason && (rules.move === false || rules.resize === false)) box.append(make("p", rules.reason, { class: "mv-field-note" }));
     for (const element of callPlugins("eventHeader", { track, event })) if (element) box.append(element);
     const values = event.values || {}, original = history.originals.get(event.id);
-    let noted = false;
+    const caps = Interact.clipCaps(track, event);
+    let noted = false, blendNoted = false, capsNoted = false;
     for (const key of Object.keys(values).slice(0, 48)) {
       const writable = writableValue(track, event, key);
       const access = valueAccess(track, event, key);
@@ -730,11 +796,39 @@
         original: original && original.values ? original.values[key] : undefined, set: access.set, gesture: access.gesture };
       const control = valueControl(info);
       if (control === null) continue;
-      box.append(control !== undefined ? control : eventField(values, key, key, writable, 0, [key], (segments, next) => setEventValue(track, event, segments, next)));
+      box.append(control !== undefined ? control : eventField(values, key, key, writable, 0, [key],
+        (segments, next) => setEventValue(track, event, segments, next), caps ? caps.modes : null));
+      // A camera shot's modes are limited while the preview plays only None and Hold.
+      if (control === undefined && editable && caps && (!Interact.timingField(caps, key) || (caps.camera &&
+          caps.modes.length < EXTRAPOLATION_LABELS.length && (key === "preExtrapolationMode" || key === "postExtrapolationMode")))) {
+        const restore = !Interact.timingField(caps, key) && restoreControl(track, event, key, original);
+        if (restore) box.append(restore);
+        capsNoted = true;
+      }
       if (!noted && control === undefined && autoExtrapolation(track) && (key === "preExtrapolationTime" || key === "postExtrapolationTime")) {
         noted = true;
         box.append(make("p", t("Recomputed by the game"), { class: "mv-field-note" }));
       }
+      if (!blendNoted && control === undefined && autoBlend(track) && (key === "blendIn" || key === "blendOut")) {
+        blendNoted = true;
+        box.append(make("p", t("Set by the overlap with the next or previous clip"), { class: "mv-field-note", "data-mv-note": "blend" }));
+      }
+    }
+    // Overlapping camera shots crossfade in the game (blendIn/blendOut), but the preview shows
+    // the later shot alone (MVStudioScene activeCameraEvent has no blend weights).
+    if (track.kind === "camera" && (Number(values.blendIn) > 0 || Number(values.blendOut) > 0)) {
+      box.append(make("p", t("This shot overlaps another: the game crossfades them, the preview cuts to the later shot."),
+        { class: "mv-field-note", "data-mv-note": "camera-blend" }));
+    }
+    // Once, below the values: why some timing fields are read only.
+    if (capsNoted) {
+      // A game clip names the timing fields its type does not use (its blends may be read only
+      // for another reason: the overlap note above).
+      const unused = CAP_FIELDS.filter(([cap]) => caps[cap] === false).map(([, name]) => t(name)).join(" · ");
+      const note = !caps.camera ? format("The game does not use these timing fields of this clip type: {fields}.", { fields: unused })
+        : t(caps.modes.length < EXTRAPOLATION_LABELS.length ? "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows."
+          : "Camera shots keep their offset and speed: the preview plays the samples read from the shot.");
+      box.append(make("p", note, { class: "mv-field-note", "data-mv-note": "caps" }));
     }
     for (const element of callPlugins("eventFooter", { track, event })) if (element) box.append(element);
     restoreFocus(box, focus);
@@ -869,10 +963,10 @@
     const target = eventTarget(track, event), values = copy(original.values || {});
     const changes = [{ target, path: ["start"], after: original.start }, { target, path: ["duration"], after: original.duration },
       { target, path: ["label"], after: original.label }, { target, path: ["values"], after: values }];
-    // A gated track's times are recomputed on the reverted state: the original's own
-    // stored times are stale once a neighbour has been retimed since it was captured.
+    // A gated track's times and blends are recomputed on the reverted state: the original's
+    // own stored values are stale once a neighbour has been retimed since it was captured.
     const reverted = { ...event, start: original.start, duration: original.duration, values: copy(values) };
-    changes.push(...extrapolationWrites({ ...track, events: track.events.map((item) => item === event ? reverted : item) }, new Map()));
+    changes.push(...derivedWrites({ ...track, events: track.events.map((item) => item === event ? reverted : item) }, new Map()));
     edit({ label: "Revert clip", changes });
   }
 
@@ -891,12 +985,8 @@
     delete clone.editable;
     const index = track.events.indexOf(event) + 1;
     const virtual = { ...track, events: [...track.events.slice(0, index), clone, ...track.events.slice(index)] };
-    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "insert", index, value: clone }];
-    if (autoExtrapolation(track)) {
-      for (const write of Interact.extrapolationChanges(virtual, new Map())) {
-        changes.push({ target: eventTarget(track, write.event), path: ["values", write.key], after: write.value });
-      }
-    }
+    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "insert", index, value: clone },
+      ...derivedWrites(virtual, new Map())];
     if (edit({ label: "Duplicate clip", changes })) {
       const found = findEvent(track.id, clone.id);
       if (found) chooseEvent(found.track, found.event);
@@ -908,12 +998,8 @@
     const index = track.events.indexOf(event);
     if (index < 0) return;
     const virtual = { ...track, events: track.events.filter((item) => item !== event) };
-    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "remove", index }];
-    if (autoExtrapolation(track)) {
-      for (const write of Interact.extrapolationChanges(virtual, new Map())) {
-        changes.push({ target: eventTarget(track, write.event), path: ["values", write.key], after: write.value });
-      }
-    }
+    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "remove", index },
+      ...derivedWrites(virtual, new Map())];
     edit({ label: "Delete clip", changes });
   }
 
@@ -1122,6 +1208,7 @@
       lane.append(clip);
     }
     lane.style.setProperty("--mv-lane-rows", Math.max(rows.length, 1));
+    if (track.muted) lane.classList.add("mv-lane-muted");
     lane.mvLayout = laneLayout(rowOf);
     return lane;
   }
@@ -1162,20 +1249,208 @@
     const label = timelineLabels.get(track.id);
     if (!label) return;
     const edited = history.editedEvents();
-    label.classList.toggle("mv-lane-edited", track.events.some((event) => edited.has(event.id)));
+    label.classList.toggle("mv-lane-edited", editedTracks().has(track.id) || track.events.some((event) => edited.has(event.id)));
+    label.classList.toggle("mv-lane-muted", !!track.muted);
+    timelineLanes.get(track.id)?.classList.toggle("mv-lane-muted", !!track.muted);
+    const control = label.querySelector(".mv-lane-mute");
+    if (control) syncMuteButton(control, track);
   }
 
+  // ---- Track mute ------------------------------------------------------------------------
+  // The project field "muted" of a leaf track (what the preview and the export read). Its
+  // value before the first change is kept in project.editor.tracks[trackId].muted, written in
+  // the same history step: a track whose mute differs from it counts as edited.
+  function trackRecord(track) {
+    const records = project && project.editor && project.editor.tracks;
+    const record = records && typeof records === "object" && Object.prototype.hasOwnProperty.call(records, track.id) ? records[track.id] : null;
+    return record && typeof record.muted === "boolean" ? record : null;
+  }
+
+  let trackEdits = null;
+  function editedTracks() {
+    if (!history || !project) return new Set();
+    if (trackEdits && trackEdits.version === history.version && trackEdits.project === project) return trackEdits.ids;
+    const ids = new Set();
+    for (const track of project.tracks) {
+      const record = trackRecord(track);
+      if (record && record.muted !== !!track.muted) ids.add(track.id);
+    }
+    trackEdits = { version: history.version, project, ids };
+    return ids;
+  }
+
+  function qualityName(option) {
+    const entry = project && project.quality && Array.isArray(project.quality.options) &&
+      project.quality.options.find((item) => item && item.key === option && item.label);
+    return entry ? text(entry.label) : t(Tabs.QUALITY_LABELS[option] || option);
+  }
+
+  // Why the mute of this track cannot reach the game, or "" when it can. A track that holds a
+  // mute edit can always be switched back. Where the export lane's rule is loaded
+  // (MVStudioEventFields.trackMuteNote, the export's own refusals) it decides which leaf
+  // tracks are locked, so the toggle never offers a mute the export refuses; Tabs.muteRefusal
+  // is the same rule (tests/mv_studio_timeline_tabs_test.js compares them) and the fallback.
+  function muteLock(track) {
+    if (Tabs.isGroup(track)) return t("A group's mute does not reach the game: the game plays each track in it by its own mute.");
+    if (editedTracks().has(track.id)) return "";
+    const rule = global.MVStudioEventFields && global.MVStudioEventFields.trackMuteNote;
+    const note = typeof rule === "function" ? rule(track) : null, refusal = Tabs.muteRefusal(track);
+    if (typeof rule === "function" ? note === null : !refusal) return "";
+    const option = Tabs.qualityOption(track);
+    if (option) return format("The game sets this track's mute from the {option} quality setting when the MV starts.", { option: qualityName(option) });
+    if (refusal === "facial") return t("The game sets the mute of eye and mouth tracks itself when the MV starts.");
+    return t(refusal === "quality" || !note ? "The game sets this track's mute from the MV quality settings when the MV starts." : note);
+  }
+
+  function toggleMute(trackId) {
+    const track = project && project.tracks.find((item) => item.id === trackId);
+    if (!track || ctx.locked()) return;
+    const reason = muteLock(track);
+    if (reason) { report(reason); return; }
+    const next = !track.muted, changes = [];
+    if (!trackRecord(track)) changes.push({ target: { kind: "editor" }, path: ["tracks", track.id, "muted"], after: !!track.muted });
+    changes.push({ target: { kind: "track", track: track.id }, path: ["muted"], after: next });
+    edit({ label: next ? "Mute track" : "Unmute track", detail: text(track.label), changes });
+  }
+
+  const SVG = "http://www.w3.org/2000/svg";
+  function speakerIcon() {
+    const icon = document.createElementNS(SVG, "svg");
+    icon.setAttribute("viewBox", "0 0 16 16");
+    icon.setAttribute("aria-hidden", "true");
+    icon.setAttribute("class", "mv-mute-icon");
+    for (const [d, part] of [["M2 6h3l4-3v10l-4-3H2z", ""], ["M11 5.5a3.5 3.5 0 0 1 0 5", "mv-mute-off"], ["M11 6l4 4m0-4-4 4", "mv-mute-on"]]) {
+      const path = document.createElementNS(SVG, "path");
+      path.setAttribute("d", d);
+      if (part) path.setAttribute("class", part);
+      icon.append(path);
+    }
+    return icon;
+  }
+
+  // The mute toggle of a lane label (a muted group's mark shows its state and why it does not count).
+  function muteButton(track) {
+    const control = make("button", null, { type: "button", class: "mv-lane-mute", "data-track": text(track.id) });
+    control.append(speakerIcon());
+    control.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const current = project && project.tracks.find((item) => item.id === track.id);
+      if (!current) return;
+      const reason = muteLock(current);
+      if (reason) report(reason);
+      else toggleMute(current.id);
+    });
+    syncMuteButton(control, track);
+    return control;
+  }
+
+  function syncMuteButton(control, track) {
+    const muted = !!track.muted, reason = muteLock(track), group = Tabs.isGroup(track);
+    control.classList.toggle("mv-muted", muted);
+    control.setAttribute("aria-label", t(group ? "Muted group" : "Mute track"));
+    if (reason) {
+      control.setAttribute("aria-disabled", "true");
+      control.removeAttribute("aria-pressed");
+      control.title = (muted ? t("Muted") + " · " : "") + reason;
+    } else {
+      control.removeAttribute("aria-disabled");
+      control.setAttribute("aria-pressed", String(muted));
+      control.title = t(muted ? "Unmute track" : "Mute track");
+    }
+  }
+
+  // ---- Quality badges ---------------------------------------------------------------------
+  // StageEffect/<difficulty>/<category> lanes play only while their quality flag is on (see
+  // MVStudioTimelineTabs.qualityMuted): the badge names the flag and shows when it is off.
+  function qualityOff(option) {
+    return !!(project && project.quality && project.quality.values && project.quality.values[option] === false);
+  }
+
+  function qualityText(track, option) {
+    const group = Tabs.isGroup(track), values = { option: qualityName(option) };
+    if (qualityOff(option)) return format(group ? "{option} is off in the MV quality settings, so the game mutes its tracks."
+      : "{option} is off in the MV quality settings, so the game mutes this track.", values);
+    return format(group ? "Its tracks play only while {option} is on in the MV quality settings."
+      : "Plays only while {option} is on in the MV quality settings.", values);
+  }
+
+  function gaugeIcon() {
+    const icon = document.createElementNS(SVG, "svg");
+    icon.setAttribute("viewBox", "0 0 16 16");
+    icon.setAttribute("aria-hidden", "true");
+    icon.setAttribute("class", "mv-quality-icon");
+    for (const [x, y] of [[2, 10], [7, 6], [12, 2]]) {
+      const bar = document.createElementNS(SVG, "rect");
+      for (const [key, value] of [["x", x], ["y", y], ["width", 3], ["height", 14 - y], ["rx", .5]]) bar.setAttribute(key, value);
+      icon.append(bar);
+    }
+    return icon;
+  }
+
+  function qualityBadge(track) {
+    const option = Tabs.qualityBadge(track, project ? project.tracks : []);
+    if (!option) return null;
+    const badge = make("button", null, { type: "button", class: "mv-lane-quality", "data-quality": option, "data-track": text(track.id) });
+    badge.append(gaugeIcon());
+    badge.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const current = project && project.tracks.find((item) => item.id === track.id);
+      if (current) report(qualityText(current, option));
+    });
+    syncQualityBadge(badge, track);
+    return badge;
+  }
+
+  function syncQualityBadge(badge, track) {
+    const option = badge.dataset.quality, label = qualityText(track, option);
+    badge.classList.toggle("mv-quality-off", qualityOff(option));
+    badge.title = label;
+    badge.setAttribute("aria-label", label);
+  }
+
+  function syncQualityBadges() {
+    for (const badge of byId("mv-timeline-grid").querySelectorAll(".mv-lane-quality")) {
+      const track = project && project.tracks.find((item) => item.id === badge.dataset.track);
+      if (track) syncQualityBadge(badge, track);
+    }
+  }
+
+  /* The mute toggle and the quality badge sit in the label's text flow, so the name wraps
+     after them and after each "/" of a path (<wbr> adds no text) and keeps the label's width. */
   function laneLabel(track) {
     const full = text(track.label || kinds[track.kind] || track.kind);
     const label = make("p", null, { class: "mv-lane-label", title: text(track.binding || track.label), "data-track": text(track.id) });
     const cut = full.lastIndexOf("/"), body = make("span", null, { class: "mv-lane-text" });
+    body.append(muteButton(track), document.createElement("wbr"));
     if (cut > 0) {
-      // The group path is muted and may wrap after each "/" (<wbr> adds no text).
+      // The group path is muted and may wrap after each "/".
       const group = make("span", null, { class: "mv-lane-path" });
       for (const part of full.slice(0, cut).split("/")) group.append(part + "/", document.createElement("wbr"));
       body.append(group, make("span", full.slice(cut + 1), { class: "mv-lane-name" }));
     } else body.append(make("span", full, { class: "mv-lane-name" }));
+    const badge = qualityBadge(track);
+    if (badge) body.append(document.createElement("wbr"), badge);
     label.append(body);
+    return label;
+  }
+
+  /* A group heading row: its path wraps only after a "/", its quality badge follows the text,
+     and a group shows a mute mark only when it is muted (its mute never reaches the game, so
+     it has no toggle). */
+  function groupLabel(track) {
+    const full = text(track.label);
+    const label = make("p", null, { class: "mv-lane-label mv-lane-group", title: full, "data-track": text(track.id) });
+    const body = make("span", null, { class: "mv-lane-text" }), name = make("span", null, { class: "mv-lane-group-name" });
+    full.split("/").forEach((part, index, parts) => {
+      name.append(index < parts.length - 1 ? part + "/" : part);
+      if (index < parts.length - 1) name.append(document.createElement("wbr"));
+    });
+    if (track.muted) body.append(muteButton(track), document.createElement("wbr"));
+    body.append(name);
+    const badge = qualityBadge(track);
+    if (badge) body.append(document.createElement("wbr"), badge);
+    label.append(body);
+    label.classList.toggle("mv-lane-muted", !!track.muted);
     return label;
   }
 
@@ -1185,15 +1460,20 @@
     return count;
   }
 
+  // Edited clips, track settings (mutes) and plugin edits.
   function editCount() {
-    return (project ? history.editedEvents().size : 0) + pluginEditCount();
+    return (project ? history.editedEvents().size + editedTracks().size : 0) + pluginEditCount();
+  }
+
+  function editedTrackIds() {
+    if (!project) return [];
+    const edited = history.editedEvents(), settings = editedTracks();
+    return project.tracks.filter((track) => settings.has(track.id) || track.events.some((event) => edited.has(event.id))).map((track) => track.id);
   }
 
   function tabCounts() {
     const counts = Tabs.census(project ? project.tracks : []);
-    const edited = project ? history.editedEvents() : new Set();
-    counts.edit = { tracks: project ? project.tracks.filter((track) => track.events.some((event) => edited.has(event.id))).length : 0,
-      events: editCount() };
+    counts.edit = { tracks: editedTrackIds().length, events: editCount() };
     return counts;
   }
 
@@ -1259,8 +1539,7 @@
   let lastEditSignature = "";
   function editSignature() {
     if (!project) return "";
-    const edited = history.editedEvents();
-    const ids = project.tracks.filter((track) => track.events.some((event) => edited.has(event.id))).map((track) => track.id);
+    const ids = editedTrackIds();
     return ids.join("\n") + "|" + (activeTab === "edit" ? extraLanes("edit").map((lane) => lane.id).join("\n") + "|" + (pluginEditCount() > 0) : "");
   }
 
@@ -1283,6 +1562,7 @@
     const active = document.activeElement;
     const focused = active && active !== grid && grid.contains(active) && active.classList.contains("mv-clip")
       ? { track: active.dataset.track, event: active.dataset.event, follow: inView(active, scroll) } : null;
+    const muteFocus = active && grid.contains(active) && active.classList.contains("mv-lane-mute") ? active.dataset.track : null;
     grid.replaceChildren();
     timelineLanes.clear();
     timelineLabels.clear();
@@ -1314,7 +1594,8 @@
     // A remembered member that this MV does not have is ignored (and kept for the next MV).
     const member = Tabs.memberChoices(project).some((choice) => choice.slot === preferredMember) ? preferredMember : null;
     const plan = Tabs.plan(project.tracks, { tab: activeTab, member, search: searchText,
-      editableOnly: activeTab !== "edit" && editableOnly, group: groupFilter, edited: history.editedEvents(), extra: extraLanes(activeTab),
+      editableOnly: activeTab !== "edit" && editableOnly, group: groupFilter, edited: history.editedEvents(), editedTracks: editedTracks(),
+      extra: extraLanes(activeTab),
       pluginEdits: activeTab === "edit" ? pluginEditCount() : 0 });
     lastPlan = plan;
     lastEditSignature = editSignature();
@@ -1329,8 +1610,7 @@
         syncLaneLabel(row.track);
         decorate.push([row.track, lane]);
       } else if (row.type === "group") {
-        grid.append(make("p", text(row.track.label), { class: "mv-lane-label mv-lane-group", title: text(row.track.label), "data-track": text(row.track.id) }),
-          make("div", null, { class: "mv-lane-group-lane", "aria-hidden": "true" }));
+        grid.append(groupLabel(row.track), make("div", null, { class: "mv-lane-group-lane", "aria-hidden": "true" }));
       } else if (row.type === "extra") {
         const label = make("p", text(row.lane.label), { class: "mv-lane-label mv-lane-extra-label", title: text(row.lane.title || row.lane.label) });
         const lane = make("div", null, { class: "mv-lane mv-lane-extra", "data-extra": text(row.lane.id) });
@@ -1355,6 +1635,8 @@
     syncPosition();
     const clip = focused && grid.querySelector(`.mv-clip[data-track="${CSS.escape(focused.track)}"][data-event="${CSS.escape(focused.event)}"]`);
     if (clip) focusClip(clip, focused.follow);
+    const toggle = muteFocus !== null && grid.querySelector(`.mv-lane-mute[data-track="${CSS.escape(muteFocus)}"]`);
+    if (toggle) toggle.focus({ preventScroll: true });
   }
 
   function renderPreviewStatus() {
@@ -1467,7 +1749,9 @@
       const target = change.target;
       kinds.add(target.kind);
       if (target.kind === "event" || target.kind === "track") tracks.add(target.track);
-      if (target.kind === "track") { structure = true; timing.add(target.track); }
+      // Added or removed clips redraw the timeline; a track setting (mute) only its label.
+      if (target.kind === "track" && change.path[0] === "events") { structure = true; timing.add(target.track); }
+      if (target.kind === "track" && selected && selected.track === target.track) selectedTouched = true;
       if (target.kind !== "event") continue;
       const key = change.path[0];
       // Timing and the clip name redraw the lane; value edits only toggle its marks.
@@ -1513,16 +1797,24 @@
       const preset = quality.some((change) => change.path[0] !== "values" || change.path.length === 1);
       if (quiet !== "quality" || preset) renderQuality();
       if (preset || quality.some((change) => change.path[1] === "rendering_resolution")) scene?.resize();
+      syncQualityBadges();
+      const active = activeEvent();
+      if (active && Tabs.qualityBadge(active.track) && !selectedTouched) renderEvent();
     }
     updateHistoryButtons();
     callPlugins("projectChanged", { reason: "history", command, direction });
   }
 
-  // Track id → whether the extrapolation port reproduces its stored times (spec §5.3).
+  // Track id → whether the extrapolation port reproduces its stored times (spec §5.3), and
+  // whether the overlap port reproduces its stored blends, now or before the project's edits.
   function computeGates(value) {
-    const gates = new Map();
-    for (const track of value.tracks) gates.set(track.id, Interact.extrapolationGate(track));
-    return gates;
+    const extrapolation = new Map(), blends = new Map();
+    const originals = value.editor && value.editor.originals;
+    for (const track of value.tracks) {
+      extrapolation.set(track.id, Interact.extrapolationGate(track));
+      blends.set(track.id, Interact.loadedBlendGate(track, originals));
+    }
+    return { extrapolation, blends };
   }
 
   // Costume re-import of the same MV: the native ids are identical, so every
@@ -1546,6 +1838,15 @@
       if ("label" in current) fresh.label = current.label;
       else delete fresh.label;
       fresh.values = copy(current.values);
+    }
+    // Track mutes: the same track (by id) takes the mute the edited project had.
+    const records = editor.tracks && typeof editor.tracks === "object" ? editor.tracks : {};
+    for (const id of Object.keys(records)) {
+      const current = previous.tracks.find((track) => track.id === id), fresh = next.tracks.find((track) => track.id === id);
+      if (!current) continue;
+      if (!fresh || Tabs.isGroup(fresh)) { complete = false; continue; }
+      if ("muted" in current) fresh.muted = current.muted;
+      else delete fresh.muted;
     }
     next.editor = copy(editor);
     return complete;
@@ -1730,8 +2031,9 @@
     }
     const previous = selected;
     project = next;
-    // Gates are decided on the data as loaded, before any carried edit.
-    extrapolationGates = computeGates(next);
+    // Gates are decided on the data as loaded, before any carried edit (blends: or on the
+    // clips' originals, for a project saved with edits).
+    ({ extrapolation: extrapolationGates, blends: blendGates } = computeGates(next));
     let reason = preserveTime ? "reload" : "load", complete = true;
     if (carry && before && before.editor) {
       complete = carryEdits(before, next);
@@ -2530,11 +2832,11 @@
     history = global.MVStudioEditHistory.create({ getProject: () => project, onChange: historyChanged, limit: 200, onBegin: gestureBegan,
       compareView: (track, event) => {
         const view = global.MVStudioEditHistory.editedView(event);
-        // Extrapolation times of a gated track are derived from the clip timing.
-        if (view && view.values && autoExtrapolation(track)) {
+        // Extrapolation times and blends of a gated track are derived from the clip timing.
+        if (view && view.values && (autoExtrapolation(track) || autoBlend(track))) {
           const values = { ...view.values };
-          delete values.preExtrapolationTime;
-          delete values.postExtrapolationTime;
+          if (autoExtrapolation(track)) { delete values.preExtrapolationTime; delete values.postExtrapolationTime; }
+          if (autoBlend(track)) { delete values.blendIn; delete values.blendOut; }
           view.values = values;
         }
         return view;

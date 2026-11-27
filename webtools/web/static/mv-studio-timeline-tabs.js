@@ -107,6 +107,91 @@
     return !!track && !isGroup(track) && Array.isArray(track.events) && track.events.some((event) => eventValueEditable(track, event));
   }
 
+  /* Tracks whose mute the game sets itself. When an MV starts, LiveQualityOperator
+     (GL 3.12.0) ApplyLiveQualityToStageEffectTrack (0x20f2b70) maps each StageEffect
+     category to a LiveQualitySettingVO flag, and MuteTracks (0x20f28a0) runs
+     ApplyMuteToChildTracks (0x20f348c) on the StageEffect/<difficulty>/<category> group:
+     ApplyMuteToTrack (0x20f30e8) calls set_muted(!flag) on every direct child (skipping
+     only the mute of an ActivationTrack). A stored mute of such a track therefore never
+     plays. Categories are compared after NormalizeTrackName (spaces removed, lower case);
+     the names and flags are mv_studio_stage_motion._STAGE_QUALITY. The director setup runs
+     four more ApplyLiveQualityTo* methods on the same MuteTracks (MotionMisc 0x20f2788,
+     GlobalEffect 0x20f2a98, MemberEffect 0x20f3164, PropEffect 0x20f331c); each names its
+     categories in string literals, and a category with another name keeps its tracks' own
+     mute. QUALITY_CATEGORIES holds those names per root, as the export refuses them
+     (mv_studio_timeline._QUALITY_CATEGORIES and MVStudioEventFields.TABLE.trackMute.qualityRoots
+     carry the same lists). A sub-group's children are compiled by their own mute (GroupTrack
+     is never compiled), so only direct children count.
+     The game also sets the mute of every eye and mouth track itself: director setup always runs
+     LiveDirector.InitializeMemberHead (0x2924d04), whose SetupFacialTrackMute (0x29250d4) sets
+     muted = IsRinaFacial XOR useRina on each MemberEyeTrack and MemberLipSyncTrack
+     (FACIAL_MUTE_CLASSES; the export lane's _FACIAL_MUTE_CLASSES and
+     MVStudioEventFields.TABLE.trackMute.facialClasses). */
+  const STAGE_QUALITY = Object.freeze({
+    ambient: "stage_ambient", animation: "stage_animation", coloring: "stage_coloring", control: "stage_control",
+    overlayeffect: "stage_overlay_effect", flashlight: "stage_flash_light", display: "stage_display", post: "posteffect",
+    emissive: "stage_emissive", audience: "stage_audience",
+  });
+  // Category names (no spaces, lower case) per quality root whose direct child tracks the game mutes.
+  const QUALITY_CATEGORIES = Object.freeze({
+    StageEffect: Object.freeze(Object.keys(STAGE_QUALITY).sort()),
+    MemberEffect: Object.freeze(["memberambient", "memberrimlight", "memberspotlightarea", "memberspotlightshaft"]),
+    PropEffect: Object.freeze(["propambient", "propcoloring", "proprimlight"]),
+    GlobalEffect: Object.freeze(["baselight"]),
+    MotionMisc: Object.freeze(["splitscreen"]),
+  });
+  const FACIAL_MUTE_CLASSES = Object.freeze(["MemberEyeTrack", "MemberLipSyncTrack"]);
+  // English names of the stage flags (mv_studio_quality._FIELDS) for a project without quality options.
+  const QUALITY_LABELS = Object.freeze({
+    stage_ambient: "Stage ambient lighting", stage_animation: "Stage animation", stage_coloring: "Stage coloring",
+    stage_control: "Stage controls", stage_overlay_effect: "Stage overlay effects", stage_flash_light: "Stage flash lighting",
+    stage_display: "Stage displays", posteffect: "Post-processing effects", stage_emissive: "Stage emissive surfaces",
+    stage_audience: "Audience",
+  });
+
+  // <root>/<difficulty>/<category> of a category group, or of a direct child of one.
+  function category(track) {
+    const parts = text(track && track.label).split("/");
+    if (parts.length !== (isGroup(track) ? 3 : 4) || !parts[1] || !parts[2]) return null;
+    return { root: parts[0], name: parts[2].replace(/ /g, "").toLowerCase() };
+  }
+
+  // The stage quality flag that mutes this StageEffect category group or its direct child, or null.
+  function qualityOption(track) {
+    const found = track ? category(track) : null;
+    return found && found.root === "StageEffect" && Object.prototype.hasOwnProperty.call(STAGE_QUALITY, found.name)
+      ? STAGE_QUALITY[found.name] : null;
+  }
+
+  // The flag a quality badge names on a lane, or null: a direct child of a StageEffect category
+  // that the flag mutes when off (not an ActivationTrack, which keeps its own mute then), or a
+  // category group with at least one such child among `tracks` (the project's tracks).
+  function qualityBadge(track, tracks) {
+    const option = qualityOption(track);
+    if (!option) return null;
+    if (!isGroup(track)) return track.nativeClass !== "ActivationTrack" ? option : null;
+    const prefix = text(track.label) + "/";
+    return Array.isArray(tracks) && tracks.some((child) => child && !isGroup(child) && text(child.label).startsWith(prefix) &&
+      qualityBadge(child) === option) ? option : null;
+  }
+
+  // Whether the game sets this (leaf) track's mute from a quality flag when the MV starts.
+  function qualityMuted(track) {
+    if (!track || isGroup(track)) return false;
+    const found = category(track);
+    return !!found && Object.prototype.hasOwnProperty.call(QUALITY_CATEGORIES, found.root) &&
+      QUALITY_CATEGORIES[found.root].includes(found.name);
+  }
+
+  // Why the game never plays this track's own mute, the export's order: "group" (a GroupTrack),
+  // "facial" (an eye or mouth track), "quality" (qualityMuted), or null when it does.
+  function muteRefusal(track) {
+    if (!track) return null;
+    if (isGroup(track)) return "group";
+    if (FACIAL_MUTE_CLASSES.includes(track.nativeClass)) return "facial";
+    return qualityMuted(track) ? "quality" : null;
+  }
+
   function census(tracks) {
     const counts = {};
     for (const id of [...TAB_IDS, "group"]) counts[id] = { tracks: 0, events: 0 };
@@ -158,6 +243,7 @@
 
   /* Rows of the timeline for one tab and its filters.
      options: { tab, member (slot|null), search, editableOnly, group, edited: Set<eventId>,
+                editedTracks: Set<trackId> (track settings the user changed, a mute),
                 extra: [{ id, after, label, title, render, members? }],
                 pluginEdits: the plugins' editedCount sum (Edit tab: the hint shows while
                 no clip is edited and this is 0, even beside an empty plugin lane) }
@@ -165,6 +251,7 @@
   function plan(tracks, options = {}) {
     const tab = TAB_IDS.includes(options.tab) ? options.tab : "all";
     const edited = options.edited instanceof Set ? options.edited : new Set();
+    const editedTracks = options.editedTracks instanceof Set ? options.editedTracks : new Set();
     const query = fold(options.search).trim();
     const list = Array.isArray(tracks) ? tracks : [];
     const extra = Array.isArray(options.extra) ? options.extra.filter((lane) => lane && lane.id != null) : [];
@@ -178,7 +265,7 @@
       (!group || nativeGroup(track) === group);
     const keepLane = (lane) => (member === null || (Array.isArray(lane.members) && lane.members.includes(member))) &&
       (!query || fold(lane.label).includes(query));
-    const hasEdit = (track) => (track.events || []).some((event) => event && edited.has(event.id));
+    const hasEdit = (track) => editedTracks.has(track.id) || (track.events || []).some((event) => event && edited.has(event.id));
     const rows = [], shown = [];
     if (tab === "edit") {
       const changed = base.filter((track) => hasEdit(track));
@@ -290,5 +377,6 @@
   global.MVStudioTimelineTabs = Object.freeze({
     TABS, TAB_IDS, CLASSES, KINDS, TIMING, tabOf, memberSlot, nativeGroup, valueEditable, eventValueEditable,
     census, visibleTabs, keyTarget, memberChoices, plan, fold, isGroup, renderTabs, renderChips, roving,
+    STAGE_QUALITY, QUALITY_CATEGORIES, FACIAL_MUTE_CLASSES, QUALITY_LABELS, qualityOption, qualityMuted, muteRefusal, qualityBadge,
   });
 })(typeof window !== "undefined" ? window : globalThis);

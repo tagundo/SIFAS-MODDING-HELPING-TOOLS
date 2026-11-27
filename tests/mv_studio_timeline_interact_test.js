@@ -225,8 +225,155 @@ function holdGap() {
   assert.equal(I.storedTime(null), Infinity);
 }
 
+// The Unity editor's overlap blends (ComputeBlendsFromOverlaps).
+function blends() {
+  const clip = (id, start, duration, blendIn = -1, blendOut = -1) => ({ id, start, duration, values: { blendIn, blendOut } });
+  const times = (events) => Object.fromEntries([...I.blendTimes(events)].map(([id, value]) => [id, [value.blendIn, value.blendOut]]));
+  // An overlap of 0.5 s blends both clips; a gap and a touching edge do not.
+  assert.deepEqual(times([clip('a', 0, 2), clip('b', 1.5, 2), clip('c', 4, 1), clip('d', 5, 1)]),
+    { a: [-1, .5], b: [.5, -1], c: [-1, -1], d: [-1, -1] });
+  // Equal starts: the shorter clip comes first (so0120's DoF and 11054's coloring keep this order).
+  assert.deepEqual(times([clip('long', 0, 4), clip('short', 0, 3.5)]), { short: [-1, 3.5], long: [3.5, -1] });
+  // Start order, not list order; an overlap of float noise is 0; a clip inside the previous one does not blend.
+  assert.deepEqual(times([clip('b', 1, 1), clip('a', 0, 1 + 1e-13)]), { a: [-1, 0], b: [0, -1] });
+  assert.deepEqual(times([clip('outer', 0, 4), clip('inner', 1, 1)]), { outer: [-1, -1], inner: [-1, -1] });
+
+  // Gate: every stored value reproduced.
+  const lips = { id: 'lips', events: [clip('a', 0, 2, -1, .5), clip('b', 1.5, 2, .5, -1), clip('c', 4, 1)] };
+  assert(I.blendGate(lips));
+  assert.deepEqual(I.blendChanges(lips, new Map()), [], 'nothing to rewrite before an edit');
+  // A track the editor never blended (Activation, CustomControl, Culler: 0/0) fails the gate.
+  assert.equal(I.blendGate({ id: 'act', events: [clip('a', 0, 1, 0, 0), clip('b', 2, 1, 0, 0)] }), false);
+  assert.equal(I.blendGate({ id: 'stale', events: [clip('a', 0, 2, -1, .4), clip('b', 1.5, 2, .4, -1)] }), false, 'a stale blend fails');
+  assert.equal(I.blendGate({ id: 'none', events: [{ id: 'a', start: 0, duration: 1, values: {} }] }), false, 'no stored blends');
+  assert.equal(I.blendGate({ id: 'empty', events: [] }), false);
+
+  // Moving b later shrinks the overlap; moving it to a's end clears both blends; a trim of a shrinks it too.
+  const write = (changes) => Object.fromEntries(changes.map((change) => [`${change.event.id}.${change.key}`, change.value]));
+  assert.deepEqual(write(I.blendChanges(lips, new Map([['b', { start: 1.75 }]]))), { 'a.blendOut': .25, 'b.blendIn': .25 });
+  assert.deepEqual(write(I.blendChanges(lips, new Map([['b', { start: 2 }]]))), { 'a.blendOut': -1, 'b.blendIn': -1 }, 'touching edges do not blend');
+  assert.deepEqual(write(I.blendChanges(lips, new Map([['a', { duration: 1.75 }]]))), { 'a.blendOut': .25, 'b.blendIn': .25 });
+  // c dragged onto b: b blends out into c, and c blends in.
+  assert.deepEqual(write(I.blendChanges(lips, new Map([['c', { start: 3 }]]))), { 'b.blendOut': .5, 'c.blendIn': .5 });
+
+  // A project saved with a move made before blends were recomputed: b moved, every blend stale.
+  const saved = { id: 'lips', events: [clip('a', 0, 2, -1, .5), clip('b', 1.75, 2, .5, -1), clip('c', 4, 1)] };
+  const originals = { b: clip('b', 1.5, 2, .5, -1) };
+  assert.equal(I.blendGate(saved), false, 'the saved clips do not follow the rule');
+  assert.deepEqual(I.originalTrack(saved, originals).events.map((event) => event.start), [0, 1.5, 4], 'the original clips');
+  assert.equal(I.loadedBlendGate(saved, originals), true, 'the original track does: gated');
+  assert.equal(I.loadedBlendGate(saved, {}), false, 'without its original, ungated');
+  assert.equal(I.loadedBlendGate(lips, originals), true, 'a track that follows the rule now is gated whatever its originals');
+  assert.equal(I.originalTrack(lips, {}), lips, 'no originals: the same track');
+  // The next edit rewrites every stale blend, not only the moved clip's.
+  const fixed = I.blendChanges(saved, new Map([['c', { start: 4.5 }]]));
+  assert.deepEqual(write(fixed), { 'a.blendOut': .25, 'b.blendIn': .25 });
+  for (const change of fixed) change.event.values[change.key] = change.value;
+  assert(I.blendGate(saved));
+  // A clip the editor added (originals: null) is left out of the original track.
+  const added = { id: 'lips', events: [...lips.events, clip('u1', 4.5, 1, .5, -1)] };
+  added.events[2] = clip('c', 4, 1, -1, .5);
+  assert.equal(I.blendGate(added), true);
+  assert.deepEqual(I.originalTrack(added, { u1: null }).events.map((event) => event.id), ['a', 'b', 'c']);
+  assert.equal(I.blendGate(I.originalTrack(added, { u1: null })), false, 'c still holds the added clip\'s blend');
+  assert.equal(I.loadedBlendGate(added, { u1: null }), true, 'gated: the saved clips follow the rule');
+}
+
+// Real timelines (optional): MV_STUDIO_TRACKS_JSON is the per-MV parse_timeline track dump
+// ({ label: tracks }) of the 13 stock timelines the editing census used. Without it, skipped.
+function blendsOnStockTimelines() {
+  const file = process.env.MV_STUDIO_TRACKS_JSON;
+  if (!file || !fs.existsSync(file)) return 'skipped (no MV_STUDIO_TRACKS_JSON)';
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  let gated = 0, ungated = 0;
+  const ungatedClasses = new Set();
+  for (const tracks of Object.values(data)) {
+    for (const track of tracks) {
+      if (!track.events.length || !('blendIn' in track.events[0].values)) continue;
+      if (I.blendGate(track)) {
+        gated++;
+        assert.deepEqual(I.blendChanges(track, new Map()), [], track.label);
+      } else {
+        ungated++;
+        ungatedClasses.add(track.nativeClass);
+        // Never blended by the editor: 0/0 on every clip.
+        assert(track.events.every((event) => event.values.blendIn === 0 && event.values.blendOut === 0), track.label);
+      }
+    }
+  }
+  assert.deepEqual({ gated, ungated }, { gated: 621, ungated: 152 });
+  assert.deepEqual([...ungatedClasses].sort(), ['ActivationTrack', 'CustomControlTrack', 'LiveMemberCullerTrack']);
+  return `${gated} tracks gated, ${ungated} never blended`;
+}
+
+// Timing fields per clip type (Unity ClipCaps).
+function clipCaps() {
+  const field = (track, playableClass, key) => I.timingField(I.clipCaps(track, { values: { playableClass } }), key);
+  const timing = ['preExtrapolationMode', 'postExtrapolationMode', 'preExtrapolationTime', 'postExtrapolationTime', 'clipIn',
+    'timeScale', 'easeIn', 'easeOut', 'blendIn', 'blendOut'];
+  const open = (track, playableClass) => timing.filter((key) => field(track, playableClass, key));
+  const lane = { kind: 'dance' }, camera = { kind: 'camera' }, lights = { kind: 'lighting' };
+  assert.equal(I.clipCaps(lane, { values: {} }), null, 'no playable class: nothing restricted');
+  assert.deepEqual(open(lane, 'AnimationPlayableAsset'), timing, 'Animation clips: every field (ClipCaps.All)');
+  assert.deepEqual(open(lights, 'LiveColoringClip'), ['easeIn', 'easeOut', 'blendIn', 'blendOut'], 'game clips: blending only');
+  assert.deepEqual(open(lane, 'ActivationPlayableAsset'), [], 'ClipCaps.None');
+  assert.deepEqual(open({ kind: 'effects' }, 'CustomControlClip'), ['clipIn']);
+  assert.deepEqual(open(lane, 'LiveMemberCullerClip'), []);
+  assert.deepEqual(open(lane, 'ControlPlayableAsset'), ['clipIn', 'timeScale']);
+  // Camera shots: modes, not offset or speed. Every mode once the preview plays them
+  // (MVStudioScene.cameraLocalTime), None and Hold before that.
+  assert.deepEqual(open(camera, 'AnimationPlayableAsset'), timing.filter((key) => key !== 'clipIn' && key !== 'timeScale'));
+  const shot = { values: { playableClass: 'AnimationPlayableAsset' } }, scene = globalThis.MVStudioScene;
+  try {
+    delete globalThis.MVStudioScene;
+    assert.deepEqual(I.clipCaps(camera, shot).modes, [0, 1], 'a preview without cameraLocalTime: None and Hold');
+    globalThis.MVStudioScene = { create() {} };
+    assert.deepEqual(I.clipCaps(camera, shot).modes, [0, 1]);
+    globalThis.MVStudioScene = { create() {}, cameraLocalTime() { return 0; } };
+    assert.deepEqual(I.clipCaps(camera, shot).modes, [0, 1, 2, 3, 4], 'the preview plays every mode: all five');
+    assert.deepEqual(open(camera, 'AnimationPlayableAsset'), timing.filter((key) => key !== 'clipIn' && key !== 'timeScale'),
+      'offset and speed stay read only');
+  } finally {
+    if (scene === undefined) delete globalThis.MVStudioScene;
+    else globalThis.MVStudioScene = scene;
+  }
+  assert.deepEqual(I.clipCaps(lane, { values: { playableClass: 'AnimationPlayableAsset' } }).modes, [0, 1, 2, 3, 4]);
+  assert.deepEqual(I.clipCaps(camera, { values: { playableClass: 'LiveCameraOffsetClip' } }).modes, [], 'a camera offset clip is a game clip');
+  assert.equal(I.timingField(I.clipCaps(lights, { values: { playableClass: 'LiveColoringClip' } }), 'color'), true, 'other keys are not timing');
+}
+
+// Stock timelines (optional, as above): a read-only timing field never hides a stored value.
+function capsOnStockTimelines() {
+  const file = process.env.MV_STUDIO_TRACKS_JSON;
+  if (!file || !fs.existsSync(file)) return 'skipped';
+  const defaults = { preExtrapolationMode: 0, postExtrapolationMode: 0, preExtrapolationTime: 0, postExtrapolationTime: 0,
+    clipIn: 0, timeScale: 1, easeIn: 0, easeOut: 0 };
+  let clips = 0, locked = 0;
+  for (const tracks of Object.values(JSON.parse(fs.readFileSync(file, 'utf8')))) {
+    for (const track of tracks) {
+      for (const event of track.events) {
+        const caps = I.clipCaps(track, event);
+        if (!caps) continue;
+        clips++;
+        for (const [key, value] of Object.entries(event.values)) {
+          if (I.timingField(caps, key)) continue;
+          locked++;
+          // Blends of a clip without Blending: 0/0 (never computed).
+          const expected = key === 'blendIn' || key === 'blendOut' ? 0 : defaults[key];
+          assert.equal(value, expected, `${track.label} ${event.id} ${key}`);
+        }
+        if (caps.camera) assert(caps.modes.includes(event.values.preExtrapolationMode) && caps.modes.includes(event.values.postExtrapolationMode));
+      }
+    }
+  }
+  return `${locked} read-only fields on ${clips} clips hold their defaults`;
+}
+
 snapping();
 dragging();
 extrapolation12035();
 holdGap();
-console.log('MV Studio clip interaction: snaps (frame, targets, Alt), clamps, one commit per drag, Escape, blocked resize, nudges, extrapolation port on 12035.');
+blends();
+clipCaps();
+const stock = [blendsOnStockTimelines(), capsOnStockTimelines()].join('; ');
+console.log('MV Studio clip interaction: snaps (frame, targets, Alt), clamps, one commit per drag, Escape, blocked resize, nudges, extrapolation port on 12035, overlap blends, timing fields per clip type; stock timelines: ' + stock + '.');
