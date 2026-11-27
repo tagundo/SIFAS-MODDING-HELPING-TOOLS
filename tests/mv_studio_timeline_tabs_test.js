@@ -201,10 +201,34 @@ function qualityMutes() {
   assert.equal(plan.rows.filter((row) => row.type === 'hint').length, 0, 'no hint once a track is edited');
 }
 
+// The mute toggle locks exactly the tracks whose mute the export refuses: Tabs' rule (a group, or
+// a direct child of a quality category) against the export lane's
+// MVStudioEventFields.trackMuteNote, in a tree that has it (after the export lane's merge). Labels:
+// the 12035 fixture, edge cases, and every stock track when MV_STUDIO_TRACKS_JSON is given.
+function exportMuteRule() {
+  require('../webtools/web/static/mv-studio-event-fields.js');
+  const rule = globalThis.MVStudioEventFields && globalThis.MVStudioEventFields.trackMuteNote;
+  if (typeof rule !== 'function') return 'export mute rule: skipped (no trackMuteNote in this tree)';
+  const tracks = [...fixture().tracks];
+  for (const label of ['StageEffect/Expert/Overlay Effect/x', 'StageEffect/Expert/Overlay/x', 'StageEffect/Normal/Audience/x',
+    'StageEffect/Expert/Coloring/LightShaft/x', 'PropEffect/Expert/PropAnimation/x', 'MotionMisc/Expert/SplitScreen/x',
+    'GlobalEffect/Expert/BaseLight/BaseLight', 'MemberEffect/Expert/MemberAmbient/Sub/x', 'CameraOffset/Expert/X/x', 'Member1/LipSync']) {
+    tracks.push({ id: label, label, kind: 'effects', nativeClass: 'CustomControlTrack', events: [] });
+  }
+  const file = process.env.MV_STUDIO_TRACKS_JSON;
+  if (file && fs.existsSync(file)) for (const list of Object.values(JSON.parse(fs.readFileSync(file, 'utf8')))) tracks.push(...list);
+  for (const track of tracks) {
+    assert.equal(rule(track) !== null, Tabs.isGroup(track) || Tabs.qualityMuted(track), track.label);
+  }
+  return `export mute rule: ${tracks.length} tracks agree`;
+}
+
 counts12035();
 synthetic();
 keyboard();
 plans();
 members();
 qualityMutes();
-console.log('MV Studio timeline tabs: 12035 counts, synthetic classes, member slots, lane plans per tab and filter, roving keys, quality-set mutes.');
+const muteRule = exportMuteRule();
+console.log('MV Studio timeline tabs: 12035 counts, synthetic classes, member slots, lane plans per tab and filter, roving keys, quality-set mutes; ' +
+  muteRule + '.');
