@@ -197,11 +197,50 @@ def _cull(material_tree):
     return None
 
 
-def split_culled_part(path, renderer_id, added_index_count, donor_cull, log=print):
-    """Apply rule 2 to one written renderer. Returns the new material's path ID or None."""
+# AS/Member's own default when a material does not store _CullMode (webtools model_materials).
+DEFAULT_CULL = 2.
+CULL_MODE_MIXED = "the grafted parts use different _CullMode values; they stay in one submesh"
+
+
+def material_cull(material_tree):
+    """The _CullMode a material draws with, AS/Member's default when it stores none."""
+    value = _cull(material_tree) if material_tree else None
+    return DEFAULT_CULL if value is None else value
+
+
+def plan_culled_part(receiver, receiver_cull, donors):
+    """What rule 2 will do for these materials, as the sentences the graft reports.
+
+    ``donors`` lists (material name, _CullMode) of the selected donor groups.
+    Returns ``(cull, sentences)``: ``cull`` is the _CullMode the part's own
+    material copy gets (None when there is no split), and ``sentences`` say
+    what happens: the split, or why the part is drawn from both sides.
+    """
+    from graft_texture_atlas import CULL_MODE_BOTH_SIDES, CULL_MODE_OWN_MATERIAL
+    culled = [(name, float(cull)) for name, cull in donors if cull in (1., 2.)]
+    if receiver_cull != 0. or not culled:
+        return None, []
+    values = {float(cull) for _, cull in donors}
+    names = list(dict.fromkeys(name for name, _ in culled))
+    if len(values) == 1:
+        cull = values.pop()
+        return cull, [CULL_MODE_OWN_MATERIAL.format(donor=", ".join(names), donor_value=f"{cull:g}",
+                                                    receiver=receiver, copy=receiver + "_culled")]
+    return None, [CULL_MODE_MIXED] + [CULL_MODE_BOTH_SIDES.format(donor=name, donor_value=f"{cull:g}", receiver=receiver)
+                                      for name, cull in dict.fromkeys(culled)]
+
+
+def split_culled_part(path, renderer_id, added_index_count, donor_cull, log=print, donor_name=None):
+    """Apply rule 2 to one written renderer. Returns the new material's path ID or None.
+
+    Logs what happened: the part's own culled material, or, when the split
+    cannot be done, that the part is drawn from both sides.
+    """
     import costume_part_transplant as cpt
+    from graft_texture_atlas import CULL_MODE_BOTH_SIDES, CULL_MODE_OWN_MATERIAL
     if donor_cull not in (1., 2.) or added_index_count <= 0:
         return None
+    donor_name = donor_name or "The grafted part"
     env, objs = _load(path)
     renderer = objs[int(renderer_id)]
     renderer_tree = renderer.read_typetree()
@@ -218,7 +257,10 @@ def split_culled_part(path, renderer_id, added_index_count, donor_cull, log=prin
         return None
     last = submeshes[-1]
     if int(last["indexCount"]) <= int(added_index_count) or len(materials) != len(submeshes):
-        log("[warn] the grafted part could not get its own culled material; its back faces can show")
+        log("[warn] the grafted part could not get its own culled material: the receiving submesh "
+            "has no triangles of its own, or its submeshes and materials do not pair up")
+        log("[warn] " + CULL_MODE_BOTH_SIDES.format(donor=donor_name, donor_value=f"{donor_cull:g}",
+                                                    receiver=receiving_tree["m_Name"]))
         return None
     width = 2 if tree.get("m_IndexFormat", 0) == 0 else 4
     indices = np.frombuffer(bytes(tree["m_IndexBuffer"]), "<u2" if width == 2 else "<u4")
@@ -270,6 +312,6 @@ def split_culled_part(path, renderer_id, added_index_count, donor_cull, log=prin
             bundle_tree["m_Container"][0][1]["preloadSize"] += 1
             bundle.save_typetree(bundle_tree)
     _save(env, path)
-    log(f"[game] the grafted part keeps _CullMode {donor_cull:g} in its own submesh "
-        f"({culled['m_Name']}); drawn from both sides its back faces flicker")
+    log("[game] " + CULL_MODE_OWN_MATERIAL.format(donor=donor_name, donor_value=f"{donor_cull:g}",
+                                                  receiver=receiving_tree["m_Name"], copy=culled["m_Name"]))
     return new_id

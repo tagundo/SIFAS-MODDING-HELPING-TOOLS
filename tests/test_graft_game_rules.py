@@ -159,5 +159,69 @@ class GraftGameRuleTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), raw)
 
 
+class CulledPartReportTests(unittest.TestCase):
+    """The preview and the graft say what rule 2 does: its own culled material,
+    or, only when that split cannot be done, that back faces can show."""
+
+    def test_plan_names_the_split_or_why_there_is_none(self):
+        from graft_texture_atlas import CULL_MODE_BOTH_SIDES, CULL_MODE_OWN_MATERIAL
+        self.assertEqual(rules.plan_culled_part("Body", 0., [("Hat", 2.), ("Hat", 2.)]), (2., [
+            CULL_MODE_OWN_MATERIAL.format(donor="Hat", donor_value="2", receiver="Body", copy="Body_culled")]))
+        self.assertEqual(rules.plan_culled_part("Body", 0., [("Hat", 2.), ("Ribbon", 0.)]), (None, [
+            rules.CULL_MODE_MIXED, CULL_MODE_BOTH_SIDES.format(donor="Hat", donor_value="2", receiver="Body")]))
+        for receiver, donor in ((2., 2.), (0., 0.), (1., 1.)):
+            self.assertEqual(rules.plan_culled_part("Body", receiver, [("Hat", donor)]), (None, []))
+        self.assertEqual(rules.material_cull({"m_SavedProperties": {"m_Floats": []}}), 2.)
+        self.assertEqual(rules.material_cull(None), 2.)
+
+    def test_split_logs_its_own_material_or_the_back_face_warning(self):
+        environment, renderer, mesh, material = fixture()
+        set_cull(material, 0.)
+        raw = environment.file.save(packer="original")
+        name = material.read_typetree()["m_Name"]
+        total = int(mesh.read_typetree()["m_SubMeshes"][-1]["indexCount"])
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "out.unity"
+            path.write_bytes(raw)
+            lines = []
+            self.assertIsNone(rules.split_culled_part(path, renderer.path_id, total, 2., log=lines.append, donor_name="Hat"))
+            self.assertEqual(path.read_bytes(), raw)
+            self.assertEqual(lines[-1], f"[warn] Hat (_CullMode 2) is drawn from both sides like {name} (_CullMode 0); "
+                                        "its back faces can show.")
+            lines.clear()
+            self.assertIsNotNone(rules.split_culled_part(path, renderer.path_id, 3, 2., log=lines.append, donor_name="Hat"))
+            self.assertEqual(lines, [f"[game] Hat (_CullMode 2) keeps its culling: it becomes its own submesh drawn by "
+                                     f"{name}_culled, a copy of {name} (_CullMode 0) with _CullMode 2."])
+
+    def test_preview_and_graft_report_the_same_split(self):
+        target, target_renderer, _, target_material = fixture()
+        donor, donor_renderer, _, donor_material = fixture((255, 0, 0, 255))
+        set_cull(target_material, 0.)
+        set_cull(donor_material, 2.)
+        receiver = target_material.read_typetree()["m_Name"]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "target.unity").write_bytes(target.file.save(packer="original"))
+            (root / "donor.unity").write_bytes(donor.file.save(packer="original"))
+            runs = {}
+            for dry_run in (True, False):
+                lines = runs[dry_run] = []
+                cpt.transplant_part(str(root / "donor.unity"), str(root / "target.unity"), str(root / "out.unity"),
+                    triangle_indices=[0], new_submesh="atlas", reuse_empty_uv=False,
+                    donor_renderer=donor_renderer.path_id, target_renderer=target_renderer.path_id,
+                    worldspace=False, fix_nodescaling=False, verbose=False, dry_run=dry_run,
+                    log_callback=lines.append)
+            out = {obj.path_id: obj for obj in UnityPy.load(str(root / "out.unity")).objects}
+        sentence = (f"{donor_material.read_typetree()['m_Name']} (_CullMode 2) keeps its culling: it becomes its own "
+                    f"submesh drawn by {receiver}_culled, a copy of {receiver} (_CullMode 0) with _CullMode 2.")
+        self.assertIn(f"  culling          : {sentence}", runs[True])
+        self.assertIn(f"[game] {sentence}", runs[False])
+        for lines in runs.values():
+            self.assertFalse([line for line in lines if "back faces can show" in line], lines)
+        materials = out[target_renderer.path_id].read_typetree()["m_Materials"]
+        self.assertEqual(len(materials), 2)
+        self.assertEqual(floats(out[materials[1]["m_PathID"]].read_typetree())["_CullMode"], 2.)
+
+
 if __name__ == "__main__":
     unittest.main()

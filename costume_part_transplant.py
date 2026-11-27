@@ -166,6 +166,8 @@ _TRANSLATIONS = {
             "{donor}의 _CullMode: {donor_value}, {receiver}의 _CullMode: {receiver_value}.",
         "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show.":
             "{donor}(_CullMode {donor_value})는 {receiver}(_CullMode 0)처럼 앞뒷면 모두 그려지므로 뒷면이 보일 수 있습니다.",
+        "{donor} (_CullMode {donor_value}) keeps its culling: it becomes its own submesh drawn by {copy}, a copy of {receiver} (_CullMode 0) with _CullMode {donor_value}.":
+            "{donor}(_CullMode {donor_value}) — 컬링 유지: 별도 서브메시로 나뉘어 {receiver}(_CullMode 0)의 복사본인 {copy}(_CullMode {donor_value}) 머티리얼로 그려집니다.",
         "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.":
             "머리 메시에 이식하려면 머리의 BodyPartManager.headMaterial이 의상 파일 안에 저장되어 있어야 합니다.",
         "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.":
@@ -261,6 +263,8 @@ _TRANSLATIONS = {
             "{donor}：_CullModeは{donor_value}ですが、{receiver}は{receiver_value}です。",
         "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show.":
             "{donor}（_CullMode {donor_value}）は{receiver}（_CullMode 0）と同じく両面が描画されるため、裏面が見えることがあります。",
+        "{donor} (_CullMode {donor_value}) keeps its culling: it becomes its own submesh drawn by {copy}, a copy of {receiver} (_CullMode 0) with _CullMode {donor_value}.":
+            "{donor}（_CullMode {donor_value}）はカリングを保ちます。別のサブメッシュに分かれ、{receiver}（_CullMode 0）を複製して_CullMode {donor_value}にした{copy}で描画されます。",
         "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.":
             "頭のメッシュに移植するには、頭のBodyPartManager.headMaterialが衣装ファイル内に保存されている必要があります。",
         "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.":
@@ -348,10 +352,16 @@ def _tr(text, **kw):
 
 
 def _template_pattern(template):
-    """A regex for one translated detail template; {name} matches its value."""
-    parts = re.split(r"\{(\w+)\}", template)
-    return re.compile("".join(re.escape(part) if index % 2 == 0 else f"(?P<{part}>.+?)"
-                              for index, part in enumerate(parts)))
+    """A regex for one translated detail template; {name} matches its value,
+    and a name used twice must match the same value again."""
+    parts, seen, pattern = re.split(r"\{(\w+)\}", template), set(), []
+    for index, part in enumerate(parts):
+        if index % 2 == 0:
+            pattern.append(re.escape(part))
+        else:
+            pattern.append(f"(?P={part})" if part in seen else f"(?P<{part}>.+?)")
+            seen.add(part)
+    return re.compile("".join(pattern))
 
 
 def _tr_reason(text):
@@ -2275,6 +2285,20 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         log(f"[info] part lives in donor sub-mesh {part_submesh}; "
             f"{'own material -> new sub-mesh' if use_new_submesh else 'merging into body sub-mesh'}")
 
+    if game_atlas:
+        # Rule 2 (graft_game_rules): what the written part's culling becomes,
+        # decided from the same materials in the preview and in the graft.
+        from graft_game_rules import material_cull, plan_culled_part
+        donor_culls, offset = [], 0
+        for index, group in enumerate(source_groups):
+            offset += len(group)
+            if not selected[offset - len(group):offset].any():
+                continue
+            tree = _safe_tt(did.get(d_mats[index]["m_PathID"])) if index < len(d_mats) else None
+            donor_culls.append(((tree or {}).get("m_Name", f"Donor material {index + 1}"), material_cull(tree)))
+        receiver_tree = _graft_receiver_material(tid, t_smr, t_smr_tt)
+        cull_plan = plan_culled_part((receiver_tree or {}).get("m_Name", "the receiving material"),
+                                     material_cull(receiver_tree), donor_culls)
     if dry_run:
         log("\n[dry-run] no file written. Summary:")
         log(f"  part root        : {chosen['root']}")
@@ -2284,6 +2308,8 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         log(f"  new sub-mesh     : {use_new_submesh and not game_atlas}")
         if game_atlas:
             log(f"  game texture mode: {uv_placement or ('try empty UV reuse, then atlas' if reuse_empty_uv else 'texture atlas')}")
+            for sentence in cull_plan[1]:
+                log(f"  culling          : {sentence}")
         log(f"  preserve physics : {preserve_physics}")
         bbox = _uv_bbox(d_mesh_tt, used)
         if bbox is not None:
@@ -2440,20 +2466,34 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     # its culling in its own submesh, and a body renderer never skins to face-side bones.
     from graft_game_rules import rebind_head_bones, split_culled_part
     if game_atlas:
-        donor_culls = set()
-        for index, _ in selected_groups:
-            floats = dict(_safe_tt(did.get(d_mats[index]["m_PathID"])).get("m_SavedProperties", {}).get("m_Floats", []))
-            donor_culls.add(float(floats["_CullMode"]) if "_CullMode" in floats else None)
-        if len(donor_culls) == 1:
-            split_culled_part(out_path, t_smr.path_id, 3 * int(stats["added_tris"]), donor_culls.pop(), log=log)
-        elif donor_culls & {1., 2.}:
-            log("[warn] the grafted parts use different _CullMode values; they stay in one submesh")
+        split_cull, sentences = cull_plan
+        if split_cull is not None:
+            # Logs the outcome itself: the part's own material, or why it cannot get one.
+            split_culled_part(out_path, t_smr.path_id, 3 * int(stats["added_tris"]), split_cull, log=log,
+                              donor_name=", ".join(dict.fromkeys(name for name, cull in donor_culls if cull == split_cull)))
+        else:
+            for sentence in sentences:
+                log("[warn] " + sentence)
     rebind_head_bones(out_path, t_smr.path_id, original_bone_count, log=log)
     # read-only: warn if the grown body renderer blew past the runtime combine limits
     check_combine_limits(out_path, verbose=verbose)
     finish_working_bundle(out_path, output_packer)
     log(f"[done] {out_path}")
     return out_path
+
+
+def _graft_receiver_material(tid, t_smr, t_smr_tt):
+    """The material the game-compatible graft folds the part into: the head's
+    BodyPartManager.headMaterial for a merged-head renderer, else the first slot."""
+    from graft_game_compat import head_material_binding
+    try:
+        head = head_material_binding(tid, t_smr)
+    except ValueError:
+        return None  # the graft itself refuses this head; nothing to plan
+    if head is not None:
+        return _safe_tt(head["material"])
+    materials = t_smr_tt.get("m_Materials") or []
+    return _safe_tt(tid.get(materials[0].get("m_PathID"))) if materials else None
 
 
 def _mesh_root_delta(donor, target, d_smr_tt, t_smr_tt):
