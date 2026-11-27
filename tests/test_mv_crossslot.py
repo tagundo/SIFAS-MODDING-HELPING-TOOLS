@@ -189,6 +189,28 @@ class ConversionCase(reg_tests.Case):
         for bad in (True, "2", 2.0):  # only an int format counts
             self.assertUnchecked("values", changed[0], stock, pack_format=bad)
 
+    def test_a_timeline_the_re_export_refuses_holds_data_this_mv_studio_does_not_write(self):
+        """A newer MV Studio's timeline reaches the check as a refused re-export (a value or a track
+        layout this export cannot write): "values", or "newer" when its pack says a newer format, and
+        never "could not be checked"."""
+        stock = self.local["tl2101"]
+        lossy = reg_tests.base_tracks()
+        lossy[1]["events"][0]["values"]["mixIn"] = [0, 0.5]  # a value this export does not write
+        for name, tracks, message in (("lossy", lossy, conversion.LOSSY),
+                                      ("another asset", reg_tests.base_tracks()[:2], conversion.NOT_THIS_ASSET)):
+            raw = timeline_bytes("android", tracks)
+            with self.subTest(name):
+                with self.assertRaises(conversion.ConversionError) as refused:
+                    conversion.convert_parsed(raw, stock)
+                self.assertEqual(str(refused.exception), message)  # the re-export refuses it ...
+                self.assertUnchecked("values", raw, stock)  # ... so the check asks about its values
+                self.assertUnchecked("values", raw, stock, pack_format=conversion.EXPORT_FORMAT)
+                self.assertUnchecked("newer", raw, stock, pack_format=conversion.EXPORT_FORMAT + 1)
+        edited = conversion.convert_parsed(self.edited_android(), stock)
+        with mock.patch.object(conversion, "convert_parsed", side_effect=register.StructureError(["StageEffect/Bloom"])):
+            self.assertUnchecked("values", edited, stock)
+            self.assertUnchecked("newer", edited, stock, pack_format=conversion.EXPORT_FORMAT + 1)
+
     def test_a_check_that_cannot_run_says_so(self):
         """No template, a time limit (the parse limits note a transient failure), memory, an unreadable
         template or an export error: "could not be checked", never the "holds data" wording."""
