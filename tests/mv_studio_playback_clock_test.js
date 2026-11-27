@@ -311,8 +311,9 @@ const report = {};
   assert(edit.rows.every((row, i) => i < 5 || row.mode === 'sync'), 'stays locked');
   // A seek to another time with the soundtrack left alone (a plugin's {audio: false} seek while
   // playing): the next frame shows the sought time and asks the host to move the soundtrack
-  // there, forward and backward alike; the picture then goes on from the sought time.
-  for (const by of [0.03, 0.3, 2, -0.3, -2]) {
+  // there, forward and backward alike, one frame (1/60 s) away included; the picture then goes
+  // on from the sought time.
+  for (const by of [1 / 60, -1 / 60, 0.03, 0.3, 2, -0.3, -2]) {
     const plugin = run({ seconds: 4, events: { 120: (audio, clock, t, host) => { host.sought = clock.state().time + by; clock.seek(host.sought, false); } } });
     const label = `plugin seek by ${by} s while playing`;
     const index = plugin.rows.findIndex((row) => row.k === 120), jumped = plugin.rows[index];
@@ -326,6 +327,16 @@ const report = {};
     const relocked = plugin.rows.slice(index).find((row) => row.mode === 'sync');
     assert(relocked.time - sought <= 0.05 + 1e-9, `${label}: goes on from the sought time`);
     assert(maxAbs(offsets(plugin.rows.slice(index + 30))) <= 0.030, `${label}: in sync afterwards`);
+  }
+  // A soundtrack that does not follow that move (it cannot seek) and so plays on 2 s behind:
+  // the move counts as the realignment, so it is ignored after that one write, not moved again.
+  {
+    const stuck = run({ seconds: 4, audio: { seekable: false }, events: { 120: (audio, clock) => clock.seek(clock.state().time + 2, false) } });
+    monotonic(stuck.rows, 'plugin seek not followed');
+    assert.equal(stuck.audio.seeks, 1, 'plugin seek not followed: one write');
+    assert.equal(stuck.state.realigns, 1);
+    assert.equal(stuck.state.ignored, true, 'plugin seek not followed: the soundtrack is ignored');
+    assert(stuck.rows.slice(-60).every((row) => row.mode === 'free'), 'plugin seek not followed: frames only');
   }
   // The same seek while paused: the soundtrack is moved when playback starts again.
   let pausedAt = NaN;
@@ -474,6 +485,22 @@ const report = {};
   assert(maxAbs(offsets(reloading.rows.slice(-60))) <= 0.030, 'loading after the realignment: within 30 ms at the end');
   report.loadingAfterRealign = { heldFrames: loadingRows.length, realigns: reloading.state.realigns,
     tailMaxOffsetMs: +(maxAbs(offsets(reloading.rows.slice(-60))) * 1000).toFixed(1) };
+
+  // Every realignment seek lands a little before the written time (a seek to a codec frame
+  // boundary), within snap (30 ms) or beyond it (0.12 s): the soundtrack still followed the
+  // realignment, so a second long stall is realigned as well and the soundtrack stays in use.
+  for (const early of [0.03, 0.12]) {
+    const label = `realignment seeks landing ${early * 1000} ms early`;
+    const landing = run({ seconds: 14, audio: { steps: [0.01, 0.02] }, events: {
+      1: (audio) => { const seek = audio.seek; audio.seek = (position, at) => seek(position - early, at); },
+      120: stop, 300: go, 540: stop, 720: go } });
+    monotonic(landing.rows, label);
+    assert.equal(landing.state.realigns, 2, `${label}: two realignments`);
+    assert.equal(landing.audio.seeks, 2, `${label}: the soundtrack is moved twice`);
+    assert.equal(landing.state.ignored, false, `${label}: the soundtrack is still used`);
+    assert(landing.rows.slice(-60).every((row) => row.mode === 'sync'), `${label}: following the soundtrack at the end`);
+    assert(maxAbs(offsets(landing.rows.slice(-60))) <= 0.030, `${label}: within 30 ms at the end`);
+  }
 
   // A soundtrack that does not follow the realignment is ignored until the next start or seek.
   const stuck = run({ seconds: 7, audio: { seekable: false }, events: { 120: (audio, clock, t) => audio.stall(t), 300: (audio, clock, t) => audio.resume(t) } });
