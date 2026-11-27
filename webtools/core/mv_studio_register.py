@@ -50,7 +50,8 @@ MAX_AUDIO_SECONDS = 6 * 3600
 PREVIEW_IMAGE = 512
 # Part of every fingerprint: a new bake or encode rule makes the next update rebuild that part.
 # 2: the native export grows m_MuscleClipSize of camera clips that a dense rewrite grew.
-FINGERPRINT_VERSION = "mv-studio-register-2"
+# 3: the native export writes a leaf track's mute; the timeline view hashes it.
+FINGERPRINT_VERSION = "mv-studio-register-3"
 # Track fields the editor may change that the native timeline stores are
 # mv_studio_timeline.exportable_track_fields of each base track (a leaf track's mute).
 _DERIVED_TRACK_FIELDS = frozenset({"shaftSlot"})
