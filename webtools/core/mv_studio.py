@@ -651,7 +651,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
             effect_row, effect_file = load(selected.get("stageEffect") or stage.get("effect"), "effect", "Stage effects")
             from . import mv_studio_import_coverage
-            shadow_gap = None
+            shadow_gap, display_gaps = None, []
             for step, (row, preview_path) in zip(("stage", "effect"), ((stage_row, stage_file), (effect_row, effect_file))):
                 if preview_path is None:
                     progress.state(step, "skipped")
@@ -667,6 +667,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                         if item.get("code") == "member_shadow_prefabs_unavailable":
                             warnings.append(f"{row['label']}: {item.get('message')}")
                             shadow_gap = mv_studio_import_coverage.SHADOW_PREFABS_UNAVAILABLE
+                        elif item.get("code") == mv_studio_import_coverage.DISPLAY_VARIANTS_UNSUPPORTED:
+                            display_gaps.append(item)
                     progress.state(step, "cached" if reused else "done")
                 except (ValueError, OSError) as error:
                     warnings.append(f"{row['label']}: {error}")
@@ -881,7 +883,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             for item in selected.get("missing", []))
             project["assets"] = list(rows.values())
             # After the assets: only an attached performer prop plays its tracks.
-            mv_studio_import_coverage.apply(project, prop_gap, shadow_gap)
+            mv_studio_import_coverage.apply(project, prop_gap, shadow_gap, display_gaps)
         with progress.step("finish"):
             result = _register(project, native)
         if receipts is not None:

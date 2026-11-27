@@ -2199,7 +2199,8 @@
         record.stagePropLight?.update(currentTime, frameClock, !!lighting?.baseTrack);
       }
       for (const record of records) record.stageColoring?.update(currentTime, project);
-      for (const record of records) record.stageDisplay?.update(currentTime, project);
+      // The wave screens read _Time.y: the game run's clock when one is set.
+      for (const record of records) record.stageDisplay?.update(currentTime, project, particleClock);
       // LiveCoreMemberManager.Update steps the springs before the director evaluates.
       const physicsStep = playing && visible && records.some((record) => record.physics)
         ? physicsClock?.step(frameTimestamp, physicsRate()) || 0 : 0;

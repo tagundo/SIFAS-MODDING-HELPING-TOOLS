@@ -2012,8 +2012,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 except ValueError:
                     pass
                 if display is not None:
-                    if "color" in stage_inputs and (display["fallback"].get("vertexColor")
-                            or any(variant["background"].get("vertexColor") for variant in display["variants"])):
+                    drawn = [display["fallback"] or {}, *((variant or {}).get(part) or {} for variant in
+                             (display["initial"], *display["variants"]) for part in ("background", "logo"))]
+                    if "color" in stage_inputs and any(fields.get("vertexColor") for fields in drawn):
                         stage_color = glb.attribute(stage_inputs["color"], "VEC4")
                         primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR": stage_color}
                     primitives[-1]["extras"]["mvStageDisplay"] = display
