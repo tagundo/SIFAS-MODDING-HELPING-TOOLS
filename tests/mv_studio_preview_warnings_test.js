@@ -97,7 +97,8 @@ const window = {
 window.window = window;
 const context = vm.createContext({ ...window, window, console, setTimeout, clearTimeout, AbortController, URL,
   encodeURIComponent, JSON, Math, Number, Object, Array, Promise, Set, Map, String });
-for (const name of ['mv-studio-edit-history.js', 'mv-studio-timeline-tabs.js', 'mv-studio-timeline-interact.js', 'mv-studio.js']) {
+for (const name of ['mv-studio-edit-history.js', 'mv-studio-timeline-tabs.js', 'mv-studio-timeline-interact.js', 'mv-studio-playback-clock.js',
+  'mv-studio.js']) {
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/' + name), 'utf8'), context);
 }
 
