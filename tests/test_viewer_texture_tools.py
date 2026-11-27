@@ -4,6 +4,7 @@ import copy
 import hashlib
 import io
 import json
+import re
 from pathlib import Path
 import secrets
 import struct
@@ -251,6 +252,53 @@ class ViewerTextureRoundtripTests(unittest.TestCase):
         self.assertEqual(restored["textures"], serialized["state"]["textures"])
         again = model_edits.export(other, restored, self.root / "restored")
         self.assertEqual(Path(first["preview_paths"][0]).read_bytes(), Path(again["preview_paths"][0]).read_bytes())
+
+    def test_recipe_keeps_optional_operations_without_changing_any_exported_byte(self):
+        """A row's operations (the Mod name's skin tone/painting split) are
+        recipe-only: kept and reopened, never part of a model or Mod ZIP byte."""
+        edited = self.edit_image()
+        legacy = self.state(self.operation(edited, kind="paint"))
+        listed = self.state(self.operation(edited, kind="paint", operations=["skin", "paint"]))
+        old, new = self.save(legacy), self.save(listed)
+        self.assertEqual(Path(old["preview_paths"][0]).read_bytes(), Path(new["preview_paths"][0]).read_bytes())
+        self.assertNotIn("operations", old["recipe"]["state"]["textures"][0])
+        self.assertEqual(new["recipe"]["state"]["textures"][0]["operations"], ["skin", "paint"])
+        on_disk = json.loads(Path(new["recipe_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["state"]["textures"][0]["operations"], ["skin", "paint"])
+        # The recipe file reopens with them; an older recipe without them still opens.
+        other, _ = self.open_session(new["original_paths"])
+        restored = model_edits.restore(other, on_disk)
+        self.assertEqual(restored["textures"][0]["operations"], ["skin", "paint"])
+        self.assertNotIn("operations", model_edits.restore(other, json.loads(json.dumps(old["recipe"])))["textures"][0])
+        again = model_edits.export(other, restored, self.root / "restored")
+        self.assertEqual(Path(again["preview_paths"][0]).read_bytes(), Path(old["preview_paths"][0]).read_bytes())
+        # Mod ZIP members are the same bytes with and without them.
+        job = SimpleNamespace(log=lambda _: None, should_stop=lambda: False, progress=lambda *args: None)
+        members = []
+        for index, state in enumerate((legacy, listed)):
+            runtime = self.root / ("runtime-%d" % index)
+            runtime.mkdir()
+            package = viewer_mod_flow.create_package(self.token, state, output_root=self.root / ("mod-%d" % index),
+                repo_root=runtime, cache_root=self.root / ("cache-%d" % index), display_name="Recoloured costume",
+                character_id=2, job=job)["mod_package"]
+            with zipfile.ZipFile(package["package_path"]) as archive:
+                # Each package draws its own random asset namespace ("v" + 16 hex digits).
+                prefix = next(re.match(r"v[0-9a-f]{16}(?=role)", name).group(0) for name in archive.namelist() if re.match(r"v[0-9a-f]{16}role", name))
+                members.append({name.replace(prefix, "NS"): archive.read(name).replace(prefix.encode(), b"NS") for name in archive.namelist()})
+        self.assertEqual(sorted(members[0]), sorted(members[1]))
+        self.assertTrue(any(name.endswith(".unity") for name in members[0]))
+        for name in members[0]:
+            self.assertEqual(members[0][name], members[1][name], name)
+        # Only the canonical list of pixel operations is accepted, never on a blush-only row.
+        for value in ([], ["paint", "skin"], ["skin", "skin"], ["blush"], ["skin", "blush"], "skin", [1], None, {"skin": True}):
+            with self.subTest(operations=value), self.assertRaisesRegex(ValueError, "operations are invalid"):
+                self.save(self.state(self.operation(edited, kind="paint", operations=value)))
+        with self.assertRaisesRegex(ValueError, "operations are invalid"):
+            self.save(self.state(self.operation(edited, kind="blush", operations=["paint"])))
+        from webtools import i18n
+        for lang in ("ko", "ja"):
+            self.assertNotEqual(i18n.tr("The texture edit operations are invalid.", lang), "The texture edit operations are invalid.", lang)
+        self.assertEqual(self.source.read_bytes(), self.raw)
 
     def test_body_and_mesh_edits_survive_same_source_texture_export(self):
         breast = next(row for row in self.metadata["nodes"] if row["name"] == "BreastSize")

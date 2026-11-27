@@ -13,7 +13,7 @@
     var result = null, resultModelId = "", resultSourcePaths = [], sourceInspection = null, authoringInspection = null, reviewingSaved = false, jobId = "", eventSource = null, requestController = null;
     var outputPaths = [], previewPaths = [], originalPaths = [], recipePath = "", events = [], lastContextId = "", lastAuthoringFingerprint = "";
     var modContext = "", manualModName = false, counterpartPath = "", modCharacters = "", lastPackage = null;
-    var suggestedNameKey = "", suggestedName = "";
+    var suggestedNameKey = "", suggestedName = "", savedNaming = null, savedNamingSerial = 0, carriedModName = null;
     var installedFingerprint = "", alreadyAdded = false, installedComparisonKey = "", installedComparisonValue = "";
     var resultBodyState = null, resultMeshState = null;
     // English sentences shown after the save status (the baked-blush save mode); translated on display.
@@ -39,6 +39,18 @@
     function listen(id, name, fn) {
       var target = element(id); if (!target) return;
       target.addEventListener(name, fn); events.push(function () { target.removeEventListener(name, fn); });
+    }
+    // A multi-line name field grows to show the whole suggested name (up to its
+    // CSS max-height). Only when the text or the width changed, and only while
+    // shown: a hidden field keeps its rows-based height.
+    var fittedName = "";
+    function fitModName(field) {
+      if (!field || field.tagName !== "TEXTAREA") return;
+      var width = field.clientWidth, key = width + "\n" + field.value;
+      if (!width || key === fittedName) return;
+      fittedName = key; field.style.height = "auto";
+      var style = global.getComputedStyle ? global.getComputedStyle(field) : null, border = style ? (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0) : 2;
+      if (field.scrollHeight) field.style.height = Math.ceil(field.scrollHeight + border) + "px";
     }
     // Sentences are joined with a space, except after a full-width stop (ja).
     function joinSentences(parts) { return parts.reduce(function (text, part) { return !part ? text : !text ? part : text + (/[。！？]$/.test(text) ? "" : " ") + part; }, ""); }
@@ -97,7 +109,7 @@
       var authored = editingState(), lightweight = Object.assign({}, authored);
       // Pixel payloads are immutable cached strings. A revision is enough for
       // frequent UI updates; serialize PNGs only for a concrete save operation.
-      if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256, blush: row.blush || null }; });
+      if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256, blush: row.blush || null, operations: row.operations || null }; });
       var fingerprint = JSON.stringify([lightweight, mesh, c.textureTools && c.textureTools.getRevision ? c.textureTools.getRevision() : 0]);
       var accessories = c.accessories || {}, accessoryBlocked = !!authored.accessoryUnclip && (accessories.pending || accessories.error);
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) { lastPackage = null; clearThumbnail(); }
@@ -150,7 +162,29 @@
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
     }
     function modContextKey(c) { return JSON.stringify([c.modelId || "", (c.editing || {}).token || "", c.loadedPaths || []]); }
-    function suggestedModName(c, rigState, authored) {
+    // The texture operations applied now, each once across all textures, in
+    // the name's order. The texture tools know several per texture and follow
+    // Undo/Redo; a texture row alone names its saved operations (an older row
+    // its one kind) and its baked blush.
+    var TEXTURE_OPERATIONS = [["costume", "Costume colour"], ["skin", "Skin tone"], ["blush", "Baked blush"], ["paint", "Texture painting"]];
+    function textureOperations(c, authored) {
+      var tools = c.textureTools, rows = tools && tools.getAppliedOperations ? tools.getAppliedOperations() : (authored.textures || []).map(function (row) {
+        return { operations: (row.kind !== "blush" && Array.isArray(row.operations) ? row.operations : [row.kind === "blush" ? "" : row.kind]).concat([row.blush ? "blush" : ""]) };
+      }), found = {};
+      rows.forEach(function (row) { (row.operations || []).forEach(function (kind) { found[kind] = true; }); });
+      return TEXTURE_OPERATIONS.filter(function (pair) { return found[pair[0]]; }).map(function (pair) { return pair[0]; });
+    }
+    // What the automatic name is built from: the current edits or, while the
+    // saved copy is reviewed (its own source has no edits), those it was saved with.
+    function namingInputs(c, rigState, authored) {
+      if (reviewingSaved && savedNaming) return savedNaming;
+      // The texture rows themselves (their PNGs) are not kept: textures names them.
+      return { c: { editing: c.editing, loadedPaths: (c.loadedPaths || []).slice(), transplantEdits: (c.transplantEdits || []).slice() }, rigState: rigState,
+        authored: { edits: authored.edits || [], outlines: authored.outlines, physics: authored.physics, accessoryUnclip: authored.accessoryUnclip },
+        textures: textureOperations(c, authored), mesh: editingMeshState() };
+    }
+    function suggestedModName(naming) {
+      var c = naming.c, rigState = naming.rigState, authored = naming.authored, textures = naming.textures;
       var metadata = c.editing || {}, packaging = metadata.modPackaging || {};
       var base = packaging.nameBase || basename((c.loadedPaths || [])[0] || "Costume").replace(/\.[^.]+$/, "");
       var groups = {}, entries = metadata.nodes || [], profile = rigState.thighProfile || {};
@@ -201,7 +235,7 @@
         });
         return translate(label) + " " + (transforms.every(function (part) { return part === transforms[0]; }) ? transforms[0] : translate("Custom adjustment"));
       });
-      var kinds = [], mesh = editingMeshState(), derived = packaging.derivedOwner || {};
+      var kinds = [], mesh = naming.mesh, derived = packaging.derivedOwner || {};
       (derived.operations || []).forEach(function (operation) {
         var title = { costume: "Costume transplant", part: "Costume part transplant", lower: "Lower body replacement", mesh: "Mesh editing" }[operation];
         if (title && kinds.indexOf(translate(title)) < 0) kinds.push(translate(title));
@@ -212,17 +246,16 @@
         if (mesh.meshes.some(function (row) { return row.positions && row.positions.length; })) kinds.push(translate("Vertex positions"));
         if (mesh.meshes.some(function (row) { return row.weights && row.weights.length; })) kinds.push(translate("Skin weights"));
       }
-      if (authored.textures && authored.textures.length) {
-        if (authored.textures.some(function (row) { return row.kind === "costume"; })) kinds.push(translate("Costume colour"));
-        if (authored.textures.some(function (row) { return row.kind === "skin"; })) kinds.push(translate("Skin tone"));
-        if (authored.textures.some(function (row) { return row.kind === "paint"; })) kinds.push(translate("Texture painting"));
-        if (authored.textures.some(function (row) { return !!row.blush; })) kinds.push(translate("Baked blush"));
-      }
+      TEXTURE_OPERATIONS.forEach(function (pair) { if (textures.indexOf(pair[0]) >= 0) kinds.push(translate(pair[1])); });
       if (authored.outlines && authored.outlines.length) kinds.push(translate("Outlines"));
       if (authored.physics && authored.physics.length) kinds.push(translate("Physics"));
       if (authored.accessoryUnclip) kinds.push(translate("Accessory Un-clip"));
       details = kinds.concat(details);
-      return [base].concat(details).join(" · ").slice(0, 120).replace(/[\uD800-\uDBFF]$/, "");
+      // A Mod name has at most 120 characters: whole labels only, never one cut
+      // short or a dangling separator.
+      var name = base.slice(0, 120).replace(/[\uD800-\uDBFF]$/, "");
+      for (var index = 0; index < details.length && (name + " · " + details[index]).length <= 120; index++) name += " · " + details[index];
+      return name;
     }
     function refreshModForm(c, rigState, authored, authoring) {
       var key = modContextKey(c), metadata = (c.editing || {}).modPackaging || {};
@@ -231,16 +264,22 @@
         element("viewer-mod-character").value = ""; element("viewer-mod-variant").value = "";
         if (element("viewer-mod-include-face")) element("viewer-mod-include-face").checked = false;
         element("viewer-mod-target").open = !!metadata.requiresCounterpart;
+        // A typed name stays with the same edits when their saved copy or
+        // their original is opened from this panel.
+        if (carriedModName && samePaths(c.loadedPaths, carriedModName.paths)) { manualModName = true; element("viewer-mod-name").value = carriedModName.name; carriedModName = null; }
       }
       var name = element("viewer-mod-name");
       if (!manualModName) {
         // Motion time and camera updates do not change the exported edits.
         // Reuse their suggestion instead of regrouping every rig node again.
-        var nameKey = JSON.stringify([key, metadata.nameBase, lastAuthoringFingerprint,
-          (rigState.thighProfile || {}).selected, (rigState.body || {}).breastPreset, translate("Mod name")]);
-        if (nameKey !== suggestedNameKey) { suggestedNameKey = nameKey; suggestedName = suggestedModName(c, rigState, authored); }
+        var naming = namingInputs(c, rigState, authored), nameKey = JSON.stringify([key, naming === savedNaming ? ["saved", savedNamingSerial] : [metadata.nameBase, lastAuthoringFingerprint, naming.textures,
+          (rigState.thighProfile || {}).selected, (rigState.body || {}).breastPreset], translate("Mod name")]);
+        if (nameKey !== suggestedNameKey) { suggestedNameKey = nameKey; suggestedName = suggestedModName(naming); }
         name.value = suggestedName;
       }
+      // The whole name, also where the field is narrower than it.
+      if (name.title !== name.value) name.title = name.value;
+      fitModName(name);
       var choices = metadata.characters || [], choicesKey = JSON.stringify([choices, metadata.characterId, translate("Automatic")]);
       var characters = element("viewer-mod-character");
       if (choicesKey !== modCharacters) {
@@ -379,6 +418,7 @@
         var value = { texture: { source: row.texture.source, file: row.texture.file, id: row.texture.id },
           sourceSha256: row.sourceSha256, png: row.png, kind: row.kind };
         if (row.blush) value.blush = { layer: row.blush.layer, k: row.blush.k, encoding: row.blush.encoding === undefined ? "exact" : row.blush.encoding };
+        if (row.operations) value.operations = row.operations.slice();
         return value;
       }).sort(function (a, b) {
         var order = a.texture.source - b.texture.source || a.texture.file - b.texture.file;
@@ -399,6 +439,7 @@
       var body = JSON.parse(JSON.stringify(authored)); delete body.unsupported;
       return { body: body, meshState: mesh ? JSON.parse(JSON.stringify(mesh)) : null, rawMesh: JSON.stringify(mesh), reviewingSaved: reviewingSaved, modelId: c.modelId, token: c.editing.token, paths: (c.loadedPaths || []).slice(),
         contextKey: modContextKey(c), canonical: canonicalBody(body, c.editing), rawBody: JSON.stringify(body),
+        naming: namingInputs(c, c.rig && c.rig.getState ? c.rig.getState() : {}, authored),
         inspection: options.captureInspection ? options.captureInspection() : null };
     }
     function stillCurrent(snapshot) {
@@ -437,6 +478,7 @@
       var savedPaths = paths(data.output_paths), models = paths(data.preview_paths);
       if (!savedPaths.length || !models.length || typeof data.recipe_path !== "string") throw new Error("The save response is invalid.");
       result = data; resultSourcePaths = snapshot.paths; sourceInspection = snapshot.inspection; authoringInspection = snapshot.inspection;
+      savedNaming = snapshot.naming || null; savedNamingSerial++;
       resultBodyState = JSON.parse(JSON.stringify(snapshot.body)); resultMeshState = snapshot.meshState ? JSON.parse(JSON.stringify(snapshot.meshState)) : null;
       outputPaths = savedPaths; previewPaths = models; originalPaths = paths(data.original_paths); recipePath = data.recipe_path; resultModelId = snapshot.modelId;
       if (outputPaths.indexOf(recipePath) < 0) outputPaths.push(recipePath);
@@ -578,7 +620,7 @@
         say("Save current model changes before opening the saved result.", "error"); return;
       }
       authoringInspection = ownOriginal && options.captureInspection ? options.captureInspection() : sourceInspection;
-      setBusy(true);
+      setBusy(true); carryModName(previewPaths);
       try {
         await options.openFiles(previewPaths.slice(), result && result.preview_variants);
         reviewingSaved = samePaths(context().loadedPaths, previewPaths);
@@ -586,12 +628,14 @@
         if (context().rig) context().rig.setEvaluationMode("animation");
         say("Reviewing the saved copy. Re-edit from original to continue.", "reviewing");
       } catch (failure) { say(failure.message, "error"); }
-      finally { setBusy(false); }
+      finally { carriedModName = null; setBusy(false); }
     }
+    // Remembers a typed Mod name for the model about to open (refreshModForm takes it).
+    function carryModName(paths) { carriedModName = manualModName ? { name: element("viewer-mod-name").value, paths: paths.slice() } : null; }
     async function reeditOriginal() {
       if (busy || !result || !result.recipe || !originalPaths.length) return;
       var recipe = result.recipe, originals = originalPaths.slice();
-      setBusy(true); say("Opening the original model and edit recipe…", "saving");
+      carryModName(originals); setBusy(true); say("Opening the original model and edit recipe…", "saving");
       try {
         await options.openFiles(originals, result.original_variants, authoringInspection || sourceInspection);
         reviewingSaved = false;
@@ -600,7 +644,7 @@
         var inspection = authoringInspection || sourceInspection;
         if (inspection && inspection.textureDocuments && options.restoreTextureDocuments) await options.restoreTextureDocuments(inspection.textureDocuments);
       } catch (failure) { say(failure.message, "error"); }
-      finally { setBusy(false); }
+      finally { carriedModName = null; setBusy(false); }
     }
     // Invalid number inputs intentionally do not update the last valid edit.
     // Observe their bubbled events as well, so Save cannot export stale values.
@@ -615,7 +659,13 @@
     listen("viewer-save", "click", save);
     listen("viewer-save-mod", "click", function () { saveMod(false); });
     listen("viewer-add-to-game", "click", function () { saveMod(true); });
-    listen("viewer-mod-name", "input", function () { manualModName = true; modChanged(); });
+    // The name is one line in the ZIP and in the game: Enter does not break
+    // it, and pasted line breaks become spaces (one for one, so the caret stays).
+    listen("viewer-mod-name", "keydown", function (event) { if (event.key === "Enter" && !event.isComposing && event.keyCode !== 229) event.preventDefault(); });
+    listen("viewer-mod-name", "input", function () {
+      if (/[\r\n]/.test(this.value)) { var start = this.selectionStart, end = this.selectionEnd; this.value = this.value.replace(/[\r\n]/g, " "); this.setSelectionRange(start, end); }
+      manualModName = true; modChanged();
+    });
     listen("viewer-mod-name-auto", "click", function () { manualModName = false; modChanged(); });
     ["viewer-mod-character", "viewer-mod-variant", "viewer-mod-include-face"].forEach(function (id) { listen(id, "change", modChanged); });
     var thumbnailChoice = element("viewer-mod-thumbnail-mode");

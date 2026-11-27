@@ -883,6 +883,8 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-mod-name-row, .viewer-mod-counterpart-row { display: flex; flex-wrap: wrap; gap: .4rem; min-width: 0; }
 .viewer-mod-name-row input, .viewer-mod-counterpart-row input { flex: 1 1 140px; min-width: 0; max-width: 100%; min-height: 44px; }
 .viewer-mod-name-row button, .viewer-mod-counterpart-row button { min-height: 44px; white-space: normal; }
+/* The name lists every applied edit; wrap it instead of hiding its end. */
+.viewer-mod-name-row textarea { flex: 1 1 100%; box-sizing: border-box; min-width: 0; max-width: 100%; min-height: 44px; max-height: 9.5em; resize: none; overflow-y: auto; font: inherit; line-height: 1.35; overflow-wrap: anywhere; }
 
 /* Native Mac file sidebar: display, import, then save. The same live cards
    remain part of panel preferences, with their disclosure states preserved. */
@@ -894,7 +896,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .elichika-macos #viewer-files-panel .viewer-option-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .elichika-macos #viewer-files-panel .viewer-option-row label, .elichika-macos #viewer-files-panel #viewer-parts label { min-width: 0; max-width: 100%; flex-wrap: wrap; overflow-wrap: anywhere; }
 .elichika-macos #viewer-files-panel input[type=checkbox] { flex: 0 0 auto; }
-.elichika-macos #viewer-files-panel select, .elichika-macos #viewer-files-panel input:not([type=checkbox]), .elichika-macos #viewer-files-panel fieldset { min-width: 0; max-width: 100%; }
+.elichika-macos #viewer-files-panel select, .elichika-macos #viewer-files-panel input:not([type=checkbox]), .elichika-macos #viewer-files-panel textarea, .elichika-macos #viewer-files-panel fieldset { min-width: 0; max-width: 100%; }
 .elichika-macos #viewer-files-panel .viewer-fov { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
 .elichika-macos #viewer-files-panel .viewer-fov > span { grid-column: 1 / -1; }
 .elichika-macos #viewer-files-panel .viewer-fov input { width: 100%; }
@@ -1046,7 +1048,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
   .field input[type=text], .field input[type=number], .field select,
   .gallery-bar input, .viewer-adjustments select,
   .viewer-adjustments input[type=number], .viewer-adjustments input[type=search],
-  .viewer-save-advanced select, .viewer-mod-name-row input,
+  .viewer-save-advanced select, .viewer-mod-name-row input, .viewer-mod-name-row textarea,
   .viewer-mod-counterpart-row input { min-height: 34px; padding: 6px 8px; font-size: 13px; line-height: 1.35; }
   .viewer-adjustments > summary, .viewer-node-editor > summary,
   .viewer-expression-advanced > summary, .viewer-scale-details > summary,

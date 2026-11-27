@@ -27,6 +27,7 @@ MAX_TEXTURE_PIXELS = 16 * 1024 * 1024
 MAX_TOTAL_PIXELS = 32 * 1024 * 1024
 MAX_TEXTURES = 128
 MAX_STATE_BYTES = 18 * 1024 * 1024
+PIXEL_OPERATIONS = ("costume", "skin", "paint")
 _DATA_SLOT = threading.BoundedSemaphore(1)
 _PNG_PREFIX = "data:image/png;base64,"
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
@@ -560,7 +561,7 @@ def validate(session, operations):
     out, seen, total, pixels = [], set(), 0, 0
     for operation in operations:
         if (not isinstance(operation, dict) or not {"texture", "sourceSha256", "png", "kind"} <= set(operation)
-                or not set(operation) <= {"texture", "sourceSha256", "png", "kind", "blush"}):
+                or not set(operation) <= {"texture", "sourceSha256", "png", "kind", "blush", "operations"}):
             _fail("Unsupported texture edit property.")
         row = _identity(operation["texture"], session)
         identity = operation["texture"]
@@ -572,6 +573,14 @@ def validate(session, operations):
             _fail("The texture edit belongs to different original model bytes.")
         if operation["kind"] not in ("costume", "skin", "paint", "blush"):
             _fail("Choose a supported texture edit mode.")
+        # Optional, recipe-only: what the changed pixels went through, in the Mod
+        # name's order, so a reopened recipe names them. The export ignores it.
+        if "operations" in operation:
+            listed = operation["operations"]
+            if (operation["kind"] == "blush" or type(listed) is not list or not listed
+                    or any(type(kind) is not str or kind not in PIXEL_OPERATIONS for kind in listed)
+                    or listed != [kind for kind in PIXEL_OPERATIONS if kind in listed]):
+                _fail("The texture edit operations are invalid.")
         if "blush" in operation or operation["kind"] == "blush":
             operation = dict(operation, blush=checked_blush(operation.get("blush")))
             if "blush" not in row:
