@@ -31,9 +31,9 @@ const KO = { "Costume colour": "의상 컬러", "Skin tone": "스킨톤", "Textu
       window.fixture = { rows: [], operations: [], tools: true };
       window.context = { current: true, modelId: "original", loadedPaths: ["/models/ch0001_co0001.unity"],
         editing: { available: true, token: "texture-name-fixture", nodes: [], modPackaging: { nameBase: "ch0001_co0001" } },
-        rig: { getAuthoringState: () => ({ version: 1, edits: [], savedSettingsEnabled: true, unsupported: [] }), getState: () => ({}), setAuthoringEnabled() {} },
+        rig: { getAuthoringState: () => ({ version: 1, edits: [], savedSettingsEnabled: true, unsupported: [] }), getState: () => ({}), setAuthoringEnabled() {}, setEvaluationMode() {}, restoreAuthoringState() {} },
         get textureTools() {
-          const tools = { getEdits: () => fixture.rows.map(row => ({ texture: identity(row.id), sourceSha256: "a".repeat(64), png: "data:image/png;base64,", kind: row.kind, ...(row.blush ? { blush: { layer: 0, k: 1.65 } } : {}) })),
+          const tools = { getEdits: () => fixture.rows.map(row => ({ texture: identity(row.id), sourceSha256: "a".repeat(64), png: "data:image/png;base64,", kind: row.kind, ...(row.blush ? { blush: { layer: 0, k: 1.65 } } : {}), ...(row.operations ? { operations: row.operations } : {}) })),
             hasPending: () => false, getRevision: () => 7 };
           if (fixture.tools) tools.getAppliedOperations = () => fixture.operations.map((operations, index) => ({ texture: identity(index + 1), operations: operations.slice() }));
           return tools;
@@ -43,11 +43,12 @@ const KO = { "Costume colour": "의상 컬러", "Skin tone": "스킨톤", "Textu
         if (url === "/api/viewer/edit/export") return { ok: true, json: async () => ({ job_id: "name-job" }) };
         if (url === "/api/viewer/edit/result/name-job") return { ok: true, json: async () => ({ output_paths: ["/saved/ch0001_co0001.unity", "/saved/recipe.json"],
           preview_paths: ["/saved/ch0001_co0001.unity"], original_paths: ["/originals/ch0001_co0001.unity"], recipe_path: "/saved/recipe.json", recipe: { state: {} } }) };
+        if (url === "/api/viewer/edit/restore") return { ok: true, json: async () => ({ state: { version: 1, edits: [], savedSettingsEnabled: true } }) };
         throw new Error("Unexpected request " + url);
       };
       window.EventSource = class { constructor() { setTimeout(() => this.onmessage && this.onmessage({ data: JSON.stringify({ type: "done", status: "done" }) }), 0); } close() {} };
       window.persistence = ViewerPersistence.create({ translate: value => ko[value] || value, context: () => window.context, pickFile() {},
-        openFiles: async paths => { context.loadedPaths = paths; context.modelId = "saved"; context.editing = Object.assign({}, context.editing, { token: "saved-copy" }); fixture.rows = []; fixture.operations = []; } });
+        openFiles: async paths => { context.loadedPaths = paths; context.modelId = paths[0]; context.editing = Object.assign({}, context.editing, { token: paths[0] }); fixture.rows = []; fixture.operations = []; persistence.refresh(); } });
       window.nameFor = (rows, operations, tools = true) => {
         fixture.rows = rows; fixture.operations = operations; fixture.tools = tools; persistence.refresh();
         return document.getElementById("viewer-mod-name").value;
@@ -66,10 +67,23 @@ const KO = { "Costume colour": "의상 컬러", "Skin tone": "스킨톤", "Textu
     assert.equal(await name([head], [["skin", "blush", "paint"]]), "ch0001_co0001 · 스킨톤 · 홍조 굽기 · 텍스쳐 페인팅");
     assert.equal(await name([], []), "ch0001_co0001");
     cases.push("the name follows the operations even when the saved rows and revision stay the same");
-    // Without the texture tools' operations, each row names its one kind and its baked blush.
+    // Without the texture tools' operations, each row names its saved operations
+    // (an older row its one kind) and its baked blush.
     assert.equal(await name([head, body], [], false), "ch0001_co0001 · 의상 컬러 · 홍조 굽기 · 텍스쳐 페인팅");
     assert.equal(await name([{ id: 14, kind: "blush", blush: true }], [], false), "ch0001_co0001 · 홍조 굽기");
-    cases.push("rows alone keep their one kind and the blush");
+    assert.equal(await name([{ id: 14, kind: "paint", blush: true, operations: ["skin"] }, body], [], false), "ch0001_co0001 · 의상 컬러 · 스킨톤 · 홍조 굽기");
+    cases.push("rows alone keep their saved operations, else their one kind, and the blush");
+    // The field shows the whole name as its tooltip too (it is wider than the field).
+    assert.equal(await page.evaluate(() => document.getElementById("viewer-mod-name").title), "ch0001_co0001 · 의상 컬러 · 스킨톤 · 홍조 굽기");
+    // At most 120 characters: whole labels only, never a dangling separator.
+    const long = "ch0001_co0001_a_rather_long_costume_file_name_typed_by_a_modder_for_the_name_truncation_check_x";
+    await page.evaluate(base => { context.editing.modPackaging.nameBase = base; }, long);
+    const cut = await name([head, body], [["blush", "paint"], ["costume", "skin"]]);
+    assert.equal(cut, long + " · 의상 컬러 · 스킨톤 · 홍조 굽기"); assert(cut.length <= 120 && (cut + " · 텍스쳐 페인팅").length > 120, cut.length);
+    await page.evaluate(base => { context.editing.modPackaging.nameBase = base; }, "x".repeat(130));
+    assert.equal(await name([head], [["skin"]]), "x".repeat(120));
+    await page.evaluate(() => { context.editing.modPackaging.nameBase = "ch0001_co0001"; });
+    cases.push("a long name keeps whole labels within 120 characters");
     // A typed name is never replaced; Automatic brings the suggestion back.
     await page.evaluate(() => { const field = document.getElementById("viewer-mod-name"); field.value = "내 의상"; field.dispatchEvent(new Event("input", { bubbles: true })); });
     assert.equal(await name([head], [["costume", "skin", "paint"]]), "내 의상");
@@ -84,6 +98,20 @@ const KO = { "Costume colour": "의상 컬러", "Skin tone": "스킨톤", "Textu
     await page.waitForFunction(() => !persistence.getState().busy && persistence.getState().reviewingSaved);
     assert.equal(await page.evaluate(() => { persistence.refresh(); return document.getElementById("viewer-mod-name").value; }), "ch0001_co0001 · 의상 컬러 · 스킨톤 · 홍조 굽기 · 텍스쳐 페인팅");
     cases.push("the reviewed saved copy keeps the name of the edits it was saved with");
+    // A typed name stays when the saved copy is reviewed and when its original is opened again.
+    await page.evaluate(() => { const field = document.getElementById("viewer-mod-name"); field.value = "내 의상 모드"; field.dispatchEvent(new Event("input", { bubbles: true })); });
+    await page.evaluate(() => document.getElementById("viewer-reedit-original").click());
+    await page.waitForFunction(() => !persistence.getState().busy && persistence.getState().status === "restored");
+    assert.equal(await page.evaluate(() => document.getElementById("viewer-mod-name").value), "내 의상 모드");
+    assert.equal(await page.evaluate(() => document.getElementById("viewer-mod-name-auto").disabled), false, "Automatic stays offered");
+    await page.evaluate(() => document.getElementById("viewer-open-saved").click());
+    await page.waitForFunction(() => !persistence.getState().busy && persistence.getState().reviewingSaved);
+    assert.equal(await page.evaluate(() => { persistence.refresh(); return document.getElementById("viewer-mod-name").value; }), "내 의상 모드");
+    // Opening another model starts with the suggestion again.
+    await page.evaluate(() => { context.loadedPaths = ["/models/other.unity"]; context.modelId = "other"; persistence.refresh(); });
+    assert.equal(await page.evaluate(() => document.getElementById("viewer-mod-name").value), "ch0001_co0001");
+    assert.equal(await page.evaluate(() => document.getElementById("viewer-mod-name-auto").disabled), true, "the suggestion is shown");
+    cases.push("a typed name stays through reviewing the saved copy and re-editing its original, not onto another model");
     assert.deepEqual(pageErrors, []); await page.close();
   } finally { await browser.close(); }
   process.stdout.write(JSON.stringify({ status: "PASS", cases }) + "\n");

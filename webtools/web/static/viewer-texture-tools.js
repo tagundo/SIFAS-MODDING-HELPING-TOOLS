@@ -137,20 +137,26 @@
   // texture's pixels went through, kept per undo step (entry.applied).
   var NAME_OPERATIONS = ["costume", "skin", "blush", "paint"], PIXEL_OPERATIONS = ["costume", "skin", "paint"];
   function pixelOperations(values) { return PIXEL_OPERATIONS.filter(function (kind) { return values.indexOf(kind) >= 0; }); }
-  // What one undo step does to them: a colour step adds its own, a step that
-  // replaces every layer starts again, selection, an empty new layer, a renamed
-  // layer and the bake change no pixels, and every other pixel or layer step is
-  // painting. "Restore texture" (a recipe) brings its own (entry.nextApplied).
+  // What one undo step does to them, decided by what the step changed (the
+  // engine's onHistoryRecord change), never by its label alone: a step that
+  // replaces every layer starts again; a step that changed no pixels (any
+  // selection, the selection brush included, the bake) or a layer step whose
+  // flattened image is unchanged (an empty layer added, hidden, moved, merged
+  // or deleted) keeps what was there; a colour step adds its own and every other
+  // step is painting. "Restore texture" (a recipe) brings its own (entry.nextApplied).
   var STEP_OPERATION = { "OKLCH color": "costume", "Skin tone": "skin" };
-  var NEUTRAL_STEPS = { "Selection": true, "Add layer": true, "Rename layer": true, "Bake blush": true, "Remove blush": true, "Restore texture": true };
   var REPLACING_STEPS = { "Restore original texture": [], "Import PNG": ["paint"], "Open texture project": ["paint"] };
-  function stepOperations(before, label) {
+  function stepOperations(before, label, change) {
     if (Object.prototype.hasOwnProperty.call(REPLACING_STEPS, label)) return REPLACING_STEPS[label].slice();
-    if (NEUTRAL_STEPS[label]) return before.slice();
+    if (!change || change.state || (change.layers ? !change.flattenedChanged() : !change.pixels)) return before.slice();
     return pixelOperations(before.concat([STEP_OPERATION[label] || "paint"]));
   }
-  // A recipe row has one kind; "blush" alone leaves the pixels unchanged.
+  // A saved texture row's pixel operations, in the name's order (recipe rows
+  // carry them as "operations" since they were added; the server ignores them
+  // for the export). A row without them has one kind; "blush" alone changes no pixels.
+  function validOperations(value) { return Array.isArray(value) && value.length > 0 && value.length <= PIXEL_OPERATIONS.length && value.every(function (kind, index) { return typeof kind === "string" && PIXEL_OPERATIONS.indexOf(kind) >= 0 && (!index || PIXEL_OPERATIONS.indexOf(value[index - 1]) < PIXEL_OPERATIONS.indexOf(kind)); }); }
   function rowOperations(kind) { return PIXEL_OPERATIONS.indexOf(kind) >= 0 ? [kind] : []; }
+  function recipeOperations(row) { return row.kind !== "blush" && validOperations(row.operations) ? row.operations.slice() : rowOperations(row.kind); }
   function nameOperations(pixels, blush) { return NAME_OPERATIONS.filter(function (kind) { return kind === "blush" ? !!blush : pixels.indexOf(kind) >= 0; }); }
   // An in-memory key for a layer project's exact content (the server keeps
   // every layer PNG byte), so one saved in this session opens with its operations.
@@ -1047,8 +1053,8 @@
         onSelectUV: function (point, tool, mode) { return selectUVAt(entry, point, tool, mode); },
         // Each undo step keeps the operations before and after it, so Undo, Redo
         // and steps dropped from the history never mix them up.
-        onHistoryRecord: function (label) {
-          var before = (entry.applied || []).slice(), after = entry.nextApplied ? pixelOperations(entry.nextApplied) : stepOperations(before, label);
+        onHistoryRecord: function (label, change) {
+          var before = (entry.applied || []).slice(), after = entry.nextApplied ? pixelOperations(entry.nextApplied) : stepOperations(before, label, change);
           entry.applied = after; return { before: before, after: after.slice() };
         },
         onHistoryTravel: function (step, redo) { if (step) entry.applied = (redo ? step.after : step.before).slice(); },
@@ -1519,23 +1525,26 @@
       refreshBlush();
     }
     function getEdits() {
-      if (pendingRestore) return pendingRestore.map(function (row) { var copy = Object.assign({}, row, { texture: Object.assign({}, row.texture) }); if (row.blush) copy.blush = copyBlush(row.blush); return copy; });
+      if (pendingRestore) return pendingRestore.map(function (row) { var copy = Object.assign({}, row, { texture: Object.assign({}, row.texture) }); if (row.blush) copy.blush = copyBlush(row.blush); if (row.operations) copy.operations = row.operations.slice(); return copy; });
       return Array.from(entries.values()).filter(function (entry) { return !entry.standalone && entry.modified && entry.png; }).map(function (entry) {
         var row = { texture: Object.assign({}, entry.record.texture), sourceSha256: entry.sourceSha256, png: entry.png, kind: entry.pixelModified ? entry.kind === "blush" ? "paint" : entry.kind : entry.blush ? "blush" : entry.kind };
         if (entry.blush) row.blush = copyBlush(entry.blush);
+        // The recipe keeps what the changed pixels went through, so a recipe
+        // reopened later names them as now. The kind stays the legacy one.
+        if (entry.pixelModified) row.operations = pixelOperationsOf(entry);
         return row;
       });
     }
-    // The operations each saved texture (getEdits) carries now, in the Mod
-    // name's order. Changed pixels without a known step (an older snapshot)
-    // count as the row's own kind, else as painting.
-    function textureOperations(entry) {
-      var pixels = entry.pixelModified ? (entry.applied || []).slice() : [];
-      if (entry.pixelModified && !pixels.length) pixels = PIXEL_OPERATIONS.indexOf(entry.kind) >= 0 ? [entry.kind] : ["paint"];
-      return nameOperations(pixels, entry.blush);
+    // The pixel operations a texture with changed pixels carries now, in the
+    // Mod name's order. Changed pixels without a known step (an older
+    // snapshot) count as the row's own kind, else as painting.
+    function pixelOperationsOf(entry) {
+      var pixels = (entry.applied || []).slice();
+      return pixels.length ? pixels : PIXEL_OPERATIONS.indexOf(entry.kind) >= 0 ? [entry.kind] : ["paint"];
     }
+    function textureOperations(entry) { return nameOperations(entry.pixelModified ? pixelOperationsOf(entry) : [], entry.blush); }
     function getAppliedOperations() {
-      if (pendingRestore) return pendingRestore.map(function (row) { return { texture: Object.assign({}, row.texture), operations: nameOperations(rowOperations(row.kind), row.blush) }; });
+      if (pendingRestore) return pendingRestore.map(function (row) { return { texture: Object.assign({}, row.texture), operations: nameOperations(recipeOperations(row), row.blush) }; });
       return Array.from(entries.values()).filter(function (entry) { return !entry.standalone && entry.modified && entry.png; }).map(function (entry) {
         return { texture: Object.assign({}, entry.record.texture), operations: textureOperations(entry) };
       });
@@ -2035,11 +2044,11 @@
       var identities = new Set();
       for (var index = 0; index < rows.length; index++) {
         var value = rows[index], identity = value && key(value.texture);
-        if (!identity || value.texture.source < 0 || value.texture.file < 0 || identities.has(identity) || typeof value.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sourceSha256) || typeof value.png !== "string" || value.png.indexOf("data:image/png;base64,") !== 0 || ["costume", "skin", "paint", "blush"].indexOf(value.kind) < 0 || value.blush !== undefined && !validBlush(value.blush) || value.kind === "blush" && !value.blush) return Promise.reject(new Error("Invalid texture recipe."));
+        if (!identity || value.texture.source < 0 || value.texture.file < 0 || identities.has(identity) || typeof value.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sourceSha256) || typeof value.png !== "string" || value.png.indexOf("data:image/png;base64,") !== 0 || ["costume", "skin", "paint", "blush"].indexOf(value.kind) < 0 || value.blush !== undefined && !validBlush(value.blush) || value.kind === "blush" && !value.blush || value.operations !== undefined && (value.kind === "blush" || !validOperations(value.operations))) return Promise.reject(new Error("Invalid texture recipe."));
         identities.add(identity);
       }
       var ready = refresh();
-      pendingRestore = rows.map(function (row) { var copy = Object.assign({}, row, { texture: Object.assign({}, row.texture) }); if (row.blush) copy.blush = copyBlush(row.blush); return copy; }); var retained = pendingRestore, born = epoch, plans = [];
+      pendingRestore = rows.map(function (row) { var copy = Object.assign({}, row, { texture: Object.assign({}, row.texture) }); if (row.blush) copy.blush = copyBlush(row.blush); if (row.operations) copy.operations = row.operations.slice(); return copy; }); var retained = pendingRestore, born = epoch, plans = [];
       loading++; refreshButtons();
       return ready.then(function () {
         var chain = Promise.resolve();
@@ -2072,8 +2081,9 @@
         });
         plans.forEach(function (plan) {
           var entry = plan.entry, nextBlush = copyBlush(plan.row.blush), step = blushStep(entry, entry.blush, nextBlush);
-          // A recipe row names one kind. The same pixels keep what this session knows about them.
-          if (!plan.same) { suppressed++; entry.nextApplied = rowOperations(plan.row.kind); try { replaceImage(entry, plan.image, { label: "Restore texture", custom: step }); } finally { suppressed--; entry.nextApplied = null; } }
+          // A recipe row names its operations (an older one its one kind). The
+          // same pixels keep what this session knows about them.
+          if (!plan.same) { suppressed++; entry.nextApplied = recipeOperations(plan.row); try { replaceImage(entry, plan.image, { label: "Restore texture", custom: step }); } finally { suppressed--; entry.nextApplied = null; } }
           else if (step) entry.engine.recordState("Restore texture", step);
           entry.png = plan.row.png; entry.kind = plan.row.kind || "paint"; entry.blush = nextBlush;
           entry.pixelModified = !equalPixels(plan.image, entry.original); entry.modified = entry.pixelModified || !!entry.blush; upload(entry);
@@ -2151,7 +2161,7 @@
     };
   }
   var exported = { create: create, key: key, sameIdentity: same, equalPixels: equalPixels, sampledUv: sampledUv, triangleCopies: triangleCopies, rasterTriangle: rasterTriangle, rasterFaces: rasterFaces, growMask: growMask, stampMaskCircle: stampMaskCircle, brushMask: brushMask,
-    operationsAfterStep: stepOperations, nameOperations: nameOperations, rowOperations: rowOperations };
+    operationsAfterStep: stepOperations, nameOperations: nameOperations, rowOperations: rowOperations, recipeOperations: recipeOperations };
   global.ViewerTextureTools = exported;
   if (typeof module === "object" && module.exports) module.exports = exported;
 }(typeof window !== "undefined" ? window : globalThis));

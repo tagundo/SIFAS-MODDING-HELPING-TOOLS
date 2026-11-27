@@ -298,4 +298,45 @@ test("every undo step carries the host's value back on undo and redo, also after
   editor.destroy();
 });
 
+test("each new undo step says what it changed: pixels, the selection only, layers (flattened or not) or host state", () => {
+  const steps = [], flat = [11, 22, 33, 255];
+  const editor = create({ onHistoryRecord: (label, change) => {
+    steps.push({ label, pixels: change.pixels, selection: change.selection, layers: change.layers, state: change.state, flattened: change.flattenedChanged() });
+    return change;
+  } });
+  editor.setImage(image(2, 1, flat));
+  const last = () => steps[steps.length - 1];
+  const expect = (label, wanted) => assert.deepEqual(last(), Object.assign({ label, pixels: false, selection: false, layers: false, state: false, flattened: false }, wanted), label);
+  // A selection changes no pixels, whatever its label.
+  editor.setMask(new Uint8Array([255, 0])); expect("Selection", { selection: true });
+  editor.setMask(null); expect("Selection", { selection: true });
+  editor.applyImageData(image(2, 1, [40, 22, 33, 255]), { label: "Skin tone" }); expect("Skin tone", { pixels: true, flattened: true });
+  editor.paintStroke([{ x: .5, y: .5 }], { size: 1, softness: 0, color: [200, 100, 50, 255] }); expect("Brush", { pixels: true, flattened: true });
+  // Layer steps that leave the flattened image as it was, and ones that change it.
+  const empty = add(editor, "Empty"); expect("Add layer", { layers: true });
+  editor.setLayerOpacity(empty, .5); expect("Layer opacity", { layers: true });
+  editor.setLayerVisible(empty, false); expect("Layer visibility", { layers: true });
+  editor.setLayerVisible(empty, true); expect("Layer visibility", { layers: true });
+  editor.renameLayer(empty, "Renamed"); expect("Rename layer", { layers: true });
+  editor.duplicateLayer(empty); expect("Duplicate layer", { layers: true });
+  editor.mergeLayerDown(active(editor)); expect("Merge layer down", { layers: true });
+  editor.moveLayer(active(editor), 0); expect("Reorder layer", { layers: true });
+  editor.moveLayer(active(editor), 1); editor.removeLayer(active(editor)); expect("Remove layer", { layers: true });
+  const painted = add(editor, "Painted", image(2, 1, [[250, 0, 0, 255], [0, 0, 0, 0]])); expect("Add layer", { layers: true, flattened: true });
+  editor.setLayerOpacity(painted, .5); expect("Layer opacity", { layers: true, flattened: true });
+  editor.setLayerVisible(painted, false); expect("Layer visibility", { layers: true, flattened: true });
+  editor.setLayerVisible(painted, true); editor.removeLayer(painted); expect("Remove layer", { layers: true, flattened: true });
+  // Two painted layers swapped: the same images at the same opacities, in another order.
+  const lower = add(editor, "Lower", image(2, 1, [[0, 200, 0, 255], [0, 0, 0, 0]])), upper = add(editor, "Upper", image(2, 1, [[0, 0, 200, 255], [0, 0, 0, 0]]));
+  editor.moveLayer(upper, editor.getLayers().findIndex(row => row.id === lower)); expect("Reorder layer", { layers: true, flattened: true });
+  editor.removeLayer(upper); editor.removeLayer(lower);
+  editor.recordState("Bake blush", () => {}); expect("Bake blush", { state: true });
+  editor.replaceImageData(image(2, 1, flat), { label: "Restore original texture" }); expect("Restore original texture", { layers: true, flattened: true });
+  // The comparison belongs to the step's own call: later it would compare other layers.
+  let kept = null; const late = create({ onHistoryRecord: (label, change) => { kept = change; } });
+  late.setImage(image(1, 1, flat)); add(late, "Late");
+  assert.throws(() => kept.flattenedChanged(), /during onHistoryRecord only/);
+  editor.destroy(); late.destroy();
+});
+
 process.stdout.write(JSON.stringify({ status: "PASS", cases: cases.length, names: cases }) + "\n");

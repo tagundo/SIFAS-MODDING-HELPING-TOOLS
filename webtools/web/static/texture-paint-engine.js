@@ -32,12 +32,16 @@
  * change(false) undoes it. replaceImageData/restoreProject accept the same
  * config.custom function, run with that layer step in one undo entry.
  *
- * onHistoryRecord(label) is called once for every new undo step, after its
- * change is made and kept; its result stays with that step. onHistoryTravel(
- * value, redo) gets that result back when the step is undone (redo false) or
- * redone (redo true), before any of the step's changes or events. The host
- * keeps state beside the pixels this way (the texture operations a Mod name
- * lists) without any step of its own.
+ * onHistoryRecord(label, change) is called once for every new undo step, after
+ * its change is made and kept; its result stays with that step. change says
+ * what the step changed: pixels (a layer's pixels), selection, layers (the
+ * layer stack: change.flattenedChanged() then compares the flattened image
+ * before and after, valid during this call only) or state (recordState only).
+ * A selection brush stroke, for one, is a pixels-false step whatever its label.
+ * onHistoryTravel(value, redo) gets that result back when the step is undone
+ * (redo false) or redone (redo true), before any of the step's changes or
+ * events. The host keeps state beside the pixels this way (the texture
+ * operations a Mod name lists) without any step of its own.
  *
  * copySelection/cutSelection use a bounded in-app clipboard shared by engines.
  * pasteClipboard/startMoveSelection create pending floating pixels: getImage
@@ -224,25 +228,44 @@
       }
       var result = display ? displayComposite : composite, owned = display ? displayOwned : compositeOwned, dirty = display ? displayDirty : compositeDirty;
       if (!result || !owned || result.width !== doc.width || result.height !== doc.height) { result = { width: doc.width, height: doc.height, data: new Uint8ClampedArray(doc.data.length) }; dirty = dimensions(); }
-      if (dirty) {
-        for (var y = dirty.y; y < dirty.y + dirty.height; y++) for (var x = dirty.x; x < dirty.x + dirty.width; x++) {
-          var offset = (y * doc.width + x) * 4, red = 0, green = 0, blue = 0, alphaByte = 0;
-          for (var layerIndex = 0; layerIndex < visible.length; layerIndex++) {
-            var source = sources[layerIndex].data, opacity = visible[layerIndex].opacity;
-            if (!layerIndex) { red = source[offset]; green = source[offset + 1]; blue = source[offset + 2]; alphaByte = Math.round(source[offset + 3] * opacity); continue; }
-            var alpha = source[offset + 3] / 255 * opacity; if (!alpha) continue;
-            var old = alphaByte / 255, combined = alpha + old * (1 - alpha);
-            red = Math.round((source[offset] * alpha + red * old * (1 - alpha)) / combined);
-            green = Math.round((source[offset + 1] * alpha + green * old * (1 - alpha)) / combined);
-            blue = Math.round((source[offset + 2] * alpha + blue * old * (1 - alpha)) / combined);
-            alphaByte = Math.round(combined * 255);
-          }
-          result.data[offset] = red; result.data[offset + 1] = green; result.data[offset + 2] = blue; result.data[offset + 3] = alphaByte;
-        }
-      }
+      if (dirty) blendLayers(result.data, visible, sources, dirty);
       if (display) { displayComposite = result; displayOwned = true; displayDirty = null; }
       else { composite = result; compositeOwned = true; compositeDirty = null; }
       return result;
+    }
+    function blendLayers(target, visible, sources, dirty) {
+      for (var y = dirty.y; y < dirty.y + dirty.height; y++) for (var x = dirty.x; x < dirty.x + dirty.width; x++) {
+        var offset = (y * doc.width + x) * 4, red = 0, green = 0, blue = 0, alphaByte = 0;
+        for (var layerIndex = 0; layerIndex < visible.length; layerIndex++) {
+          var source = sources[layerIndex].data, opacity = visible[layerIndex].opacity;
+          if (!layerIndex) { red = source[offset]; green = source[offset + 1]; blue = source[offset + 2]; alphaByte = Math.round(source[offset + 3] * opacity); continue; }
+          var alpha = source[offset + 3] / 255 * opacity; if (!alpha) continue;
+          var old = alphaByte / 255, combined = alpha + old * (1 - alpha);
+          red = Math.round((source[offset] * alpha + red * old * (1 - alpha)) / combined);
+          green = Math.round((source[offset + 1] * alpha + green * old * (1 - alpha)) / combined);
+          blue = Math.round((source[offset + 2] * alpha + blue * old * (1 - alpha)) / combined);
+          alphaByte = Math.round(combined * 255);
+        }
+        target[offset] = red; target[offset + 1] = green; target[offset + 2] = blue; target[offset + 3] = alphaByte;
+      }
+    }
+    // The flattened RGBA bytes of a layer list (getImage's rule), without
+    // touching the composite caches: a fresh array unless one opaque layer shows.
+    function flattenLayers(list) {
+      var visible = list.filter(function (layer) { return layer.visible && layer.opacity > 0; });
+      if (visible.length === 1 && visible[0].opacity === 1) return visible[0].image.data;
+      var data = new Uint8ClampedArray(doc.data.length);
+      blendLayers(data, visible, visible.map(function (layer) { return layer.image; }), dimensions());
+      return data;
+    }
+    function sameFlattened(before, after) {
+      var shown = function (list) { return list.filter(function (layer) { return layer.visible && layer.opacity > 0; }); }, left = shown(before), right = shown(after);
+      // The same visible images at the same opacities flatten alike (a rename, a hidden layer moved).
+      if (left.length === right.length && left.every(function (layer, index) { return layer.image.data === right[index].image.data && layer.opacity === right[index].opacity; })) return true;
+      var a = flattenLayers(before), b = flattenLayers(after);
+      if (a === b) return true;
+      for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
     }
     function nextLayerId() { var id; do { id = "layer_" + (++layerSerial).toString(36); } while (layers.some(function (layer) { return layer.id === id; })); return id; }
     function checkedName(value) { if (typeof value !== "string" || !value.trim() || /[\u0000-\u001f\u007f]/.test(value) || Array.from(value).length > 128) throw new Error("Use a layer name of 1 to 128 characters."); return value.trim(); }
@@ -262,8 +285,21 @@
         historyBytes = retainedBytes();
       }
     }
-    // The host's value for a new undo step (onHistoryRecord), kept with it.
-    function recorded(record) { if (options.onHistoryRecord) record.host = options.onHistoryRecord(record.label); return record; }
+    // The host's value for a new undo step (onHistoryRecord), kept with it. A
+    // layer step's project is the stack before it; layers is the stack after it.
+    function recorded(record) {
+      if (!options.onHistoryRecord) return record;
+      var before = record.project, flattened = null, live = true;
+      try {
+        record.host = options.onHistoryRecord(record.label, { pixels: record.image.length > 0, selection: record.mask.length > 0 || record.activeBefore !== record.activeAfter, layers: !!before, state: !!record.stateOnly,
+          flattenedChanged: function () {
+            if (!live) throw new Error("A history step's flattened image is compared during onHistoryRecord only.");
+            if (flattened === null) flattened = before ? !sameFlattened(before.layers, layers) : record.image.length > 0;
+            return flattened;
+          } });
+      } finally { live = false; }
+      return record;
+    }
     function changeLayers(label, callback, config) {
       requireImage(); if (floating) throw new Error("Apply or cancel the floating selection first."); if (transaction) rollback();
       var before = snapshot(false), oldHistory = history.slice(), oldFuture = future.slice(); callback();

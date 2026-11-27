@@ -12,7 +12,7 @@
     var result = null, resultModelId = "", resultSourcePaths = [], sourceInspection = null, authoringInspection = null, reviewingSaved = false, jobId = "", eventSource = null, requestController = null;
     var outputPaths = [], previewPaths = [], originalPaths = [], recipePath = "", events = [], lastContextId = "", lastAuthoringFingerprint = "";
     var modContext = "", manualModName = false, counterpartPath = "", modCharacters = "", lastPackage = null;
-    var suggestedNameKey = "", suggestedName = "", savedNaming = null, savedNamingSerial = 0;
+    var suggestedNameKey = "", suggestedName = "", savedNaming = null, savedNamingSerial = 0, carriedModName = null;
     var installedFingerprint = "", alreadyAdded = false, installedComparisonKey = "", installedComparisonValue = "";
     var resultBodyState = null, resultMeshState = null;
     // English sentences shown after the save status (the baked-blush save mode); translated on display.
@@ -96,7 +96,7 @@
       var authored = editingState(), lightweight = Object.assign({}, authored);
       // Pixel payloads are immutable cached strings. A revision is enough for
       // frequent UI updates; serialize PNGs only for a concrete save operation.
-      if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256, blush: row.blush || null }; });
+      if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256, blush: row.blush || null, operations: row.operations || null }; });
       var fingerprint = JSON.stringify([lightweight, mesh, c.textureTools && c.textureTools.getRevision ? c.textureTools.getRevision() : 0]);
       var accessories = c.accessories || {}, accessoryBlocked = !!authored.accessoryUnclip && (accessories.pending || accessories.error);
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) { lastPackage = null; clearThumbnail(); }
@@ -151,11 +151,12 @@
     function modContextKey(c) { return JSON.stringify([c.modelId || "", (c.editing || {}).token || "", c.loadedPaths || []]); }
     // The texture operations applied now, each once across all textures, in
     // the name's order. The texture tools know several per texture and follow
-    // Undo/Redo; a texture row alone names its one kind and its baked blush.
+    // Undo/Redo; a texture row alone names its saved operations (an older row
+    // its one kind) and its baked blush.
     var TEXTURE_OPERATIONS = [["costume", "Costume colour"], ["skin", "Skin tone"], ["blush", "Baked blush"], ["paint", "Texture painting"]];
     function textureOperations(c, authored) {
       var tools = c.textureTools, rows = tools && tools.getAppliedOperations ? tools.getAppliedOperations() : (authored.textures || []).map(function (row) {
-        return { operations: [row.kind === "blush" ? "" : row.kind, row.blush ? "blush" : ""] };
+        return { operations: (row.kind !== "blush" && Array.isArray(row.operations) ? row.operations : [row.kind === "blush" ? "" : row.kind]).concat([row.blush ? "blush" : ""]) };
       }), found = {};
       rows.forEach(function (row) { (row.operations || []).forEach(function (kind) { found[kind] = true; }); });
       return TEXTURE_OPERATIONS.filter(function (pair) { return found[pair[0]]; }).map(function (pair) { return pair[0]; });
@@ -237,7 +238,11 @@
       if (authored.physics && authored.physics.length) kinds.push(translate("Physics"));
       if (authored.accessoryUnclip) kinds.push(translate("Accessory Un-clip"));
       details = kinds.concat(details);
-      return [base].concat(details).join(" · ").slice(0, 120).replace(/[\uD800-\uDBFF]$/, "");
+      // A Mod name has at most 120 characters: whole labels only, never one cut
+      // short or a dangling separator.
+      var name = base.slice(0, 120).replace(/[\uD800-\uDBFF]$/, "");
+      for (var index = 0; index < details.length && (name + " · " + details[index]).length <= 120; index++) name += " · " + details[index];
+      return name;
     }
     function refreshModForm(c, rigState, authored, authoring) {
       var key = modContextKey(c), metadata = (c.editing || {}).modPackaging || {};
@@ -246,6 +251,9 @@
         element("viewer-mod-character").value = ""; element("viewer-mod-variant").value = "";
         if (element("viewer-mod-include-face")) element("viewer-mod-include-face").checked = false;
         element("viewer-mod-target").open = !!metadata.requiresCounterpart;
+        // A typed name stays with the same edits when their saved copy or
+        // their original is opened from this panel.
+        if (carriedModName && samePaths(c.loadedPaths, carriedModName.paths)) { manualModName = true; element("viewer-mod-name").value = carriedModName.name; carriedModName = null; }
       }
       var name = element("viewer-mod-name");
       if (!manualModName) {
@@ -256,6 +264,8 @@
         if (nameKey !== suggestedNameKey) { suggestedNameKey = nameKey; suggestedName = suggestedModName(naming); }
         name.value = suggestedName;
       }
+      // The whole name, also where the field is narrower than it.
+      if (name.title !== name.value) name.title = name.value;
       var choices = metadata.characters || [], choicesKey = JSON.stringify([choices, metadata.characterId, translate("Automatic")]);
       var characters = element("viewer-mod-character");
       if (choicesKey !== modCharacters) {
@@ -387,6 +397,7 @@
         var value = { texture: { source: row.texture.source, file: row.texture.file, id: row.texture.id },
           sourceSha256: row.sourceSha256, png: row.png, kind: row.kind };
         if (row.blush) value.blush = { layer: row.blush.layer, k: row.blush.k, encoding: row.blush.encoding === undefined ? "exact" : row.blush.encoding };
+        if (row.operations) value.operations = row.operations.slice();
         return value;
       }).sort(function (a, b) {
         var order = a.texture.source - b.texture.source || a.texture.file - b.texture.file;
@@ -579,7 +590,7 @@
         say("Save current model changes before opening the saved result.", "error"); return;
       }
       authoringInspection = ownOriginal && options.captureInspection ? options.captureInspection() : sourceInspection;
-      setBusy(true);
+      setBusy(true); carryModName(previewPaths);
       try {
         await options.openFiles(previewPaths.slice(), result && result.preview_variants);
         reviewingSaved = samePaths(context().loadedPaths, previewPaths);
@@ -587,12 +598,14 @@
         if (context().rig) context().rig.setEvaluationMode("animation");
         say("Reviewing the saved copy. Re-edit from original to continue.", "reviewing");
       } catch (failure) { say(failure.message, "error"); }
-      finally { setBusy(false); }
+      finally { carriedModName = null; setBusy(false); }
     }
+    // Remembers a typed Mod name for the model about to open (refreshModForm takes it).
+    function carryModName(paths) { carriedModName = manualModName ? { name: element("viewer-mod-name").value, paths: paths.slice() } : null; }
     async function reeditOriginal() {
       if (busy || !result || !result.recipe || !originalPaths.length) return;
       var recipe = result.recipe, originals = originalPaths.slice();
-      setBusy(true); say("Opening the original model and edit recipe…", "saving");
+      carryModName(originals); setBusy(true); say("Opening the original model and edit recipe…", "saving");
       try {
         await options.openFiles(originals, result.original_variants, authoringInspection || sourceInspection);
         reviewingSaved = false;
@@ -601,7 +614,7 @@
         var inspection = authoringInspection || sourceInspection;
         if (inspection && inspection.textureDocuments && options.restoreTextureDocuments) await options.restoreTextureDocuments(inspection.textureDocuments);
       } catch (failure) { say(failure.message, "error"); }
-      finally { setBusy(false); }
+      finally { carriedModName = null; setBusy(false); }
     }
     // Invalid number inputs intentionally do not update the last valid edit.
     // Observe their bubbled events as well, so Save cannot export stale values.
