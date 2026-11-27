@@ -94,6 +94,7 @@ async function main() {
     }
     assert.deepStrictEqual(errors, []); delete report.inProgress; report.status = 'PASS';
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); throw error; }
-  finally { if (context) await context.close(); if (browser) await browser.close(); if (server) { server.child.kill(); server.stream.end(); } fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ status: report.status, evidence, error: report.error })); }
+  finally { if (context) await context.close(); if (browser) await browser.close(); if (server) { server.child.kill(); server.stream.end(); await new Promise(resolve => { if (server.child.exitCode !== null || server.child.signalCode !== null) return resolve(); server.child.once('exit', resolve); setTimeout(resolve, 5000).unref(); }); }
+    fs.rmSync(library, { recursive: true, force: true }); fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ status: report.status, evidence, error: report.error })); }
 }
 main().catch(() => { process.exitCode = 1; });
