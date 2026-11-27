@@ -1,6 +1,8 @@
 """Read native Unity MV tracks and their existing scene events."""
+import itertools
 import math
 import re
+import struct
 import time
 from collections import Counter, defaultdict
 
@@ -253,6 +255,18 @@ _CAMERA_FRAMES = "A camera shot with camera edits needs a length of whole frames
 _CAMERA_POINTS = "Keep one camera point per frame of the shot, at its frame times."
 
 
+def _camera_rotation(values, euler_order=None):
+    """A camera point's rotation from its native samples: Euler degrees in `euler_order`, or a
+    quaternion (`euler_order` None). The parse and the writer's own check share this computation."""
+    rotation = animation._quaternion(values, euler=euler_order is not None,
+                                     order=animation.DEFAULT_EULER_ORDER if euler_order is None else euler_order)
+    # The viewer helper returns glTF handedness. This descriptor exposes
+    # Unity coordinates, keeping handedness conversion with the renderer.
+    rotation[1] = -rotation[1]
+    rotation[2] = -rotation[2]
+    return rotation
+
+
 def _camera_count(duration, rate):
     """The samples of a camera shot on its grid: one every 1/rate s, the last one at the clip's end."""
     return math.ceil(duration * rate - 1e-9) + 1
@@ -311,12 +325,8 @@ def _camera_frames(obj, clip, duration, deadline, remaining_frames, euler_order=
         stamp = max(first, min(last, first + source_offset + local * speed))
         position = [animation._finite(evaluate(value, stamp)) for value in channels["position"]]
         orientation = channels.get("rotation") or channels["euler"]
-        rotation = animation._quaternion([evaluate(value, stamp) for value in orientation],
-                                         euler="rotation" not in channels, order=euler_order)
-        # The viewer helper returns glTF handedness. This descriptor exposes
-        # Unity coordinates, keeping handedness conversion with the renderer.
-        rotation[1] = -rotation[1]
-        rotation[2] = -rotation[2]
+        rotation = _camera_rotation([evaluate(value, stamp) for value in orientation],
+                                    euler_order if "rotation" not in channels else None)
         fov = animation._finite(evaluate(channels["fov"][0], stamp)) if "fov" in channels else None
         result.append({"time": local, "position": position, "rotation": rotation, "fov": fov})
     return result
@@ -1125,14 +1135,81 @@ def _camera_vector(value, length, label):
     return [_time(item, label, minimum=-1_000_000, maximum=1_000_000) for item in value]
 
 
+_F32, _U32 = struct.Struct("<f"), struct.Struct("<I")
+
+
+def _f32(value):
+    return _F32.unpack(_F32.pack(value))[0]
+
+
+def _f32_step(value, direction):
+    """The float32 next to float32 `value`, one step up (direction 1) or down (-1)."""
+    if value == 0:
+        return _F32.unpack(_U32.pack(1 if direction > 0 else 0x80000001))[0]
+    bits = _U32.unpack(_F32.pack(value))[0]
+    return _F32.unpack(_U32.pack(bits + 1 if (value > 0) == (direction > 0) else bits - 1))[0]
+
+
+def _f32_at_least(value):
+    """The smallest float32 at or above `value` (a positive time)."""
+    rounded = _f32(value)
+    return rounded if rounded >= value else _f32_step(rounded, 1)
+
+
+# Euler angles (degrees) closer to 0 than this are written as 0. Converting a written sample back
+# and forth (Euler -> quaternion -> Euler, in doubles) leaves an angle that is 0 at about 1e-15
+# degrees, and float32 keeps such values, so each export would write different noise. 1e-5 degrees
+# is below the float32 step of an angle of about 2 degrees and above that noise by eight orders.
+_EULER_ZERO = 1e-5
+# A quaternion's float32 neighbours: one to four components one float32 step away, fewer first.
+_QUATERNION_STEPS = tuple(combo for count in (1, 2, 3, 4) for combo in itertools.product((0, -1, 1), repeat=4)
+                          if sum(1 for step in combo if step) == count)
+
+
+def _camera_rotation_samples(rotation, euler_order, reference):
+    """The float32 rotation samples (Euler degrees in `euler_order`, nearest `reference`, or a
+    quaternion when `euler_order` is None) to store for one camera point, written so that the next
+    parse -> export writes them again.
+
+    MV Studio's checks (check_editor_bytes, convert_parsed, another slot, a pack's other platform)
+    export a written timeline's parsed points once more and compare bytes. A parsed rotation is the
+    normalized quaternion of the stored float32 samples (_camera_rotation), and rounding it back does
+    not always give those samples: a quaternion normalized again moves its small components a float32
+    step, and an Euler angle near 0 or near the middle-axis gimbal moves by noise. So the samples
+    stored are the first float32 set found whose parse is exactly `rotation` (compared as given: a
+    parsed rotation is normalized already): b, the point rounded to float32 samples, or for a
+    quaternion one of b's float32 neighbours. When none is (an edited point), the point becomes b's
+    parse and the search repeats; what it finds is what the next export, starting from that parse,
+    finds first. Measured: every camera shot of 11 MVs and random rotations, near-gimbal ones too,
+    are found within the eight rounds; past them, b is written."""
+    euler = euler_order is not None
+    target = list(rotation)
+    for _ in range(8):
+        length = math.sqrt(sum(axis * axis for axis in target))
+        unit = [axis / length for axis in target]
+        if euler:
+            angles = animation.unity_euler_near(unit, euler_order, reference)
+            base = tuple(0. if abs(angle) < _EULER_ZERO else _f32(angle) + 0. for angle in angles)
+            candidates = (base,)
+        else:
+            base = tuple(_f32(axis) + 0. for axis in unit)
+            candidates = itertools.chain((base,), (tuple(_f32_step(value, step) if step else value
+                                                         for value, step in zip(base, combo))
+                                                   for combo in _QUATERNION_STEPS))
+        for candidate in candidates:
+            if _camera_rotation(list(candidate), euler_order) == target:
+                return list(candidate)
+        target = _camera_rotation(list(base), euler_order)
+    return list(base)
+
+
 def _write_camera(tree, clip, old_event, new_event):
     """Write a shot's points as the clip's dense 60 Hz samples, its stop time at the shot's end.
 
     `clip` is the TimelineClip as it will be saved (its new timing). A resized shot (new_event's
     duration) brings the points of its new grid, ceil(duration·60) + 1 of them at min(i/60,
-    duration): the clip is written for that length."""
-    unity_euler_near = animation.unity_euler_near
-
+    duration): the clip is written for that length. The export of a parse of the result writes the
+    same samples again (_camera_rotation_samples; positions and FOV are float32 already)."""
     after = new_event["values"]["keyframes"]
     span = new_event["duration"]
     if old_event["values"].get("clipIn", 0) != 0 or old_event["values"].get("timeScale", 1) != 1:
@@ -1147,7 +1224,7 @@ def _write_camera(tree, clip, old_event, new_event):
     if not isinstance(after, list) or len(after) != count or not 2 <= count <= _MAX_CAMERA_FRAMES:
         raise ValueError(_CAMERA_POINTS)
     order = _camera_sample_order(tree)
-    sample_array, previous_euler = [], None
+    sample_array, previous_euler, euler_order = [], None, None
     if "euler" in order:
         channels = _camera_channels(tree, None)
         euler_order = channels["eulerOrder"]
@@ -1158,18 +1235,19 @@ def _write_camera(tree, clip, old_event, new_event):
         if (not isinstance(point, dict) or set(point) != {"time", "position", "rotation", "fov"}
                 or point["time"] != min(span, index / rate)):
             raise ValueError(_CAMERA_POINTS)
-        position = _camera_vector(point["position"], 3, "position")
+        # +0.: a -0. sample would parse as 0. between two samples (the dense lerp adds 0.).
+        position = [value + 0. for value in _camera_vector(point["position"], 3, "position")]
         rotation = _camera_vector(point["rotation"], 4, "rotation")
-        length = math.sqrt(sum(axis * axis for axis in rotation))
-        if length < 1e-10:
+        if math.sqrt(sum(axis * axis for axis in rotation)) < 1e-10:
             raise ValueError("The camera rotation quaternion must be nonzero.")
-        rotation = [axis / length for axis in rotation]
-        fov = [_time(point["fov"], "field of view", minimum=.01, maximum=179.99)]
-        values = {"position": position, "rotation": rotation, "fov": fov}
+        fov = [_time(point["fov"], "field of view", minimum=.01, maximum=179.99) + 0.]
+        values = {"position": position, "fov": fov}
         if "euler" in order:
             # Write the binding's own rotation order. The dense clip lerps Euler
             # samples, so keep the equivalent angles nearest the previous sample.
-            values["euler"] = previous_euler = unity_euler_near(rotation, euler_order, previous_euler)
+            values["euler"] = previous_euler = _camera_rotation_samples(rotation, euler_order, previous_euler)
+        else:
+            values["rotation"] = _camera_rotation_samples(rotation, None, None)
         for channel in order:
             sample_array.extend(values[channel])
     packed = muscle["m_Clip"]["data"]
@@ -1178,9 +1256,12 @@ def _write_camera(tree, clip, old_event, new_event):
     packed["m_DenseClip"].update(m_FrameCount=count, m_CurveCount=len(sample_array) // count,
                                  m_SampleRate=rate, m_BeginTime=0., m_SampleArray=sample_array)
     # The clip now ends where the shot does. A source that stopped a frame early (or ran past the
-    # shot, as some split-screen sub cameras do) would clamp or extend the written samples.
-    if _float32(float(muscle["m_StopTime"])) != _float32(span):
-        muscle["m_StopTime"] = span
+    # shot, as some split-screen sub cameras do) would clamp or extend the written samples. The
+    # stored float32 is the first one at or after the shot's end: the float32 nearest a length such
+    # as 1.8 s lies below it, and the parse would clamp the last point to it (between two samples).
+    stop = _f32_at_least(span)
+    if _f32(float(muscle["m_StopTime"])) != stop:
+        muscle["m_StopTime"] = stop
 
 
 def _bundle_facts(env):

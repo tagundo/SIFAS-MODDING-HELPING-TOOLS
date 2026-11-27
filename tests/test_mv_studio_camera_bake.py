@@ -6,8 +6,10 @@ inspected stock camera clip records its serialized size + 188 bytes). The export
 by the growth + 64 bytes, rounded up to 16, and never shrinks it.
 
 The parse marks a shot's keyframes editable by the writer's own rule (_camera_rewrite_refusal), and
-the writer sets the clip's m_StopTime to the shot's length: the split-screen sub cameras of 12056
-stop a frame before their clip ends (1.7833 s in 1.8 s) or run past it (1.8 s in 0.8667 s).
+the writer sets the clip's m_StopTime to the shot's length (the first float32 at or after it): the
+split-screen sub cameras of 12056 stop a frame before their clip ends (1.7833 s in 1.8 s) or run past
+it (1.8 s in 0.8667 s). A written shot parses to points that the writer writes again byte for byte
+(MV Studio's own checks export a written timeline's parse once more and compare).
 
 Original game samples are optional and never stored here: ELICHIKA_STUDIO_TIMELINE_DIR with
 [ai]-1203503-live_timeline.unity (12035), and when present [ai]-12036*-live_timeline.unity (12036,
@@ -73,6 +75,14 @@ SUB = lambda track: "/SplitScreenEffect/Cameras/SubCamera" in (track.get("bindin
 
 
 f32 = lambda value: struct.unpack("<f", struct.pack("<f", value))[0]  # noqa: E731
+
+
+def f32_at_least(value):
+    """The smallest float32 at or above a positive `value`."""
+    rounded = f32(value)
+    if rounded >= value:
+        return rounded
+    return struct.unpack("<f", struct.pack("<I", struct.unpack("<I", struct.pack("<f", rounded))[0] + 1))[0]
 
 
 def normalize(q):
@@ -263,7 +273,8 @@ class Real12035Tests(Checks):
                     self.assertLess(worst, 1e-6)
                     key = by_id[event["values"]["animation"]]
                     old_tree, new_tree = objects[key].read_typetree(), after[key].read_typetree()
-                    self.assertEqual(new_tree["m_MuscleClip"]["m_StopTime"], f32(event["duration"]))
+                    self.assertEqual(new_tree["m_MuscleClip"]["m_StopTime"], f32_at_least(event["duration"]))
+                    self.assertGreaterEqual(new_tree["m_MuscleClip"]["m_StopTime"], event["duration"])
                     growth = len(after[key].get_raw_data()) - len(objects[key].get_raw_data())
                     if growth > 0:
                         self.assertEqual(new_tree["m_MuscleClipSize"], ceil16(old_tree["m_MuscleClipSize"] + growth + 64))
@@ -310,7 +321,8 @@ class Real12035Tests(Checks):
 @unittest.skipUnless(every_sample(12056), "The 12056 original timelines are optional")
 class Real12056SubCameraTests(Checks):
     """The split-screen sub cameras: m_StopTime 1.7833 / 1.1 / 2.7167 / 1.8 in clips of 1.8 / 1.1167 /
-    2.7333 / 0.8667 s. Every one of them takes camera edits now, written with m_StopTime = length."""
+    2.7333 / 0.8667 s. Every one of them takes camera edits now, written with m_StopTime = length (the
+    first float32 at or after it)."""
 
     @classmethod
     def setUpClass(cls):
@@ -324,7 +336,7 @@ class Real12056SubCameraTests(Checks):
                 rows = exported.stops()
                 self.assertTrue(any(abs(old - length) > 1e-3 for _, length, old, _ in rows), "stock stop times differ")
                 for clip, length, _, new in rows:
-                    self.assertEqual(new, f32(length), clip)
+                    self.assertEqual(new, f32_at_least(length), clip)
                 self.check_sizes(exported)
                 self.check_reparse(exported)
 
@@ -372,6 +384,33 @@ def dense_camera(count, *, stop=None, rate=60.):
                             "m_BeginTime": 0., "m_SampleArray": samples}}}}}
 
 
+def quaternion_camera(count, *, stop=None, rate=60.):
+    """dense_camera with a quaternion rotation binding (attribute 2) in place of the Euler one."""
+    tree = dense_camera(count, stop=stop, rate=rate)
+    tree["m_ClipBindingConstant"]["genericBindings"][1]["attribute"] = 2
+    half = [math.radians(index * .3) / 2 for index in range(count)]
+    samples = [value for index in range(count) for value in (
+        f32(index * .01), 1.5, -4., 0., f32(math.sin(half[index])), 0., f32(math.cos(half[index])), f32(30 + index * .05))]
+    tree["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"].update(m_CurveCount=8, m_SampleArray=samples)
+    return tree
+
+
+def saved(tree):
+    """`tree` as a bundle stores it: the dense samples and the stop time as float32."""
+    tree = deepcopy(tree)
+    dense = tree["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"]
+    dense["m_SampleArray"] = [f32(value) for value in dense["m_SampleArray"]]
+    tree["m_MuscleClip"]["m_StopTime"] = f32(tree["m_MuscleClip"]["m_StopTime"])
+    return tree
+
+
+def stored(tree):
+    """The float32 bytes of a written clip's stop time and dense samples (-0. differs from 0. here)."""
+    muscle = tree["m_MuscleClip"]
+    return (struct.pack("<f", muscle["m_StopTime"]),
+            b"".join(struct.pack("<f", value) for value in muscle["m_Clip"]["data"]["m_DenseClip"]["m_SampleArray"]))
+
+
 def points(tree, duration, clip=None):
     return studio._camera_frames(SimpleNamespace(read_typetree=lambda: tree), clip or {}, duration, None, 100_000)
 
@@ -395,7 +434,8 @@ class WriterRuleTests(unittest.TestCase):
                 for point in after:
                     point["fov"] += 1
                 studio._write_camera(tree, {"m_Duration": length}, shot(length, before), shot(length, after))
-                self.assertEqual(tree["m_MuscleClip"]["m_StopTime"], length)
+                self.assertEqual(tree["m_MuscleClip"]["m_StopTime"], f32_at_least(length))
+                self.assertGreater(tree["m_MuscleClip"]["m_StopTime"], length, "1.8 and 52/60 are not float32 values")
                 dense = tree["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"]
                 self.assertEqual(dense["m_FrameCount"], len(after))
                 again = points(tree, length)
@@ -425,7 +465,7 @@ class WriterRuleTests(unittest.TestCase):
                 for index, point in enumerate(after):
                     point["fov"] += index * .01
                 studio._write_camera(written, {"m_Duration": length}, shot(1., old), shot(length, after))
-                self.assertEqual(written["m_MuscleClip"]["m_StopTime"], length)
+                self.assertEqual(written["m_MuscleClip"]["m_StopTime"], f32_at_least(length))
                 self.assertEqual(written["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"]["m_FrameCount"], 61 + frames)
                 again = points(written, length)
                 self.assertEqual([point["time"] for point in again], [point["time"] for point in after])
@@ -436,6 +476,89 @@ class WriterRuleTests(unittest.TestCase):
             studio._write_camera(deepcopy(tree), {}, shot(1., points(tree, 1.)), shot(1.005, points(tree, 1.005)))
         with self.assertRaisesRegex(ValueError, "one camera point per frame"):
             studio._write_camera(deepcopy(tree), {}, shot(1., points(tree, 1.)), shot(70 / 60, points(tree, 1.)))
+
+    def test_a_written_shot_parses_to_points_the_writer_writes_again(self):
+        """check_editor_bytes, convert_parsed, another slot and a pack's other platform export a written
+        timeline's parse once more and compare bytes: the writer must write the same samples and stop
+        time from its own output's parse. Rotations with a roll of exactly 0 or of 1e-9..4e-6 degrees,
+        at the yaw gimbal of an XYZ camera (yaw 90), and turned at random, on Euler and quaternion clips,
+        unresized and resized off a float32 length; positions of -0."""
+        import random
+        rng = random.Random(5)
+        rows, worst = 0, 0.
+        for name, tree in (("euler", dense_camera(61)), ("euler, stop at the end", dense_camera(61, stop=f32(1.))),
+                           ("quaternion", quaternion_camera(61))):
+            for frames in (0, -7, 12):
+                length = (60 + frames) / 60
+                with self.subTest(clip=name, frames=frames):
+                    edited = points(tree, length)
+                    for index, point in enumerate(edited):
+                        kind = index % 5
+                        if kind == 3:
+                            turn = [rng.gauss(0, 1) for _ in range(4)]
+                        elif kind == 4:  # a yaw alone, its zero components -0.
+                            half = math.radians(rng.uniform(-170, 170)) / 2
+                            turn = [-0., math.sin(half), -0., math.cos(half)]
+                        else:
+                            roll = (0., 0., rng.choice((1e-9, -3e-7, 4e-6)))[kind]
+                            yaw = 90. if kind == 1 else rng.uniform(-170, 170)
+                            turn = studio._camera_rotation([rng.uniform(-80, 80), yaw, roll], 0)
+                        point.update(rotation=list(turn), position=[-0., point["position"][1] + rng.uniform(-1, 1), 2.],
+                                     fov=point["fov"] + rng.uniform(-3, 3))
+                    first = deepcopy(tree)
+                    studio._write_camera(first, {"m_Duration": length}, shot(1., points(tree, 1.)), shot(length, edited))
+                    first = saved(first)
+                    self.assertGreaterEqual(first["m_MuscleClip"]["m_StopTime"], length)
+                    parsed = points(first, length)
+                    for got, want in zip(parsed, edited):
+                        sign = 1 if sum(x * y for x, y in zip(got["rotation"], want["rotation"])) >= 0 else -1
+                        norm = math.sqrt(sum(value * value for value in want["rotation"]))
+                        worst = max(worst, *(abs(x - sign * y / norm) for x, y in zip(got["rotation"], want["rotation"])))
+                    second = deepcopy(tree)
+                    studio._write_camera(second, {"m_Duration": length}, shot(1., points(tree, 1.)), shot(length, parsed))
+                    second = saved(second)
+                    self.assertEqual(second["m_MuscleClip"], first["m_MuscleClip"])
+                    self.assertEqual(stored(second), stored(first), "the same samples and stop time, bit for bit")
+                    self.assertEqual(points(second, length), parsed)
+                    # The last point is the last sample: the stop time does not clamp it between two.
+                    self.assertEqual(parsed[-1]["position"], [0., f32(edited[-1]["position"][1]), 2.])
+                    rows += len(edited)
+        self.assertEqual(rows, 3 * (61 + 54 + 73))
+        self.assertLess(worst, 1e-6, "the rotations written are the ones asked for, to float32 precision")
+
+    def test_rotations_near_the_gimbal_are_written_again(self):
+        """Within 1e-3 degrees of the middle-axis gimbal (yaw +-90 for XYZ, pitch +-90 for ZXY) an Euler
+        angle can move by more than a float32 step on each round trip: the search runs a few rounds."""
+        import random
+        rng = random.Random(3)
+        for order in (0, 4):
+            axes = studio.animation.EULER_ORDERS[order]
+            missed = 0
+            for _ in range(1500):
+                angles = [0., 0., 0.]
+                for axis, value in zip(axes, (rng.uniform(-180, 180), rng.choice((90, -90)) - 10 ** rng.uniform(-9, -3),
+                                              rng.uniform(-180, 180))):
+                    angles["xyz".index(axis)] = value
+                rotation = studio._camera_rotation(angles, order)
+                written = studio._camera_rotation_samples(rotation, order, None)
+                again = studio._camera_rotation_samples(studio._camera_rotation(list(written), order), order, None)
+                missed += again != written
+            self.assertEqual(missed, 0, f"order {order}")
+
+    def test_euler_angles_near_zero_are_written_as_zero(self):
+        # A roll of 1e-5 degrees or less is written as 0; the others as the float32 of their angle.
+        tree = dense_camera(61)
+        for roll, written in ((1e-15, 0.), (-4e-6, 0.), (9.9e-6, 0.), (2e-5, f32(2e-5)), (-0.5, -.5)):
+            with self.subTest(roll=roll):
+                keys = points(tree, 1.)
+                for point in keys:
+                    point["rotation"] = studio._camera_rotation([10., 20., roll], 0)
+                copy = deepcopy(tree)
+                studio._write_camera(copy, {}, shot(1., points(tree, 1.)), shot(1., keys))
+                samples = copy["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"]["m_SampleArray"]
+                self.assertEqual({samples[row * 7 + 5] for row in range(61)}, {written})
+                self.assertEqual({(f32(samples[row * 7 + 3]), f32(samples[row * 7 + 4])) for row in range(61)},
+                                 {(f32(10.), f32(20.))})
 
     def test_refusals(self):
         tree = dense_camera(61)

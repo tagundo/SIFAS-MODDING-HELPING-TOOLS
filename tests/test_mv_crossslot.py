@@ -535,6 +535,106 @@ class RealSampleEveryFieldTests(unittest.TestCase):
                 self.assertEqual(targets - changed, set())
 
 
+def _camera_shots(tracks, sub):
+    """(track, event) of the camera shots whose keys the export writes: the split-screen sub cameras
+    (``sub``) or the main camera."""
+    marker = "/SplitScreenEffect/Cameras/SubCamera"
+    return [(track, event) for track in tracks if track["kind"] == "camera" and track["nativeClass"] == "AnimationTrack"
+            and (marker in (track.get("binding") or "")) == sub
+            for event in track["events"] if "keyframes" in event["editableValues"]]
+
+
+def _moved(keys, phase, *, position=False, rotation=False, fov=False):
+    """Camera keys moved per key (a different amount each): position, a turn about the up axis, FOV."""
+    import math
+    moved = []
+    for index, key in enumerate(keys):
+        wave = math.sin(index * .13 + phase)
+        key = copy.deepcopy(key)
+        if position:
+            key["position"] = [key["position"][0] + .2 * wave, key["position"][1], key["position"][2] + .3]
+        if rotation:
+            half = .025 * wave
+            s, c = math.sin(half), math.cos(half)
+            x, y, z, w = key["rotation"]
+            key["rotation"] = [c * x + s * z, c * y + s * w, c * z - s * x, c * w - s * y]
+        if fov:
+            key["fov"] = key["fov"] + 3 * wave
+        moved.append(key)
+    return moved
+
+
+def _shortened(event, frames):
+    """``event`` made ``frames`` frames shorter, its keys on the new grid (the old motion by time, as the
+    editor bakes a resized shot)."""
+    event["duration"] = round(event["duration"] * 60 - frames) / 60
+    old = event["values"]["keyframes"]
+    count = round(event["duration"] * 60) + 1
+    event["values"]["keyframes"] = [{**old[min(index, len(old) - 1)], "time": min(index / 60, event["duration"])}
+                                    for index in range(count)]
+
+
+@unittest.skipUnless(SAMPLES, "Real 12035 timelines (MV_TIMELINE_SAMPLES) are not available")
+class RealSampleCameraEditTests(unittest.TestCase):
+    """Camera point edits MV Studio exports (resized shots, rotations, split-screen sub cameras) are
+    what it writes again: check_editor_bytes confirms them, and another slot, a pack's other platform
+    and the platform conversion (convert_parsed) carry them. The camera writer reproduces its own
+    output: its stop time is the first float32 at or after the shot's end, and its rotation samples
+    are those its own parse finds again."""
+
+    def check(self, edited, stock, other=None):
+        conversion.check_editor_bytes(edited, stock)
+        conversion.check_editor_bytes(edited, stock, pack_format=conversion.EXPORT_FORMAT)
+        self.assertEqual(conversion.convert_parsed(edited, stock), edited)
+        if other is not None:
+            converted = conversion.convert_parsed(edited, other)
+            self.assertEqual(register._parse(converted)["tracks"], register._parse(edited)["tracks"])
+            conversion.check_editor_bytes(converted, other)
+            self.assertEqual(conversion.convert_parsed(converted, stock), edited)
+
+    def test_a_resized_12035_shot_with_a_position_edit_and_turned_shots(self):
+        for name, other_name in (("a", "i"), ("i", "a")):
+            stock = (SAMPLES / f"{name}-1203503-live_timeline.unity").read_bytes()
+            other = (SAMPLES / f"{other_name}-1203503-live_timeline.unity").read_bytes()
+            with self.subTest(platform=name):
+                tracks = register._parse(stock)["tracks"]
+                shots = _camera_shots(tracks, sub=False)
+                longer = [event for _, event in shots[1:] if event["duration"] * 60 > 30]
+                resized, turned = longer[0], shots[0][1]
+                _shortened(resized, 7)
+                resized["values"]["keyframes"] = _moved(resized["values"]["keyframes"], 1, position=True)
+                turned["values"]["keyframes"] = _moved(turned["values"]["keyframes"], 0, rotation=True)
+                both = longer[1]
+                _shortened(both, 3)
+                both["values"]["keyframes"] = _moved(both["values"]["keyframes"], 2, position=True, rotation=True,
+                                                     fov=True)
+                edited = mv_studio_timeline.export_timeline(stock, "camera-edits", tracks)
+                parsed = {event["id"]: event for track in register._parse(edited)["tracks"] for event in track["events"]}
+                for event in (resized, turned, both):
+                    self.assertEqual(parsed[event["id"]]["duration"], event["duration"])
+                    self.assertEqual(len(parsed[event["id"]]["values"]["keyframes"]), len(event["values"]["keyframes"]))
+                self.check(edited, stock, other)
+
+    def test_12056_sub_camera_edits_and_a_resized_main_shot(self):
+        paths = sorted(SAMPLES.glob("i-12056??-live_timeline.unity"))
+        if not paths:
+            self.skipTest("The 12056 original timelines are optional")
+        for path in paths:
+            stock = path.read_bytes()
+            with self.subTest(timeline=path.name):
+                tracks = register._parse(stock)["tracks"]
+                subs = _camera_shots(tracks, sub=True)
+                self.assertGreaterEqual(len(subs), 4)
+                for (_, event), edit in zip(subs, ({"position": True}, {"fov": True}, {"rotation": True},
+                                                   {"position": True, "fov": True})):
+                    event["values"]["keyframes"] = _moved(event["values"]["keyframes"], 2, **edit)
+                main = next(event for _, event in _camera_shots(tracks, sub=False)[1:] if event["duration"] * 60 > 30)
+                _shortened(main, 7)  # a resize alone: the old motion on the new grid
+                edited = mv_studio_timeline.export_timeline(stock, "camera-edits", tracks)
+                self.assertNotEqual(edited, stock)
+                self.check(edited, stock)
+
+
 class ConversionMessageTests(unittest.TestCase):
     def test_every_conversion_and_check_message_has_korean_and_japanese(self):
         from webtools import i18n
