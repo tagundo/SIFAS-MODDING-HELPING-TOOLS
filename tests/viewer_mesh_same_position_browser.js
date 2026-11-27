@@ -275,6 +275,11 @@ async function desktop(url) {
     await page.evaluate(state => window.__meshTool.restoreEdits(state), { version: 1, meshes: [{ mesh: data.mesh, positions: [{ vertex: 2, position: torn }] }] });
     await selectIndex(page, 2); value = await snapshot(page);
     assert.deepEqual(edits(value), [{ vertex: 2, position: torn }]); assert.deepEqual(value.mesh.samePosition.partners, [], 'a recipe that tore the seam leaves no partner');
+    // A recipe restore gives each mesh a new selection that counts its changes
+    // too, so redraws keep reusing the partner lookup after it.
+    lookups = value.mesh.samePosition.lookups;
+    await page.evaluate(() => { window.__meshTool.updateLanguage(); window.__meshTool.updateLanguage(); window.__meshTool.refresh(); });
+    assert.equal((await snapshot(page)).mesh.samePosition.lookups, lookups, 'after a recipe restore, redraws reuse the partner lookup');
     await page.locator('#viewer-mesh-modify-undo').click(); await page.locator('#viewer-mesh-modify-undo').click();
     value = await snapshot(page); assert.deepEqual(value.mesh.edits, untorn.mesh.edits);
     await selectIndex(page, 2); assert.deepEqual((await snapshot(page)).mesh.samePosition.partners, [6]);
@@ -316,6 +321,13 @@ async function desktop(url) {
       assert.equal(state.mesh.samePosition.builds, built, why + ': one rebuild'); assert.deepEqual(state.mesh.samePosition.partners, partners, why + ': partners');
       assert.deepEqual(edits(state).map(row => row.vertex), edited, why + ': edited vertices');
     }
+    // Set vertex position to the values it already has: a position write
+    // (one rebuild); its Undo restores the same current positions (none).
+    await inspector(page, true); await button('position-set'); await inspector(page, false);
+    await rebuilt('Set vertex position to its own values', [6], [2, 6]);
+    value = await snapshot(page); assert.deepEqual(position(value, 2, data), data.positions[2]); assert.deepEqual(position(value, 6, data), data.positions[2]);
+    await button('undo'); value = await snapshot(page); assert.deepEqual(value.mesh.edits, flat.mesh.edits);
+    assert.equal(value.mesh.samePosition.builds, built, 'Undo to equal current positions (an edit equal to the source value): no rebuild');
     await nudge(); await rebuilt('nudge', [6], [2, 6]);
     await button('undo'); await rebuilt('Undo of the nudge', [6], []);
     await button('redo'); await rebuilt('Redo of the nudge', [6], [2, 6]);

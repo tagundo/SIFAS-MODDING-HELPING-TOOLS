@@ -133,6 +133,10 @@ assert.deepStrictEqual(groupsOf([[1e6, -1e6, 999999.99], [1e6, -1e6, 999999.99]]
   assert.deepStrictEqual(groupsOf(huge, 0), [[3, 4], [5, 6]], 'and with the exact rule');
   assert.deepStrictEqual(groups, brute(huge.slice(0, 7), T), 'brute force on the finite ones before the first infinite one');
   assert(Date.now() - started < 1000);
+  // Non-finite points are never stored: 1,000 NaN positions (each its own
+  // point) cost a vertex near the origin, whose cell they would hash to, nothing.
+  const nans = Array.from({ length: 1000 }, () => [NaN, 0, 0]).concat([[1e-7, 1e-7, 1e-7]]);
+  const nanIndex = build(nans.length, v => nans[v]); assert.deepStrictEqual([nanIndex.compares, nanIndex.visits, nanIndex.groups.length], [0, 0, 0], 'NaN points are not scanned or stored');
 }
 // Exact edge cases with a power-of-two tolerance: a neighbour exactly one
 // tolerance away sits on the next cell's first value.
@@ -319,6 +323,14 @@ assert(Math.hypot(...own(0).map((x, axis) => x - own(1)[axis])) > 1e-3, 'per-ver
 // The pointer picked the partner side: it leads, the selected vertex copies it.
 plan = planeDragPlan(new Set([0, 1]), { partners: [], groups: [{ members: [0, 1], chosen: [0, 1] }] }, 1, positionOf, linearOf); values = plain(planeDragValues(plan, delta));
 assert.deepStrictEqual(values[0], values[1]); assert.deepStrictEqual(values[1], own(1), 'the picked member is the seed');
+// The picked vertex is outside the group (another group or an ungrouped
+// vertex): the group's lowest-index selected member leads, not a later one.
+const pair = { partners: [], groups: [{ members: [0, 1], chosen: [0, 1] }] };
+plan = planeDragPlan(new Set([0, 1, 2]), pair, 2, positionOf, linearOf); values = plain(planeDragValues(plan, delta));
+assert.deepStrictEqual(values[0], own(0)); assert.deepStrictEqual(values[1], own(0), 'picked 2 is outside group [0, 1]: both take the delta of 0, its lowest selected member');
+assert.deepStrictEqual(values[2], own(2), 'and the picked ungrouped vertex keeps its own map');
+plan = planeDragPlan(new Set([0, 1]), pair, 0, positionOf, linearOf); values = plain(planeDragValues(plan, delta));
+assert.deepStrictEqual(values[0], own(0)); assert.deepStrictEqual(values[1], own(0), 'picked 0 leads its group');
 // A seed with a singular map hands the group to the next selected member;
 // a group with no invertible chosen member does not move (as before).
 const singular = vertex => vertex === 0 ? new THREE.Matrix3().set(0, 0, 0, 0, 1, 0, 0, 0, 1) : linearOf(vertex);
