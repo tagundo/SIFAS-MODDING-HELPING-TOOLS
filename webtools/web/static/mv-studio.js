@@ -330,7 +330,7 @@
   function tick(now) {
     if (!visible || !playing || !project) return;
     const media = audio.src && !audio.paused && !audio.ended ? audio.currentTime - audioOffset() : NaN;
-    const step = playbackClock.next(now, media, !audio.seeking);
+    const step = playbackClock.next(now, media, !audio.seeking, !audio.error && audio.readyState < audio.HAVE_FUTURE_DATA);
     if (step.realign) audio.currentTime = Math.max(0, step.time + audioOffset());
     time = clamp(finite(step.time) ? step.time : time, 0, project.duration);
     if (scene) scene.playbackFrame(time, now);

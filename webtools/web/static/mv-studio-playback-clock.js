@@ -23,8 +23,8 @@
      buffering, a stall, a long frame gap), the clock holds and waits for the soundtrack to
      advance, then locks onto it with no confirmation;
    - with no soundtrack, one the browser paused or ended, or one not advancing for `giveUp`
-     (not counting the time it spends seeking), the time advances with the frames, as it does
-     without a soundtrack;
+     (not counting the time it spends seeking, nor, before it first advances after start(),
+     loading), the time advances with the frames, as it does without a soundtrack;
    - during playback the time it returns is never below the last one.
 
    Pure state: mv-studio.js feeds it one reading per animation frame. Frame captures step
@@ -54,6 +54,7 @@
     let last = NaN; // timestamp of the last frame (ms)
     let mode = "wait"; // "wait": hold for the soundtrack; "sync": follow it; "free": frames only
     let rate = 1, error = 0, holding = false, realigned = false, ignored = false;
+    let locked = false; // the soundtrack has advanced since start()
     let audio = NaN, seen = NaN; // the reading followed (s) and when it was first seen (ms)
     let read = NaN, alive = NaN; // the latest distinct reading, used or not, and when it came (ms)
     let since = NaN; // when waiting began (ms)
@@ -82,7 +83,7 @@
     function start(value, now) {
       time = finite(value) ? value : 0;
       last = finite(now) ? now : NaN;
-      realigned = ignored = false;
+      realigned = ignored = locked = false;
       forget(last);
       wait(last);
     }
@@ -103,6 +104,7 @@
     function lock(reading, now) {
       const offset = reading - time;
       mode = "sync";
+      locked = true;
       holding = false;
       rate = 1;
       error = 0;
@@ -138,10 +140,12 @@
 
     // One display frame at timestamp `now` (ms). `media`: the soundtrack's song time (s),
     // or NaN without a usable soundtrack (none, paused by the browser, ended); `ready`:
-    // false while it seeks (buffering shows as readings that stop changing: a stall).
+    // false while it seeks (buffering shows as readings that stop changing: a stall);
+    // `loading`: the element has too little data to play yet (readyState below
+    // HAVE_FUTURE_DATA), used only until the soundtrack first advances after start().
     // Returns { time, mode, rate, holding, realign }; realign asks the host to move the
     // soundtrack to `time`.
-    function next(now, media, ready = true) {
+    function next(now, media, ready = true, loading = false) {
       const dt = finite(last) && finite(now) ? Math.max(0, now - last) / 1000 : 0;
       if (finite(now)) last = now;
       if (!finite(since)) since = now;
@@ -176,9 +180,10 @@
       if (mode === "sync" && (!ready || (now - alive) / 1000 > stallLimit())) wait(now, ready ? alive : now);
       if (mode !== "sync") {
         if (advanced) return lock(media, now);
-        // A seeking soundtrack (a seek over the network can take seconds) is waited for: the
-        // time towards giveUp counts from when it stopped seeking.
-        if (mode === "wait" && !ready) since = now;
+        // A seeking soundtrack (a seek over the network can take seconds), or one still loading
+        // before it first plays (WKWebView fetches the file on play()), is waited for: the time
+        // towards giveUp counts from when it stopped seeking or loading.
+        if (mode === "wait" && (!ready || (loading && !locked))) since = now;
         if (mode === "wait" && (now - since) / 1000 > o.giveUp) mode = "free";
         if (mode === "free") time += dt;
         return result();

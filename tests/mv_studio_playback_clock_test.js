@@ -80,7 +80,7 @@ function soundtrack(random, { steps = [0.02, 0.05], jitter = 0, drift = 0, laten
 function run({ seed = 1, seconds = 5, fps = 60, frameJitter = 0, events = {}, frames = null, start = 0, audio: audioOptions = {},
   soundtrack: present = true, clockOptions = {} } = {}) {
   const random = rng(seed), audio = soundtrack(random, audioOptions), clock = Clock.create(clockOptions);
-  const frame = 1000 / fps, host = { reading: null, ready: true, playing: true };
+  const frame = 1000 / fps, host = { reading: null, ready: true, playing: true, loading: null };
   let t = 1000, clean = 1000;
   if (present) audio.play(start, t);
   clock.start(start, t);
@@ -94,7 +94,7 @@ function run({ seed = 1, seconds = 5, fps = 60, frameJitter = 0, events = {}, fr
     if (!host.playing) continue;
     let reading = NaN;
     if (present && !audio.paused && !audio.ended) reading = host.reading ? host.reading(audio, t) : audio.read(t);
-    const out = clock.next(t, reading, host.ready && !audio.seeking(t));
+    const out = clock.next(t, reading, host.ready && !audio.seeking(t), host.loading ? host.loading(audio, t) : false);
     if (out.realign) audio.seek(out.time, t);
     rows.push({ k, t, time: out.time, truth: audio.truth(t), reading, mode: out.mode, holding: out.holding, rate: out.rate, realign: out.realign,
       seeking: audio.seeking(t) });
@@ -192,6 +192,36 @@ const report = {};
   for (const row of rows.slice(0, first)) assert.equal(row.time, 12.5, 'held at the start time while waiting');
   assert(rows[first].time - 12.5 <= 0.05 + 1e-9, 'locks within one reading step of the start');
   monotonic(rows, 'start');
+
+  // A soundtrack that loads for 2 s after play() (WKWebView fetches the file then): the picture
+  // waits at the start time for as long as it loads, and nothing of the song is skipped.
+  const loadingUntilPlay = (audio, t) => t < audio.anchor;
+  const late = run({ seconds: 4, start: 12.5, audio: { latency: 2 }, events: { 1: (audio, clock, t, host) => { host.loading = loadingUntilPlay; } } });
+  const locked = late.rows.findIndex((row) => row.mode === 'sync');
+  assert(late.rows.slice(0, locked).every((row) => row.mode === 'wait' && row.time === 12.5), 'late start: held at the start time while loading');
+  assert(late.rows[locked].t - 1000 >= 2000, 'late start: locks once the soundtrack plays');
+  assert.equal(late.state.realigns + late.audio.seeks, 0, 'late start: the soundtrack is not moved');
+  assert(maxAbs(offsets(late.rows.slice(locked + 20))) <= 0.030, 'late start: within 30 ms');
+  // Without the loading signal the clock gives up after 1 s and moves the soundtrack.
+  const unknown = run({ seconds: 4, start: 12.5, audio: { latency: 2 } });
+  assert(unknown.rows.some((row) => row.mode === 'free'), 'late start without the loading signal: frames after 1 s');
+  assert.equal(unknown.state.realigns, 1);
+  // Loading counts only until the soundtrack first plays: a later long stall while buffering
+  // (readyState low again) still gives up after 1 s.
+  const buffering = run({ seconds: 6, events: { 1: (audio, clock, t, host) => { host.loading = (track) => track.stalled; },
+    120: (audio, clock, t) => audio.stall(t), 300: (audio, clock, t) => audio.resume(t) } });
+  assert(buffering.rows.some((row) => row.k > 120 && row.k < 300 && row.mode === 'free'), 'buffering after the start: frames after 1 s');
+  assert.equal(buffering.state.realigns, 1);
+  // A new start (play, or a seek) waits for loading again.
+  const again = run({ seconds: 6, audio: { latency: 0.03 }, events: {
+    1: (audio, clock, t, host) => { host.loading = loadingUntilPlay; },
+    120: (audio, clock, t, host) => { audio.pause(t); host.playing = false; host.pausedAt = clock.state().time; },
+    150: (audio, clock, t, host) => { host.playing = true; audio.play(host.pausedAt, t + 1500); audio.anchor = t + 1500; clock.start(host.pausedAt, t); },
+  } });
+  const resumed = again.rows.filter((row) => row.k >= 150);
+  const relock = resumed.findIndex((row) => row.mode === 'sync');
+  assert(relock > 80 && resumed.slice(0, relock).every((row) => row.mode === 'wait' && row.time === resumed[0].time), 'a new start waits while loading');
+  assert.equal(again.state.realigns, 0);
 }
 
 // ---- A single backward reading (a glitch) is ignored; a persistent backward step holds -------
