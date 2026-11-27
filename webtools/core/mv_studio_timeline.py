@@ -1365,9 +1365,11 @@ def merge_changes(base, ours, theirs, synced=None):
 
     Values compare as stored (``field_digest``). A conflict names its ``basis``: "load" (the
     agreed value is the loaded one, shown as ``loaded``) or "applied" (the value this project
-    last applied, shown as ``loaded`` from the synced label). Returns ``(merged tracks,
-    conflicts, taken, theirs_only)``: merged is theirs with the taken fields; ``theirs_only``
-    counts the fields the game changed that the project does not hold. Raises
+    last applied, shown as ``loaded`` from the synced label). Track fields of
+    EXPORTABLE_TRACK_FIELDS merge the same way, keyed by the track id in ``synced``; their
+    conflicts have ``scope`` "track" (the track id as ``eventId``, no clip). Returns ``(merged
+    tracks, conflicts, taken, theirs_only)``: merged is theirs with the taken fields;
+    ``theirs_only`` counts the fields the game changed that the project does not hold. Raises
     ValueError(MERGE_LAYOUT) when theirs has other tracks, clips or value keys."""
     import copy
 
@@ -1377,45 +1379,63 @@ def merge_changes(base, ours, theirs, synced=None):
         raise ValueError(MERGE_LAYOUT)
     synced = synced if isinstance(synced, dict) else {}
     merged = copy.deepcopy(theirs)
-    conflicts, taken, theirs_only = [], 0, 0
+    conflicts, counts = [], {"taken": 0, "theirs_only": 0}
+
+    def merge(identity, field, old, new, now, put, where):
+        """Merge one field: put(new) when ours is taken, a conflict row (``where`` + values) otherwise."""
+        agreed = synced.get(identity) if isinstance(synced.get(identity), dict) else {}
+        old_digest, applied_label = synced_digest(agreed.get(field))
+        basis = "applied" if old_digest is not None else "load"
+        if old_digest is None:
+            old_digest = field_digest(old)
+        new_digest, now_digest = field_digest(new), field_digest(now)
+        if new_digest == old_digest:
+            if now_digest != old_digest:
+                counts["theirs_only"] += 1
+            return
+        if now_digest == new_digest:
+            return
+        if now_digest == old_digest:
+            put(new)
+            counts["taken"] += 1
+            return
+        conflicts.append({**where, "field": field, "basis": basis,
+                          "loaded": _merge_label(old) if basis == "load" else (applied_label or "?"),
+                          "project": _merge_label(new), "game": _merge_label(now)})
+
     for base_track, our_track, merged_track in zip(base, ours, merged):
+        track_label = str(base_track.get("label") or base_track["id"])
+        for field in EXPORTABLE_TRACK_FIELDS:
+            if field in base_track and field in our_track:
+                if field not in merged_track:
+                    raise ValueError(MERGE_LAYOUT)
+                merge(base_track["id"], field, base_track[field], our_track[field], merged_track[field],
+                      lambda value, track=merged_track, key=field: track.__setitem__(key, value),
+                      {"track": track_label, "trackId": base_track["id"], "clip": "", "eventId": base_track["id"],
+                       "start": 0.0, "scope": "track"})
         for before, mine, game in zip(base_track["events"], our_track["events"], merged_track["events"]):
             if not isinstance(game.get("values"), dict) or before["values"].keys() - game["values"].keys():
                 raise ValueError(MERGE_LAYOUT)
-            agreed = synced.get(before["id"]) if isinstance(synced.get(before["id"]), dict) else {}
             for field in _merge_fields(before, mine):
-                old, new, now = _merge_value(before, field), _merge_value(mine, field), _merge_value(game, field)
-                old_digest, applied_label = synced_digest(agreed.get(field))
-                basis = "applied" if old_digest is not None else "load"
-                if old_digest is None:
-                    old_digest = field_digest(old)
-                new_digest, now_digest = field_digest(new), field_digest(now)
-                if new_digest == old_digest:
-                    if now_digest != old_digest:
-                        theirs_only += 1
-                    continue
-                if now_digest == new_digest:
-                    continue
-                if now_digest == old_digest:
-                    if field in _CLIP_FIELDS:
-                        game[field] = new
-                    else:
-                        game["values"][field] = new
-                    taken += 1
-                    continue
-                conflicts.append({"track": str(base_track.get("label") or base_track["id"]), "trackId": base_track["id"],
-                                  "clip": str(before.get("label") or before["id"]), "eventId": before["id"],
-                                  "start": before["start"], "field": field, "basis": basis,
-                                  "loaded": _merge_label(old) if basis == "load" else (applied_label or "?"),
-                                  "project": _merge_label(new), "game": _merge_label(now)})
-    return merged, conflicts, taken, theirs_only
+                target = game if field in _CLIP_FIELDS else game["values"]
+                merge(before["id"], field, _merge_value(before, field), _merge_value(mine, field),
+                      _merge_value(game, field), lambda value, target=target, key=field: target.__setitem__(key, value),
+                      {"track": track_label, "trackId": base_track["id"], "clip": str(before.get("label") or before["id"]),
+                       "eventId": before["id"], "start": before["start"]})
+    return merged, conflicts, counts["taken"], counts["theirs_only"]
 
 
 def synced_fields(base, ours):
     """What a project and the game agree on after a successful apply: {event id: {field: [digest,
-    label]}} of every field where ours is not the base (the base holds for every other field)."""
+    label]}} of every field where ours is not the base (the base holds for every other field); a
+    changed EXPORTABLE_TRACK_FIELDS field is listed under its track id."""
     result = {}
     for base_track, our_track in zip(base, ours):
+        for field in EXPORTABLE_TRACK_FIELDS:
+            if field in base_track and field in our_track:
+                digest = field_digest(our_track[field])
+                if digest != field_digest(base_track[field]):
+                    result.setdefault(base_track["id"], {})[field] = [digest, _shown(our_track[field])]
         for before, mine in zip(base_track["events"], our_track["events"]):
             for field in _merge_fields(before, mine):
                 value = _merge_value(mine, field)

@@ -1,4 +1,4 @@
-"""Track mutes that reach the game: the rule, the export and registration.
+"""Track mutes that reach the game: the rule, the export, registration, and "Apply only the edits".
 
 Original game samples are optional (ELICHIKA_STUDIO_TIMELINE_DIR, every *timeline*.unity there, with
 a-/i-1203503-live_timeline.unity as one MV on both platforms); Elichika's own install validator runs
@@ -124,6 +124,49 @@ class RegistrationTests(unittest.TestCase):
         plain = register.timeline_fingerprint("android", identity, self.original)
         self.assertNotEqual(plain, register.timeline_fingerprint("android", identity, self.posted(leaf=True)))
         self.assertEqual(plain, register.timeline_fingerprint("android", identity, self.posted(led=True, group=True)))
+
+
+class MergeTests(unittest.TestCase):
+    def setUp(self):
+        self.base = timeline(track("leaf", "Member1/Gaze", "MemberGazeTrack", events=[clip("leaf:0")]))["tracks"]
+
+    def tracks(self, muted=False, value=1.0):
+        result = deepcopy(self.base)
+        result[0]["muted"] = muted
+        result[0]["events"][0]["values"]["intensity"] = value
+        return result
+
+    def test_apply_only_the_edits_keeps_a_track_mute(self):
+        merge = studio.merge_changes
+        merged, conflicts, taken, theirs_only = merge(self.base, self.tracks(muted=True), self.tracks(value=2.0))
+        self.assertEqual((merged[0]["muted"], merged[0]["events"][0]["values"]["intensity"], conflicts, taken, theirs_only),
+                         (True, 2.0, [], 1, 1))
+        # Already muted in the game: nothing to take.
+        self.assertEqual(merge(self.base, self.tracks(muted=True), self.tracks(muted=True))[1:], ([], 0, 0))
+        # After this project applied its mute, the agreed value is the mute.
+        synced = studio.synced_fields(self.base, self.tracks(muted=True))
+        self.assertEqual(synced, {"leaf": {"muted": [studio.field_digest(True), "true"]}})
+        # The project unmuted it again and the game still holds the applied mute: ours is taken.
+        merged, conflicts, taken, theirs_only = merge(self.base, self.tracks(muted=False), self.tracks(muted=True), synced)
+        self.assertEqual((merged[0]["muted"], conflicts, taken, theirs_only), (False, [], 1, 0))
+        # The game unmuted it since and the project kept its mute: the game's change stays.
+        merged, conflicts, taken, theirs_only = merge(self.base, self.tracks(muted=True), self.tracks(muted=False), synced)
+        self.assertEqual((merged[0]["muted"], conflicts, taken, theirs_only), (False, [], 0, 1))
+
+    def test_a_track_field_conflict_names_the_track(self):
+        # A bool cannot differ from both sides; the conflict row of a track field, on three values.
+        base, ours, theirs = (self.tracks(muted=value) for value in ("a", "b", "c"))
+        merged, conflicts, taken, _ = studio.merge_changes(base, ours, theirs)
+        self.assertEqual((merged[0]["muted"], taken), ("c", 0))
+        self.assertEqual(conflicts, [{"track": "Member1/Gaze", "trackId": "leaf", "clip": "", "eventId": "leaf",
+                                      "start": 0.0, "scope": "track", "field": "muted", "basis": "load",
+                                      "loaded": '"a"', "project": '"b"', "game": '"c"'}])
+
+    def test_a_missing_track_field_in_the_game_is_another_layout(self):
+        theirs = self.tracks()
+        del theirs[0]["muted"]
+        with self.assertRaisesRegex(ValueError, "different track layout"):
+            studio.merge_changes(self.base, self.tracks(muted=True), theirs)
 
 
 def sample_timelines():
