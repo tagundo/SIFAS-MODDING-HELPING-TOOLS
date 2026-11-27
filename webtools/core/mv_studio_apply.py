@@ -329,9 +329,12 @@ def _pending(base, ours, synced):
     if synced is None:
         return register.count_edits(base["tracks"], ours)
     agreed = mv_studio_timeline.synced_fields(base["tracks"], ours)
-    counts = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0}
+    counts = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 0}
     digest = lambda entries, field: mv_studio_timeline.synced_digest(entries.get(field))[0]  # noqa: E731
     for track in base["tracks"]:
+        now, before = agreed.get(track["id"], {}), synced.get(track["id"], {})
+        if any(digest(now, field) != digest(before, field) for field in mv_studio_timeline.EXPORTABLE_TRACK_FIELDS):
+            counts["tracks"] += 1
         for event in track["events"]:
             now, before = agreed.get(event["id"], {}), synced.get(event["id"], {})
             fields = {field for field in now.keys() | before.keys() if digest(now, field) != digest(before, field)}
@@ -405,12 +408,12 @@ def plan(repo_root, project, *, unbaked=(), language="en", target=None):
     # Edits since loading, or since this project's last successful apply, per platform: a platform
     # left out of an earlier apply still needs the edits the other one already has.
     pending = {platform: _pending(base, ours, synced.get(platform)) for platform in _catalogued(target)}
-    shown = max(pending, key=lambda platform: pending[platform]["clips"], default=None)
+    shown = max(pending, key=lambda platform: pending[platform]["clips"] + pending[platform]["tracks"], default=None)
     edits = {"counts": pending[shown] if shown else register.count_edits(base["tracks"], ours), "conflicts": [],
              "apply": [], "keep": [], "download": [], "missing": [], "theirsOnly": 0, "blocked": [],
              "since": "apply" if shown in synced else "load",
-             "pending": {platform: counts["clips"] for platform, counts in pending.items()}}
-    edits["unchanged"] = not edits["counts"]["clips"]
+             "pending": {platform: counts["clips"] + counts["tracks"] for platform, counts in pending.items()}}
+    edits["unchanged"] = not register.has_edits(edits["counts"])
     every = {"counts": None, "unchanged": True, "download": [], "missing": [], "blocked": []}
     # An unedited game import bakes nothing: every platform plays the stock rows, no original is read.
     stock_unchanged = register._unchanged_stock(blob, project["tracks"])
@@ -433,7 +436,7 @@ def plan(repo_root, project, *, unbaked=(), language="en", target=None):
             try:
                 served = served_tracks[platform] = register._parse(served_raw, "served")["tracks"]
                 current, _ = register.normalize(served, ours)
-                if register.count_edits(served, current)["clips"]:
+                if register.has_edits(register.count_edits(served, current)):
                     every["unchanged"] = False
             except (register.StructureError, ValueError, KeyError, TypeError):
                 every["unchanged"] = False
@@ -457,7 +460,7 @@ def plan(repo_root, project, *, unbaked=(), language="en", target=None):
         if stock_raw is None and platform not in edits["download"]:
             edits["download" if stock_status == "download" else "missing"].append(platform)
     if stock_unchanged:
-        every["counts"] = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0}
+        every["counts"] = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 0}
     elif "stock" in parsed:
         try:
             normalized, _ = register.normalize(parsed["stock"]["tracks"], ours)
@@ -596,7 +599,7 @@ def _merge_edits(job, progress, repo_root, project, target, request):
     timelines = {platform: KEEP for platform in _catalogued(target)}
     # Each platform against its own last agreed values: one left out of an earlier apply still
     # takes the edits the other platform already has.
-    waiting = [platform for platform in _catalogued(target) if _pending(base, ours, synced.get(platform))["clips"]]
+    waiting = [platform for platform in _catalogued(target) if register.has_edits(_pending(base, ours, synced.get(platform)))]
     agreed = [platform for platform in _catalogued(target) if platform not in waiting]
     if not waiting:
         return timelines, {}, agreed

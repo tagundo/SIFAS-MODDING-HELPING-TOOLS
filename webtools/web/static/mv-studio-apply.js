@@ -207,7 +207,7 @@
     if (!part || part.blocked.length) return true;
     if (mode === "all") return !!part.unchanged || (part.missing || []).length === catalogued(plan).length;
     // A platform whose served timeline needs a download is merged by the job once the download is allowed.
-    return !((part.apply || []).length || (part.download || []).length && part.counts && part.counts.clips);
+    return !((part.apply || []).length || (part.download || []).length && part.counts && (part.counts.clips || part.counts.tracks));
   }
 
   function confirmText(plan, mode) {
@@ -627,11 +627,12 @@
     }
     if (edits) {
       const counts = edits.counts || {};
-      if (!counts.clips) item("ok", t(edits.since === "apply" ? "Edits: none since the last apply" : "Edits: none since loading"));
+      if (!counts.clips && !counts.tracks) item("ok", t(edits.since === "apply" ? "Edits: none since the last apply" : "Edits: none since loading"));
       else {
-        item("ok", format(edits.since === "apply" ? "Edits since the last apply: {clips} clips (camera {camera} · values {values} · timing {timing})" :
+        if (counts.clips) item("ok", format(edits.since === "apply" ? "Edits since the last apply: {clips} clips (camera {camera} · values {values} · timing {timing})" :
           "Edits since loading: {clips} clips (camera {camera} · values {values} · timing {timing})",
         { clips: counts.clips, camera: counts.cameraShots || 0, values: counts.values || 0, timing: counts.timing || 0 }));
+        if (counts.tracks) item("ok", format("Tracks muted or unmuted: {count}", { count: counts.tracks }));
         // A platform left out of an earlier apply (with consent) still waits for edits the other one has.
         const pending = edits.pending || {};
         const waiting = catalogued(plan).filter((platform) => pending[platform]);
@@ -642,8 +643,11 @@
     }
     if (all) {
       if (all.unchanged) item("ok", t("Apply all: the game already plays this project."));
-      else if (all.counts && !all.counts.clips) item("ok", t("Apply all: the game plays the original MV again."));
-      else if (all.counts) item("ok", format("Apply all: {clips} clips differ from the original MV", { clips: all.counts.clips }));
+      else if (all.counts && !all.counts.clips && !all.counts.tracks) item("ok", t("Apply all: the game plays the original MV again."));
+      else if (all.counts) {
+        if (all.counts.clips) item("ok", format("Apply all: {clips} clips differ from the original MV", { clips: all.counts.clips }));
+        if (all.counts.tracks) item("ok", format("Tracks muted or unmuted: {count}", { count: all.counts.tracks }));
+      }
     }
     const downloads = [...new Set([...(edits && edits.download || []), ...(all && all.download || [])])];
     if (downloads.length && !plan.cross) {
@@ -921,7 +925,8 @@
     "Edits since the last apply: {clips} clips (camera {camera} · values {values} · timing {timing})",
     "Edits since loading: {clips} clips (camera {camera} · values {values} · timing {timing})",
     "These edits are not in {platform} yet.", "Apply all: the game already plays this project.", "Apply all: the game plays the original MV again.",
-    "Apply all: {clips} clips differ from the original MV", "Download (about {size} MB)", "No {platform} original",
+    "Apply all: {clips} clips differ from the original MV", "Tracks muted or unmuted: {count}",
+    "Download (about {size} MB)", "No {platform} original",
     "Not in the game:", "Changed differently in the game ({count})", "{where}: loaded {loaded} → project {project}, game {game}",
     "{where}: last applied {loaded} → project {project}, game {game}",
     "Nothing was overwritten. Use Apply all to replace the game's version with this project, or load the MV from the game again.",

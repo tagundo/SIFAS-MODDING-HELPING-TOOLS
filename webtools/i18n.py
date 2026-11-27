@@ -4312,8 +4312,10 @@ for _source, (_korean, _japanese) in _MV_EDITOR_B_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 
-# MV Studio export slots (mv_studio_timeline): export refusals.
+# MV Studio export slots (mv_studio_timeline): track mutes that reach the game, their plan lines
+# (mv-studio-apply.js, mv-studio-register.js) and export refusals.
 _MV_EXPORT_SLOT_TRANSLATIONS = {
+    "Tracks muted or unmuted: {count}": ("음소거를 바꾼 트랙: {count}개", "ミュートを切り替えたトラック: {count}"),
     "A group track's mute does not reach the game. Mute the tracks inside it.": (
         "그룹 트랙의 음소거는 게임에 반영되지 않습니다. 그 안의 트랙을 음소거하세요.",
         "グループトラックのミュートはゲームに反映されません。中のトラックをミュートしてください。"),

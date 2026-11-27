@@ -9,7 +9,7 @@ import os
 import time
 import unittest
 
-from webtools.core import mv_studio_register as register, mv_studio_timeline as studio
+from webtools.core import mv_studio_apply as apply, mv_studio_register as register, mv_studio_timeline as studio
 
 SAMPLES = Path(os.environ.get("ELICHIKA_STUDIO_TIMELINE_DIR", "/unavailable-studio-samples"))
 try:
@@ -115,6 +115,10 @@ class RegistrationTests(unittest.TestCase):
         normalized, report = register.normalize(self.original, self.posted(leaf=True, led=True, group=True))
         self.assertEqual([item["muted"] for item in normalized], [True, False, False])
         self.assertEqual(report["trackSettings"], ["StageEffect", "StageEffect/Expert/Coloring/LED"])
+        counts = register.count_edits(self.original, normalized)
+        self.assertEqual(counts, {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 1})
+        self.assertTrue(register.has_edits(counts))
+        self.assertFalse(register.has_edits(register.count_edits(self.original, deepcopy(self.original))))
         # The export rules accept what normalize keeps.
         base = timeline(*self.original)
         self.assertEqual(studio._track_changes(base, timeline(*normalized)), [("leaf", "muted", True)])
@@ -161,6 +165,16 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(conflicts, [{"track": "Member1/Gaze", "trackId": "leaf", "clip": "", "eventId": "leaf",
                                       "start": 0.0, "scope": "track", "field": "muted", "basis": "load",
                                       "loaded": '"a"', "project": '"b"', "game": '"c"'}])
+
+    def test_pending_counts_a_mute_since_the_last_apply(self):
+        base = {"tracks": self.base}
+        ours = self.tracks(muted=True)
+        self.assertEqual(apply._pending(base, ours, None)["tracks"], 1)
+        self.assertEqual(apply._pending(base, ours, {})["tracks"], 1)
+        synced = studio.synced_fields(self.base, ours)
+        self.assertEqual(apply._pending(base, ours, synced), {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0,
+                                                              "tracks": 0})
+        self.assertEqual(apply._pending(base, self.tracks(), synced)["tracks"], 1)
 
     def test_a_missing_track_field_in_the_game_is_another_layout(self):
         theirs = self.tracks()
@@ -221,6 +235,7 @@ class ActualTimelineTests(unittest.TestCase):
                 reference = studio.parse_timeline(data, platform)["tracks"]
                 normalized, report = register.normalize(reference, tracks)
                 self.assertEqual(report["trackSettings"], [])
+                self.assertEqual(register.count_edits(reference, normalized)["tracks"], 1)
                 exported = studio.export_timeline(data, platform, normalized)
                 again = {item["id"]: item for item in studio.parse_timeline(exported, platform)["tracks"]}
                 self.assertTrue(again[leaf["id"]]["muted"])

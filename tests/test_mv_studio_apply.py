@@ -145,7 +145,7 @@ class PlanTests(ApplyCase):
     def test_edit_counts_and_a_structure_change(self):
         project = self.edited(self.imported())
         plan = self.plan(project)
-        self.assertEqual(plan["edits"]["counts"], {"cameraShots": 1, "values": 1, "timing": 0, "clips": 2})
+        self.assertEqual(plan["edits"]["counts"], {"cameraShots": 1, "values": 1, "timing": 0, "clips": 2, "tracks": 0})
         self.assertEqual(sorted(plan["edits"]["apply"]), ["android", "ios"])
         self.assertEqual(plan["all"]["unchanged"], False)
         project["tracks"].pop()

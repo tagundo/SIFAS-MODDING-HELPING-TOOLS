@@ -454,7 +454,7 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(normalized[1]["events"][0]["values"]["intensity"], 3.0)
         self.assertEqual(normalized[2]["events"][0]["editableValues"], ["clipIn", "color"])
         self.assertEqual(register.count_edits(original, normalized),
-                         {"cameraShots": 1, "values": 1, "timing": 1, "clips": 3})
+                         {"cameraShots": 1, "values": 1, "timing": 1, "clips": 3, "tracks": 0})
         # The exporter accepts the result as it is.
         mv_studio_timeline._changes({"duration": 4.0, "tracks": original, "warnings": []},
                                     {"duration": 4.0, "tracks": normalized, "warnings": []})
@@ -466,6 +466,8 @@ class NormalizeTests(unittest.TestCase):
         normalized, report = register.normalize(original, tracks)
         self.assertTrue(normalized[1]["muted"])
         self.assertEqual(report["trackSettings"], [])
+        self.assertEqual(register.count_edits(original, normalized)["tracks"], 1)
+        self.assertTrue(register.has_edits(register.count_edits(original, normalized)))
 
     def test_structure_changes_are_refused_with_track_labels(self):
         original = base_tracks()
@@ -686,7 +688,8 @@ class PlanTests(Case):
                               "values": {"shadow": False}}
         project["editor"] = {"version": 1, "originals": {}, "camera": {"version": 1, "shots": {}, "rigs": [{"id": "r"}]}}
         result = self.plan(project, unbaked=[{"kind": "camera", "eventId": "cab-1:10:0", "reason": "pending"}])
-        self.assertEqual(result["edits"], {"cameraShots": 1, "values": 1, "timing": 1, "clips": 3, "follow": True})
+        self.assertEqual(result["edits"], {"cameraShots": 1, "values": 1, "timing": 1, "clips": 3, "tracks": 0,
+                                           "follow": True})
         self.assertFalse(result["timeline"]["unchanged"])
         self.assertEqual(result["timeline"]["bake"], ["android", "ios"])
         self.assertEqual([note["message"] for note in result["notInGame"]],

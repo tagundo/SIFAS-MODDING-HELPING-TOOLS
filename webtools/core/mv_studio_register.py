@@ -563,9 +563,12 @@ def normalize(original_tracks, tracks):
 
 
 def count_edits(original_tracks, tracks):
-    """Edits by kind between the base parse and normalized tracks."""
-    counts = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0}
+    """Edits by kind between the base parse and normalized tracks; ``tracks`` counts the tracks whose
+    exportable track fields (a mute) changed."""
+    counts = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 0}
     for before, after in zip(original_tracks, tracks):
+        if any(field in before and after.get(field) != before[field] for field in mv_studio_timeline.EXPORTABLE_TRACK_FIELDS):
+            counts["tracks"] += 1
         for old, new in zip(before["events"], after["events"]):
             if old == new:
                 continue
@@ -579,9 +582,14 @@ def count_edits(original_tracks, tracks):
     return counts
 
 
+def has_edits(counts):
+    """True when count_edits (or an equal-shaped count) found an edited clip or track."""
+    return bool(counts.get("clips") or counts.get("tracks"))
+
+
 def _exportable_view(tracks):
     """What can reach the game from the project's tracks: clip timing, names, the values of the
-    clip's own editableValues and the track fields in EXPORTABLE_TRACK_FIELDS.
+    clip's own editableValues and the track fields exportable_track_fields lists for the track.
 
     It covers everything ``normalize`` bakes (a baked value's key is in the posted clip's
     editableValues), so an unchanged view means an unchanged bake for the same original.
@@ -908,7 +916,7 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
     result = {"region": None, "base": None, "song": None, "targets": [], "target": "new",
               "title": project["name"].strip()[:MAX_TITLE], "credit": "", "platforms": {}, "projectPlatform": None,
               "timeline": {"native": project.get("nativeTimeline") is True, "unchanged": True, "fingerprints": {}},
-              "edits": {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "follow": _follow(project)},
+              "edits": {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 0, "follow": _follow(project)},
               "notInGame": [], "blocked": [], "warnings": [], "audio": {}, "jacket": {"default": "base"},
               **capabilities()}
     base = _base(repo_root, project, template, live)
@@ -1004,7 +1012,7 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
                 result["notInGame"] = _not_in_game(project, report, unbaked)
                 counts = count_edits(original["tracks"], normalized)
                 result["edits"].update(counts)
-                result["timeline"]["unchanged"] = not counts["clips"] and mod_raw is None
+                result["timeline"]["unchanged"] = not has_edits(counts) and mod_raw is None
                 result["timeline"]["duration"] = original["duration"]
         except StructureError as error:
             result["blocked"].append({"message": STRUCTURE, "labels": error.labels})
@@ -1233,7 +1241,7 @@ def _unchanged_stock(blob, tracks):
     try:
         reference = _parse(blob["raw"])
         result, _ = normalize(reference["tracks"], tracks)
-        return not count_edits(reference["tracks"], result)["clips"]
+        return not has_edits(count_edits(reference["tracks"], result))
     except (StructureError, ValueError, KeyError, TypeError):
         return False
 
@@ -1314,7 +1322,7 @@ def _bake(job, progress, repo_root, project, base, facts, request, song, *, left
         reference = _parse(raw)
         result, _ = normalize(reference["tracks"], tracks)
         # Without edits the platforms not kept play the stock rows: nothing to bake or download.
-        unchanged = mod_raw is None and not count_edits(reference["tracks"], result)["clips"]
+        unchanged = mod_raw is None and not has_edits(count_edits(reference["tracks"], result))
         return result, unchanged
 
     def left_out(platform):
