@@ -15,9 +15,11 @@
                 handle: "auto-clamped" | "auto" | "flat" | "free",
                 handles?: { [channel]: { in: [dFrames, dValue], out: [dFrames, dValue] } } }] }
 
-   The bake keeps the original sample count and time floats (the native exporter's
-   rule), keeps the quaternions continuous, and gives back the original samples bit
-   for bit when nothing is edited. History stores only these records; the bake
+   The bake keeps the shot's sample grid and time floats (the native exporter's rule:
+   the original grid, or for a resized shot the 60 Hz grid of its new length with the
+   original motion held past its old end), keeps the quaternions continuous, and gives
+   back the original samples bit for bit when nothing is edited. History stores only
+   these records; the bake
    runs again after every apply/undo/redo (projectChanged). Registered layers (the
    follow camera, MVStudioCameraKeys.registerLayer) are applied after the keys.
 
@@ -139,6 +141,30 @@
     });
   }
 
+  // The original samples of a resized shot on the 60 Hz grid of its new length. The grids agree up
+  // to the shorter length, so each point keeps its original sample (the same arrays, bit for bit);
+  // past the original end the last pose is held, as the game plays a longer clip of the same
+  // source; a point between two samples (a length off the grid) is interpolated as the scene does.
+  function resizedGrid(frames, duration) {
+    const count = gridCount(duration);
+    if (frames.length === count && frames.every((frame, index) => frame.time === gridTime(index, duration))) return frames;
+    const last = frames[frames.length - 1];
+    return Array.from({ length: count }, (_, index) => {
+      const time = gridTime(index, duration), own = frames[index];
+      const sample = own && Math.abs(own.time - time) <= 1e-9 ? own : time >= last.time ? last : null;
+      if (sample) return { time, position: sample.position, rotation: sample.rotation, fov: finite(sample.fov) ? sample.fov : null };
+      const pose = M.sampleFrames(frames, time);
+      return { time, position: pose.position, rotation: pose.rotation, fov: finite(pose.fov) ? pose.fov : null };
+    });
+  }
+
+  // Whether the native writer can write `duration` (mv_studio_timeline._camera_rewrite_refusal):
+  // whole frames, the parse's own sample count.
+  function wholeFrames(duration) {
+    const count = Math.ceil(duration * FRAME_RATE - 1e-9) + 1;
+    return finite(duration) && duration > 0 && count === gridCount(duration) && Math.abs(duration * FRAME_RATE - (count - 1)) <= 1e-3;
+  }
+
   const sameNumberArray = (a, b) => a === b || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => value === b[index]));
 
   function sameFrames(a, b) {
@@ -214,6 +240,13 @@
       regrid = grid !== source;
       source = grid;
     }
+    // A resized shot bakes on the grid of its new length (the native writer writes that grid).
+    const resized = !user && !staticSource && !!source && !!original && original.duration !== event.duration;
+    if (resized) {
+      const grid = resizedGrid(source, event.duration);
+      regrid = grid !== source;
+      source = grid;
+    }
     const native = project && project.nativeTimeline === true;
     let editable = !!source && source.length >= 2 && track.editable !== false && event.editable !== false;
     let reason = "";
@@ -221,14 +254,11 @@
       editable = false;
       reason = "The camera samples of this shot cannot be exported.";
     }
-    const lengthChanged = !!(native && original && original.duration !== event.duration);
-    if (editable && lengthChanged) {
-      editable = false;
-      reason = "Restore this shot's original length to edit its camera.";
-    }
+    // A native shot resized off the 60 Hz grid previews its edits, but they cannot be exported.
+    const partialFrame = !!(native && resized && !wholeFrames(event.duration));
     const count = source ? source.length : 0;
     const shots = mainCameraShots(ctx);
-    const info = { track, event, source, count, user, owned, native, staticSource, regrid, editable, reason, lengthChanged,
+    const info = { track, event, source, count, user, owned, native, staticSource, regrid, editable, reason, resized, partialFrame,
       record: source && (!user || owned) ? normalizeRecord(raw, count) : null,
       lens: M.nativeLens(track), index: shots.findIndex((item) => item.event === event), total: shots.length,
       fallbackFov: finite(current.fov) ? current.fov : finite(values.fov) ? values.fov : 30 };
@@ -419,21 +449,13 @@
     return result;
   }
 
-  // A shot's length is locked while its samples differ from the originals: the native writer
-  // keeps the sample count. Shots made in the editor are never written natively and resize.
-  function durationLocked(ctx, track, event) {
-    if (!mainTrack(track) || !event) return false;
-    const original = ctx.history && ctx.history.originals ? ctx.history.originals.get(event.id) : undefined;
-    return original !== null && differs(ctx, event);
-  }
-
   // Shots a bake must visit: those with a record, a layer, or samples to restore.
   function candidates(ctx, events) {
     const list = [];
     for (const { track, event } of mainCameraShots(ctx)) {
       if (events && !events.includes(event.id)) continue;
       const shot = shotInfo(ctx, track, event);
-      if (!shot || !shot.source || (shot.lengthChanged && !differs(ctx, event))) continue;
+      if (!shot || !shot.source) continue;
       if (shot.record || (shot.user && shot.regrid) || differs(ctx, event) || (layers.length && affecting(ctx, shot).length)) list.push(shot);
     }
     return list;
@@ -1796,6 +1818,8 @@
   }
 
   // ---- the Camera editor panel ------------------------------------------------------------------
+  const PARTIAL_FRAME = "This shot's length is not whole frames (1/60 s): its camera edits cannot be exported until it is.";
+  const PARTIAL_FRAME_EXPORT = "Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.";
   const MODES = [["original", "Original motion"], ["offset", "Offset keys"], ["keys", "Keyframes (replace)"]];
   const LABELS = { x: "X", y: "Y", z: "Z", pan: "Pan", tilt: "Tilt", roll: "Roll", fov: "FOV" };
   const VIEW_LABELS = { x: "Truck", y: "Pedestal", z: "Dolly" };
@@ -1876,7 +1900,6 @@
     root.append(refs.header);
     if (!shot.editable) {
       root.append(ctx.make("p", t(ctx, shot.reason || "This camera shot cannot be edited."), { class: "mv-field-note", id: "mv-cam-locked" }));
-      if (shot.lengthChanged) root.append(ctx.button(t(ctx, "Revert shot"), () => revertShot(ctx, shot.track, shot.event), { id: "mv-cam-revert" }));
       return refs;
     }
     const locked = ctx.locked();
@@ -2273,7 +2296,7 @@
     if (refs.note) {
       const notes = [];
       if (layers.length && affecting(ctx, shot).length) notes.push(t(ctx, "A camera rig also moves this shot."));
-      if (durationLocked(ctx, shot.track, shot.event)) notes.push(t(ctx, "Duration is locked while this shot has camera edits."));
+      if (shot.partialFrame) notes.push(t(ctx, PARTIAL_FRAME));
       setText(refs.note, notes.join(" "));
     }
   }
@@ -2417,10 +2440,6 @@
       return undefined;
     },
     laneDecorate(ctx, track, lane, layout) { decorate(ctx, track, lane, layout); },
-    clipConstraints(ctx, track, event) {
-      if (!durationLocked(ctx, track, event)) return undefined;
-      return { resize: false, reason: t(ctx, "Duration is locked while this shot has camera edits.") };
-    },
     revertEvent(ctx, track, event) {
       if (!mainTrack(track)) return false;
       const shot = shotInfo(ctx, track, event);
@@ -2452,13 +2471,11 @@
       }
     },
     async beforeSave(ctx) { await (stateOf(ctx).pending || null); },
+    // A resized shot exports its edits on its new grid; only a length off the 60 Hz grid cannot be written.
     async beforeExport(ctx) {
       await (stateOf(ctx).pending || null);
-      for (const { event } of mainCameraShots(ctx)) {
-        const original = ctx.history.originals.get(event.id);
-        if (original && original.duration !== event.duration && differs(ctx, event)) {
-          throw new Error("Restore the original length of camera shots with camera edits before exporting.");
-        }
+      for (const { track, event } of mainCameraShots(ctx)) {
+        if (differs(ctx, event) && shotInfo(ctx, track, event)?.partialFrame) throw new Error(PARTIAL_FRAME_EXPORT);
       }
     },
   };
@@ -2475,9 +2492,8 @@
     "Auto clamped", "Automatic", "Flat", "Free", "Ease presets", "Ease in-out", "Ease in", "Ease out", "Curve channels",
     "Shot {index} / {count}", "Frame {frame} / {last}", "No camera shot at the playhead.", "New camera shot at playhead",
     "Camera shot", "Camera (editor)", "This camera shot cannot be edited.", "The camera samples of this shot cannot be exported.",
-    "Restore this shot's original length to edit its camera.", "Switch the preview camera to Free camera to key the view.",
-    "Duration is locked while this shot has camera edits.", "A camera rig also moves this shot.",
-    "Restore the original length of camera shots with camera edits before exporting.", "The camera could not be baked.",
+    "Switch the preview camera to Free camera to key the view.", "A camera rig also moves this shot.",
+    PARTIAL_FRAME, PARTIAL_FRAME_EXPORT, "The camera could not be baked.",
     "Edit camera key", "Move camera key", "Delete camera key", "Duplicate camera key", "Edit camera handle", "Change interpolation",
     "Change handle type", "Apply ease preset", "Change camera mode", "Change offset space", "New camera shot", "Add camera key",
     // Multi-key editing.

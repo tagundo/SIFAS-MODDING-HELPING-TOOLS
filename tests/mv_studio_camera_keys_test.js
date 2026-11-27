@@ -100,10 +100,8 @@ function unedited() {
   const second = harness(fresh);
   K.requestBake(second.ctx, {});
   assert.equal(fresh.editor, undefined, 'attach/projectChanged/requestBake on an unedited project create no editor');
-  for (const shot of fresh.tracks[0].events) {
-    assert.equal(plugin.clipConstraints(second.ctx, fresh.tracks[0], shot), undefined, 'unedited shots resize');
-    assert.equal(K.differs(second.ctx, shot), false);
-  }
+  for (const shot of fresh.tracks[0].events) assert.equal(K.differs(second.ctx, shot), false);
+  assert.equal(plugin.clipConstraints, undefined, 'the camera editor locks no shot length');
   assert.equal(plugin.valueControl(second.ctx, { track: fresh.tracks[2], event: fresh.tracks[2].events[0], key: 'color', value: 1 }), undefined);
   assert.equal(plugin.valueControl(second.ctx, { track: fresh.tracks[0], event: fresh.tracks[0].events[0], key: 'm_Position', value: {} }), null,
     'raw playable transforms are hidden on camera shots');
@@ -134,8 +132,6 @@ function offsetKey() {
   assert.equal(other.values.keyframes, otherArray, 'the other shot is not rewritten');
   assert.deepEqual(project.editor.originals['cam:0'].values.keyframes, before, 'originals captured before the first write');
   assert(ctx.edited('cam:0'));
-  assert.deepEqual(plugin.clipConstraints(ctx, track(project, 'cam'), shot), { resize: false, reason: 'Duration is locked while this shot has camera edits.' });
-  assert.equal(plugin.clipConstraints(ctx, track(project, 'cam'), other), undefined);
 
   // The same frame again updates that key; another channel keeps the dolly.
   at(30.4 / 60);
@@ -294,14 +290,63 @@ function followsMove() {
   at(shot.start + 30 / 60);
   assert.equal(K.playheadShot(ctx).frame, 30, 'the key moved with the shot');
   assert.deepEqual(project.editor.camera.shots['cam:1'].keys.map((key) => key.frame), [30]);
-  // A shot whose length differs from the original cannot be keyed, and export refuses.
-  history.apply({ label: 'Resize clip', changes: [{ target: { kind: 'event', track: 'cam', event: 'cam:1' }, path: ['duration'], after: shot.duration + .5 }] });
-  const info = K.findShot(ctx, 'cam:1');
-  assert.equal(info.editable, false);
-  assert.equal(info.reason, "Restore this shot's original length to edit its camera.");
-  return plugin.beforeExport(ctx).then(() => assert.fail('export must refuse'), (error) => {
-    assert.equal(error.message, 'Restore the original length of camera shots with camera edits before exporting.');
-  });
+  return resizedShot(project, ctx, history, at, shot, baked);
+}
+
+// A resized shot with camera edits bakes on the 60 Hz grid of its new length: the original samples
+// up to the shorter length (the same values bit for bit), the last pose held past the old end, and
+// the keys on their frames. A length off the grid previews, but export refuses it.
+async function resizedShot(project, ctx, history, at, shot, baked) {
+  const count = baked.length, length = shot.duration;
+  const resize = (duration) => history.apply({ label: 'Resize clip',
+    changes: [{ target: { kind: 'event', track: 'cam', event: 'cam:1' }, path: ['duration'], after: duration }] });
+  const grid = (frames, duration) => frames.forEach((sample, index) => assert.equal(sample.time, Math.min(index / 60, duration), `grid time ${index}`));
+  // The next shot moves out of the way, so the playhead past the old end is in this shot.
+  const next = event(project, 'cam:2');
+  assert(history.apply({ label: 'Move clip', changes: [{ target: { kind: 'event', track: 'cam', event: 'cam:2' }, path: ['start'], after: next.start + 2 }] }));
+  assert(resize(length + 30 / 60));
+  let info = K.findShot(ctx, 'cam:1');
+  assert.equal(info.editable, true, 'an edited shot stays editable at another length');
+  assert.equal(info.count, count + 30);
+  assert.equal(info.partialFrame, false);
+  const longer = shot.values.keyframes;
+  assert.equal(longer.length, count + 30, 'baked on the longer grid');
+  grid(longer, shot.duration);
+  assert.deepEqual(longer.slice(0, count), baked, 'the original grid keeps its baked samples');
+  for (const sample of longer.slice(count)) assert.deepEqual({ ...sample, time: baked[count - 1].time }, baked[count - 1], 'the last pose holds');
+  // A key past the old end.
+  at(shot.start + (count + 10) / 60);
+  assert(K.setChannels(ctx, 'offset', { x: .25 }));
+  assert.deepEqual(project.editor.camera.shots['cam:1'].keys.map((key) => key.frame), [30, count + 10]);
+  assert.notDeepEqual(shot.values.keyframes[count + 20].position, longer[count + 20].position, 'the new key moves the held frames');
+  await plugin.beforeExport(ctx);
+  // Undo the key and the resize: back on the original grid with the original bake.
+  history.undo();
+  history.undo();
+  assert.equal(shot.duration, length);
+  assert.deepEqual(shot.values.keyframes, baked);
+  // A shorter shot: the first samples of the original grid.
+  assert(resize(length - 20 / 60));
+  const shorter = shot.values.keyframes;
+  assert.equal(shorter.length, count - 20);
+  grid(shorter, shot.duration);
+  shorter.forEach((sample, index) => assert.deepEqual({ ...sample, time: baked[index].time }, baked[index], `sample ${index}`));
+  await plugin.beforeExport(ctx);
+  // Off the grid: previewed, refused at export.
+  assert(resize(length + .005));
+  info = K.findShot(ctx, 'cam:1');
+  assert.equal(info.editable, true);
+  assert.equal(info.partialFrame, true);
+  assert.equal(shot.values.keyframes.length, Math.ceil((length + .005) * 60 - 1e-6) + 1);
+  await assert.rejects(plugin.beforeExport(ctx), { message: 'Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.' });
+  // A resized shot without camera edits exports its timing only and is never refused.
+  history.undo();
+  history.undo();
+  assert(K.revertShot(ctx, track(project, 'cam'), shot));
+  assert.deepEqual(shot.values.keyframes, original('cam:1'));
+  assert(resize(length + .005));
+  assert.equal(K.differs(ctx, shot), false, 'no edit: the original samples stay');
+  await plugin.beforeExport(ctx);
 }
 
 function layers() {
@@ -487,7 +532,6 @@ function nonNative() {
   nearVector(created.event.values.keyframes[100].position, [-1, 2, 3], 1e-12, 'the free view as a rig pose');
   assert.equal(created.event.values.keyframes[100].fov, 50);
   // An editor-made shot is never written natively: it resizes, and its 60 Hz grid follows.
-  assert.equal(plugin.clipConstraints(ctx, created.track, created.event), undefined, 'an editor-made shot keeps its resize');
   const resize = (duration) => history.apply({ label: 'Resize clip',
     changes: [{ target: { kind: 'event', track: K.USER_TRACK, event: created.event.id }, path: ['duration'], after: duration }] });
   assert(resize(6));

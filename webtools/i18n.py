@@ -2632,17 +2632,16 @@ _MV_EDITOR_C_TRANSLATIONS = {
     "This camera shot cannot be edited.": ("이 카메라 샷은 편집할 수 없습니다.", "このカメラショットは編集できません。"),
     "The camera samples of this shot cannot be exported.": (
         "이 샷의 카메라 샘플은 내보낼 수 없습니다.", "このショットのカメラサンプルは書き出せません。"),
-    "Restore this shot's original length to edit its camera.": (
-        "카메라를 편집하려면 이 샷의 길이를 원래대로 되돌리세요.", "カメラを編集するには、このショットの長さを元に戻してください。"),
     "Switch the preview camera to Free camera to key the view.": (
         "시점을 키로 저장하려면 미리보기 카메라를 자유 카메라로 바꾸세요.",
         "視点をキーにするには、プレビューカメラを自由カメラに切り替えてください。"),
-    "Duration is locked while this shot has camera edits.": (
-        "카메라를 편집한 샷은 길이를 바꿀 수 없습니다.", "カメラを編集したショットは長さを変えられません。"),
     "A camera rig also moves this shot.": ("카메라 리그도 이 샷을 움직입니다.", "カメラリグもこのショットを動かしています。"),
-    "Restore the original length of camera shots with camera edits before exporting.": (
-        "내보내기 전에 카메라를 편집한 샷의 길이를 원래대로 되돌리세요.",
-        "書き出す前に、カメラを編集したショットの長さを元に戻してください。"),
+    "This shot's length is not whole frames (1/60 s): its camera edits cannot be exported until it is.": (
+        "이 샷의 길이가 프레임(1/60초) 단위가 아닙니다. 프레임 단위로 맞추기 전에는 카메라 편집을 내보낼 수 없습니다.",
+        "このショットの長さがフレーム（1/60秒）単位ではありません。フレーム単位にするまでカメラの編集は書き出せません。"),
+    "Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.": (
+        "내보내기 전에 카메라를 편집한 샷의 길이를 프레임(1/60초) 단위로 맞추세요.",
+        "書き出す前に、カメラを編集したショットの長さをフレーム（1/60秒）単位にしてください。"),
     "The camera could not be baked.": ("카메라를 굽지 못했습니다.", "カメラを焼き込めませんでした。"),
     "Edit camera key": ("카메라 키 편집", "カメラキーを編集"),
     "Add camera key": ("카메라 키 추가", "カメラキーを追加"),

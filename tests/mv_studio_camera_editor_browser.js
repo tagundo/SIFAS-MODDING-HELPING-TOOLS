@@ -20,7 +20,8 @@
 
    Real 12035 timeline (skipped unless ELICHIKA_STUDIO_TIMELINE_DIR holds
    a-1203503-live_timeline.unity; no game data in Git): an unedited project exports the
-   original bytes, and the export of an edited shot re-parses to the baked samples.
+   original bytes, and the export of an edited shot re-parses to the baked samples, also
+   after the edited shot is shortened by ten frames.
 
    Screenshots go to EVIDENCE_DIR (a temporary folder otherwise). */
 'use strict';
@@ -568,9 +569,9 @@ async function synthetic(browser, url) {
   await page.locator('#mv-cam-curves').screenshot({ path: path.join(evidence, 'camera-curves-ko.png') });
   await page.setViewportSize({ width: 1400, height: 1000 });
 
-  // Resize is locked for an edited shot; moving stays allowed.
+  // An edited shot can be moved and resized.
   await page.locator('.mv-clip[data-event="cam:1"]').click();
-  assert.equal(await page.locator('#mv-event-fields [data-mv-field=duration]').count(), 0, 'duration locked');
+  assert.equal(await page.locator('#mv-event-fields [data-mv-field=duration]').count(), 1, 'an edited shot keeps its resize');
   assert.equal(await page.locator('#mv-event-fields [data-mv-field=start]').count(), 1);
 
   // Closed, the panel skips playhead updates; opened again elsewhere, it shows the playhead shot.
@@ -1140,9 +1141,32 @@ async function exportRoundTrip(browser, url) {
   });
   assert(worst.position < 1e-4 && worst.rotation < 1e-3 && worst.fov < 1e-4, `re-parse matches the baked samples ${JSON.stringify(worst)}`);
   main.events.slice(1).forEach((event, index) => assert.deepEqual(again.events[index + 1].values.keyframes, event.values.keyframes, `shot ${index + 1} untouched`));
+
+  // The edited shot ten frames shorter: it rebakes on its new grid and exports that grid. (Selected
+  // through the editor: its key diamonds cover the clip.)
+  await page.evaluate(([trackId, eventId]) => window.probeCtx.select(trackId, eventId), [main.id, shot.id]);
+  const length = Math.round(shot.duration * 60 - 10) / 60;
+  await page.locator('#mv-event-fields [data-mv-field=duration]').fill(String(length));
+  await page.locator('#mv-event-fields [data-mv-field=duration]').press('Tab');
+  await page.waitForFunction(([trackId, count]) => MVStudio.getState().project.tracks.find((track) => track.id === trackId).events[0].values.keyframes.length === count,
+    [main.id, baked.length - 10]);
+  const shorter = (await state(page)).project.tracks.find((track) => track.id === main.id).events[0];
+  const resized = await page.request.post(url + '/api/mv-studio/open', { data: { path: await exportPath() }, timeout: 600000 }).then((reply) => reply.json());
+  const cut = resized.tracks.find((track) => track.id === main.id).events[0];
+  assert.equal(cut.duration, shorter.duration);
+  assert.equal(cut.values.keyframes.length, shorter.values.keyframes.length, 'the shorter grid');
+  const resizedWorst = { position: 0, rotation: 0, fov: 0 };
+  cut.values.keyframes.forEach((frame, index) => {
+    const want = shorter.values.keyframes[index];
+    assert.equal(frame.time, want.time, 'same sample times');
+    resizedWorst.position = Math.max(resizedWorst.position, distance(frame.position, want.position));
+    resizedWorst.rotation = Math.max(resizedWorst.rotation, angleBetween(frame.rotation, want.rotation));
+    resizedWorst.fov = Math.max(resizedWorst.fov, Math.abs(frame.fov - want.fov));
+  });
+  assert(resizedWorst.position < 1e-4 && resizedWorst.rotation < 1e-3 && resizedWorst.fov < 1e-4, `resized re-parse ${JSON.stringify(resizedWorst)}`);
   assert.deepEqual(errors, []);
   await page.close();
-  return worst;
+  return { worst, resized: resizedWorst };
 }
 
 async function run() {
