@@ -701,7 +701,7 @@ class RealPackModuleTests(reg_tests.Case):
         self.pack = mv_timeline_pack
 
     def hand_made(self, stage):
-        """A pack whose manifest stage names only ``stage`` (the reader accepts it, the writer does not)."""
+        """A hand-made pack whose manifest stage names only ``stage`` (MV Studio exports all five or none)."""
         import io
         import zipfile
         data = self.pack.write_pack(name="hand", song={"liveId": 21, "title": "Base song"},
@@ -718,33 +718,71 @@ class RealPackModuleTests(reg_tests.Case):
         path.write_bytes(output.getvalue())
         return path
 
-    def test_a_partial_stage_is_completed_from_the_source_stock_stage(self):
-        import io
-        import zipfile
+    def convert(self, path):
+        """The platform tool's android -> ios conversion of the pack at ``path``: (written bytes, job log)."""
         from webtools.tools import mv_timeline
-        path = self.hand_made({"live_stage_master_id": 102})
-        self.assertEqual(self.pack.read_pack(path)["manifest"]["stage"], {"live_stage_master_id": 102})
         out = self.library / "modded" / "out"
         cwd = os.getcwd()
         os.chdir(self.root)
-        self.addCleanup(os.chdir, cwd)
-        logs = []
-        job = types.SimpleNamespace(log=logs.append, progress=lambda done, total: None, outputs=[])
-        job.add_output = job.outputs.append
-        mv_timeline.run_mv_timeline_platform(job, {"direction": "android_to_ios", "source": str(path),
-                                                   "out_dir": str(out)})
-        written = Path(job.outputs[-1]).read_bytes()
+        try:
+            logs = []
+            job = types.SimpleNamespace(log=logs.append, progress=lambda done, total: None, outputs=[])
+            job.add_output = job.outputs.append
+            mv_timeline.run_mv_timeline_platform(job, {"direction": "android_to_ios", "source": str(path),
+                                                       "out_dir": str(out)})
+        finally:
+            os.chdir(cwd)
+        return Path(job.outputs[-1]).read_bytes(), logs
+
+    def installed_stage(self, data):
+        """The stage Elichika's install gives the target 2201 for the pack ``data`` (then restored)."""
+        import database_maintenance
+        import mv_studio_stock
+        before = apply.stage_fields(self.root, "gl", 2201)
+        self.pack.install_pack(self.root, data, regions=("gl",), log=None,
+                               convert=lambda raw, src, dst, region, asset_id: timeline_bytes(dst, tag="converted"))
+        stage = apply.stage_fields(self.root, "gl", 2201)
+        described = mv_studio_stock.describe_mv_timeline(self.root, region="gl", asset_id=2201)
+        with database_maintenance.guard(self.root):
+            mv_studio_stock.restore_mv_timeline(self.root, region="gl", asset_id=2201,
+                                                expected_key=described["timelineKey"], log=None)
+        self.assertEqual(apply.stage_fields(self.root, "gl", 2201), before)
+        return stage
+
+    def test_a_partial_stage_installs_the_same_stage_after_the_conversion(self):
+        """The install fills the stage fields a pack leaves out from the TARGET slot's original stage, so the
+        platform tool passes a partial stage through (the writer takes it), or, with an older writer that
+        needs all five, fills it from the target's stock stage: the converted pack installs what the
+        original pack installs. The source's stage (E2101) never fills it."""
+        import io
+        import zipfile
+        partial = {"live_stage_master_id": 101}
+        path = self.hand_made(partial)
+        self.assertEqual(self.pack.read_pack(path)["manifest"]["stage"], partial)
+        original = self.installed_stage(path.read_bytes())
+        target_stock = apply.stage_fields(self.root, "gl", 2201)
+        self.assertEqual(original, {**target_stock, **partial})
+        self.assertNotEqual(original["stage_effect_asset_path"], STAGE_2101["stage_effect_asset_path"])
+        # This Elichika's writer takes the partial stage: it goes through as it is.
+        self.assertTrue(getattr(self.pack, "PARTIAL_STAGE", False))
+        written, logs = self.convert(path)
         result = self.pack.read_pack(written)
-        self.assertEqual(sorted(result["timelines"]), ["android", "ios"])
-        # The left-out fields come from 3D 2101's original stage; the named one stays.
-        self.assertEqual(result["manifest"]["stage"], {**STAGE_2101, "live_stage_master_id": 102})
-        self.assertTrue(any("stage_effect_asset_path" in line and "3D 2101" in line for line in logs), logs)
-        # The legacy layout is kept: the target's file and the source's stock key.
+        self.assertEqual((sorted(result["timelines"]), result["manifest"]["stage"]), (["android", "ios"], partial))
+        self.assertFalse(any("whole stage" in line for line in logs), logs)
+        self.assertEqual(self.installed_stage(written), original)
+        # The legacy layout: the target's file, the source's stock key, and the stage the install gives the target.
         with zipfile.ZipFile(io.BytesIO(written)) as archive:
             self.assertIn("2201android.unity", archive.namelist())
             text = archive.read("livetimeline.txt").decode()
         self.assertIn("timeline = 'A2101'", text)
-        self.assertIn("live_stage_master_id = 102", text)
+        self.assertIn("live_stage_master_id = 101", text)
+        self.assertIn(f"stage_effect_asset_path = {target_stock['stage_effect_asset_path']!r}", text)
+        # An older writer needs the whole stage: the left-out fields come from the target's stock stage (logged).
+        with mock.patch.object(self.pack, "PARTIAL_STAGE", False):
+            written, logs = self.convert(path)
+        self.assertEqual(self.pack.read_pack(written)["manifest"]["stage"], original)
+        self.assertTrue(any("stage_effect_asset_path" in line and "3D 2201" in line for line in logs), logs)
+        self.assertEqual(self.installed_stage(written), original)
 
     def test_a_damaged_compressed_entry_is_not_a_pack(self):
         """A corrupt deflate stream or LZMA entry is a refusal (ValueError, HTTP 400), whether the reader

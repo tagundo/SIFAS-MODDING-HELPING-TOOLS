@@ -327,32 +327,35 @@ def _stock_timeline_key(repo_root, region, asset_id):
         return None
 
 
-def rewrite_stage(repo_root, manifest):
+def rewrite_stage(repo_root, manifest, *, partial=False):
     """write_pack's stage keywords for a new pack made from a read ``manifest`` (the platform
-    conversion adds a platform): ({"stage", "target_stage", "source_timeline_key"}, completed).
+    conversion adds a platform): ({"stage", "target_stage", "source_timeline_key"}, filled).
 
-    write_pack needs all five stage fields while the reader accepts a pack naming only some (a
-    hand-made pack): the fields it leaves out are taken from the source asset's STOCK stage, the
-    one an MV Studio pack carries, and listed in ``completed``. ``target_stage`` (the target slot's
-    current stage) and ``source_timeline_key`` keep the legacy layout in the new pack."""
+    A pack may name only some stage fields; installing it fills the others from the TARGET slot's
+    original stage (Elichika's apply_mv_timeline). A writer that takes a partial stage
+    (``partial``: mv_timeline_pack.PARTIAL_STAGE) gets it as it is, so the new pack installs the
+    same stage. An older writer needs all five: the left-out fields then come from the manifest
+    target's stock (original) stage, the values the install would give them there, and are listed
+    in ``filled``. ``target_stage`` (that same stock stage) and ``source_timeline_key`` keep the
+    legacy layout in the new pack."""
     from . import mv_studio_apply as apply
     source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
     region, asset = source.get("region"), source.get("assetId")
     target = (manifest.get("target") or {}).get("assetId") if isinstance(manifest.get("target"), dict) else None
-    stage, completed = manifest.get("stage"), []
-    if isinstance(stage, dict) and set(stage) != set(apply.STAGE_FIELDS):
-        try:
-            live = register.store()
-        except ImportError:
-            live = None  # _source_stage then reads the region's masterdata
-        stock = apply._source_stage(live, repo_root, region, asset)
-        if stock is None:
+    try:
+        live = register.store()
+    except ImportError:
+        live = None  # _source_stage then reads the region's masterdata
+    target_stage = apply._source_stage(live, repo_root, region, target) if target else None
+    stage, filled = manifest.get("stage"), []
+    if isinstance(stage, dict) and set(stage) != set(apply.STAGE_FIELDS) and not partial:
+        if target_stage is None:
             from . import mv_timeline_platform
             raise ValueError(mv_timeline_platform.NO_ASSET)
-        completed = [field for field in apply.STAGE_FIELDS if field not in stage]
-        stage = {**stock, **stage}
-    return {"stage": stage, "target_stage": apply.stage_fields(repo_root, region, target) if target else None,
-            "source_timeline_key": _stock_timeline_key(repo_root, region, asset)}, completed
+        filled = [field for field in apply.STAGE_FIELDS if field not in stage]
+        stage = {**target_stage, **stage}
+    return {"stage": stage, "target_stage": target_stage,
+            "source_timeline_key": _stock_timeline_key(repo_root, region, asset)}, filled
 
 
 __all__ = ("open_pack", "staged", "read", "export_pack", "validate_export", "rewrite_stage", "MESSAGES", "EXTENSION")
