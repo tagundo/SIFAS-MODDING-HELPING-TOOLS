@@ -2160,6 +2160,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     if coloring_uv is None:
                         coloring_uv = glb.attribute(stage_inputs["lightUV"], "VEC2")
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR_INDEX": coloring_uv}
+                    if descriptor.get("vertexColor") and "color" in stage_inputs:
+                        if stage_color is None:
+                            stage_color = glb.attribute(stage_inputs["color"], "VEC4")
+                        primitives[-1]["attributes"]["_STAGE_COLOR"] = stage_color
                     primitives[-1]["extras"]["mvStageColoring"] = descriptor
             prop = (mv_studio_stage_props.light(prop_light, scene.name(material_obj))
                     if prop_light is not None and material_obj is not None else None)

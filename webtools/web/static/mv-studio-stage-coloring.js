@@ -1,8 +1,15 @@
 (function (global) {
   "use strict";
 
+  // AS/Coloring/Transparent's GLES3 programs: _AUTO_PLAY_ON scrolls the palette by -_Time.y * _Speed
+  // instead of -_SelfTime * _Speed (uSelfTime carries the clock), _VERTEX_COLOR_ON multiplies COLOR0
+  // in, and _SATURATE_ON adds (main.rgb^2)^2 to the colour, alpha unchanged.
   const vertexShader = [
     "attribute vec2 _stage_color_index;",
+    "#ifdef VERTEX_COLOR",
+    "attribute vec4 _stage_color;",
+    "varying vec4 vColor;",
+    "#endif",
     "uniform vec4 uMainST;",
     "uniform vec2 uIndexST;",
     "uniform float uShift;",
@@ -15,6 +22,9 @@
     "  vMain = uv * uMainST.xy + uMainST.zw;",
     "  float index = floor((_stage_color_index.x * uIndexST.x + uIndexST.y) * 256.0);",
     "  vPalette = vec2((index * (255.0 / 256.0) + uShift + 0.5) / 256.0, -uSpeed * uSelfTime);",
+    "  #ifdef VERTEX_COLOR",
+    "  vColor = _stage_color;",
+    "  #endif",
     "}"
   ].join("\n");
 
@@ -24,8 +34,19 @@
     "uniform vec4 uTint;",
     "varying vec2 vMain;",
     "varying vec2 vPalette;",
+    "#ifdef VERTEX_COLOR",
+    "varying vec4 vColor;",
+    "#endif",
     "void main() {",
-    "  gl_FragColor = texture2D(uMain, vMain) * texture2D(uPalette, vPalette) * uTint;",
+    "  vec4 base = texture2D(uMain, vMain);",
+    "  gl_FragColor = base * texture2D(uPalette, vPalette) * uTint;",
+    "  #ifdef VERTEX_COLOR",
+    "  gl_FragColor *= vColor;",
+    "  #endif",
+    "  #ifdef SATURATE",
+    "  vec3 square = base.rgb * base.rgb;",
+    "  gl_FragColor.rgb += square * square;",
+    "  #endif",
     "}"
   ].join("\n");
 
@@ -150,13 +171,18 @@
           uTint: { value: new T.Vector4().fromArray(fields.tint) },
           uShift: { value: fields.shift }, uSpeed: { value: fields.speed }, uSelfTime: { value: 0 }
         };
+        const defines = {};
+        if (fields.vertexColor === true) defines.VERTEX_COLOR = 1;
+        if (fields.saturate === true) defines.SATURATE = 1;
         const material = new T.ShaderMaterial({
-          uniforms, vertexShader, fragmentShader, depthWrite: false, transparent: true, toneMapped: false,
+          uniforms, vertexShader, fragmentShader, defines, depthWrite: false, transparent: true, toneMapped: false,
           side: [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull], blending: T.CustomBlending,
           blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor,
           blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneFactor
         });
         material.name = "AS/Coloring/Transparent";
+        // Unity feeds opaque white to COLOR when the mesh has no colour stream.
+        material.defaultAttributeValues._stage_color = [1, 1, 1, 1];
         groups.set(fields.target, { fields, material, uniforms, track: null, palette: colors, base, shafts,
           currentIndex: null });
       }
@@ -170,7 +196,7 @@
       for (const task of paletteTextures.values()) task.then(({ texture }) => texture.dispose(), () => {});
       throw error;
     }
-    let lastProject, lastColors;
+    let lastProject, lastColors, gameClock = null;
     // Unity draws queue-3000 renderers back to front by the distance from the camera to the
     // renderer's bounds center; MVStudioTransparentSort orders these meshes with the other
     // native transparent stage meshes. sortCenter is the mesh's m_LocalAABB center in the node's
@@ -182,7 +208,11 @@
     return {
       sortEntries() { return sortEntries; },
       invalidate() { lastProject = null; },
-      update(seconds, project) {
+      // The scene's game clock (director seconds -> the game's Time.time), or null for the director time.
+      useClock(clock) { gameClock = typeof clock === "function" ? clock : null; },
+      // `clock` (optional, the scene's game clock): director seconds -> the game's Time.time, which
+      // the _AUTO_PLAY_ON programs read as _Time.y; the director time stands in without one.
+      update(seconds, project, clock = gameClock) {
         if (project !== lastProject) {
           const tracks = new Map();
           const colors = { ...project?.stage?.memberThemeColors };
@@ -218,7 +248,8 @@
           uniforms.uTint.value.fromArray(value.tint);
           uniforms.uShift.value = value.shift;
           uniforms.uSpeed.value = value.speed;
-          uniforms.uSelfTime.value = value.selfTime;
+          uniforms.uSelfTime.value = fields.autoPlay === true
+            ? (typeof clock === "function" ? clock(seconds) : seconds) : value.selfTime;
           material.visible = value.tint[3] !== 0;
         }
       },
