@@ -11,8 +11,14 @@ copies, the way game exports split a vertex at a UV seam or material border:
   real exports leave), its own UV, vertex 3's weights.
 
 The lower quad also gets a UV seam inside its own material: its second
-triangle uses vertex 8, an exact copy of vertex 1 with its own UV. Vertices 0,
-4 and 5 have no copy. All values are synthetic.
+triangle uses vertex 8, an exact copy of vertex 1 with its own UV. Two more
+vertices are used by no triangle (as copies left on deleted faces are):
+
+* vertex 9: a second exact copy of vertex 1, so {1, 8, 9} is a group of three;
+* vertex 10: vertex 5 moved 1e-6 in X, a distinct nearby vertex (the closest
+  distinct vertices in real costumes are 1.2e-6 apart), never a partner.
+
+Vertices 0, 4 and 5 have no copy. All values are synthetic.
 """
 import copy
 import struct
@@ -46,8 +52,13 @@ def fixture_bytes():
     struct.pack_into('<2f', copy7, 24, 0.95, 0.6)
     copy8 = bytearray(data[1 * STRIDE:2 * STRIDE])
     struct.pack_into('<2f', copy8, 24, 0.9, 0.08)
-    data += copy6 + copy7 + copy8
-    vertex['m_VertexCount'] = 9
+    copy9 = bytearray(data[1 * STRIDE:2 * STRIDE])
+    struct.pack_into('<2f', copy9, 24, 0.7, 0.3)
+    near10 = bytearray(data[5 * STRIDE:6 * STRIDE])
+    struct.pack_into('<f', near10, 0, struct.unpack_from('<f', near10, 0)[0] + 1e-6)
+    struct.pack_into('<2f', near10, 24, 0.6, 0.9)
+    data += copy6 + copy7 + copy8 + copy9 + near10
+    vertex['m_VertexCount'] = 11
     vertex['m_DataSize'] = bytes(data)
     lower, upper = (0, 1, 2, 8, 3, 2), (6, 7, 4, 7, 5, 4)
     mesh['m_IndexBuffer'] = struct.pack('<12H', *(lower + upper))

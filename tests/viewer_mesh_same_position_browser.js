@@ -2,12 +2,15 @@
  * ribbon whose upper quad is a second material joined by seam copies (vertex 6
  * = vertex 2 exactly with other weights, vertex 7 = vertex 3 one float32 step
  * away, both in the second material; vertex 8 = vertex 1 exactly, a UV seam
- * inside the first material). Checkbox, partner count and UV dots and rings,
- * nudge, axis and free drag, delta and absolute position, Undo/Redo, OFF =
- * selected vertices only, regrouping by current position (tear, Undo, join,
- * recipe), weights and Select connected unchanged, save + reopen + open copy +
- * recipe restore, ja labels and tooltips after a language switch, and
- * phone/touch and narrow layouts. */
+ * inside the first material; vertices 9 and 10 on no face: 9 = vertex 1 exactly,
+ * so {1, 8, 9} is a group of three, and 10 = vertex 5 moved 1e-6, a distinct
+ * nearby vertex). Checkbox, partner count and UV dots and rings (shown
+ * material only, also after a material switch), nudge, axis and free drag
+ * (also of a group that already has an edit), delta and absolute position,
+ * Undo/Redo, OFF = selected vertices only, regrouping by current position
+ * (tear, Undo, join, recipe, deselecting), weights and Select connected
+ * unchanged, save + reopen + open copy + recipe restore, ja labels and
+ * tooltips after a language switch, and phone/touch and narrow layouts. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -39,6 +42,9 @@ async function frames(page) { await page.evaluate(() => new Promise(resolve => r
 async function snapshot(page) { return page.evaluate(() => ({ mesh: ModelViewer.getState().meshTools, camera: ModelViewer.getState().camera })); }
 function edits(state) { const mesh = state.mesh.edits.meshes[0]; return mesh ? mesh.positions.slice().sort((a, b) => a.vertex - b.vertex) : []; }
 function position(state, vertex, data) { const row = edits(state).find(row => row.vertex === vertex); return row ? row.position : data.positions[vertex]; }
+// Vertices whose current position differs between two snapshots.
+function moved(before, after, data) { return data.positions.map((_, v) => v).filter(v => JSON.stringify(position(before, v, data)) !== JSON.stringify(position(after, v, data))); }
+async function countText(page) { return page.locator('#viewer-mesh-modify-count').textContent(); }
 function near(actual, expected, why, tolerance = 1e-9) { assert(Math.abs(actual - expected) <= tolerance, why + ': ' + actual + ' != ' + expected); }
 async function stage(page) { await page.locator('#viewer-stage').scrollIntoViewIfNeeded(); await frames(page); await page.evaluate(() => ModelViewer.renderProbe(9)); await frames(page); }
 async function project(page, mesh, vertex) { await stage(page); return page.evaluate(({ mesh, vertex }) => ModelViewer.projectMeshVertex(mesh, vertex), { mesh, vertex }); }
@@ -119,18 +125,23 @@ async function desktop(url) {
   try {
     await page.goto(url); await page.waitForFunction(() => typeof openModelViewer === 'function');
     const data = await open(page, source);
-    assert.equal(data.positions.length, 9); assert.deepEqual(data.positions[6], data.positions[2]); assert.deepEqual(data.positions[8], data.positions[1]); assert.equal(ulps(data.positions[7], data.positions[3]), 1);
+    assert.equal(data.positions.length, 11); assert.deepEqual(data.positions[6], data.positions[2]); assert.deepEqual(data.positions[8], data.positions[1]); assert.equal(ulps(data.positions[7], data.positions[3]), 1);
+    assert.deepEqual(data.positions[9], data.positions[1]); assert(gap(data.positions[10], data.positions[5]) > 1e-6 && gap(data.positions[10], data.positions[5]) < 1.1e-6);
+    assert(!data.triangles.some(face => face.includes(9) || face.includes(10)), 'vertices 9 and 10 are on no face');
     assert.notDeepEqual(data.skin[6], data.skin[2], 'the exact seam copy has other weights'); assert.equal(data.submeshes.length, 2);
     const quick = page.locator('#viewer-mesh-modify-same-position'), settings = page.locator('#viewer-mesh-modify-same-position-settings');
     // Selection and the partner indicator (UV dots for partners in the shown material).
     // Vertices 1 and 8 project to one screen point: a click picks either one.
     await pick(page, data, 1); let value = await snapshot(page);
     assert.equal(value.mesh.selectedVertices.length, 1); assert([1, 8].includes(value.mesh.selectedVertices[0]));
-    assert.deepEqual(value.mesh.samePosition.partners, [9 - value.mesh.selectedVertices[0]]); assert.equal(value.mesh.samePosition.enabled, true);
+    assert.deepEqual(value.mesh.samePosition.partners, [1, 8, 9].filter(v => v !== value.mesh.selectedVertices[0])); assert.equal(value.mesh.samePosition.enabled, true);
+    assert.equal(value.mesh.samePosition.tolerance, 5e-7, 'the groups were built with the 5e-7 tolerance');
     // Vertex 1 by index: its partner 8 has a UV inside the texture (1 sits on the corner).
     await inspector(page, true); await page.locator('#viewer-mesh-modify-vertex').fill('1'); await page.locator('#viewer-mesh-modify-select-vertex').click(); await inspector(page, false);
-    value = await snapshot(page); assert.deepEqual(value.mesh.selectedVertices, [1]); assert.deepEqual(value.mesh.samePosition.partners, [8]);
+    value = await snapshot(page); assert.deepEqual(value.mesh.selectedVertices, [1]); assert.deepEqual(value.mesh.samePosition.partners, [8, 9]);
+    assert.match(await countText(page), /^Selected vertices: 1 \(\+2 at the same position\) · /, 'the count line counts partners, not groups');
     assert(pink(await uvPixel(page, data.uv[8])), 'the UV canvas marks the partner'); assert(!pink(await uvPixel(page, data.uv[3])), 'non-partners are unmarked');
+    assert(!pink(await uvPixel(page, data.uv[9])), 'a partner on no face gets no dot');
     // A pink ring above the selected dots (radius 5.6 px), so a partner under a
     // yellow dot (same UV) still shows; the filled dot ends at 4 px.
     assert((await uvRow(page, data.uv[8], [-6, -5.5, -5])).some(pink), 'the partner ring is drawn outside the dot');
@@ -146,12 +157,24 @@ async function desktop(url) {
     assert(!(await uvRow(page, data.uv[6], [-6, -5.5, -5, 5, 5.5, 6])).some(pink), 'and no ring');
     assert.match(await page.locator('#viewer-mesh-modify-count').textContent(), /^Selected vertices: 1 \(\+1 at the same position\) · /);
     assert(!pink(await uvPixel(page, data.uv[8])), 'the dot follows the selection');
+    // A material switch: the shown-material filter follows it. Partner 2 of
+    // vertex 6 is only in material 0, so material 1 shows no dot for it.
+    await page.locator('#viewer-mesh-modify-submesh').selectOption('1'); await frames(page);
+    await selectIndex(page, 6); value = await snapshot(page);
+    assert.deepEqual(value.mesh.selectedVertices, [6]); assert.deepEqual(value.mesh.samePosition.partners, [2]);
+    assert(!pink(await uvPixel(page, data.uv[2])), 'material 1 shows no dot for a partner only in material 0');
+    assert(!(await uvRow(page, data.uv[2], [5, 5.5, 6])).some(pink), 'and no ring');
+    // Vertex 10 is 1e-6 from vertex 5, beyond the 5e-7 tolerance: not a partner.
+    await selectIndex(page, 5); assert.deepEqual((await snapshot(page)).mesh.samePosition.partners, [], 'a distinct vertex 1e-6 away is not a partner');
+    await selectIndex(page, 10); assert.deepEqual((await snapshot(page)).mesh.samePosition.partners, []);
+    await page.locator('#viewer-mesh-modify-submesh').selectOption('0'); await frames(page); await pick(page, data, 2);
+    assert.deepEqual((await snapshot(page)).mesh.samePosition.partners, [6]);
     assert.equal(await quick.isVisible(), false, 'Pick mode keeps the move tools to one row');
     await page.locator('#viewer-mesh-modify-quick-drag').click();
     assert(await quick.isVisible()); assert(await quick.isChecked(), 'default ON'); assert(await settings.isChecked(), 'the settings copy agrees');
     assert.equal((await page.locator('#viewer-mesh-modify .mesh-transform-together label').textContent()).trim(), 'Move vertices at the same position together');
     result.moveToolsHeight = (await page.locator('#viewer-mesh-modify .mesh-transform-tools').boundingBox()).height;
-    result.cases.push('Pick shows partners (count + pink UV dot and ring, none in a hidden material, lookup reused across redraws); Move shows the checkbox, default ON, selection unchanged');
+    result.cases.push('Pick shows partners (count of partners in a group of three, pink UV dot and ring, none in a hidden material, also after a material switch, none on no face, lookup reused across redraws); 1e-6 is not a partner; Move shows the checkbox, default ON, selection unchanged');
     // Nudge with partners, one Undo step.
     await page.locator('#viewer-mesh-modify-move-axis').selectOption('x'); await page.locator('#viewer-mesh-modify-move-step').fill('.025');
     const start = await snapshot(page); await page.locator('#viewer-mesh-modify-nudge-plus').click(); value = await snapshot(page);
@@ -231,6 +254,23 @@ async function desktop(url) {
     await page.locator('#viewer-mesh-modify-undo').click(); assert.deepEqual((await snapshot(page)).mesh.edits, before.mesh.edits);
     await page.locator('#viewer-mesh-modify-redo').click(); assert.deepEqual(edits(await snapshot(page)), freeDrag);
     result.cases.push('Free drag gives the seam copy (other weights) the seed delta: saved values identical, one Undo step, groups built once');
+    // A group that already has edits: nudge it, then axis-drag and free-drag it
+    // without undoing. Every member starts from its current value.
+    await page.locator('#viewer-mesh-modify-move-axis').selectOption('x');
+    let step = await snapshot(page); await page.locator('#viewer-mesh-modify-nudge-plus').click(); value = await snapshot(page);
+    assert.deepEqual(position(value, 6, data), position(value, 2, data)); near(position(value, 2, data)[0], position(step, 2, data)[0] + .025, 'X+ after the free drag');
+    step = value; handle = await gizmo(page, 'x'); await mouseDrag(page, handle, along(handle, 24)); value = await snapshot(page);
+    assert.deepEqual(moved(step, value, data), [2, 6]); assert.deepEqual(position(value, 6, data), position(value, 2, data), 'an axis drag of an edited group keeps it bit-identical');
+    assert(Math.abs(position(value, 2, data)[0] - position(step, 2, data)[0]) > .001); assert.equal(position(value, 2, data)[1], position(step, 2, data)[1]);
+    await page.locator('#viewer-mesh-modify-move-axis').selectOption('screen');
+    step = value; point = await project(page, data.mesh, 2); await mouseDrag(page, point, { x: -20, y: 14 }); value = await snapshot(page);
+    assert.deepEqual(moved(step, value, data), [2, 6]); assert.deepEqual(position(value, 6, data), position(value, 2, data), 'a free drag of an edited group keeps it bit-identical');
+    assert(Math.hypot(...position(value, 2, data).map((x, axis) => x - position(step, 2, data)[axis])) > .001);
+    step = value; point = await project(page, data.mesh, 2); await mouseDrag(page, point, { x: 16, y: 10 }, true); value = await snapshot(page);
+    assert.deepEqual(value.mesh.edits, step.mesh.edits, 'a return-to-start free drag keeps the edited group where it was'); assert.equal(value.mesh.history, step.mesh.history);
+    for (let i = 0; i < 3; i++) await page.locator('#viewer-mesh-modify-undo').click();
+    assert.deepEqual(edits(await snapshot(page)), freeDrag, 'three Undo steps: free drag, axis drag, nudge');
+    result.cases.push('Nudge, axis drag and free drag of a group that already has edits keep it bit-identical; a return-to-start drag keeps it in place');
     // The 1-step group: vertex 3 and its copy 7 move together and keep their offset.
     await pick(page, data, 3); value = await snapshot(page); assert.deepEqual(value.mesh.samePosition.partners, [7], 'a one-step seam copy is a partner');
     await page.locator('#viewer-mesh-modify-quick-drag').click(); await page.locator('#viewer-mesh-modify-move-axis').selectOption('y');
@@ -258,6 +298,16 @@ async function desktop(url) {
     value = await snapshot(page); assert.deepEqual(value.mesh.edits, before.mesh.edits, 'two selected vertices: no absolute edit');
     assert.equal(await page.locator('#viewer-mesh-modify-status').textContent(), 'Choose one vertex for an absolute position.');
     result.cases.push('Set vertex position: the partner takes the same value; the one-vertex rule counts selected vertices only');
+    // Shrinking the selection: Shift-pick 3 again deselects it, and its copy 7
+    // no longer moves with the selection.
+    await inspector(page, false); await pick(page, data, 3, true); value = await snapshot(page);
+    assert.deepEqual(value.mesh.selectedVertices, [2]); assert.deepEqual(value.mesh.samePosition.partners, [6], 'deselecting 3 drops its partner 7');
+    assert.match(await countText(page), /^Selected vertices: 1 \(\+1 at the same position\) · /);
+    await page.locator('#viewer-mesh-modify-quick-drag').click(); await page.locator('#viewer-mesh-modify-move-axis').selectOption('z');
+    before = await snapshot(page); await page.locator('#viewer-mesh-modify-nudge-plus').click(); value = await snapshot(page);
+    assert.deepEqual(moved(before, value, data), [2, 6], 'the nudge moves 2 and 6, not 3 or 7'); assert.equal(value.mesh.history, before.mesh.history + 1);
+    await page.locator('#viewer-mesh-modify-undo').click();
+    result.cases.push('Shift-pick deselects a vertex: its partner stops moving (count and nudge)');
     // Weights and Select connected act on the selected vertices only.
     await inspector(page, false); await pick(page, data, 2); await inspector(page, true);
     await page.locator('#viewer-mesh-modify-weight-bone').selectOption('2'); await page.locator('#viewer-mesh-modify-weight-value').fill('.3');
@@ -266,7 +316,7 @@ async function desktop(url) {
     await page.locator('#viewer-mesh-modify-undo').click(); await inspector(page, false);
     await page.locator('#viewer-mesh-modify .uv-selection-menu > summary').click(); await page.locator('#viewer-mesh-modify-connected').click();
     value = await snapshot(page); assert.deepEqual(value.mesh.selectedVertices.slice().sort(), [0, 1, 2, 3, 8], 'Select connected stays in the selected material');
-    assert.deepEqual(value.mesh.samePosition.partners, [6, 7]); await page.locator('#viewer-mesh-modify .uv-selection-menu > summary').click();
+    assert.deepEqual(value.mesh.samePosition.partners, [6, 7, 9]); await page.locator('#viewer-mesh-modify .uv-selection-menu > summary').click();
     result.cases.push('Weights and Select connected use the selected vertices only');
     // Save, reopen and open the copy: groups stay one point in the saved mesh.
     const expected = edits(await snapshot(page)), response = page.waitForResponse(response => response.url().endsWith('/api/viewer/mesh/export'));
@@ -276,7 +326,8 @@ async function desktop(url) {
     assert.deepEqual(reopened.positions[6], reopened.positions[2], 'exported exact group: bit-identical float32');
     assert(gap(reopened.positions[7], reopened.positions[3]) <= TOLERANCE && ulps(reopened.positions[7], reopened.positions[3]) <= 2, 'exported one-step group keeps its gap');
     expected.forEach(row => assert.deepEqual(reopened.positions[row.vertex], stored(row.position), 'saved vertex ' + row.vertex));
-    [0, 1, 4, 5, 8].forEach(vertex => assert.deepEqual(reopened.positions[vertex], data.positions[vertex]));
+    [0, 1, 4, 5, 8, 9, 10].forEach(vertex => assert.deepEqual(reopened.positions[vertex], data.positions[vertex]));
+    assert.deepEqual(reopened.positions[9], reopened.positions[1], 'the unedited group of three stays one point');
     assert.deepEqual(reopened.skin, data.skin); assert.deepEqual(reopened.triangles, data.triangles);
     const copyData = await open(page, saved.preview_paths[0]);
     assert.deepEqual(copyData.positions, reopened.positions, 'the opened copy has the saved positions');
