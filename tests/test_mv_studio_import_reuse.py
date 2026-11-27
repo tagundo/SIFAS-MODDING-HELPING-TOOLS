@@ -1,8 +1,9 @@
-"""An MV import reads each bundle once, with unchanged results.
+"""An MV import reads each bundle and downloads each pack once, with unchanged results.
 
 game_motion_selection.shared_reads() keeps a parsed bundle for every member's dance
 selection; write_selected must then leave a shared source exactly as it found it.
-Outside the block nothing is kept.
+mv_studio_game.shared_downloads() keeps a downloaded pack for the import's other
+sections of the same pack. Outside these blocks nothing is kept.
 """
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 from webtools.core import game_motion_selection as selection
 from webtools.core import model_viewer
+from webtools.core import mv_studio_game as studio
 
 
 def _environment(names):
@@ -109,6 +111,58 @@ class SharedReadTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 selection.write_selected({"selected": chosen, "segments": []}, self.dir)
             self.assertEqual(list(table.items()), before)
+
+
+class SharedDownloadTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.pack = b"@UTF@UTF" + bytes(range(56))
+        self.addCleanup(patch.stopall)
+        # Sound sections (acb) are not decrypted: no Elichika extractor is needed.
+        patch.object(studio.game, "_extractor", return_value=object()).start()
+        patch.object(studio, "_local_section", return_value=None).start()
+        self.remote = patch.object(studio.game, "_remote_pack", return_value=self.pack).start()
+
+    def section(self, head, size, name="pack1"):
+        return {"pack_name": name, "head": head, "size": size, "format": "acb", "pack_size": len(self.pack)}
+
+    def test_each_pack_downloads_once_per_block(self):
+        first, second = self.section(0, 8), self.section(4, 12)
+        with studio.shared_downloads():
+            self.assertEqual(studio.load_asset(self.root, first, download=True), self.pack[:8])
+            with studio.shared_downloads():
+                self.assertEqual(studio.load_asset(self.root, second, download=True), self.pack[4:16])
+            self.assertEqual(self.remote.call_count, 1)
+            # Another pack name, or the same name in another metapack, is its own download.
+            studio.load_asset(self.root, self.section(0, 8, "pack2"), download=True)
+            meta = dict(first, metapack={"name": "bucket", "offset": 0, "size": len(self.pack)})
+            studio.load_asset(self.root, meta, download=True)
+            studio.load_asset(self.root, meta, download=True)
+            self.assertEqual(self.remote.call_count, 3)
+        # Outside the block every section downloads again, and nothing is kept.
+        studio.load_asset(self.root, first, download=True)
+        studio.load_asset(self.root, second, download=True)
+        self.assertEqual(self.remote.call_count, 5)
+        self.assertIsNone(getattr(studio._SHARED, "packs", None))
+
+    def test_kept_packs_stay_within_the_budget(self):
+        with patch.object(studio, "_SHARED_PACK_BYTES", len(self.pack) + 1), studio.shared_downloads():
+            studio.load_asset(self.root, self.section(0, 8), download=True)
+            studio.load_asset(self.root, self.section(0, 8, "pack2"), download=True)
+            studio.load_asset(self.root, self.section(0, 8, "pack2"), download=True)
+            studio.load_asset(self.root, self.section(0, 8), download=True)
+            # pack1 fits and is kept; pack2 would exceed the budget, so it downloads each time.
+            self.assertEqual(self.remote.call_count, 3)
+
+    def test_missing_pack_is_not_kept(self):
+        from urllib.error import HTTPError
+        self.remote.side_effect = HTTPError("https://cdn.invalid/pack1", 404, "missing", {}, None)
+        with studio.shared_downloads():
+            self.assertIsNone(studio.load_asset(self.root, self.section(0, 8), download=True))
+            self.assertIsNone(studio.load_asset(self.root, self.section(0, 8), download=True))
+        self.assertEqual(self.remote.call_count, 2)
 
 
 if __name__ == "__main__":
