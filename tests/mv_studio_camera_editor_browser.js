@@ -791,6 +791,11 @@ async function subCameras(browser, url) {
   await page.waitForFunction(() => document.getElementById('mv-cam-align') !== null);
   assert.equal(await page.evaluate(() => MVStudioCameraKeys.selected(window.probeCtx)), null);
   assert.equal(await page.locator('.mv-cam-key[aria-selected="true"]').count(), 0);
+  // "Open camera editor" in the inspector (still showing sub1:0) picks the inspected clip's camera.
+  assert.equal(await page.locator('#mv-event-fields .mv-cam-open').count(), 1);
+  await page.locator('#mv-event-fields .mv-cam-open').click();
+  await page.waitForFunction((camera) => document.getElementById('mv-cam-camera')?.value === camera, `${SPLIT}/SubCamera1`);
+  await page.waitForFunction(() => document.getElementById('mv-cam-align') === null);
   assert.deepEqual(errors, []);
   await page.close();
 }

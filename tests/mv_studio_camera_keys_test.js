@@ -646,6 +646,15 @@ function subCameras() {
   // Reopening a project goes back to the main camera.
   plugin.projectChanged(ctx, { reason: 'load' });
   assert.equal(K.camera(ctx), 'main');
+  // A muted sub camera track is not edited (the split view does not show it either).
+  const muted = splitProject();
+  track(muted, 'sub3').muted = true;
+  const other = harness(muted);
+  assert.equal(K.setCamera(other.ctx, `${SPLIT}/SubCamera3`), false, 'no muted sub camera to choose');
+  assert(!K.cameraShots(other.ctx).some((item) => item.event.id === 'sub3:0'));
+  assert.equal(K.findShot(other.ctx, 'sub3:0'), null);
+  plugin.selectionChanged(other.ctx, { track: track(muted, 'sub3'), event: event(muted, 'sub3:0') });
+  assert.equal(K.camera(other.ctx), 'main', 'selecting its clip keeps the camera');
 }
 
 // "Add follow camera" (mv-studio-camera-follow.js) covers the main camera's shot at the playhead,
@@ -776,6 +785,25 @@ function extrapolation() {
   assert.equal(looped.frame, 6, '3.1 s past its start: 0.1 s into its loop');
   lastSub.values.postExtrapolationMode = 1;
   assert.equal(K.editedShot(sub.ctx), null, 'Hold with a null window: no shot, as before');
+
+  // The camera editor's own copies of the scene's rules give the same shot and time everywhere:
+  // every mode before and after, stored, zero, null, 3600 and missing windows.
+  let checks = 0;
+  for (const pre of [0, 1, 2, 3, 4]) for (const post of [0, 1, 2, 3, 4]) {
+    for (const [preTime, postTime] of [[0, 1 / 60], [.5, 2], [null, null], [3600, 3600], [undefined, 1], [2, null]]) {
+      const track = { events: [
+        { id: 'e', start: 2, duration: 1.5, values: { preExtrapolationMode: pre, postExtrapolationMode: post, preExtrapolationTime: preTime, postExtrapolationTime: postTime } },
+        { id: 'next', start: 7, duration: 1, values: { preExtrapolationMode: post, postExtrapolationMode: pre, preExtrapolationTime: postTime, postExtrapolationTime: preTime } }] };
+      for (let index = 0; index <= 1300; index++) {
+        const time = -2 + index / 97;
+        const chosen = S.activeCameraEvent(track, time);
+        assert.equal(K.activeCameraEvent(track, time), chosen, `${pre}/${post} ${preTime}/${postTime} at ${time}`);
+        for (const item of track.events) assert(Object.is(K.cameraLocalTime(item, time), S.cameraLocalTime(item, time)), `${pre}/${post} local at ${time}`);
+        checks++;
+      }
+    }
+  }
+  assert.equal(checks, 25 * 6 * 1301);
 }
 
 function hemisphere() {

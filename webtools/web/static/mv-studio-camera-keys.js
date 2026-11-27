@@ -2683,6 +2683,8 @@
     cameraShots, setCamera, camera: (ctx) => stateOf(ctx).camera,
     // Model, bake and commands (also used by the tests).
     shotInfo, findShot, playheadShot, editedShot, normalizeRecord, basePose, bakeShot, differs, channelValues,
+    // The editor's copies of the scene's shot choice and extrapolated time (tests compare them).
+    activeCameraEvent, cameraLocalTime,
     setChannels, keyView, addKey, deleteKey, duplicateKey, stepKey, moveKey, setKeyValue, setHandle, setKeyProperty, ease,
     setMode, setSpace, convertToKeys, revertShot, newShotAtPlayhead, selectKey: (ctx, eventId, frame) => {
       const shot = findShot(ctx, eventId);

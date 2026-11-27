@@ -460,6 +460,52 @@ class WriterRuleTests(unittest.TestCase):
             studio._write_camera(deepcopy(tree), {"m_ClipIn": .5}, shot(1., before), shot(1., before))
 
 
+    def test_the_parse_marks_keyframes_editable_exactly_when_the_writer_takes_them(self):
+        # _event on a synthetic camera clip (its pointers stubbed): "keyframes" is editable only when
+        # _camera_rewrite_refusal has no reason, for every case of test_refusals the parse samples.
+        tree = dense_camera(61)
+        track_key, asset_key, clip_key = ("cab", 1), ("cab", 2), ("cab", 3)
+        pointer = lambda obj, value: ("cab", value["m_PathID"]) if isinstance(value, dict) and "m_PathID" in value else None
+
+        def parse(case, clip, length):
+            animation_obj = SimpleNamespace(type=SimpleNamespace(name="AnimationClip"), peek_name=lambda: "camera",
+                                            read_typetree=lambda: deepcopy(case))
+            mono = {track_key: (None, {}, "AnimationTrack"),
+                    asset_key: (None, {"m_Clip": {"m_FileID": 0, "m_PathID": 3}}, "AnimationPlayableAsset")}
+            record = {"m_Start": 0., "m_Duration": length, "m_ClipIn": 0., "m_TimeScale": 1., "m_DisplayName": "shot",
+                      "m_Asset": {"m_FileID": 0, "m_PathID": 2}, **clip}
+            warnings = set()
+            with mock.patch.object(studio, "_pointer", pointer):
+                event = studio._event(None, record, track_key, 0, "camera", {clip_key: animation_obj}, mono,
+                                      {asset_key: 1}, {clip_key: 1}, None, warnings, 100_000)
+            return event, warnings
+
+        cases = [
+            ({}, tree, 1.), ({"m_ClipIn": .5}, tree, 1.), ({"m_TimeScale": 2.}, tree, 1.),
+            ({}, {**tree, "m_SampleRate": 120.}, 1.), ({}, {**tree, "m_SampleRate": 30.}, 1.),
+            ({}, {**tree, "m_MuscleClip": {**tree["m_MuscleClip"], "m_StartTime": .1}}, 1.),
+            ({}, {**tree, "m_ClipBindingConstant": {"genericBindings": tree["m_ClipBindingConstant"]["genericBindings"][:2]}}, 1.),
+            ({}, tree, 1.005), ({}, tree, 61 / 60), ({}, dense_camera(109, stop=108 / 60), 52 / 60),
+        ]
+        sampled = 0
+        for clip, case, length in cases:
+            with self.subTest(clip=clip, length=length, rate=case["m_SampleRate"]):
+                event, warnings = parse(case, clip, length)
+                refusal = studio._camera_rewrite_refusal(case, {"m_ClipIn": 0., "m_TimeScale": 1., **clip}, length)
+                if event["values"].get("keyframes"):
+                    sampled += 1
+                self.assertEqual("keyframes" in event["editableValues"], refusal is None and bool(event["values"].get("keyframes")),
+                                 (refusal, sorted(warnings)))
+        self.assertGreaterEqual(sampled, 7, "most cases are sampled, so the rule (not a failed sample) decides")
+        # The accepted cases are editable, the others are not.
+        self.assertIn("keyframes", parse(tree, {}, 1.)[0]["editableValues"])
+        self.assertIn("keyframes", parse(dense_camera(109, stop=108 / 60), {}, 52 / 60)[0]["editableValues"])
+        for clip, case, length in cases[1:4] + cases[5:6] + cases[7:8]:
+            event = parse(case, clip, length)[0]
+            self.assertTrue(event["values"].get("keyframes"), "sampled")
+            self.assertNotIn("keyframes", event["editableValues"])
+
+
 class FingerprintTests(unittest.TestCase):
     def test_registered_songs_rebake_after_the_size_rule(self):
         # The size rule changes exported bytes: a song registered before it rebakes on its next update.
