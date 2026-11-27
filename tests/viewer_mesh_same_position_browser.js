@@ -216,6 +216,25 @@ async function desktop(url) {
     assert.deepEqual((await snapshot(page)).mesh.edits, start.mesh.edits, 'three Undo steps: nudge, selection, recipe');
     await selectIndex(page, 2); assert.deepEqual((await snapshot(page)).mesh.samePosition.partners, [6]);
     result.cases.push('A group of three moves together with a copy on no face, and with a copy whose only face is deleted');
+    // A click at a seam point picks a copy on the model. Vertices 1 and 8
+    // project to one point; with no face deleted the distance tie still goes
+    // to 8, the later vertex, as before. With face 1 (vertex 8's only face)
+    // deleted, the click picks 1, with the option on (8 and 9 move with it)
+    // and off.
+    const beforeDeleted = await snapshot(page);
+    await pick(page, data, 1); assert.deepEqual((await snapshot(page)).mesh.selectedVertices, [8], 'no deleted face: the tie goes to the later vertex as before');
+    await page.evaluate(state => window.__meshTool.restoreEdits(state), { version: 1, meshes: [{ mesh: data.mesh, deleteFaces: [1] }] });
+    await pick(page, data, 1); value = await snapshot(page);
+    assert.deepEqual(value.mesh.selectedVertices, [1], 'option on: the click picks the copy on the model, not the one on a deleted face');
+    assert.deepEqual(value.mesh.samePosition.partners, [8, 9], 'the deleted copy still moves with it');
+    await settings.evaluate(box => box.click()); assert.equal((await snapshot(page)).mesh.samePosition.enabled, false);
+    await selectIndex(page, 0); await pick(page, data, 1); value = await snapshot(page);
+    assert.deepEqual(value.mesh.selectedVertices, [1], 'option off: the click picks the copy on the model'); assert.deepEqual(value.mesh.samePosition.partners, []);
+    await settings.evaluate(box => box.click()); assert.equal((await snapshot(page)).mesh.samePosition.enabled, true);
+    while ((await snapshot(page)).mesh.history > beforeDeleted.mesh.history) await page.locator('#viewer-mesh-modify-undo').click();
+    value = await snapshot(page); assert.deepEqual(value.mesh.edits, beforeDeleted.mesh.edits); assert.deepEqual(value.mesh.selectedVertices, [2]);
+    await page.locator('#viewer-mesh-modify-quick-drag').click();
+    result.cases.push('A click at a seam point picks the copy on the model when the other copy is on deleted faces only (option on and off); no deletion: tie unchanged');
     // OFF: exactly the selected vertex, as before.
     const beforeOff = await snapshot(page), buildsBeforeOff = beforeOff.mesh.samePosition.builds;
     await quick.uncheck(); value = await snapshot(page);

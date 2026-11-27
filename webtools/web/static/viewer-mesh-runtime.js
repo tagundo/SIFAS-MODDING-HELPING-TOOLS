@@ -489,11 +489,27 @@
       });
       return polygon.map(function (point) { var p = screenPoint(point, rect); p.world = point; return p; });
     }
+    // Marks the vertices on at least one live (undeleted) face of a binding:
+    // the ones its current index uses. Cached until apply() changes the faces.
+    function liveVertices(binding) {
+      var index = binding.geometry.index; if (!index) return null;
+      if (binding.liveFaces !== binding.faceMap) {
+        var live = new Uint8Array(binding.geometry.attributes.position.count);
+        for (var i = 0; i < index.count; i++) live[index.getX(i)] = 1;
+        binding.live = live; binding.liveFaces = binding.faceMap;
+      }
+      return binding.live;
+    }
     function pickVertex(event, context) {
       beforeRender(); var pointer = pointerRay(event), rect = pointer.rect, nearest = null, seen = new Set(), radius = 12;
       activeBindings(context).forEach(function (binding) {
+        // A vertex whose faces are all deleted is not on the model, so it is
+        // skipped: a click at a seam picks the visible copy, not one left on
+        // deleted faces. With no deleted face the index is baseIndex, every
+        // vertex is live, and candidates and their order are as before.
+        var live = liveVertices(binding);
         binding.baseIndex.forEach(function (vertex) {
-          if (seen.has(vertex)) return; seen.add(vertex);
+          if (seen.has(vertex) || live && !live[vertex]) return; seen.add(vertex);
           var p = projectedVertex(binding, vertex, rect); if (p.z < -1 || p.z > 1) return;
           var distance = Math.hypot(p.x - event.clientX, p.y - event.clientY); if (distance > radius || nearest && distance > nearest.distance) return;
           // Surface occlusion uses the exact deformed triangles, avoiding rest
