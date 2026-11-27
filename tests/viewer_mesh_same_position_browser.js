@@ -2,7 +2,7 @@
  * ribbon whose upper quad is a second material joined by seam copies (vertex 6
  * = vertex 2 exactly with other weights, vertex 7 = vertex 3 one float32 step
  * away, both in the second material; vertex 8 = vertex 1 exactly, a UV seam
- * inside the first material). Checkbox, partner count and UV dots,
+ * inside the first material). Checkbox, partner count and UV dots and rings,
  * nudge, axis and free drag, delta and absolute position, Undo/Redo, OFF =
  * selected vertices only, regrouping by current position (tear, Undo, join,
  * recipe), weights and Select connected unchanged, save + reopen + open copy +
@@ -99,6 +99,11 @@ async function uvPixel(page, uv) {
     return Array.from(ctx.getImageData(Math.round(uv[0] * size), Math.round((1 - uv[1]) * size), 1, 1).data); }, uv);
 }
 const pink = pixel => pixel[0] > 200 && pixel[1] < 150 && pixel[2] > 170;
+// Pixels on a horizontal line from a texture coordinate, offsets in CSS pixels.
+async function uvRow(page, uv, offsets) {
+  return page.evaluate(({ uv, offsets }) => { const canvas = document.getElementById('viewer-mesh-modify-canvas'), size = canvas.width, ctx = canvas.getContext('2d'), density = size / canvas.getBoundingClientRect().width;
+    return offsets.map(dx => Array.from(ctx.getImageData(Math.round(uv[0] * size + dx * density), Math.round((1 - uv[1]) * size), 1, 1).data)); }, { uv, offsets });
+}
 async function selectIndex(page, vertex) {
   await inspector(page, true); await page.locator('#viewer-mesh-modify-vertex').fill(String(vertex)); await page.locator('#viewer-mesh-modify-select-vertex').click(); await inspector(page, false); await frames(page);
 }
@@ -125,9 +130,14 @@ async function desktop(url) {
     await inspector(page, true); await page.locator('#viewer-mesh-modify-vertex').fill('1'); await page.locator('#viewer-mesh-modify-select-vertex').click(); await inspector(page, false);
     value = await snapshot(page); assert.deepEqual(value.mesh.selectedVertices, [1]); assert.deepEqual(value.mesh.samePosition.partners, [8]);
     assert(pink(await uvPixel(page, data.uv[8])), 'the UV canvas marks the partner'); assert(!pink(await uvPixel(page, data.uv[3])), 'non-partners are unmarked');
+    // A pink ring above the selected dots (radius 5.6 px), so a partner under a
+    // yellow dot (same UV) still shows; the filled dot ends at 4 px.
+    assert((await uvRow(page, data.uv[8], [-6, -5.5, -5])).some(pink), 'the partner ring is drawn outside the dot');
+    assert(!(await uvRow(page, data.uv[3], [-6, -5.5, -5])).some(pink), 'no ring around a non-partner');
     await pick(page, data, 2); value = await snapshot(page);
     assert.deepEqual(value.mesh.selectedVertices, [2]); assert.deepEqual(value.mesh.samePosition.partners, [6], 'partners in any submesh');
     assert(!pink(await uvPixel(page, data.uv[6])), 'a partner in a hidden material gets no dot');
+    assert(!(await uvRow(page, data.uv[6], [-6, -5.5, -5, 5, 5.5, 6])).some(pink), 'and no ring');
     assert.match(await page.locator('#viewer-mesh-modify-count').textContent(), /^Selected vertices: 1 \(\+1 at the same position\) · /);
     assert(!pink(await uvPixel(page, data.uv[8])), 'the dot follows the selection');
     assert.equal(await quick.isVisible(), false, 'Pick mode keeps the move tools to one row');
@@ -135,7 +145,7 @@ async function desktop(url) {
     assert(await quick.isVisible()); assert(await quick.isChecked(), 'default ON'); assert(await settings.isChecked(), 'the settings copy agrees');
     assert.equal((await page.locator('#viewer-mesh-modify .mesh-transform-together label').textContent()).trim(), 'Move vertices at the same position together');
     result.moveToolsHeight = (await page.locator('#viewer-mesh-modify .mesh-transform-tools').boundingBox()).height;
-    result.cases.push('Pick shows partners (count + pink UV dot, none in a hidden material); Move shows the checkbox, default ON, selection unchanged');
+    result.cases.push('Pick shows partners (count + pink UV dot and ring, none in a hidden material); Move shows the checkbox, default ON, selection unchanged');
     // Nudge with partners, one Undo step.
     await page.locator('#viewer-mesh-modify-move-axis').selectOption('x'); await page.locator('#viewer-mesh-modify-move-step').fill('.025');
     const start = await snapshot(page); await page.locator('#viewer-mesh-modify-nudge-plus').click(); value = await snapshot(page);

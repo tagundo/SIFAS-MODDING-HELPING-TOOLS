@@ -479,14 +479,18 @@
       ctx.save(); ctx.setTransform(view.zoom, 0, 0, view.zoom, view.x * size, view.y * size);
       m.deleted.forEach(function (index) { if (!visibleFace(panel, m, index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(0,0,0,.8)'; ctx.fill(); });
       m.marked.forEach(function (index) { if (!visibleFace(panel, m, index) || m.deleted.has(index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(255,50,80,.65)'; ctx.fill(); });
-      // Partners that move with the selection: a pink dot with a dark ring,
-      // drawn under the yellow selected dots and only in the shown material.
+      // Partners that move with the selection, only in the shown material: a
+      // pink dot with a dark rim under the yellow selected dots, and a pink
+      // ring above them, so a partner whose UV equals a selected vertex's UV
+      // (normal splits, full copies: 19 % of real groups) shows around it.
       if (together === undefined) together = panel.modify ? samePosition(panel, m) : null;
+      var marks = [];
       if (together && together.partners.length) {
         var shown = m.data.submeshes && m.data.submeshes.length > 1 ? visibleVertexCache(panel, m) : null;
-        together.partners.forEach(function (v) { if (shown && !shown.has(v)) return; var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3.4 * density / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ff6fd8'; ctx.fill(); ctx.lineWidth = 1.2 * density / view.zoom; ctx.strokeStyle = '#17202b'; ctx.stroke(); });
+        together.partners.forEach(function (v) { if (shown && !shown.has(v)) return; var p = point(v); marks.push(p); ctx.beginPath(); ctx.arc(p[0], p[1], 3.4 * density / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ff6fd8'; ctx.fill(); ctx.lineWidth = 1.2 * density / view.zoom; ctx.strokeStyle = '#17202b'; ctx.stroke(); });
       }
       if (panel.modify) m.selected.forEach(function (v) { var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3 * density / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ffe05c'; ctx.fill(); });
+      marks.forEach(function (p) { ctx.beginPath(); ctx.arc(p[0], p[1], 5.6 * density / view.zoom, 0, Math.PI * 2); ctx.lineWidth = 3 * density / view.zoom; ctx.strokeStyle = '#17202b'; ctx.stroke(); ctx.lineWidth = 1.6 * density / view.zoom; ctx.strokeStyle = '#ff6fd8'; ctx.stroke(); });
       ctx.restore();
     }
     function operationState() {
