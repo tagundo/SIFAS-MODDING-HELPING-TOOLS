@@ -811,6 +811,25 @@ class ServerGuardMessageTests(unittest.TestCase):
                     self.assertNotEqual(translated, message, language)
                     self.assertIn(f"'{field}'", translated)
 
+    def test_every_vector_refusal_has_korean_and_japanese(self):
+        # A number box of a vector control can post an empty axis or one beyond ±1e6.
+        from webtools import i18n
+        vectors = {(native, key) for native, fields in descriptors()["classes"].items()
+                   for key, spec in fields.items() if spec.get("control") == "vector"}
+        self.assertIn(("LivePenlightClip", "position"), vectors)
+        for native, field in sorted(vectors):
+            for bad in ({"x": 0., "y": 0.}, {"x": 0., "y": 0., "z": 2e6}):
+                with self.subTest(field=field, bad=bad):
+                    with self.assertRaises(ValueError) as caught:  # The real guard and its exact message.
+                        studio._set_playable_value({field: {"x": 0., "y": 0., "z": 0.}}, native, field, bad)
+                    message = str(caught.exception)
+                    self.assertEqual(message, f"'{field}' is not a supported native value for this clip." if len(bad) == 2
+                                     else f"The timeline has an invalid {field}.")
+                    for language in ("ko", "ja"):
+                        translated = i18n.tr(message, language)
+                        self.assertNotEqual(translated, message, language)
+                        self.assertIn(f"'{field}'", translated)
+
 
 def sample_timelines():
     """Every original timeline bundle in ELICHIKA_STUDIO_TIMELINE_DIR (choreography bundles excluded)."""

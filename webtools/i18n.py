@@ -4379,6 +4379,15 @@ for _field in ("focusTransitionTime", "basicYZMoveY", "basicYZMoveZ", "basicYZRo
                "simpleXZRotateX", "simpleXZRotateZ"):
     _MV_EXPORT_SLOT_TRANSLATIONS[f"The timeline has an invalid {_field}."] = (
         f"타임라인의 '{_field}' 값이 올바르지 않습니다.", f"タイムラインの'{_field}'の値が正しくありません。")
+# Refusals of a vector value (mv_studio_timeline._replace_value): a missing or extra axis, or an axis
+# beyond ±1e6, which a typed number box can reach. These are the fields with a "vector" control in
+# mv-studio-event-fields.js (the test pins the list to the descriptor table).
+for _field in ("center", "direction", "offset", "position", "randomDelay", "randomUp", "rimlightDirection", "scale",
+               "scrollSpeed"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"'{_field}' is not a supported native value for this clip."] = (
+        f"'{_field}' 값은 이 클립에서 지원하지 않는 원본 값입니다.", f"'{_field}'の値はこのクリップで対応していない元の値です。")
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"The timeline has an invalid {_field}."] = (
+        f"타임라인의 '{_field}' 값이 올바르지 않습니다.", f"タイムラインの'{_field}'の値が正しくありません。")
 for _source, (_korean, _japanese) in _MV_EXPORT_SLOT_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
