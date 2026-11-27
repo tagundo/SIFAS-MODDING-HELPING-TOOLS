@@ -5,12 +5,14 @@
  * inside the first material; vertices 9 and 10 on no face: 9 = vertex 1 exactly,
  * so {1, 8, 9} is a group of three, and 10 = vertex 5 moved 1e-6, a distinct
  * nearby vertex). Checkbox, partner count and UV dots and rings (shown
- * material only, also after a material switch), nudge, axis and free drag
- * (also of a group that already has an edit), delta and absolute position,
- * Undo/Redo, OFF = selected vertices only, regrouping by current position
- * (tear, Undo, join, recipe, deselecting), weights and Select connected
- * unchanged, save + reopen + open copy + recipe restore, ja labels and
- * tooltips after a language switch, and phone/touch and narrow layouts. */
+ * material only, also after a material switch), nudge (also of the group of
+ * three, with and without its face 1 deleted), axis and free drag (also of a
+ * group that already has an edit), delta and absolute position, Undo/Redo
+ * (the partner lookup is reused after Undo), OFF = selected vertices only,
+ * regrouping by current position (tear, Undo, join, recipe, deselecting),
+ * weights and Select connected unchanged, save + reopen + open copy + recipe
+ * restore, ja labels and tooltips after a language switch, ko count line, and
+ * phone/touch and narrow layouts. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -184,11 +186,38 @@ async function desktop(url) {
     await page.locator('#viewer-mesh-modify-undo').click(); assert.deepEqual((await snapshot(page)).mesh.edits, start.mesh.edits);
     await page.locator('#viewer-mesh-modify-redo').click(); assert.deepEqual((await snapshot(page)).mesh.edits, value.mesh.edits);
     await page.locator('#viewer-mesh-modify-undo').click();
-    result.cases.push('Nudge moves the partner by the same step; Undo/Redo restore both in one step');
+    // Undo restores the selection as a new set: its partner lookup is reused
+    // by later redraws too.
+    lookups = (await snapshot(page)).mesh.samePosition.lookups;
+    await page.evaluate(() => { window.__meshTool.updateLanguage(); window.__meshTool.updateLanguage(); window.__meshTool.refresh(); });
+    assert.equal((await snapshot(page)).mesh.samePosition.lookups, lookups, 'after Undo, redraws reuse the partners of the restored selection');
+    result.cases.push('Nudge moves the partner by the same step; Undo/Redo restore both in one step; the partner lookup is reused after Undo');
+    // The group of three {1, 8, 9}: vertex 9 is on no face and moves with 1 and 8.
+    await selectIndex(page, 1); let three = await snapshot(page); assert.deepEqual(three.mesh.samePosition.partners, [8, 9]);
+    await page.locator('#viewer-mesh-modify-nudge-plus').click(); value = await snapshot(page);
+    assert.deepEqual(moved(three, value, data), [1, 8, 9], 'a partner on no face moves too');
+    assert.deepEqual(position(value, 9, data), position(value, 1, data)); assert.deepEqual(position(value, 8, data), position(value, 1, data));
+    near(position(value, 1, data)[0], data.positions[1][0] + .025, 'X+ moves the group of three'); assert.equal(value.mesh.history, three.mesh.history + 1);
+    await page.locator('#viewer-mesh-modify-undo').click(); assert.deepEqual((await snapshot(page)).mesh.edits, three.mesh.edits);
+    // Delete face 1 (8, 3, 2), the only face of vertex 8: 8 now sits on a
+    // deleted face only and still moves with 1 (and 9).
+    assert.deepEqual(data.triangles[1], [8, 3, 2]); assert.equal(data.triangles.filter(face => face.includes(8)).length, 1);
+    await page.evaluate(state => window.__meshTool.restoreEdits(state), { version: 1, meshes: [{ mesh: data.mesh, deleteFaces: [1] }] });
+    await selectIndex(page, 1); three = await snapshot(page);
+    assert.deepEqual(three.mesh.edits.meshes[0].deleteFaces, [1]); assert.deepEqual(three.mesh.samePosition.partners, [8, 9], 'a copy on a deleted face is still a partner');
+    assert.match(await countText(page), /^Selected vertices: 1 \(\+2 at the same position\) · /);
+    await page.locator('#viewer-mesh-modify-nudge-plus').click(); value = await snapshot(page);
+    assert.deepEqual(moved(three, value, data), [1, 8, 9], 'a partner on a deleted face moves too');
+    assert.deepEqual(position(value, 8, data), position(value, 1, data)); assert.deepEqual(position(value, 9, data), position(value, 1, data));
+    assert.deepEqual(value.mesh.edits.meshes[0].deleteFaces, [1], 'the nudge keeps the deleted face'); assert.equal(value.mesh.history, three.mesh.history + 1);
+    for (let i = 0; i < 3; i++) await page.locator('#viewer-mesh-modify-undo').click();
+    assert.deepEqual((await snapshot(page)).mesh.edits, start.mesh.edits, 'three Undo steps: nudge, selection, recipe');
+    await selectIndex(page, 2); assert.deepEqual((await snapshot(page)).mesh.samePosition.partners, [6]);
+    result.cases.push('A group of three moves together with a copy on no face, and with a copy whose only face is deleted');
     // OFF: exactly the selected vertex, as before.
-    const buildsBeforeOff = (await snapshot(page)).mesh.samePosition.builds;
+    const beforeOff = await snapshot(page), buildsBeforeOff = beforeOff.mesh.samePosition.builds;
     await quick.uncheck(); value = await snapshot(page);
-    assert.equal(value.mesh.samePosition.enabled, false); assert(!(await settings.isChecked())); assert.equal(value.mesh.history, start.mesh.history, 'the option is not an edit');
+    assert.equal(value.mesh.samePosition.enabled, false); assert(!(await settings.isChecked())); assert.equal(value.mesh.history, beforeOff.mesh.history, 'the option is not an edit');
     assert.match(await page.locator('#viewer-mesh-modify-count').textContent(), /^Selected vertices: 1 · /);
     await page.locator('#viewer-mesh-modify-nudge-plus').click(); value = await snapshot(page);
     assert.deepEqual(edits(value), [{ vertex: 2, position: [data.positions[2][0] + .025, data.positions[2][1], data.positions[2][2]] }], 'OFF writes the selected vertex only');
@@ -365,6 +394,7 @@ async function touch(url, profile) {
     const data = await open(page, source);
     await inspector(page, true); await page.locator('#viewer-mesh-modify-vertex').fill('2'); await page.locator('#viewer-mesh-modify-select-vertex').tap(); await inspector(page, false);
     assert.deepEqual((await snapshot(page)).mesh.selectedVertices, [2]); assert.deepEqual((await snapshot(page)).mesh.samePosition.partners, [6]);
+    if (profile.language === 'ko') assert.match(await countText(page), /^선택된 정점: 1 \(같은 위치 정점 \+1\) · /, 'the ko count line names the partner');
     await page.locator('#viewer-mesh-modify-quick-drag').tap();
     const label = page.locator('#viewer-mesh-modify .mesh-transform-together label'), box = await label.boundingBox(), coarse = await page.evaluate(() => matchMedia('(pointer: coarse)').matches);
     const layout = await page.evaluate(() => ({ documentWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth, viewport: window.visualViewport ? window.visualViewport.width : innerWidth }));
