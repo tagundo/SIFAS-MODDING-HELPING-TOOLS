@@ -9,21 +9,33 @@
      rate within 1 ± 3 %, no frame repeats a time, no frame goes back (no clock rewind), and the
      shown time stays within 50 ms of the soundtrack, plus whatever a slow frame takes beyond
      1/60 s (the raw readings, as tick() used them, repeat a time on many frames: counted);
-   - pause keeps the shown time at the soundtrack's; a seek while paused and play from there,
-     and a seek back while playing, start from the sought time and lock onto the soundtrack;
+   - pause keeps the shown time at the soundtrack's; play again with no seek starts at the
+     paused time and leaves the soundtrack where it is; a seek while paused and play from there,
+     and a seek back while playing, start from the sought time and lock onto the soundtrack (a
+     seek while playing writes the soundtrack once, to the sought time plus the offset);
    - a soundtrack stall holds the picture and it follows again on resume, never going back;
    - a soundtrack the browser pauses on its own: the time goes on with the frames; when the
-     soundtrack comes back far behind, it is moved to the picture;
+     soundtrack comes back far behind, it is moved to the picture (to the shown time plus the
+     offset);
    - a soundtrack offset change while playing moves the soundtrack and follows the new offset;
    - a playing soundtrack whose readyState stays below HAVE_FUTURE_DATA is still followed;
+   - edits while playing (seeks to the time shown, soundtrack left alone) change nothing;
+   - a plugin seek with {audio: false} to another time while playing, forward or back, goes on
+     from the sought time and moves the soundtrack there once;
+   - a 1.5 s seek holds the picture at the sought time until the soundtrack plays (the fake's
+     seeking flag is the only sign of it), then follows;
+   - two 2 s stalls in one playback are each realigned and end in sync;
+   - a soundtrack that ends before the MV (ended, not paused): the time goes on with the frames;
+   - a soundtrack loading for 1.5 s after play holds the picture at the paused time without
+     moving the soundtrack; one that fails to load (an error) is given up on after 1 s;
    - without a soundtrack every frame advances by exactly its frame interval (as before);
    - fixed-step frame captures (mv_frame_capture.renderFrame) are the same PNG and scene state
      before and after all of the above (the reference after one warm-up capture: the first
      capture after an import draws differently from later ones, at 0fcfd4d as well).
 
    Real 12035 MV (skipped unless MV_PLAYBACK_SERVER_ROOT is an Elichika server root that imports
-   GL Android 12035/1203503; no game data in Git): the same playback, pause, seek and resume
-   checks, a fixed-step capture identical before and after playback, and the native timeline
+   GL Android 12035/1203503; no game data in Git): the same playback, pause, play again, seek and
+   resume checks, a fixed-step capture identical before and after playback, and the native timeline
    export byte-identical before and after playback.
 
    Run: node tests/mv_studio_playback_clock_browser.js (EVIDENCE_DIR keeps the server logs). */
@@ -84,25 +96,32 @@ async function startServer() {
 // Replaces the MV soundtrack's media clock (a media element playing an /api/mv-studio/ URL;
 // other media elements keep the browser's) with a fake soundtrack (window.fakeAudio): its true
 // position advances with performance.now() (after a start latency, and not while stalled); a
-// read returns the position of its latest update, updates coming 20-50 ms apart.
+// read returns the position of its latest update, updates coming 20-50 ms apart. A currentTime
+// write seeks for seekMs (seeking true, the position held; readyState stays as set, so only the
+// seeking flag tells the clock); play() from paused loads for loadMs (readyState 1, the position
+// held); at endAt the soundtrack ends (ended true while paused stays false, so only the ended
+// flag tells the clock). Each write records the time shown by the next frame drawn.
 function installFakeAudio() {
   let seed = 12345;
   const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const now = () => performance.now();
   const fake = window.fakeAudio = { steps: [0.02, 0.05], jitter: 0.002, latency: 0.06, playing: false, stalled: false,
-    base: 0, anchor: 0, reported: 0, next: 0, writes: [], plays: 0, readAt: 0, readyState: 4 };
+    base: 0, anchor: 0, reported: 0, next: 0, writes: [], plays: 0, readAt: 0, readyState: 4, seekMs: 40, seekUntil: 0, loadMs: 0,
+    loadUntil: 0, endAt: Infinity, error: null };
   const step = () => (fake.steps[0] + (fake.steps[1] - fake.steps[0]) * random()) * 1000;
-  fake.truth = (t = now()) => fake.playing && !fake.stalled ? fake.base + Math.max(0, t - fake.anchor) / 1000 : fake.base;
-  fake.start = (position) => {
+  fake.truth = (t = now()) => Math.min(fake.endAt,
+    fake.playing && !fake.stalled ? fake.base + Math.max(0, t - fake.anchor) / 1000 : fake.base);
+  fake.start = (position, after = 0) => {
     fake.base = fake.reported = position;
-    fake.anchor = now() + fake.latency * 1000;
+    fake.anchor = now() + Math.max(fake.latency * 1000, after);
     fake.next = now() + step();
   };
   fake.read = () => {
     const t = fake.readAt = now();
-    // A stalled clock reads the same, jitter and all.
+    // A stalled clock, or one not yet playing (start latency, loading, seeking), reads the same,
+    // jitter and all.
     while (!fake.stalled && fake.next <= t) {
-      fake.reported = fake.truth(fake.next) + (random() * 2 - 1) * fake.jitter;
+      if (fake.next >= fake.anchor) fake.reported = fake.truth(fake.next) + (random() * 2 - 1) * fake.jitter;
       fake.next += step();
     }
     return fake.reported;
@@ -120,16 +139,25 @@ function installFakeAudio() {
       get() { return mine(this) ? get() : native.get.call(this); },
       ...(set ? { set(value) { if (mine(this)) set(value); else native.set.call(this, value); } } : {}) });
   };
-  define('currentTime', () => fake.read(), (value) => { fake.writes.push(value); fake.start(value); });
+  define('currentTime', () => fake.read(), (value) => {
+    fake.writes.push({ value, at: now() });
+    fake.seekUntil = now() + fake.seekMs;
+    fake.start(value, fake.seekMs);
+  });
   define('paused', () => !fake.playing);
-  define('ended', () => false);
-  define('seeking', () => false);
-  define('readyState', () => fake.readyState);
+  define('ended', () => fake.playing && fake.truth() >= fake.endAt);
+  define('seeking', () => now() < fake.seekUntil);
+  define('readyState', () => now() < fake.loadUntil ? 1 : fake.readyState);
+  define('error', () => fake.error);
   const { play, pause } = proto;
   proto.play = function () {
     if (!mine(this)) return play.call(this);
     fake.plays++;
-    if (!fake.playing) { fake.playing = true; fake.start(fake.base); }
+    if (!fake.playing) {
+      fake.playing = true;
+      fake.loadUntil = now() + fake.loadMs;
+      fake.start(fake.base, fake.loadMs);
+    }
     return Promise.resolve();
   };
   proto.pause = function () {
@@ -152,7 +180,8 @@ function recordFrames() {
       const fake = window.fakeAudio, song = (value) => value - offset();
       window.lastFrameStamp = stamp;
       window.playLog.push({ time, stamp, truth: song(fake.truth(stamp)), truthAtRead: song(fake.truth(fake.readAt)), reading: song(fake.reported),
-        sounding: fake.playing && !fake.stalled });
+        sounding: fake.playing && !fake.stalled, ended: fake.playing && fake.truth(stamp) >= fake.endAt });
+      for (const write of fake.writes) if (write.shown === undefined) Object.assign(write, { shown: time, offset: offset() });
     }
     return draw.call(this, time, stamp, ...rest);
   };
@@ -195,6 +224,10 @@ function steady(label, result) {
 }
 
 const take = (page) => page.evaluate(() => window.playLog.splice(0));
+// The soundtrack writes since the last call: { value, at, shown (time of the next frame drawn), offset }.
+const writesOf = (page) => page.evaluate(() => window.fakeAudio.writes.splice(0));
+const offsetOf = (page) => page.evaluate(() => window.probeCtx.project().soundtrack?.offset || 0);
+const near = (a, b) => Math.abs(a - b) < 1e-9;
 const playing = (page) => page.evaluate(() => MVStudio.getState().playing);
 async function play(page, ms) {
   if (!(await playing(page))) await page.locator('#mv-play').click();
@@ -258,7 +291,9 @@ async function importGame(page, project) {
 // Play, pause, seek and resume checks shared by the synthetic and the real MV.
 async function transport(page, label, { from, later, earlier, ms = 1500 }) {
   const results = {};
+  const offset = await offsetOf(page);
   await seek(page, from);
+  await writesOf(page);
   await play(page, ms);
   results.play = analyse(await take(page), { from });
   console.log(label, 'play', JSON.stringify(results.play));
@@ -273,6 +308,18 @@ async function transport(page, label, { from, later, earlier, ms = 1500 }) {
     `${label}: paused in sync (${paused.time} vs ${paused.audio}, ${paused.since} s after the last frame)`);
   results.pausedOffsetMs = +((paused.time - paused.audio) * 1000).toFixed(1);
 
+  // Play again with no seek: the first frame shows the paused time, the soundtrack is not moved.
+  await page.evaluate(() => { window.playLog.length = 0; });
+  await writesOf(page);
+  await play(page, ms);
+  const replay = await take(page);
+  assert.equal(replay[0].time, paused.time, `${label}: play after pause starts at the paused time`);
+  assert.deepEqual(await writesOf(page), [], `${label}: play after pause leaves the soundtrack where it is`);
+  results.replay = analyse(replay);
+  console.log(label, 'play after pause', JSON.stringify(results.replay));
+  steady(`${label} play after pause`, results.replay);
+  await pause(page);
+
   // Seek while paused, then play from there.
   await seek(page, later);
   await play(page, ms);
@@ -280,11 +327,19 @@ async function transport(page, label, { from, later, earlier, ms = 1500 }) {
   console.log(label, 'resume', JSON.stringify(results.resume));
   steady(`${label} resume`, results.resume);
 
-  // Seek back while playing: from the sought time, locked again.
+  // Seek back while playing: from the sought time, locked again; the soundtrack is moved once,
+  // to the sought time (and not back to the old one).
+  await writesOf(page);
   await seek(page, earlier);
   await page.waitForTimeout(ms);
-  results.seekBack = analyse(await take(page), { from: earlier });
+  const back = await take(page);
+  results.seekBack = analyse(back, { from: earlier });
   console.log(label, 'seek while playing', JSON.stringify(results.seekBack));
+  const moved = await writesOf(page);
+  assert.equal(moved.length, 1, `${label}: a seek while playing moves the soundtrack once (${JSON.stringify(moved)})`);
+  assert(near(moved[0].value, earlier + offset), `${label}: to the sought time plus the offset (${moved[0].value})`);
+  assert.equal(moved[0].shown, earlier, `${label}: the next frame shows the sought time`);
+  assert(back[0].time - earlier <= 1 / 60 + 1e-9, `${label}: the first frame after the seek is at the sought time (${back[0].time})`);
   steady(`${label} seek while playing`, results.seekBack);
   await pause(page);
   return results;
@@ -336,10 +391,11 @@ async function synthetic(browser, url) {
     assert(Math.abs(advance - interval) < 1e-6, 'interruption: the time goes on with the frames');
   }
   const writes = await page.evaluate(() => window.fakeAudio.writes.slice());
-  assert.equal(writes.length, 1, `interruption: the soundtrack is moved once (${writes})`);
+  assert.equal(writes.length, 1, `interruption: the soundtrack is moved once (${JSON.stringify(writes)})`);
+  assert(near(writes[0].value, writes[0].shown + 0.5), `interruption: to the shown time plus the offset (${JSON.stringify(writes[0])})`);
   const tail = interrupted.filter((frame) => frame.stamp >= interrupted.at(-1).stamp - 400);
   assert(excess(tail) <= 0, `interruption: in sync again (${excess(tail)} s beyond the bound)`);
-  result.interruption = { ...interruption, realignedTo: writes[0] };
+  result.interruption = { ...interruption, realignedTo: writes[0].value };
 
   // A soundtrack offset change while playing moves the soundtrack and follows the new offset.
   const moved = await page.evaluate(() => {
@@ -351,7 +407,7 @@ async function synthetic(browser, url) {
   });
   assert.equal(moved.offset, 0.75);
   assert.equal(moved.writes.length, 1, 'the soundtrack is moved once');
-  assert(Math.abs(moved.writes[0] - (moved.time + 0.75)) < 1e-9, 'to the shown time plus the new offset');
+  assert(near(moved.writes[0].value, moved.time + 0.75), 'to the shown time plus the new offset');
   await page.evaluate(() => { window.playLog.length = 0; });
   await page.waitForTimeout(1200);
   result.offsetChange = analyse(await take(page));
@@ -364,7 +420,134 @@ async function synthetic(browser, url) {
   result.lowReadyState = analyse(await take(page), { settle: 0 });
   await page.evaluate(() => { window.fakeAudio.readyState = 4; });
   steady('readyState 2', result.lowReadyState);
+  await writesOf(page);
+  const offset = await offsetOf(page);
+  assert.equal(offset, 0.75);
+
+  // Edits while playing (a plugin seeks to the time shown, the soundtrack left alone, about 20
+  // times a second): playback goes on undisturbed and the soundtrack is not moved.
+  await page.evaluate(() => {
+    window.playLog.length = 0;
+    window.editTimer = setInterval(() => window.probeCtx.seek(window.probeCtx.time(), { audio: false }), 45);
+  });
+  await page.waitForTimeout(900);
+  await page.evaluate(() => clearInterval(window.editTimer));
+  result.editsWhilePlaying = analyse(await take(page), { settle: 0 });
+  steady('edits while playing', result.editsWhilePlaying);
+  assert.deepEqual(await writesOf(page), [], 'edits while playing: the soundtrack is not moved');
+
+  // A plugin seek to another time while playing, the soundtrack left alone ({audio: false}, as
+  // selecting a follow camera rig does), forward and back: the picture goes on from the sought
+  // time and the soundtrack is moved there once.
+  result.pluginSeeks = [];
+  for (const by of [0.3, -1]) {
+    const sought = await page.evaluate((delta) => {
+      window.playLog.length = 0;
+      window.probeCtx.seek(window.probeCtx.time() + delta, { audio: false });
+      return window.probeCtx.time();
+    }, by);
+    await page.waitForTimeout(1200);
+    const frames = await take(page), moved = await writesOf(page);
+    assert.equal(moved.length, 1, `plugin seek by ${by} s: the soundtrack is moved once (${JSON.stringify(moved)})`);
+    assert(near(moved[0].value, sought + offset) && moved[0].shown === sought, `plugin seek by ${by} s: to the sought time (${JSON.stringify(moved[0])})`);
+    assert.equal(frames[0].time, sought, `plugin seek by ${by} s: the first frame shows the sought time`);
+    const analysed = analyse(frames, { from: sought });
+    steady(`plugin seek by ${by} s`, analysed);
+    result.pluginSeeks.push({ by, ...analysed });
+  }
+
+  // A slow seek while playing (1.5 s, as over a phone's network): the picture holds at the sought
+  // time while the soundtrack seeks, without giving up on it, then follows.
+  await page.evaluate(() => { window.fakeAudio.seekMs = 1500; });
+  await seek(page, 5);
+  await page.waitForTimeout(2700);
+  await page.evaluate(() => { window.fakeAudio.seekMs = 40; });
+  {
+    const frames = await take(page), moved = await writesOf(page);
+    assert.equal(moved.length, 1, `slow seek: the soundtrack is moved once (${JSON.stringify(moved)})`);
+    assert(near(moved[0].value, 5 + offset), `slow seek: to the sought time plus the offset (${moved[0].value})`);
+    const seeking = frames.filter((frame) => frame.stamp < moved[0].at + 1500 - 100);
+    assert(seeking.length > 10 && seeking.every((frame) => frame.time === 5), 'slow seek: held at the sought time while the soundtrack seeks');
+    const analysed = analyse(frames, { settle: 0 });
+    assert.equal(analysed.back, 0, 'slow seek: no frame goes back');
+    const tail = frames.filter((frame) => frame.stamp >= frames.at(-1).stamp - 500);
+    assert(excess(tail) <= 0, `slow seek: in sync afterwards (${excess(tail)} s beyond the bound)`);
+    result.slowSeek = { frames: frames.length, heldFrames: seeking.length };
+  }
+
+  // Two long stalls (2 s each) in one playback: the picture runs on with the frames, and each
+  // time the soundtrack comes back far behind it is moved to the picture, the second time too.
+  await seek(page, 6);
+  await page.waitForTimeout(600);
+  await writesOf(page);
+  result.longStalls = [];
+  for (const round of [1, 2]) {
+    await page.evaluate(() => { window.playLog.length = 0; window.fakeAudio.stall(); });
+    await page.waitForTimeout(2000);
+    await page.evaluate(() => window.fakeAudio.resume());
+    await page.waitForTimeout(2500);
+    const frames = await take(page), moved = await writesOf(page);
+    assert.equal(analyse(frames, { settle: 0 }).back, 0, `long stall ${round}: no frame goes back`);
+    assert.equal(moved.length, 1, `long stall ${round}: the soundtrack is moved once (${JSON.stringify(moved)})`);
+    assert(near(moved[0].value, moved[0].shown + offset), `long stall ${round}: to the shown time plus the offset`);
+    const tail = frames.filter((frame) => frame.stamp >= frames.at(-1).stamp - 500);
+    assert(excess(tail) <= 0, `long stall ${round}: in sync again (${excess(tail)} s beyond the bound)`);
+    result.longStalls.push({ frames: frames.length, movedTo: moved[0].value, tailMaxOffsetMs: +(Math.max(...tail.map((frame) => Math.abs(frame.time - frame.truth))) * 1000).toFixed(1) });
+  }
+
+  // The soundtrack ends before the MV (ended, not paused): the time goes on with the frames.
+  await page.evaluate(() => { window.playLog.length = 0; window.fakeAudio.endAt = window.fakeAudio.truth() + 0.4; });
+  await page.waitForTimeout(1200);
+  {
+    const frames = await take(page);
+    await page.evaluate(() => { window.fakeAudio.endAt = Infinity; });
+    let free = 0;
+    for (let index = 1; index < frames.length; index++) {
+      if (!frames[index - 1].ended || !frames[index].ended) continue;
+      const advance = frames[index].time - frames[index - 1].time, interval = (frames[index].stamp - frames[index - 1].stamp) / 1000;
+      assert(Math.abs(advance - interval) < 1e-6, `ended: frame advances by its interval (${advance} over ${interval})`);
+      free++;
+    }
+    assert(free > 20, `frames after the end (${free})`);
+    result.ended = { frames: free };
+  }
   await pause(page);
+  await writesOf(page);
+
+  // A soundtrack still loading when play starts (1.5 s, as WKWebView fetches it on play()): the
+  // picture waits at the paused time while it loads and the soundtrack is not moved.
+  {
+    const pausedAt = await page.evaluate(() => { window.playLog.length = 0; window.fakeAudio.loadMs = 1500; return window.probeCtx.time(); });
+    await play(page, 2600);
+    const loadUntil = await page.evaluate(() => { window.fakeAudio.loadMs = 0; return window.fakeAudio.loadUntil; });
+    const frames = await take(page);
+    const loading = frames.filter((frame) => frame.stamp < loadUntil - 100);
+    assert(loading.length > 10 && loading.every((frame) => frame.time === pausedAt),
+      `late start: held at the paused time while loading (${pausedAt}, ${JSON.stringify(loading.filter((frame) => frame.time !== pausedAt).slice(0, 3))}, ${loading.length})`);
+    assert.deepEqual(await writesOf(page), [], 'late start: the soundtrack is not moved');
+    const tail = frames.filter((frame) => frame.stamp >= frames.at(-1).stamp - 500);
+    assert(excess(tail) <= 0, `late start: in sync once playing (${excess(tail)} s beyond the bound)`);
+    result.lateStart = { frames: frames.length, heldFrames: loading.length };
+  }
+  await pause(page);
+
+  // A soundtrack that fails to load (an error, never playing): not waited for as a loading one;
+  // after 1 s the time goes on with the frames.
+  {
+    await page.evaluate(() => { window.playLog.length = 0; Object.assign(window.fakeAudio, { error: { code: 4 }, loadMs: 1e9 }); });
+    await play(page, 2200);
+    const frames = await take(page);
+    await pause(page);
+    await page.evaluate(() => Object.assign(window.fakeAudio, { error: null, loadMs: 0, loadUntil: 0 }));
+    const late = frames.filter((frame) => frame.stamp > frames[0].stamp + 1200);
+    assert(late.length > 20, `failed soundtrack: frames after 1.2 s (${late.length})`);
+    for (let index = 1; index < late.length; index++) {
+      const advance = late[index].time - late[index - 1].time, interval = (late[index].stamp - late[index - 1].stamp) / 1000;
+      assert(Math.abs(advance - interval) < 1e-6, `failed soundtrack: the time goes on with the frames (${advance} over ${interval})`);
+    }
+    assert.deepEqual(await writesOf(page), [], 'failed soundtrack: not moved');
+    result.failedSoundtrack = { frames: frames.length, freeFrames: late.length };
+  }
 
   // Fixed-step captures are unchanged by all of the above.
   assert.deepEqual(await fixedCapture(page, 4), before, 'the fixed-step capture is the same PNG and scene state');
