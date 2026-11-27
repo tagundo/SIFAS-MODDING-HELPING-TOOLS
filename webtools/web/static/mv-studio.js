@@ -285,6 +285,7 @@
     const target = scrubTime;
     scrubTime = null;
     if (audio.hasAttribute("src")) audio.currentTime = Math.max(0, target + audioOffset());
+    playbackClock.seek(target);
     if (scene && project) scene.seek(target, project, false);
     return true;
   }

@@ -17,6 +17,9 @@
    - a soundtrack the browser pauses on its own: the time goes on with the frames; when the
      soundtrack comes back far behind, it is moved to the picture (to the shown time plus the
      offset);
+   - a scrub of the seek slider while paused, then an edit (a seek to the time shown, the
+     soundtrack left alone), then play: the scrub moved the soundtrack, so play does not move it
+     again; the same after playback stopped at the song's end;
    - a soundtrack offset change while playing moves the soundtrack and follows the new offset;
    - a playing soundtrack whose readyState stays below HAVE_FUTURE_DATA is still followed;
    - edits while playing (seeks to the time shown, soundtrack left alone) change nothing;
@@ -361,6 +364,39 @@ async function synthetic(browser, url) {
   await page.evaluate(recordFrames);
   const before = await fixedCapture(page, 4, true);
   const result = await transport(page, 'synthetic', { from: 2, later: 8, earlier: 3 });
+
+  // A scrub of the seek slider while paused (the scene and the soundtrack seek on the next
+  // frame), then an edit (apply() seeks to the time shown with the soundtrack left alone), then
+  // play: the scrub moved the soundtrack, so play leaves it where it is. The same after playback
+  // stopped at the song's end (the clock there may be past the duration) and a scrub back.
+  result.pausedScrubs = [];
+  for (const [label, prepare] of [['paused scrub', null], ['scrub after the song end', async () => {
+    await seek(page, 29.6);
+    await play(page, 1500);
+    assert.equal(await playing(page), false, 'the song end stops playback');
+  }]]) {
+    if (prepare) await prepare();
+    await writesOf(page);
+    const to = 9, offset = await offsetOf(page);
+    await page.evaluate((value) => {
+      const input = document.getElementById('mv-seek');
+      input.value = String(value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }, to);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const scrubbed = await writesOf(page);
+    assert(scrubbed.length === 1 && near(scrubbed[0].value, to + offset), `${label}: the scrub moves the soundtrack once (${JSON.stringify(scrubbed)})`);
+    await page.evaluate(() => window.probeCtx.seek(window.probeCtx.time(), { audio: false }));
+    await page.evaluate(() => { window.playLog.length = 0; });
+    await play(page, 1000);
+    await pause(page);
+    const frames = await take(page);
+    assert.deepEqual(await writesOf(page), [], `${label}, an edit, then play: the soundtrack is not moved again`);
+    assert.equal(frames[0].time, to, `${label}: play starts at the scrubbed time`);
+    const analysed = analyse(frames, { from: to });
+    steady(`${label}, an edit, then play`, analysed);
+    result.pausedScrubs.push({ label, ...analysed });
+  }
 
   // A stall: the picture holds within the stall limit and follows again, never going back.
   await seek(page, 12);
