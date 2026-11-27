@@ -373,13 +373,12 @@
     return last && time > last.start + last.duration ? last : null;
   }
 
-  // The shot the edited camera shows at `time`. The main camera's as the scene's mainCameraAt picks
-  // it: the last main-camera track with an active shot wins; otherwise, for game sources, the shot
-  // that ends last among the tracks the playhead has run past. A sub camera's as mv-studio-split
-  // samples it (its track's active shot, no hold past its last shot).
-  function playheadShot(ctx, time = ctx.time()) {
+  // The shot a camera ("main" or a sub camera binding) shows at `time`. The main camera's as the
+  // scene's mainCameraAt picks it: the last main-camera track with an active shot wins; otherwise,
+  // for game sources, the shot that ends last among the tracks the playhead has run past. A sub
+  // camera's as mv-studio-split samples it (its track's active shot, no hold past its last shot).
+  function shotAt(ctx, time, camera) {
     const project = ctx.project();
-    const camera = project ? editedCamera(ctx) : "main";
     if (camera !== "main") {
       let sub = null;
       for (const track of cameraTracks(project, camera)) {
@@ -399,6 +398,12 @@
     found = found || ended;
     return found ? shotInfo(ctx, found.track, found.event, time) : null;
   }
+
+  // The main camera's shot at `time` (or another camera's): what other modules (the follow
+  // camera) cover. The editor's own commands use editedShot.
+  const playheadShot = (ctx, time = ctx.time(), camera = "main") => shotAt(ctx, time, camera);
+  // The shot of the camera the editor works on (the main camera or a chosen sub camera).
+  const editedShot = (ctx, time = ctx.time()) => shotAt(ctx, time, ctx.project() ? editedCamera(ctx) : "main");
 
   // ---- poses and the bake ---------------------------------------------------------------------
   // Curve values at frame f: deltas (offset) or absolute values (keys). With no keys an offset
@@ -739,7 +744,7 @@
     return stateOf(ctx).selected;
   }
 
-  function selectAllKeys(ctx, shot = playheadShot(ctx)) {
+  function selectAllKeys(ctx, shot = editedShot(ctx)) {
     if (!shot || !shot.record || !shot.record.keys.length) return false;
     const selected = stateOf(ctx).selected;
     setSelection(ctx, shot.event.id, shot.record.keys.map((key) => key.frame), selected && selected.event === shot.event.id ? selected.frame : undefined);
@@ -883,7 +888,7 @@
   // at the playhead frame, or inserts one holding the current curve values (auto-key).
   function setChannels(ctx, row, patch, { time } = {}) {
     const at = finite(time) ? time : ctx.time();
-    const found = requireShot(ctx, playheadShot(ctx, at));
+    const found = requireShot(ctx, editedShot(ctx, at));
     if (!found) return false;
     const { shot, record } = editStart(ctx, found, at);
     const frame = shot.frame;
@@ -924,7 +929,7 @@
 
   function keyView(ctx, { auto = false } = {}) {
     if (ctx.locked()) return false;
-    const found = playheadShot(ctx);
+    const found = editedShot(ctx);
     if (auto && (!found || !found.editable)) return false;
     if (!requireShot(ctx, found)) return false;
     const { shot, record } = editStart(ctx, found, ctx.time());
@@ -953,7 +958,7 @@
   }
 
   function addKey(ctx) {
-    const found = requireShot(ctx, playheadShot(ctx));
+    const found = requireShot(ctx, editedShot(ctx));
     if (!found) return false;
     const { shot, record } = editStart(ctx, found, ctx.time());
     const frame = shot.frame;
@@ -972,7 +977,7 @@
   }
 
   function targetKey(ctx) {
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     const selected = stateOf(ctx).selected;
     const owner = selected && (shot && shot.event.id === selected.event ? shot : findShot(ctx, selected.event, ctx.time()));
     const key = owner && selectedKey(ctx, owner);
@@ -993,7 +998,7 @@
 
   function duplicateKey(ctx) {
     const found = targetKey(ctx);
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     if (!found || !shot || shot.event !== found.shot.event || !shot.editable || shot.frame === found.key.frame) return false;
     const record = clone(shot.record);
     const source = record.keys.find((key) => key.frame === found.key.frame);
@@ -1007,7 +1012,7 @@
 
   // Previous (-1) / next (+1) key of the shot under the playhead.
   function stepKey(ctx, direction) {
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     if (!shot || !shot.record || !shot.record.keys.length) return false;
     const local = ctx.time() - shot.event.start;
     const keys = shot.record.keys;
@@ -1327,7 +1332,7 @@
     const clip = stateOf(ctx).clipboard;
     if (!clip || !clip.keys.length) { ctx.report(t(ctx, "Copy camera keys first."), true); return false; }
     const at = finite(time) ? time : ctx.time();
-    const found = requireShot(ctx, playheadShot(ctx, at));
+    const found = requireShot(ctx, editedShot(ctx, at));
     if (!found) return false;
     const { shot, record: start } = editStart(ctx, found, at);
     const record = shot.claimed || shot.record ? start : { mode: clip.mode, space: clip.space, keys: [] };
@@ -1403,7 +1408,7 @@
   };
 
   function setMode(ctx, mode, { confirm = true } = {}) {
-    const found = requireShot(ctx, playheadShot(ctx));
+    const found = requireShot(ctx, editedShot(ctx));
     if (!found || !["original", "offset", "keys"].includes(mode)) return false;
     const current = found.record ? found.record.mode : "original";
     if (current === mode) return false;
@@ -1421,7 +1426,7 @@
   function setSpace(ctx, space) {
     if (!["view", "world"].includes(space)) return false;
     stateOf(ctx).space = space;
-    const shot = requireShot(ctx, playheadShot(ctx));
+    const shot = requireShot(ctx, editedShot(ctx));
     if (!shot || !shot.record || shot.record.mode !== "offset" || shot.record.space === space) { renderPanel(ctx, true); return false; }
     const changed = commit(ctx, shot, convertRecord(shot, shot.record, "offset", space), "Change offset space", space);
     renderPanel(ctx, true);
@@ -1430,7 +1435,7 @@
 
   // "Convert to keyframes": the current motion as linear keys within 2 mm / 0.05° / 0.01°.
   function convertToKeys(ctx) {
-    const found = requireShot(ctx, playheadShot(ctx));
+    const found = requireShot(ctx, editedShot(ctx));
     if (!found) return false;
     // An added clip converts on the grid its keys will own (editStart), from its samples.
     const shot = editStart(ctx, found, ctx.time()).shot;
@@ -2205,7 +2210,7 @@
       // A click selects one key and seeks to it; Shift/Ctrl/Cmd+click (and Shift+Space), or a tap
       // in "Select several", adds or removes it.
       onSelectKey(frame, { toggle = false } = {}) {
-        const shot = playheadShot(ctx);
+        const shot = editedShot(ctx);
         if (!shot) return;
         if (toggle || stateOf(ctx).multi) toggleKey(ctx, shot, frame);
         else {
@@ -2218,18 +2223,18 @@
       },
       // A box dragged on the plot (added to the selection with Shift or in "Select several").
       onSelectKeys(frames, { add = false } = {}) {
-        const shot = playheadShot(ctx);
+        const shot = editedShot(ctx);
         if (shot) selectBoxed(ctx, new Map([[shot.event.id, frames]]), add || stateOf(ctx).multi);
       },
       onSeek(frame) {
-        const shot = playheadShot(ctx);
+        const shot = editedShot(ctx);
         if (shot) ctx.seek(frameTime(shot, frame), { audio: false });
       },
       // Dragging a selected key moves every selected key by the same frames and changes the
       // dragged channel of each by the same amount (one undo step); an unselected key moves alone.
       onDragKey(phase, { from, frame, channel, value }) {
         if (phase === "begin") {
-          const shot = playheadShot(ctx);
+          const shot = editedShot(ctx);
           const key = shot && shot.record && shot.record.keys.find((item) => item.frame === from);
           if (!key) return null;
           const frames = selectedFrames(ctx, shot);
@@ -2257,7 +2262,7 @@
       onDragHandle(phase, { frame, channel, side, handle }) {
         if (phase === "begin") { begin("Edit camera handle"); return; }
         if (phase === "end") { end(); return; }
-        const shot = playheadShot(ctx);
+        const shot = editedShot(ctx);
         if (shot) setHandle(ctx, shot.event.id, frame, channel, side, handle);
       },
     };
@@ -2266,7 +2271,7 @@
   // Keys pressed in the curve view (the points are its focusable keys).
   function curveKeydown(ctx, event) {
     if (event.defaultPrevented || event.isComposing || ctx.locked()) return;
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     if (!shot) return;
     const target = event.target, point = target.classList?.contains("mv-cam-curve-key") ? Number(target.dataset.frame) : null;
     const channel = point === null ? null : target.dataset.channel;
@@ -2332,7 +2337,7 @@
   function syncPanel(ctx) {
     const state = stateOf(ctx), refs = state.panel && state.panel.refs;
     if (!refs) return;
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     if (!shot || !shot.source) return;
     const frame = shot.frame;
     if (refs.header) {
@@ -2405,7 +2410,7 @@
   function renderInto(box, ctx) {
     const state = stateOf(ctx);
     watchToggle(ctx, box);
-    const shot = ctx.project() ? playheadShot(ctx) : null;
+    const shot = ctx.project() ? editedShot(ctx) : null;
     const key = signature(ctx, shot);
     if (!state.panel || state.panel.box !== box || state.panel.key !== key || !box.contains(state.panel.refs.root)) {
       // A rebuild (a new mode or shot) keeps keyboard focus on the same control. The new
@@ -2522,7 +2527,7 @@
     timeChanged(ctx) {
       hookScene(ctx);
       if (!panelOpen()) return;
-      const state = stateOf(ctx), shot = playheadShot(ctx);
+      const state = stateOf(ctx), shot = editedShot(ctx);
       const key = signature(ctx, shot);
       if (state.panel && state.panel.key === key) syncPanel(ctx);
       else renderPanel(ctx);
@@ -2620,9 +2625,11 @@
     // Lane D (follow camera) and other layers.
     registerLayer, unregisterLayer, requestBake, mainCameraShots, ensureUserShot,
     // Every editable camera (main and split-screen sub cameras), and the one being edited.
+    // playheadShot(ctx, time) is the main camera's shot (the follow camera covers it);
+    // editedShot(ctx, time) the shot of the camera being edited.
     cameraShots, setCamera, camera: (ctx) => stateOf(ctx).camera,
     // Model, bake and commands (also used by the tests).
-    shotInfo, findShot, playheadShot, normalizeRecord, basePose, bakeShot, differs, channelValues,
+    shotInfo, findShot, playheadShot, editedShot, normalizeRecord, basePose, bakeShot, differs, channelValues,
     setChannels, keyView, addKey, deleteKey, duplicateKey, stepKey, moveKey, setKeyValue, setHandle, setKeyProperty, ease,
     setMode, setSpace, convertToKeys, revertShot, newShotAtPlayhead, selectKey: (ctx, eventId, frame) => {
       const shot = findShot(ctx, eventId);

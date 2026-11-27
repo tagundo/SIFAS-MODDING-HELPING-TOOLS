@@ -9,6 +9,9 @@
    never written to and gets no project.editor. */
 'use strict';
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 globalThis.window = globalThis;
 require('../webtools/web/static/mv-studio-split.js');
 require('../webtools/web/static/mv-studio-camera-math.js');
@@ -481,14 +484,21 @@ function subCameras() {
   assert.deepEqual(K.cameraShots(ctx).map((item) => item.event.id).sort(), ['cam:0', 'cam:1', 'cam:2', 'sub1:0', 'sub1:1', 'sub3:0']);
   assert.equal(K.camera(ctx), 'main');
   at(1.5);
-  assert.equal(K.playheadShot(ctx).event.id, 'cam:0', 'the main camera by default');
+  assert.equal(K.editedShot(ctx).event.id, 'cam:0', 'the main camera by default');
   assert.equal(K.setCamera(ctx, `${SPLIT}/SubCamera2`), false, 'a sub camera the MV does not have');
   assert(K.setCamera(ctx, `${SPLIT}/SubCamera1`));
-  let shot = K.playheadShot(ctx);
+  let shot = K.editedShot(ctx);
   assert.equal(shot.event.id, 'sub1:0');
   assert.deepEqual([shot.sub, shot.index, shot.total, shot.lens, shot.count, shot.frame], [1, 0, 2, false, 61, 30]);
+  // playheadShot stays the main camera's (the follow camera covers it), whichever camera is edited.
+  assert.equal(K.playheadShot(ctx).event.id, 'cam:0', 'playheadShot: the main camera');
+  assert.equal(K.playheadShot(ctx, 1.5, `${SPLIT}/SubCamera1`).event.id, 'sub1:0', 'or the camera asked for');
   at(4);
-  assert.equal(K.playheadShot(ctx), null, 'no sub camera shot here (no hold past a sub shot)');
+  assert.equal(K.editedShot(ctx), null, 'no sub camera shot here (no hold past a sub shot)');
+  assert.equal(K.playheadShot(ctx).event.id, 'cam:1');
+  at(6.75);
+  assert.equal(K.editedShot(ctx), null, 'nor past the last sub shot (6..6.5)');
+  assert.equal(K.playheadShot(ctx).event.id, 'cam:2', 'the main camera holds its last shot');
   // An offset key moves the sub camera along its own view; the main camera is not rewritten.
   const sub = event(project, 'sub1:0'), main = event(project, 'cam:0'), mainSamples = main.values.keyframes;
   const original = copy(sub.values.keyframes);
@@ -517,7 +527,7 @@ function subCameras() {
   near(pose.fov, 40, 1e-9, 'a sub camera has no aspect correction');
   // A key in another sub camera's shot: one record per shot.
   assert(K.setCamera(ctx, `${SPLIT}/SubCamera3`));
-  assert.equal(K.playheadShot(ctx).event.id, 'sub3:0');
+  assert.equal(K.editedShot(ctx).event.id, 'sub3:0');
   assert(K.setChannels(ctx, 'offset', { fov: 2 }));
   assert.deepEqual(Object.keys(project.editor.camera.shots).sort(), ['sub1:0', 'sub3:0']);
   // A timeline selection picks its camera.
@@ -538,6 +548,56 @@ function subCameras() {
   // Reopening a project goes back to the main camera.
   plugin.projectChanged(ctx, { reason: 'load' });
   assert.equal(K.camera(ctx), 'main');
+}
+
+// "Add follow camera" (mv-studio-camera-follow.js) covers the main camera's shot at the playhead,
+// whichever camera the editor works on. The follow module registers its layer when it loads, so it
+// runs in its own context here (this file's other layer checks see only their own layers).
+async function followCoversMainShot() {
+  const context = vm.createContext({ console, setTimeout, clearTimeout, AbortController, DOMException, Promise });
+  context.window = context;
+  for (const file of ['mv-studio-split.js', 'mv-studio-camera-math.js', 'mv-studio-edit-history.js', 'mv-studio-timeline-interact.js',
+    'mv-studio-timeline-tabs.js', 'mv-studio-camera-keys.js', 'mv-studio-camera-follow.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../webtools/web/static', file), 'utf8'), context, { filename: file });
+  }
+  const keys = context.MVStudioCameraKeys, follow = context.MVStudioCameraFollow;
+  const project = splitProject();
+  project.performers = [{ id: 'p1', position: 1, glb: '/x.glb', transform: { position: [0, 0, 0] } }];
+  const scene = { memberTargets: () => [{ slot: 1, id: 'p1', parts: [0], facing: true }], onViewChange: () => () => {}, setGameCameraHelper() {},
+    async sampleMemberPath({ times }) { return { positions: new Float64Array(3 * times.length), yaw: new Float64Array(times.length) }; } };
+  let time = 0, history;
+  const ctx = { project: () => project, time: () => time, duration: () => project.duration, playing: () => false, pause() {},
+    seek(seconds) { time = seconds; }, selection: () => null, select() {},
+    editor(create = false) { if (create && !project.editor) project.editor = { version: 1, originals: {} }; return project.editor || null; },
+    edited: (id) => history.editedEvents().has(id), extrapolationAuto: () => false, scene: () => scene, t: (label) => label,
+    format: (label, values) => label.replace(/\{(\w+)\}/g, (match, key) => key in values ? String(values[key]) : match), make() { throw new Error('no DOM'); },
+    renderTimeline() { history.invalidate(); }, refreshLane() { history.invalidate(); }, renderPanel() {}, renderEvent() {}, report() {},
+    locked: () => false, frameRate: 60, snap: (seconds) => Math.round(seconds * 60) / 60, activeTab: () => 'camera', snapTargets: () => [time] };
+  history = context.MVStudioEditHistory.create({ getProject: () => project, limit: 200, onChange: ({ command, direction }) => {
+    keys.plugin.projectChanged(ctx, { reason: 'history', command, direction });
+    follow.plugin.projectChanged(ctx, { reason: 'history', command, direction });
+  } });
+  ctx.history = history;
+  keys.plugin.attach(ctx); follow.plugin.attach(ctx);
+  keys.plugin.projectChanged(ctx, { reason: 'load' }); follow.plugin.projectChanged(ctx, { reason: 'load' });
+  const span = (rig) => [Math.round(rig.start * 60), Math.round(rig.end * 60)];
+  const cam1 = [121, 301];   // cam:1 (2.0167..5.0167 s); sub1:0 is 1..2 s, sub1:1 6..6.5 s, sub3:0 1..2 s
+  time = 2.6;
+  assert.deepEqual(span(follow.addRig(ctx, { blendIn: 0, blendOut: 0 })), cam1, 'main camera edited: the main shot');
+  history.undo();
+  // The camera editor switches to a sub camera (a sub clip selected on the timeline).
+  keys.plugin.selectionChanged(ctx, { track: track(project, 'sub1'), event: event(project, 'sub1:0') });
+  assert.equal(keys.camera(ctx), `${SPLIT}/SubCamera1`);
+  time = 1.5;
+  assert.equal(keys.editedShot(ctx).event.id, 'sub1:0');
+  time = 2.6;
+  assert.deepEqual(span(follow.addRig(ctx, { blendIn: 0, blendOut: 0 })), cam1, 'sub camera edited: still the main shot');
+  history.undo();
+  // Past the main camera's last shot (cam:2 ends at 6.05 s, a game source holds it) and in no sub shot.
+  time = 8;
+  assert.deepEqual(span(follow.addRig(ctx, { blendIn: 0, blendOut: 0 })), [303, 363], 'the held main shot, not a 4 s rig at the playhead');
+  assert.equal(keys.camera(ctx), `${SPLIT}/SubCamera1`, 'adding a rig leaves the edited camera alone');
+  await keys.pending(ctx);
 }
 
 // Camera shot extrapolation (the preview and the editor): Unity's TimelineClip.GetExtrapolatedTime
@@ -1232,6 +1292,7 @@ function multiKeys() {
   await asyncLayers();
   keyView();
   subCameras();
+  await followCoversMainShot();
   extrapolation();
   hemisphere();
   absoluteEdit();
