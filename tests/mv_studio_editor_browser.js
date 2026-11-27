@@ -722,13 +722,35 @@ async function run() {
       'recomputed extrapolation times are read-only');
     assert.equal(await page.locator('#mv-event-fields [data-mv-field=postExtrapolationTime]').count(), 0);
     assert.equal(await page.locator('#mv-event-fields .mv-field-note').filter({ hasText: '게임이 다시 계산하는 값입니다' }).count(), 1);
-    // A camera shot offers None and Hold (what the preview shows) and keeps its offset and speed.
-    assert.deepEqual(await page.locator('#mv-event-fields [data-mv-field=postExtrapolationMode] option').evaluateAll(
-      (options) => options.map((option) => option.value)), ['0', '1']);
-    assert.equal(await page.locator('#mv-event-fields [data-mv-field=clipIn]').count(), 0);
+    // A camera shot keeps its offset and speed. It offers the modes the preview plays: every mode
+    // once the scene has cameraLocalTime (Loop, Ping-pong and Continue), else None and Hold.
+    const shotModes = () => page.locator('#mv-event-fields [data-mv-field=postExtrapolationMode] option').evaluateAll(
+      (options) => options.map((option) => option.value));
+    const capsNote = () => page.locator('#mv-event-fields [data-mv-note=caps]').textContent();
+    const reselectShot = async () => {
+      await page.locator(`.mv-clip[data-event="${original.tracks.find((track) => track.label === 'CameraMotion/Camera1').events[0].id}"]`).click();
+      await clip.click();
+    };
+    // Both previews: without cameraLocalTime (the scene before it plays Loop, Ping-pong and
+    // Continue), and with it. The scene keeps its own copy, so only the host's choice changes.
+    const playsEveryMode = await page.evaluate(() => {
+      window.mvSceneLocalTime = MVStudioScene.cameraLocalTime;
+      delete MVStudioScene.cameraLocalTime;
+      return typeof window.mvSceneLocalTime === 'function';
+    });
+    await reselectShot();
+    assert.deepEqual(await shotModes(), ['0', '1'], 'a hold-only preview: None and Hold');
+    assert.equal(await capsNote(), '카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.');
+    await page.evaluate(() => { MVStudioScene.cameraLocalTime = window.mvSceneLocalTime || (() => 0); });
+    await reselectShot();
+    assert.deepEqual(await shotModes(), ['0', '1', '2', '3', '4'], 'every mode the preview plays');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=clipIn]').count(), 0, 'the offset stays read only');
     assert.equal(await page.locator('#mv-event-fields [data-mv-field=timeScale]').count(), 0);
-    assert.equal(await page.locator('#mv-event-fields [data-mv-note=caps]').textContent(),
-      '카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.');
+    assert.equal(await capsNote(), '카메라 샷은 오프셋과 속도를 바꿀 수 없습니다. 미리보기는 샷에서 읽은 샘플을 그대로 재생합니다.');
+    // This tree's own preview.
+    await page.evaluate((plays) => { if (!plays) delete MVStudioScene.cameraLocalTime; delete window.mvSceneLocalTime; }, playsEveryMode);
+    await reselectShot();
+    assert.deepEqual(await shotModes(), playsEveryMode ? ['0', '1', '2', '3', '4'] : ['0', '1']);
     // Alt+→ nudges one frame as one more step.
     await clip.focus();
     await page.keyboard.press('Alt+ArrowRight');

@@ -298,9 +298,23 @@ function clipCaps() {
   assert.deepEqual(open({ kind: 'effects' }, 'CustomControlClip'), ['clipIn']);
   assert.deepEqual(open(lane, 'LiveMemberCullerClip'), []);
   assert.deepEqual(open(lane, 'ControlPlayableAsset'), ['clipIn', 'timeScale']);
-  // Camera shots: modes, not offset or speed; only None and Hold.
+  // Camera shots: modes, not offset or speed. Every mode once the preview plays them
+  // (MVStudioScene.cameraLocalTime), None and Hold before that.
   assert.deepEqual(open(camera, 'AnimationPlayableAsset'), timing.filter((key) => key !== 'clipIn' && key !== 'timeScale'));
-  assert.deepEqual(I.clipCaps(camera, { values: { playableClass: 'AnimationPlayableAsset' } }).modes, [0, 1]);
+  const shot = { values: { playableClass: 'AnimationPlayableAsset' } }, scene = globalThis.MVStudioScene;
+  try {
+    delete globalThis.MVStudioScene;
+    assert.deepEqual(I.clipCaps(camera, shot).modes, [0, 1], 'a preview without cameraLocalTime: None and Hold');
+    globalThis.MVStudioScene = { create() {} };
+    assert.deepEqual(I.clipCaps(camera, shot).modes, [0, 1]);
+    globalThis.MVStudioScene = { create() {}, cameraLocalTime() { return 0; } };
+    assert.deepEqual(I.clipCaps(camera, shot).modes, [0, 1, 2, 3, 4], 'the preview plays every mode: all five');
+    assert.deepEqual(open(camera, 'AnimationPlayableAsset'), timing.filter((key) => key !== 'clipIn' && key !== 'timeScale'),
+      'offset and speed stay read only');
+  } finally {
+    if (scene === undefined) delete globalThis.MVStudioScene;
+    else globalThis.MVStudioScene = scene;
+  }
   assert.deepEqual(I.clipCaps(lane, { values: { playableClass: 'AnimationPlayableAsset' } }).modes, [0, 1, 2, 3, 4]);
   assert.deepEqual(I.clipCaps(camera, { values: { playableClass: 'LiveCameraOffsetClip' } }).modes, [], 'a camera offset clip is a game clip');
   assert.equal(I.timingField(I.clipCaps(lights, { values: { playableClass: 'LiveColoringClip' } }), 'color'), true, 'other keys are not timing');

@@ -769,8 +769,9 @@
       if (control === null) continue;
       box.append(control !== undefined ? control : eventField(values, key, key, writable, 0, [key],
         (segments, next) => setEventValue(track, event, segments, next), caps ? caps.modes : null));
-      if (control === undefined && editable && caps && (!Interact.timingField(caps, key) ||
-          (caps.camera && (key === "preExtrapolationMode" || key === "postExtrapolationMode")))) {
+      // A camera shot's modes are limited while the preview plays only None and Hold.
+      if (control === undefined && editable && caps && (!Interact.timingField(caps, key) || (caps.camera &&
+          caps.modes.length < EXTRAPOLATION_LABELS.length && (key === "preExtrapolationMode" || key === "postExtrapolationMode")))) {
         const restore = !Interact.timingField(caps, key) && restoreControl(track, event, key, original);
         if (restore) box.append(restore);
         capsNoted = true;
@@ -786,8 +787,10 @@
     }
     // Once, below the values: why some timing fields are read only.
     if (capsNoted) {
-      box.append(make("p", t(caps.camera ? "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows."
-        : "The game does not use the read-only timing fields of this clip type."), { class: "mv-field-note", "data-mv-note": "caps" }));
+      const note = !caps.camera ? "The game does not use the read-only timing fields of this clip type."
+        : caps.modes.length < EXTRAPOLATION_LABELS.length ? "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows."
+          : "Camera shots keep their offset and speed: the preview plays the samples read from the shot.";
+      box.append(make("p", t(note), { class: "mv-field-note", "data-mv-note": "caps" }));
     }
     for (const element of callPlugins("eventFooter", { track, event })) if (element) box.append(element);
     restoreFocus(box, focus);

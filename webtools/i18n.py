@@ -3175,6 +3175,9 @@ _MV_EDITOR_E2_TRANSLATIONS = {
     "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows.": (
         "카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.",
         "カメラショットはオフセットと速度を変えられず、プレビューに出る「なし」と「保持」だけを選べます。"),
+    "Camera shots keep their offset and speed: the preview plays the samples read from the shot.": (
+        "카메라 샷은 오프셋과 속도를 바꿀 수 없습니다. 미리보기는 샷에서 읽은 샘플을 그대로 재생합니다.",
+        "カメラショットはオフセットと速度を変えられません。プレビューはショットから読んだサンプルをそのまま再生します。"),
     "Restore original value": ("원래 값으로 되돌리기", "元の値に戻す"),
     "Mute track": ("트랙 음소거", "トラックをミュート"),
     "Unmute track": ("트랙 음소거 해제", "トラックのミュートを解除"),

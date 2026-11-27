@@ -225,9 +225,10 @@
      measured on 13 stock timelines: none of the 647 non-Animation tracks (29 classes,
      20,869 clips) stores an extrapolation mode or time, a clip offset or a speed, except
      a clip offset on 35 CustomControlClips, and the editor blended every Live and Member
-     track but never a CustomControl or LiveMemberCuller one. Camera shots offer only
-     None and Hold, the modes the preview shows (activeCameraEvent), and keep their
-     offset and speed: the preview plays a shot's samples at the shot's own time.
+     track but never a CustomControl or LiveMemberCuller one. Camera shots keep their
+     offset and speed: the preview plays the samples read from the shot (clip offset and
+     speed already applied). They offer every mode once the preview plays Loop, Ping-pong
+     and Continue (MVStudioScene.cameraLocalTime), and only None and Hold before that.
      → null for a clip without a playable class (nothing is restricted). */
   const ALL = Object.freeze({ extrapolation: true, clipIn: true, timeScale: true, blending: true });
   const CLIP_CAPS = Object.freeze({
@@ -239,7 +240,11 @@
     LiveMemberCullerClip: Object.freeze({ extrapolation: false, clipIn: false, timeScale: false, blending: false }),
   });
   const GAME_CLIP = Object.freeze({ extrapolation: false, clipIn: false, timeScale: false, blending: true });
-  const EXTRAPOLATION_MODES = Object.freeze([0, 1, 2, 3, 4]), CAMERA_MODES = Object.freeze([0, 1]);
+  const EXTRAPOLATION_MODES = Object.freeze([0, 1, 2, 3, 4]), HOLD_MODES = Object.freeze([0, 1]);
+  // The camera modes the preview plays: all five with MVStudioScene.cameraLocalTime (read when
+  // asked, as the scene script loads after this one), else None and Hold (activeCameraEvent).
+  const cameraModes = () => global.MVStudioScene && typeof global.MVStudioScene.cameraLocalTime === "function"
+    ? EXTRAPOLATION_MODES : HOLD_MODES;
   const TIMING_CAPS = Object.freeze({
     preExtrapolationMode: "extrapolation", postExtrapolationMode: "extrapolation",
     preExtrapolationTime: "extrapolation", postExtrapolationTime: "extrapolation",
@@ -251,7 +256,7 @@
     if (typeof native !== "string" || !native) return null;
     const caps = Object.prototype.hasOwnProperty.call(CLIP_CAPS, native) ? CLIP_CAPS[native] : GAME_CLIP;
     const camera = native === "AnimationPlayableAsset" && !!track && track.kind === "camera";
-    if (camera) return { ...caps, clipIn: false, timeScale: false, modes: CAMERA_MODES, camera: true };
+    if (camera) return { ...caps, clipIn: false, timeScale: false, modes: cameraModes(), camera: true };
     return { ...caps, modes: caps.extrapolation ? EXTRAPOLATION_MODES : Object.freeze([]), camera: false };
   }
 
