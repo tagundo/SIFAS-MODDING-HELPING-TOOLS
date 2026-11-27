@@ -750,6 +750,32 @@ function extrapolation() {
   first.values.postExtrapolationMode = 0;
   at(2.5);
   assert.equal(K.playheadShot(ctx), null, 'None: no shot in the gap');
+
+  // A null window (an infinite time in the bundle, as on the last shot of a track): Loop, PingPong
+  // and Continue go on to the end, as Unity's do; Hold keeps the rule original MVs played with
+  // (no window; a game source's main camera holds its last shot by itself).
+  const last = (mode) => ({ events: [shot(1, mode, 1, null)] });
+  for (const [mode, time, local] of [[2, 20.25, .25], [3, 20.25, .25], [3, 21, 1], [4, 20.25, 1.5]]) {
+    assert.equal(S.activeCameraEvent(last(mode), time)?.id, 'e', `mode ${mode}: no end to a null window`);
+    near(S.cameraLocalTime(last(mode).events[0], time), local, 1e-12, `mode ${mode} at ${time}`);
+  }
+  assert.equal(S.activeCameraEvent(last(1), 3.6), null, 'Hold with a null window: none, as before');
+  const missing = { events: [{ id: 'e', start: 2, duration: 1.5, values: { preExtrapolationMode: 2, postExtrapolationMode: 2 } }] };
+  assert.equal(S.activeCameraEvent(missing, 3.6), null, 'a missing window is still no window');
+  assert.equal(S.activeCameraEvent(missing, 1.9), null);
+  assert.equal(S.activeCameraEvent({ events: [shot(2, 1, null, 1)] }, -5)?.id, 'e', 'a null pre window too');
+  // The sub camera editor follows the same rule (a sub camera holds nothing past its last shot).
+  const split = splitProject();
+  const lastSub = event(split, 'sub1:1');   // 6..6.5 s
+  Object.assign(lastSub.values, { postExtrapolationMode: 2, postExtrapolationTime: null });
+  const sub = harness(split);
+  assert(K.setCamera(sub.ctx, `${SPLIT}/SubCamera1`));
+  sub.at(9.1);
+  const looped = K.editedShot(sub.ctx);
+  assert.equal(looped && looped.event.id, 'sub1:1', 'Loop on the last sub shot plays on');
+  assert.equal(looped.frame, 6, '3.1 s past its start: 0.1 s into its loop');
+  lastSub.values.postExtrapolationMode = 1;
+  assert.equal(K.editedShot(sub.ctx), null, 'Hold with a null window: no shot, as before');
 }
 
 function hemisphere() {

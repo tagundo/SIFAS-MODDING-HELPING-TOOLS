@@ -349,6 +349,8 @@
   // activeCameraEvent of the scene: latest-start active clip, else the neighbours whose Hold, Loop,
   // PingPong or Continue extrapolation covers `time`.
   const extrapolates = (mode) => mode === 1 || mode === 2 || mode === 3 || mode === 4;
+  // A null window (an infinite time in the bundle) reaches the end for Loop, PingPong and Continue.
+  const reach = (mode, seconds) => seconds === null && mode !== 1 ? Infinity : seconds;
   function activeCameraEvent(track, time) {
     let active = null;
     for (const event of track.events) {
@@ -358,8 +360,10 @@
     let previous = null, next = null;
     for (const event of track.events) {
       const values = event.values || {}, end = event.start + event.duration;
-      if (time > end && extrapolates(values.postExtrapolationMode) && time <= end + values.postExtrapolationTime && (!previous || event.start > previous.start)) previous = event;
-      if (time < event.start && extrapolates(values.preExtrapolationMode) && time >= event.start - values.preExtrapolationTime && (!next || event.start < next.start)) next = event;
+      if (time > end && extrapolates(values.postExtrapolationMode) && time <= end + reach(values.postExtrapolationMode, values.postExtrapolationTime) &&
+        (!previous || event.start > previous.start)) previous = event;
+      if (time < event.start && extrapolates(values.preExtrapolationMode) && time >= event.start - reach(values.preExtrapolationMode, values.preExtrapolationTime) &&
+        (!next || event.start < next.start)) next = event;
     }
     return previous || next;
   }

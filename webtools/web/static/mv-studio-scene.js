@@ -93,6 +93,10 @@
   // TimelineClip extrapolation modes: None 0, Hold 1, Loop 2, PingPong 3, Continue 4. A camera
   // shot is an AnimationPlayableAsset, whose ClipCaps include Extrapolation: all four play.
   const extrapolates = (mode) => mode === 1 || mode === 2 || mode === 3 || mode === 4;
+  // How far a mode's stored window reaches. A JSON null is an infinite time in the bundle (a last
+  // shot): Loop, PingPong and Continue then go on to the end, as Unity's do. Hold keeps the rule
+  // original MVs always played with (null: no window; mainCameraAt holds a game source's last shot).
+  const reach = (mode, seconds) => seconds === null && mode !== 1 ? Infinity : seconds;
 
   function activeCameraEvent(track, time) {
     const active = activeEvent(track, time);
@@ -103,9 +107,9 @@
     for (const event of track.events) {
       const values = event.values || {};
       const end = event.start + event.duration;
-      if (time > end && extrapolates(values.postExtrapolationMode) && time <= end + values.postExtrapolationTime &&
+      if (time > end && extrapolates(values.postExtrapolationMode) && time <= end + reach(values.postExtrapolationMode, values.postExtrapolationTime) &&
           (!previous || event.start > previous.start)) previous = event;
-      if (time < event.start && extrapolates(values.preExtrapolationMode) && time >= event.start - values.preExtrapolationTime &&
+      if (time < event.start && extrapolates(values.preExtrapolationMode) && time >= event.start - reach(values.preExtrapolationMode, values.preExtrapolationTime) &&
           (!next || event.start < next.start)) next = event;
     }
     return previous || next;
