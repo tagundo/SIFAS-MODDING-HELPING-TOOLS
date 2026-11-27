@@ -681,28 +681,31 @@ _EDITABLE_VALUES = {
     "MemberCheekClip": {"cheekType", "intensity"},
     "LiveBloomClip": {"intensity", "threshold", "softKnee", "radius", "antiFlicker"},
     "LiveDepthOfFieldClip": {"focusDistance", "aperture", "focalLength", "useCameraFov", "antiAura",
-                             "kernelSize", "useMemberDistance", "bodyPart"},
+                             "kernelSize", "useMemberDistance", "bodyPart", "memberPosition", "cameraAutoDistanceMode",
+                             "focusTransitionTime"},
     "LiveBaseLightClip": {"ambientColor", "ambientTintColor", "rimlightColor", "rimlightIntensity",
-                         "rimlightSharpness", "rimlightDirection"},
-    "LiveMemberAmbientClip": {"color", "tintColor", "colorSpecifiedType"},
-    "LiveStageAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType"},
-    "LiveStageSingleAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType"},
-    "LiveStageEmissiveClip": {"color", "intensity", "colorSpecifiedType"},
-    "LiveMemberSpotLightAreaClip": {"color", "colorSpecifiedType"},
+                         "rimlightSharpness", "rimlightDirection", "ambientColorType", "rimlightColorType",
+                         "ambientMemberPosition", "rimlightMemberPosition"},
+    "LiveMemberAmbientClip": {"color", "tintColor", "colorSpecifiedType", "memberPosition"},
+    "LiveStageAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType", "memberPosition"},
+    "LiveStageSingleAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType", "memberPosition"},
+    "LiveStageEmissiveClip": {"color", "intensity", "colorSpecifiedType", "memberPosition"},
+    "LiveMemberSpotLightAreaClip": {"color", "colorSpecifiedType", "memberPosition"},
     "LiveMemberSpotLightShaftClip": {"color", "scale", "offsetHeight", "smoothTime", "colorSpecifiedType",
-                                     "drawObjectIndex"},
-    "LiveRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType"},
-    "LiveFlareClip": {"color", "center", "intensity", "smoothness", "roundness", "rounded", "colorSpecifiedType"},
-    "LiveFlashLightClip": {"tintColor", "speed", "colorSpecifiedType", "status"},
+                                     "drawObjectIndex", "memberPosition"},
+    "LiveRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType", "memberPosition"},
+    "LiveFlareClip": {"color", "center", "intensity", "smoothness", "roundness", "rounded", "colorSpecifiedType",
+                      "memberPosition"},
+    "LiveFlashLightClip": {"tintColor", "speed", "colorSpecifiedType", "status", "memberPosition"},
     "LiveDisplayClip": {"scrollSpeed", "ambientColor", "materialIndex"},
     "LiveColoringClip": {"shift", "tintColor", "speed", "textureIndex"},
-    "LiveCameraOffsetClip": {"intensity"},
+    "LiveCameraOffsetClip": {"intensity", "memberPosition"},
     "LivePenlightClip": {"tintColor", "fogIntensity", "randomBrightness", "beatLength", "beatOffset",
                          "randomDelay", "randomUp", "randomSwingIntensity"},
     "CustomControlClip": {"weight", "offset"},
     "LiveMemberScalingClip": {"intensity"},
-    "LivePropAmbientClip": {"color", "tintColor", "colorSpecifiedType"},
-    "LivePropRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType"},
+    "LivePropAmbientClip": {"color", "tintColor", "colorSpecifiedType", "memberPosition"},
+    "LivePropRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType", "memberPosition"},
 }
 # Every class above whose clips pick their colour source with colorSpecifiedType
 # (0 custom, 1 member, 2 original member) is resolved by the preview's
@@ -716,7 +719,24 @@ _LIMITED_VALUES = {
     **{(native, "colorSpecifiedType"): (0, 2) for native in _COLOR_SOURCE_CLASSES},
     ("LiveDepthOfFieldClip", "kernelSize"): (0, 3),
     ("LiveDepthOfFieldClip", "useMemberDistance"): (0, 1),
+    # LiveDepthOfFieldMixer.CalcFocusDistance (0x29237fc): 1 the nearest member, 2 the member nearest
+    # the view axis, anything else memberPosition (mv-studio-dof-focus.js memberFocus).
+    ("LiveDepthOfFieldClip", "cameraAutoDistanceMode"): (0, 2),
+    ("LiveBaseLightClip", "ambientColorType"): (0, 2),
+    ("LiveBaseLightClip", "rimlightColorType"): (0, 2),
     ("LiveFlashLightClip", "status"): (0, 2),
+}
+# Values that name a member slot: a changed one must be a slot this timeline binds a performer
+# model to (_PERFORMER_MODEL). The client reads Members[slot - 1] behind a bounds check and throws
+# for a missing member (LiveDepthOfFieldMixer.CalcFocusDistance 0x2924148), and the member colour
+# and camera height lookups read the same members.
+_MEMBER_POSITIONS = frozenset(
+    {(native, "memberPosition") for native in _COLOR_SOURCE_CLASSES | {"LiveDepthOfFieldClip", "LiveCameraOffsetClip"}}
+    | {("LiveBaseLightClip", "ambientMemberPosition"), ("LiveBaseLightClip", "rimlightMemberPosition")})
+MEMBER_SLOT = "Choose a member this MV has."
+# Float fields with a native range (other floats take any value within +-1e6).
+_FLOAT_RANGES = {
+    ("LiveDepthOfFieldClip", "focusTransitionTime"): (0, 60),
 }
 # Indices into game-side lists the bundle does not describe (coloring textures,
 # display materials, shaft draw objects, BodyPartManager parts): a revision may
@@ -728,11 +748,15 @@ _OBSERVED_VALUES = {
     ("LiveMemberSpotLightShaftClip", "drawObjectIndex"): "track",
     ("LiveDepthOfFieldClip", "bodyPart"): "timeline",
 }
-# Changed values that only work for a clip whose own (read-only) memberPosition is a member slot.
+# Changed values that only work for a clip whose member position (as revised) is a member slot:
+# (values, message, the field holding that position).
+_COLOUR_MEMBER = "This colour source needs the clip's member position to be 1 to 12."
 _MEMBER_SLOT_VALUES = {
-    **{(native, "colorSpecifiedType"): ({1, 2}, "This colour source needs the clip's member position to be 1 to 12.")
-       for native in _COLOR_SOURCE_CLASSES},
-    ("LiveDepthOfFieldClip", "useMemberDistance"): ({1}, "Member focus needs the clip's member position to be 1 to 12."),
+    **{(native, "colorSpecifiedType"): ({1, 2}, _COLOUR_MEMBER, "memberPosition") for native in _COLOR_SOURCE_CLASSES},
+    ("LiveBaseLightClip", "ambientColorType"): ({1, 2}, _COLOUR_MEMBER, "ambientMemberPosition"),
+    ("LiveBaseLightClip", "rimlightColorType"): ({1, 2}, _COLOUR_MEMBER, "rimlightMemberPosition"),
+    ("LiveDepthOfFieldClip", "useMemberDistance"): ({1}, "Member focus needs the clip's member position to be 1 to 12.",
+                                                    "memberPosition"),
 }
 _TIMING_NATIVE = {label: field for field, label in _CLIP_TIMING.items()}
 # Track fields an export writes into the track's own MonoBehaviour, for a track whose
@@ -894,9 +918,14 @@ def _set_playable_value(tree, native, field, value):
     bounds = _LIMITED_VALUES.get((native, field))
     if bounds and (type(value) is not int or not bounds[0] <= value <= bounds[1]):
         raise ValueError(f"'{field}' is outside the supported native range.")
+    if (native, field) in _MEMBER_POSITIONS and (type(value) is not int or not 1 <= value <= 12):
+        raise ValueError(MEMBER_SLOT)
     if (field in ("weight", "weightForDirection")
             or native in ("MemberCheekClip", "LiveMemberScalingClip") and field == "intensity"):
         value = _time(value, field, minimum=0, maximum=1)
+    floats = _FLOAT_RANGES.get((native, field))
+    if floats:
+        value = _time(value, field, minimum=floats[0], maximum=floats[1])
     tree[field] = _replace_value(tree[field], value, field)
 
 
@@ -906,12 +935,25 @@ def _value_key(value):
     return json.dumps(value, sort_keys=True)
 
 
+def performer_slots(tracks):
+    """The member slots a parsed timeline binds a performer model to (Members/Member<n>/Model)."""
+    slots = set()
+    for track in tracks:
+        bindings = [track.get("binding"), *(track.get("bindings") or ())] if isinstance(track, dict) else ()
+        for binding in bindings:
+            match = _PERFORMER_MODEL.fullmatch(binding) if isinstance(binding, str) else None
+            if match:
+                slots.add(int(match[1]))
+    return frozenset(slots)
+
+
 def _check_values(original, revised):
     """Rules on changed values that one field alone cannot check.
 
     A field of _OBSERVED_VALUES must take a value the original timeline already
-    uses for it (on the same track, or anywhere), and a member colour or member
-    focus needs the clip's own read-only memberPosition to be a member slot.
+    uses for it (on the same track, or anywhere); a changed member position must
+    be one of the timeline's performer slots; and a member colour or member focus
+    needs the clip's member position (as revised) to be a member slot.
     Malformed revisions are left to _changes."""
     if not isinstance(revised, dict) or not isinstance(revised.get("tracks"), list):
         return
@@ -928,6 +970,7 @@ def _check_values(original, revised):
                 if values.get("playableClass") == native and field in values:
                     key = (native, field, track["id"] if scope == "track" else None)
                     observed.setdefault(key, set()).add(_value_key(values[field]))
+    slots = performer_slots(original["tracks"])
     for track in original["tracks"]:
         for event in track["events"]:
             before, after = event["values"], revised_events.get(event["id"])
@@ -942,8 +985,10 @@ def _check_values(original, revised):
                 if scope and _value_key(value) not in observed.get(
                         (native, field, track["id"] if scope == "track" else None), ()):
                     raise ValueError(f"Choose a value this MV already uses for '{field}'.")
+                if (native, field) in _MEMBER_POSITIONS and not (type(value) is int and value in slots):
+                    raise ValueError(MEMBER_SLOT)
                 rule = _MEMBER_SLOT_VALUES.get((native, field))
-                slot = before.get("memberPosition")
+                slot = after.get(rule[2], before.get(rule[2])) if rule else None
                 if rule and type(value) is int and value in rule[0] and not (type(slot) is int and 1 <= slot <= 12):
                     raise ValueError(rule[1])
 

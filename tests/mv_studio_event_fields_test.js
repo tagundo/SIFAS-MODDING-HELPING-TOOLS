@@ -88,6 +88,11 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
             // An HDR colour whose k has more than 4 decimals: the box shows 1.498.
             { id: 'grey:1', start: 2, duration: 2, label: 'G1', editableValues: ['tintColor'],
               values: { asset: 'cab:13', playableClass: 'LiveColoringClip', tintColor: { r: 1.4980392456054688, g: .5, b: .25, a: 1 } } }] },
+          // A member target: slot 2 is not among the project's members (1 and 3).
+          { id: 'dof', kind: 'dof', events: [
+            { id: 'dof:0', start: 0, duration: 2, label: 'D', editableValues: ['memberPosition', 'cameraAutoDistanceMode', 'focusTransitionTime'],
+              values: { asset: 'cab:14', playableClass: 'LiveDepthOfFieldClip', memberPosition: 2, cameraAutoDistanceMode: 0,
+                focusTransitionTime: 1, bodyPart: 0 } }] },
         ] };
       const history = MVStudioEditHistory.create({ getProject: () => project });
       const ctx = {
@@ -271,6 +276,18 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
         badgeTitle: offset.querySelector('.mv-field-badge')?.title };
       out.weightBadge = !!control('fx:0', 'weight').querySelector('.mv-field-badge');
       out.tintBadge = !!tint.querySelector('.mv-field-badge');
+
+      // Member slot: the project's members, then the clip's own value; the focus target and its time.
+      const focus = control('dof:0', 'memberPosition');
+      out.focus = { options: [...focus.querySelectorAll('option')].map((option) => [Number(option.value), option.textContent]),
+        fields: fields(focus), label: focus.querySelector('.mv-value-label').textContent };
+      focus.querySelector('select').value = '3';
+      focus.querySelector('select').dispatchEvent(new Event('change', { bubbles: true }));
+      out.focusValue = find('dof:0').event.values.memberPosition;
+      const mode = control('dof:0', 'cameraAutoDistanceMode');
+      out.mode = [...mode.querySelectorAll('option')].map((option) => [Number(option.value), option.textContent]);
+      const transition = control('dof:0', 'focusTransitionTime').querySelector('[data-mv-field=focusTransitionTime]');
+      out.transition = [transition.min, transition.max];
       return out;
     });
 
@@ -382,6 +399,11 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
     assert.match(result.offset.badgeTitle, /exported to the game/);
     assert(result.weightBadge);
     assert(!result.tintBadge);
+    assert.deepEqual(result.focus, { options: [[1, '멤버 1 · 아유무'], [3, '멤버 3'], [2, 'Value 2']], fields: ['memberPosition'],
+      label: 'Focus member' }, 'member slots of the project, then the clip\'s own value');
+    assert.equal(result.focusValue, 3);
+    assert.deepEqual(result.mode, [[0, 'The chosen member'], [1, 'The nearest member'], [2, 'The member nearest the centre']]);
+    assert.deepEqual(result.transition, ['0', '60']);
     console.log('MV Studio event fields: descriptors, HDR colour, 0/1 ints, observed options, data-mv-field, native data, gestures passed');
   } finally {
     await browser.close();

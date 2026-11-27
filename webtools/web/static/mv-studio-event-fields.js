@@ -22,8 +22,9 @@
   //   classes: playable class → value key → { control, ... }.
   // Controls: number (min, max, step, integer), slider (min, max, step), vector (unit),
   //   color, enum (set), enum-observed (scope: track | timeline, set or format),
-  //   enum-members (gaze targets), bool-int, text (maxLength), facial-index
-  //   (facial: eyes | mouth), readonly (set, member). badge "not-previewed": the
+  //   enum-members (gaze targets), member-slot (the project's member slots), bool-int,
+  //   text (maxLength), facial-index (facial: eyes | mouth), readonly (set, member).
+  //   member: true shows a slot as "Member n · name". badge "not-previewed": the
   //   value is exported but the 3D preview does not show it.
   const TABLE = /* descriptors:begin */ {
     "sets": {
@@ -31,7 +32,8 @@
       "kernelSize": [[0, "Small"], [1, "Medium"], [2, "Large"], [3, "Very large"]],
       "flashStatus": [[0, "Off"], [1, "On"], [2, "All"]],
       "cheekType": [[0, "Blush pattern 1"], [1, "Blush pattern 2"]],
-      "bodyPart": [[0, "Head"], [1, "Head (all)"], [2, "Face"], [3, "Hips"], [4, "Neck"]]
+      "bodyPart": [[0, "Head"], [1, "Head (all)"], [2, "Face"], [3, "Hips"], [4, "Neck"]],
+      "focusTarget": [[0, "The chosen member"], [1, "The nearest member"], [2, "The member nearest the centre"]]
     },
     "labels": {
       "color": "Colour",
@@ -90,8 +92,9 @@
         "kernelSize": {"control": "enum", "set": "kernelSize", "label": "Blur size"},
         "useMemberDistance": {"control": "bool-int", "label": "Focus on the member"},
         "bodyPart": {"control": "enum-observed", "scope": "timeline", "set": "bodyPart", "label": "Focus body part"},
-        "memberPosition": {"control": "readonly", "member": true},
-        "focusTransitionTime": {"control": "readonly", "label": "Focus transition time (s)"}
+        "cameraAutoDistanceMode": {"control": "enum", "set": "focusTarget", "label": "Focus target"},
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Focus member"},
+        "focusTransitionTime": {"control": "number", "min": 0, "max": 60, "label": "Focus transition time (s)"}
       },
       "LiveBaseLightClip": {
         "ambientColor": {"control": "color"},
@@ -100,41 +103,41 @@
         "rimlightIntensity": {"control": "number", "min": 0, "max": 100},
         "rimlightSharpness": {"control": "number", "min": 0, "max": 1000},
         "rimlightDirection": {"control": "vector", "unit": "deg"},
-        "ambientColorType": {"control": "readonly", "set": "colorSource"},
-        "rimlightColorType": {"control": "readonly", "set": "colorSource"},
-        "ambientMemberPosition": {"control": "readonly", "member": true},
-        "rimlightMemberPosition": {"control": "readonly", "member": true}
+        "ambientColorType": {"control": "enum", "set": "colorSource"},
+        "rimlightColorType": {"control": "enum", "set": "colorSource"},
+        "ambientMemberPosition": {"control": "member-slot", "member": true},
+        "rimlightMemberPosition": {"control": "member-slot", "member": true}
       },
       "LiveMemberAmbientClip": {
         "color": {"control": "color"},
         "tintColor": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveStageAmbientClip": {
         "color": {"control": "color"},
         "tintColor": {"control": "color"},
         "blendColor": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveStageSingleAmbientClip": {
         "color": {"control": "color"},
         "tintColor": {"control": "color"},
         "blendColor": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveStageEmissiveClip": {
         "color": {"control": "color"},
         "intensity": {"control": "number", "min": 0, "max": 100},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveMemberSpotLightAreaClip": {
         "color": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveMemberSpotLightShaftClip": {
         "color": {"control": "color"},
@@ -143,7 +146,7 @@
         "smoothTime": {"control": "number", "min": 0, "max": 100, "label": "Follow smoothing (s)"},
         "drawObjectIndex": {"control": "enum-observed", "scope": "track", "format": "Shaft shape {n}", "label": "Shaft shape"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveRimlightClip": {
         "color": {"control": "color"},
@@ -151,7 +154,7 @@
         "sharpness": {"control": "number", "min": 0, "max": 1000},
         "direction": {"control": "vector", "unit": "deg"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveFlareClip": {
         "color": {"control": "color"},
@@ -161,14 +164,14 @@
         "roundness": {"control": "number", "min": 0, "max": 100, "label": "Roundness"},
         "rounded": {"control": "bool-int", "label": "Rounded"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveFlashLightClip": {
         "tintColor": {"control": "color"},
         "speed": {"control": "number", "min": 0, "max": 1000},
         "status": {"control": "enum", "set": "flashStatus", "label": "Flash lights"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveDisplayClip": {
         "scrollSpeed": {"control": "vector", "label": "Scroll speed"},
@@ -183,7 +186,7 @@
       },
       "LiveCameraOffsetClip": {
         "intensity": {"control": "number", "min": 0, "max": 100, "label": "Offset strength"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Height from member"}
       },
       "LivePenlightClip": {
         "tintColor": {"control": "color"},
@@ -206,7 +209,7 @@
         "color": {"control": "color"},
         "tintColor": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LivePropRimlightClip": {
         "color": {"control": "color"},
@@ -214,7 +217,7 @@
         "sharpness": {"control": "number", "min": 0, "max": 1000},
         "direction": {"control": "vector", "unit": "deg"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       }
     }
   } /* descriptors:end */;
@@ -366,6 +369,8 @@
         labels.has(value) ? ctx.t(labels.get(value)) : spec.format ? ctx.format(spec.format, { n: value }) : String(value)]);
     } else if (spec.control === "enum-members") {
       options = gazeOptions(ctx, info);
+    } else if (spec.control === "member-slot") {
+      options = memberSlots(ctx).map(({ slot, name }) => [slot, memberLabel(ctx, slot, name)]);
     } else if (spec.control === "facial-index") {
       options = facialOptions(ctx, info, spec.facial);
     } else options = (set || []).map(([value, label]) => [value, ctx.t(label)]);
@@ -612,7 +617,8 @@
 
   const builders = {
     number: numberControl, slider: sliderControl, vector: vectorControl, color: colorControl,
-    enum: selectControl, "enum-observed": selectControl, "enum-members": selectControl, "facial-index": selectControl,
+    enum: selectControl, "enum-observed": selectControl, "enum-members": selectControl, "member-slot": selectControl,
+    "facial-index": selectControl,
     "bool-int": boolControl, text: textControl,
   };
 

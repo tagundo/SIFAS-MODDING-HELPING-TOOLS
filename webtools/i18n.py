@@ -4324,6 +4324,15 @@ _MV_EXPORT_SLOT_TRANSLATIONS = {
         "このトラックはゲームの画質設定でオン・オフが決まるため、ミュートはゲームに反映されません。"),
     "A track mute must be on or off.": ("트랙 음소거는 켜기나 끄기로만 정할 수 있습니다.", "トラックのミュートはオンかオフで指定してください。"),
     "This native track has no mute to change.": ("이 원본 트랙에는 바꿀 수 있는 음소거가 없습니다.", "この元のトラックには変更できるミュートがありません。"),
+    # Member targets (mv-studio-event-fields.js descriptors, mv_studio_timeline.MEMBER_SLOT).
+    "Focus member": ("초점 맞출 멤버", "ピントを合わせるメンバー"),
+    "Focus target": ("초점 대상", "ピントの対象"),
+    "The chosen member": ("지정한 멤버", "指定したメンバー"),
+    "The nearest member": ("가장 가까운 멤버", "いちばん近いメンバー"),
+    "The member nearest the centre": ("화면 중앙에 가장 가까운 멤버", "画面の中央にいちばん近いメンバー"),
+    "Colour member": ("색 기준 멤버", "色の基準メンバー"),
+    "Height from member": ("높이 기준 멤버", "高さの基準メンバー"),
+    "Choose a member this MV has.": ("이 MV에 있는 멤버를 고르세요.", "このMVにいるメンバーを選んでください。"),
 }
 for _source, (_korean, _japanese) in _MV_EXPORT_SLOT_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
