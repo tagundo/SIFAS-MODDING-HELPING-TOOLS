@@ -182,6 +182,27 @@ class SharedDownloadTests(unittest.TestCase):
             # pack1 fits and is kept; pack2 would exceed the budget, so it downloads each time.
             self.assertEqual(self.remote.call_count, 3)
 
+    def test_pack_size_is_part_of_a_kept_pack(self):
+        with studio.shared_downloads():
+            studio.load_asset(self.root, self.section(0, 8), download=True)
+            other = dict(self.section(0, 8), pack_size=len(self.pack) + 1)
+            studio.load_asset(self.root, other, download=True)
+            studio.load_asset(self.root, other, download=True)
+            self.assertEqual(self.remote.call_count, 2)
+
+    def test_a_pack_exactly_at_the_budget_is_kept(self):
+        with patch.object(studio, "_SHARED_PACK_BYTES", len(self.pack)), studio.shared_downloads():
+            studio.load_asset(self.root, self.section(0, 8), download=True)
+            studio.load_asset(self.root, self.section(4, 12), download=True)
+            self.assertEqual(self.remote.call_count, 1)
+
+    def test_only_immutable_bytes_are_kept(self):
+        self.remote.return_value = bytearray(self.pack)
+        with studio.shared_downloads():
+            self.assertEqual(studio.load_asset(self.root, self.section(0, 8), download=True), self.pack[:8])
+            self.assertEqual(studio.load_asset(self.root, self.section(4, 12), download=True), self.pack[4:16])
+            self.assertEqual(self.remote.call_count, 2)
+
     def test_missing_pack_is_not_kept(self):
         from urllib.error import HTTPError
         self.remote.side_effect = HTTPError("https://cdn.invalid/pack1", 404, "missing", {}, None)
