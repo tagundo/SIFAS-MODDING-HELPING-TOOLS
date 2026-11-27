@@ -71,8 +71,9 @@ def _files(value):
 
 
 def _normalized(result, legacy):
-    """{"manifest", "platforms": {platform: bytes}, "legacy"} from a reader result: a
-    {"manifest", "platforms"|"timelines"|"files"} dict or a (manifest, files) pair."""
+    """{"manifest", "platforms": {platform: bytes}, "legacy", "editor"} from a reader result: a
+    {"manifest", "platforms"|"timelines"|"files"} dict or a (manifest, files) pair. ``editor`` is the
+    exporting MV Studio's record a newer reader returns (mvstudio.json), else None."""
     if isinstance(result, tuple) and len(result) == 2:
         manifest, files = result
     elif isinstance(result, dict) and isinstance(result.get("manifest"), dict):
@@ -88,7 +89,9 @@ def _normalized(result, legacy):
             raise ValueError(NOT_PACK)
     if not files:
         raise ValueError(PACK_PLATFORM)
-    return {"manifest": manifest, "platforms": files, "legacy": legacy}
+    editor = result.get("editor") if isinstance(result, dict) else None
+    return {"manifest": manifest, "platforms": files, "legacy": legacy,
+            "editor": editor if isinstance(editor, dict) else None}
 
 
 # What a damaged compressed entry raises from a reader that does not turn it into its own ValueError
@@ -135,6 +138,24 @@ def read(path):
             return _normalized(_call(reader, path, data), True)
         except ValueError:
             raise error from None
+
+
+# ---------------------------------------------------------------- the exporting MV Studio
+
+def editor_keywords(pack, previous=None):
+    """write_pack's ``editor`` keyword, when Elichika's writer takes it (its EDITOR entry): this MV
+    Studio's timeline export format (mv_timeline_platform.EXPORT_FORMAT) and version, so a server
+    whose MV Studio tools are older can say the pack is newer. A pack rewritten from one ``previous``
+    says a newer MV Studio made keeps that newer format. An older writer gets nothing."""
+    if not getattr(pack, "EDITOR", None):
+        return {}
+    import webtools
+    from . import mv_timeline_platform
+    timeline_format = mv_timeline_platform.EXPORT_FORMAT
+    earlier = previous.get("timelineFormat") if isinstance(previous, dict) else None
+    if type(earlier) is int and earlier > timeline_format:
+        timeline_format = earlier
+    return {"editor": {"timelineFormat": timeline_format, "modtools": str(webtools.__version__)[:64]}}
 
 
 # ---------------------------------------------------------------- staging for the game import
@@ -305,7 +326,8 @@ def export_pack(repo_root, request, *, language="en"):
                            song={"liveId": loaded["liveId"], "title": str(loaded["title"])[:160]},
                            source={"region": loaded["region"], "assetId": loaded["assetId"]},
                            target_asset_id=target["assetId"], timelines=payloads, stage=stage,
-                           target_stage=target_stage, source_timeline_key=loaded["facts"].get("timelineKey"))
+                           target_stage=target_stage, source_timeline_key=loaded["facts"].get("timelineKey"),
+                           **editor_keywords(pack))
     if not isinstance(data, (bytes, bytearray)):
         raise ValueError(NO_PACKS)
     destination = mv_studio._destination(request["name"], EXTENSION)
@@ -359,4 +381,5 @@ def rewrite_stage(repo_root, manifest, *, partial=False):
             "source_timeline_key": _stock_timeline_key(repo_root, region, asset)}, filled
 
 
-__all__ = ("open_pack", "staged", "read", "export_pack", "validate_export", "rewrite_stage", "MESSAGES", "EXTENSION")
+__all__ = ("open_pack", "staged", "read", "export_pack", "validate_export", "rewrite_stage", "editor_keywords",
+           "MESSAGES", "EXTENSION")

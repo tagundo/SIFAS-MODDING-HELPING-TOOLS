@@ -863,6 +863,34 @@ class PackTests(reg_tests.Case):
                 {"project": project, "name": "p", "target": target}))
             self.assertIsNone(self.written[-1]["stage"])
 
+    def test_the_pack_records_the_exporting_mv_studio_when_the_writer_takes_it(self):
+        """A writer with the mvstudio.json entry (EDITOR) gets this MV Studio's timeline export format and
+        version; an older writer (no EDITOR, no editor keyword) gets nothing, so its packs still write."""
+        import webtools
+        project = self.project(source={"kind": "game", "region": "gl", "platform": "android", "liveId": 21,
+                                       "assetId": 2101, "mvOnly": False, "registered": False, "timelineKey": "A2101"})
+        request = mv_studio_pack.validate_export({"project": project, "name": "p", "target": None})
+        mv_studio_pack.export_pack(self.root, request)  # the fake writer has no editor keyword
+        self.assertNotIn("editor", self.written[-1])
+        module, recorded = sys.modules["mv_timeline_pack"], []
+        plain = module.write_pack
+
+        def write_pack(*, editor=None, **arguments):
+            recorded.append(editor)
+            return plain(**arguments)
+
+        with mock.patch.multiple(module, create=True, EDITOR="mvstudio.json", write_pack=write_pack):
+            mv_studio_pack.export_pack(self.root, request)
+        self.assertEqual(recorded, [{"timelineFormat": conversion.EXPORT_FORMAT, "modtools": webtools.__version__}])
+        newer = {"timelineFormat": conversion.EXPORT_FORMAT + 2, "modtools": "9"}
+        self.assertEqual(mv_studio_pack.editor_keywords(module, newer), {})  # no EDITOR: nothing
+        with mock.patch.object(module, "EDITOR", "mvstudio.json", create=True):
+            self.assertEqual(mv_studio_pack.editor_keywords(module, newer)["editor"]["timelineFormat"],
+                             conversion.EXPORT_FORMAT + 2)  # a rewrite keeps the newer format it came with
+            for older in (None, {"timelineFormat": 0}, {"timelineFormat": "9"}, ["x"]):
+                self.assertEqual(mv_studio_pack.editor_keywords(module, older)["editor"]["timelineFormat"],
+                                 conversion.EXPORT_FORMAT)
+
     def test_the_legacy_layout_gets_the_target_slots_original_stage(self):
         """Without a stage, an install puts the target slot's ORIGINAL stage back: the legacy layout's
         target stage is that one, not a stage an override gave the slot."""
@@ -1024,6 +1052,26 @@ class RealPackModuleTests(reg_tests.Case):
         self.assertEqual(self.pack.read_pack(written)["manifest"]["stage"], original)
         self.assertTrue(any("stage_effect_asset_path" in line and "3D 2201" in line for line in logs), logs)
         self.assertEqual(self.installed_stage(written), original)
+
+    def test_the_converted_pack_records_the_exporting_mv_studio(self):
+        """The platform tool's pack says which MV Studio made it (this one, or the newer one the pack came
+        from), through Elichika's mvstudio.json entry."""
+        import webtools
+        if not getattr(self.pack, "EDITOR", None):
+            self.skipTest("This Elichika's pack writer does not record the exporting MV Studio")
+        path = self.hand_made({"live_stage_master_id": 101})
+        written, _ = self.convert(path)
+        self.assertEqual(self.pack.read_pack(written)["editor"],
+                         {"timelineFormat": conversion.EXPORT_FORMAT, "modtools": webtools.__version__})
+        self.assertEqual(mv_studio_pack.read(Path(path))["editor"], None)
+        newer = self.pack.write_pack(name="newer", song={"liveId": 21, "title": "Base song"},
+                                     source={"region": "gl", "assetId": 2101}, target_asset_id=2201,
+                                     timelines={"android": self.local["tl2101"]},
+                                     editor={"timelineFormat": conversion.EXPORT_FORMAT + 3, "modtools": "9.9"})
+        path.write_bytes(newer)
+        self.assertEqual(mv_studio_pack.read(path)["editor"]["timelineFormat"], conversion.EXPORT_FORMAT + 3)
+        written, _ = self.convert(path)
+        self.assertEqual(self.pack.read_pack(written)["editor"]["timelineFormat"], conversion.EXPORT_FORMAT + 3)
 
     def test_a_damaged_compressed_entry_is_not_a_pack(self):
         """A corrupt deflate stream or LZMA entry is a refusal (ValueError, HTTP 400), whether the reader

@@ -72,7 +72,7 @@ def run_mv_timeline_platform(job, params):
         data = writer.write_pack(
             name=manifest.get("name") or source.stem, note=manifest.get("note") or "", song=manifest.get("song"),
             source=origin, target_asset_id=(manifest.get("target") or {}).get("assetId"), timelines=files,
-            created=manifest.get("created"), **stage)
+            created=manifest.get("created"), **stage, **mv_studio_pack.editor_keywords(writer, pack.get("editor")))
         output = Path(single_out_path(str(out_dir), str(source), "", "-android-ios"))
         output.write_bytes(bytes(data))
     else:
