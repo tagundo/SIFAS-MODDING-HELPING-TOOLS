@@ -2099,8 +2099,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         descriptor = None
                 if descriptor and "queue" in descriptor:
                     # AS/Stage, TransparentCutout and Coloring/Opaque keep it for their pass state.
-                    queue = (descriptor["queue"] if descriptor["shader"] in mv_studio_stage_materials.QUEUED_PASS_STATE
-                             else descriptor.pop("queue"))
+                    queue = mv_studio_stage_materials.pass_queue(descriptor)
                     if renderer_type == "MeshRenderer" and queue <= 2500:
                         if opaque_center is False:
                             opaque_center = mv_studio_stage_materials.opaque_sort_center(

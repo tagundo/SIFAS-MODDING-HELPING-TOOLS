@@ -47,6 +47,14 @@ _SHADER_QUEUES = {"stage": 2000, "solid": 2000, "general": 2000, "blend": 2000, 
 # The shaders whose descriptor keeps its queue for the editor's pass state:
 # a queue above 2500 draws in Unity's transparent order.
 QUEUED_PASS_STATE = frozenset({"stage", "cutout", "coloring"})
+
+
+def pass_queue(descriptor):
+    """The descriptor's render queue (the opaque sort reads it for every kind);
+    only the QUEUED_PASS_STATE kinds keep it in the exported descriptor."""
+    return descriptor["queue"] if descriptor["shader"] in QUEUED_PASS_STATE else descriptor.pop("queue")
+
+
 # AS/Blend/Opaque m_PropInfo defaults: _TintColor (1, 1, 1, 1), _AmbientColor
 # (1, 1, 1, 0), _BlendRate Range(0, 1) = 0, and "white" for both 2D maps.
 _BLEND_DEFAULTS = {"_TintColor": [1., 1., 1., 1.], "_AmbientColor": [1., 1., 1., 0.]}

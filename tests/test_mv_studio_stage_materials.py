@@ -719,10 +719,25 @@ class StageEmissiveOwnershipTests(unittest.TestCase):
             self.assertFalse(stage.emissive_materials(scene, model, model_data))
 
 
+class StagePassQueueTests(unittest.TestCase):
+    def test_only_kinds_with_a_queued_pass_state_keep_the_queue(self):
+        # The JS pass state draws queue > 2500 in Unity's transparent order; a kind that
+        # lost its queue would draw a queue-3000 _BlendMode floor opaque.
+        for kind, queue in (("stage", 3000), ("stage", 2000), ("cutout", 2450), ("coloring", 2000)):
+            descriptor = {"shader": kind, "queue": queue}
+            self.assertEqual(stage.pass_queue(descriptor), queue)
+            self.assertEqual(descriptor, {"shader": kind, "queue": queue}, kind)
+        for kind in ("general", "blend", "solid"):
+            descriptor = {"shader": kind, "queue": 2000}
+            self.assertEqual(stage.pass_queue(descriptor), 2000, "the opaque sort still reads it")
+            self.assertEqual(descriptor, {"shader": kind}, kind)
+
+
 class ActualStageFloorTests(unittest.TestCase):
     """Set SIFAS_TEST_STAGE_10001, SIFAS_TEST_STAGE_12035_1, SIFAS_TEST_STAGE_12035_2,
     SIFAS_TEST_STAGE_EFFECT_12026 and SIFAS_TEST_STAGE_EFFECT_10008 to the original Android bundles
-    (stage-e274af832d, stage-048468c62c, stage-d7eb918585, stage_effect-65e5b9311b, stage_effect-108cc2d4fe)."""
+    (stage-e274af832d, stage-048468c62c, stage-d7eb918585, stage_effect-65e5b9311b, stage_effect-108cc2d4fe),
+    and SIFAS_TEST_STAGE_10022 to the original Android 10022/3 (asset 1002203) stage bundle."""
 
     def descriptors(self, variable, effect=False):
         import os
@@ -766,6 +781,22 @@ class ActualStageFloorTests(unittest.TestCase):
         reflection = second["mvStageMaterial"]["reflection"]
         self.assertEqual((reflection["mode"], reflection["parallax"], reflection["op"], reflection["reflectivity"]),
                          ("fragment", True, "alpha-blend", "texture"))
+
+    def test_10022_queues_survive_the_export_for_stage_and_cutout_only(self):
+        found = self.descriptors("SIFAS_TEST_STAGE_10022")
+        meta = lambda name: found[name][0]["mvStageMaterial"]
+        # bg0007_04_plantsA_tra_mt: AS/Stage with _BlendMode transparent, queue 3000 (SrcAlpha OneMinusSrcAlpha).
+        plants = meta("bg0007_04_plantsA_tra_mt")
+        self.assertEqual((plants["shader"], plants["queue"], plants["blend"]), ("stage", 3000, [5, 10]))
+        self.assertNotIn("opaqueSort", plants, "queue 3000 is sorted back to front, not in the opaque rule")
+        floor = meta("bg0007_04_stageA_opa_mt")
+        self.assertEqual((floor["shader"], floor["queue"], floor["opaqueSort"]["queue"]), ("stage", 2000, 2000))
+        cutout = meta("bg0007_04_plantsA_cut_mt")
+        self.assertEqual((cutout["shader"], cutout["queue"], cutout["opaqueSort"]["queue"]), ("cutout", 2450, 2450))
+        solid = meta("bg0007_02_out_opa_mt")
+        self.assertEqual(solid["shader"], "solid")
+        self.assertNotIn("queue", solid)
+        self.assertEqual(solid["opaqueSort"]["queue"], 2000)
 
     def test_12026_moon_chair_is_a_cutout_lit_by_its_prop(self):
         chair, = self.descriptors("SIFAS_TEST_STAGE_EFFECT_12026", effect=True)["mat_stg_so2026_oth_02"]
