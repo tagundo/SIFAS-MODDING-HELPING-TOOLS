@@ -440,6 +440,62 @@ def expand_scene(path, directory, variant=None, *, platform=None):
                          "default_variant": manifest.get("default_variant", "primary")}}
 
 
+def counterpart_face_proof(session, index):
+    """Outline records of one declared Rina face, proven by its unmasked body.
+
+    The board body of a masked view does not bind this face's AS/Member
+    headMaterial, so its face meshes are listed but not editable there. The
+    costume's unmasked body, declared in the same family archive, names this
+    exact face: the unchanged outline proof runs on that pair. Returns the
+    face's records, or None without such a counterpart.
+    """
+    from . import model_outlines
+    try:
+        source = session["sources"][index]
+        raw = session["containers"][source["container"]]["raw"]
+        if source["member"] is None or not zipfile.is_zipfile(io.BytesIO(raw)):
+            return None
+        faces, models = _literal_faces(raw), _literal_models(raw)
+    except (ValueError, KeyError, IndexError, TypeError, OSError, SyntaxError, zipfile.BadZipFile):
+        return None
+    platform = next((key for key, value in faces.items() if fmt.sha(value) == source["sha256"]), None)
+    body = models.get((platform, "unmasked"))
+    if platform is None or body is None or fmt.sha(source["raw"]) != source["sha256"]:
+        return None
+    # The counterpart is not a session source; it only supplies the proof.
+    catalog = model_outlines.catalogue_sources([(edits._inspect(source["raw"]), index),
+                                                (edits._inspect(body), len(session["sources"]))])
+    return [row for row in catalog["meshes"] if row["sourceIndex"] == index and row.get("runtimeBindings")]
+
+
+def split_held_face_outlines(session, rows):
+    """Separate face outline rows this view lists but cannot edit.
+
+    A masked Rina view lists its face meshes as not editable. A saved row for
+    one of them is held when the costume's own unmasked body proves that face
+    (counterpart_face_proof): it is carried unchanged into every save. Any
+    other row stays in ``rows`` and keeps its strict validation.
+    """
+    catalog = session.get("outlines", {})
+    editable = {row["id"] for row in catalog.get("meshes", [])}
+    excluded = {row["id"] for row in catalog.get("excludedMeshes", [])}
+    candidates = [row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)
+                  and row["id"] not in editable and row["id"] in excluded]
+    proofs = {}
+    for row in candidates:
+        index = row["id"].split(":", 1)[0]
+        if index.isdigit() and int(index) < len(session["sources"]) and index not in proofs:
+            proofs[index] = counterpart_face_proof(session, int(index)) or []
+    proof = [record for records in proofs.values() for record in records]
+    proven = {record["id"] for record in proof}
+    held = [row for row in candidates if row["id"] in proven]
+    if not held:
+        return rows, [], None
+    from . import model_outlines
+    return ([row for row in rows if row not in held], model_outlines.validate({"meshes": proof}, held),
+            {"meshes": proof})
+
+
 def register_reopened(token, scene):
     """Restore a recipe only after the exact selected raw source is recovered."""
     session = edits._session(token)
@@ -460,22 +516,13 @@ def register_reopened(token, scene):
                                           for row in value["state"]["textures"]]
         return value
     bind(recipe)
-    catalog = session.get("outlines", {})
-    editable = {row["id"] for row in catalog.get("meshes", [])}
-    excluded = {row["id"] for row in catalog.get("excludedMeshes", [])}
-    held = []
     for face in copy.deepcopy(scene.get("face_recipes", [])):
         bind(face)
         _require(not face["nodeIdentities"] and not face["state"].get("edits") and not face["state"].get("physics"),
                  "The face authoring recipe contains unsupported model changes.")
-        if scene.get("variant") == "primary" and face["state"].get("outlines"):
-            # The masked view draws Rina's board over this face, so its face
-            # meshes are listed but cannot be proven editable here. Open the
-            # view without them; saving from it is refused below, so the
-            # costume's face outline edits are never dropped.
-            hidden = [row for row in face["state"]["outlines"] if row["id"] not in editable and row["id"] in excluded]
-            held.extend(hidden)
-            face["state"]["outlines"] = [row for row in face["state"]["outlines"] if row not in hidden]
+        # The masked view draws Rina's board over this face, so its face
+        # meshes are not editable here; restore holds those rows and every
+        # save carries them unchanged (split_held_face_outlines).
         for field in ("textures", "outlines"):
             if face["state"].get(field):
                 recipe["state"].setdefault(field, []).extend(face["state"][field])
@@ -483,8 +530,6 @@ def register_reopened(token, scene):
     recipe["originals"] = [{"name": item["name"], "sha256": item["sha256"]} for item in session["containers"]]
     session["allowEmptySceneReset"] = True
     state = edits.restore(token, recipe)
-    if held:
-        session["heldFaceOutlines"] = held
     with _LOCK:
         _SCENES[token] = copy.deepcopy(scene["metadata"])
         while len(_SCENES) > edits.MAX_SESSIONS:

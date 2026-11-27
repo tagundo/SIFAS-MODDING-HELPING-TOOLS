@@ -324,8 +324,11 @@ def export_current(token, state, output_root, *, mesh_state=None, allow_empty=Fa
         if mesh is not None:
             result = viewer_mesh_tools.export(token, mesh, output_root, body_state=normalized)
             with model_edits._LOCK:
-                body_recipe = model_edits._recipe(model_edits._session(token), normalized)
+                session = model_edits._session(token)
+                body_recipe = model_edits._recipe(session, model_edits.with_held(session, normalized))
             result["recipe"]["bodyRecipe"] = body_recipe
+            # Held face outline rows were written too; both copies name them.
+            result["recipe"]["bodyState"] = copy.deepcopy(body_recipe["state"])
             path = Path(result["recipe_path"])
             temporary = path.with_name(".mesh-recipe-" + secrets.token_hex(8) + ".part")
             try:

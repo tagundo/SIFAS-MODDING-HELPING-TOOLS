@@ -97,6 +97,26 @@ class CombinedExportTests(unittest.TestCase):
         self.assertEqual(source.read_bytes(), raw); self.assertEqual(donor.read_bytes(), raw)
         self.assertEqual(graft.read_bytes(), graft_raw)
 
+    def test_held_face_outline_rows_reach_the_combined_mesh_recipe(self):
+        # A masked Rina view holds face rows it cannot edit (viewer_scene_roles).
+        # A mesh-tool save writes them with the same writer and both recipe
+        # copies name them, so the combined recipe still restores.
+        session = model_edits._session(self.token)
+        record = session['outlines']['meshes'][0]
+        row = {'id': record['id'], 'factor': .5}
+        operations = self.mesh_state(deleteFaces=[0])
+        expected = self.export(dict(self.empty, outlines=[row]), mesh_state=operations)
+        session['heldFaceOutlines'], session['heldFaceProof'] = [row], {'meshes': [record]}
+        result = self.export(self.empty, mesh_state=operations)
+        self.assertEqual(Path(result['preview_paths'][0]).read_bytes(), Path(expected['preview_paths'][0]).read_bytes())
+        self.assertEqual(result['recipe']['bodyState']['outlines'], [row])
+        self.assertEqual(result['recipe']['bodyRecipe']['state'], result['recipe']['bodyState'])
+        self.assertEqual(json.loads(Path(result['recipe_path']).read_text()), result['recipe'])
+        # This view can edit that mesh itself, so restoring puts it in the state.
+        restored = flow.restore_current(self.token, result['recipe'])
+        self.assertEqual(restored['state']['outlines'], [row])
+        self.assertEqual(session['heldFaceOutlines'], [])
+
     def test_mesh_body_physics_and_outline_share_one_real_serialized_export(self):
         breast = next(row for row in self.metadata['nodes'] if row['name'] == 'BreastSize')
         bone = next(row for row in self.metadata['physics']['components'] if row['kind'] == 'bone')

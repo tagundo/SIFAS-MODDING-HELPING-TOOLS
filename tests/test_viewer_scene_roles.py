@@ -395,13 +395,11 @@ class SceneRolesTests(unittest.TestCase):
         self.assertEqual(originals, goldens)
         self.assertFalse(any(recipe["state"].get("outlines") for recipe in recipes.values()))
 
-    def test_masked_view_holds_face_outline_edits_and_refuses_to_save_them(self):
-        face_id, mouth = "0:0:-3871884669349275213", "0:0:-1"
+    def test_reopened_scene_passes_every_face_row_to_restore(self):
+        face_id = "0:0:-3871884669349275213"
         session = {"sources": [{"name": "android_face.unity", "sha256": "f" * 64, "container": 0, "member": "f"},
                                {"name": "android_primary.unity", "sha256": "b" * 64, "container": 0, "member": "b"}],
-                   "containers": [{"name": "canonical-originals.zip", "sha256": "c" * 64}],
-                   "outlines": {"meshes": [{"id": "1:0:5538708582486367566"}],
-                                "excludedMeshes": [{"id": face_id}, {"id": mouth}]}}
+                   "containers": [{"name": "canonical-originals.zip", "sha256": "c" * 64}]}
 
         def recipe(sha, rows):
             return {"sources": [{"sha256": sha}], "nodeIdentities": [], "state": {"edits": [], "outlines": rows}}
@@ -413,32 +411,129 @@ class SceneRolesTests(unittest.TestCase):
             return value["state"]
 
         scene = {"recipe": recipe("b" * 64, [{"id": "0:0:5538708582486367566", "factor": 1.5}]),
-                 "face_recipes": [recipe("f" * 64, [{"id": "0:0:-3871884669349275213", "factor": 1.0, "absolute": 40},
-                                                     # Not a mesh of this face at all: still refused.
-                                                     {"id": "0:0:999", "factor": 1.0}])],
+                 "face_recipes": [recipe("f" * 64, [{"id": face_id, "factor": 1.0, "absolute": 40}])],
                  "metadata": {}}
-        for variant, held in (("primary", [{"id": face_id, "factor": 1.0, "absolute": 40}]), ("unmasked", None)):
+        for variant in ("primary", "unmasked"):
             restored.clear()
-            current = copy.deepcopy(session)
             with self.subTest(variant=variant), \
-                    patch.object(edits, "_session", return_value=current), \
+                    patch.object(edits, "_session", return_value=copy.deepcopy(session)), \
                     patch.object(edits, "restore", side_effect=restore):
                 roles.register_reopened("a" * 32, dict(scene, variant=variant))
-            outlines = restored[0]["state"]["outlines"]
-            self.assertEqual(current.get("heldFaceOutlines"), held)
-            # The masked view restores the body's edit only; the unmasked view
-            # passes the face rows on, and their validation stays strict.
-            self.assertEqual([row["id"] for row in outlines],
-                             ["1:0:5538708582486367566"] + ([] if held else [face_id]) + ["0:0:999"])
-        # A held view refuses every save path; read-only previews still work.
+            # Each face row is bound to the face source; restore decides
+            # whether this view edits it or holds it.
+            self.assertEqual([row["id"] for row in restored[0]["state"]["outlines"]],
+                             ["1:0:5538708582486367566", face_id])
+
+    def held_session(self):
+        session = {"sources": [{"sha256": "f" * 64}, {"sha256": "b" * 64}],
+                   "outlines": {"meshes": [{"id": "1:0:5"}, {"id": "0:0:6"}],
+                                "excludedMeshes": [{"id": "0:0:7"}, {"id": "0:0:8"}, {"id": "1:0:9"}]}}
+        proof = [{"id": "0:0:7", "sourceIndex": 0, "vertexCount": 4, "runtimeBindings": [{"headSourceIndex": 2}]},
+                 # Editable in this view as well (the Normal face view): never held.
+                 {"id": "0:0:6", "sourceIndex": 0, "vertexCount": 4, "runtimeBindings": [{"headSourceIndex": 2}]}]
+        return session, proof
+
+    def test_held_face_rows_are_only_rows_the_unmasked_counterpart_proves(self):
+        session, proof = self.held_session()
+        rows = [{"id": "1:0:5", "factor": 1.5},
+                {"id": "0:0:6", "factor": 0.5},
+                {"id": "0:0:7", "factor": 1, "absolute": 40},
+                # Not editable here and not proven by the counterpart.
+                {"id": "0:0:8", "factor": 1.0},
+                # Excluded on the body itself: the face proof never covers it.
+                {"id": "1:0:9", "factor": 1.0},
+                # Not a mesh of this session at all.
+                {"id": "0:0:999", "factor": 1.0}]
+        with patch.object(roles, "counterpart_face_proof", side_effect=lambda value, index: proof if index == 0 else None) as find:
+            kept, held, catalog = roles.split_held_face_outlines(session, copy.deepcopy(rows))
+        self.assertEqual(held, [{"id": "0:0:7", "factor": 1.0, "absolute": 40}])
+        self.assertEqual(kept, [rows[0], rows[1], rows[3], rows[4], rows[5]])
+        self.assertEqual(catalog, {"meshes": proof})
+        self.assertEqual(sorted(call.args[1] for call in find.call_args_list), [0, 1])
+        # Without a counterpart body nothing is held: the strict validation
+        # of the remaining rows still refuses them.
+        with patch.object(roles, "counterpart_face_proof", return_value=None):
+            self.assertEqual(roles.split_held_face_outlines(session, copy.deepcopy(rows)), (rows, [], None))
+        # A held row keeps the outline writer's own limits.
+        with patch.object(roles, "counterpart_face_proof", return_value=proof), \
+                self.assertRaisesRegex(ValueError, "between zero and two"):
+            roles.split_held_face_outlines(session, [{"id": "0:0:7", "factor": 3}])
+
+    def test_counterpart_proof_needs_the_declared_face_and_its_unmasked_body(self):
+        face = bundle_fixture(fmt.PLATFORMS["android"], "primary", unit_breast=True)
+        path = self.source()
+        with zipfile.ZipFile(path) as archive:
+            members = {info.filename: archive.read(info.filename) for info in archive.infolist()}
+        members["modinstall.txt"] += b"costume_facedynamic_file = 'face.unity'\n"
+        members["face.unity"] = face
+        family = self.root / "family.zip"
+        with zipfile.ZipFile(family, "w") as archive:
+            for name, raw in members.items():
+                archive.writestr(name, raw)
+
+        def session(raw, member="face.unity", source=face):
+            return {"sources": [{"container": 0, "member": member, "sha256": fmt.sha(source), "raw": source}],
+                    "containers": [{"raw": raw}]}
+
+        from webtools.core import model_outlines
+        unmasked = members["android_unmasked.unity"]
+        with patch.object(model_outlines, "catalogue_sources", wraps=model_outlines.catalogue_sources) as catalogue, \
+                patch.object(edits, "_inspect", wraps=edits._inspect) as inspect:
+            # These neutral bodies have no BodyPartManager: nothing is proven.
+            self.assertEqual(roles.counterpart_face_proof(session(family.read_bytes()), 0), [])
+        # The proof pairs this face with the family's unmasked body, which
+        # supplies the proof only and is never a session source.
+        self.assertEqual([call.args[0] for call in inspect.call_args_list], [face, unmasked])
+        self.assertEqual([index for _, index in catalogue.call_args.args[0]], [0, 1])
+        # No face declaration, another face, a loose file, or no unmasked body.
+        plain = path.read_bytes()
+        without_unmasked = self.root / "no-unmasked.zip"
+        with zipfile.ZipFile(without_unmasked, "w") as archive:
+            for name, raw in members.items():
+                if name != "android_unmasked.unity":
+                    archive.writestr(name, raw.replace(b"rina_unmask_costume_file = 'android_unmasked.unity'\n", b"")
+                                     if name == "modinstall.txt" else raw)
+        for label, value in (("undeclared", session(plain)), ("other face", session(family.read_bytes(), source=unmasked)),
+                             ("loose file", session(face, member=None)),
+                             ("no unmasked body", session(without_unmasked.read_bytes()))):
+            with self.subTest(label):
+                self.assertIsNone(roles.counterpart_face_proof(value, 0))
+
+    def test_held_face_rows_reach_every_save_of_the_masked_view(self):
+        from webtools.core import model_outlines
         token, _, _ = self.prepare(self.source(), "primary")
-        empty = {"version": 1, "savedSettingsEnabled": True, "edits": []}
-        edits.validate_state(token, empty, allow_empty=True)
-        edits._session(token)["heldFaceOutlines"] = [{"id": face_id, "factor": 1.0}]
-        with self.assertRaisesRegex(ValueError, "Without mask view"):
-            edits.validate_state(token, empty, allow_empty=True)
-        edits.validate_state(token, empty, allow_empty=True, preview=True)
-        self.assertEqual(edits.accessory_preview(token, empty)["corrections"], [])
+        session = edits._session(token)
+        empty = {"version": 1, "savedSettingsEnabled": True, "edits": [], "unsupported": [], "compensationReference": []}
+        held = [{"id": "0:0:7", "factor": 1.0, "absolute": 40}]
+        proof = {"meshes": [{"id": "0:0:7", "sourceIndex": 0}]}
+        recipe = {"format": "elichika-viewer-body-edit", "version": 1, "sources": edits._source_signature(session),
+                  "originals": [{"name": item["name"], "sha256": item["sha256"]} for item in session["containers"]],
+                  "state": dict(empty, outlines=held), "nodeIdentities": []}
+        with patch.object(roles, "split_held_face_outlines", return_value=([], copy.deepcopy(held), proof)):
+            restored = edits.restore(token, copy.deepcopy(recipe))
+        # The view's own state has no face row; the session holds it.
+        self.assertNotIn("outlines", restored)
+        self.assertEqual((session["heldFaceOutlines"], session["heldFaceProof"]), (held, proof))
+        self.assertEqual(edits.validate_state(token, empty, allow_empty=True), restored)
+        writes = []
+
+        def apply(raw, index, values, catalog, *, original_raw=None):
+            writes.append((index, values, catalog, original_raw == session["sources"][index]["raw"]))
+            return raw + b"held"
+
+        with patch.object(model_outlines, "apply_edits", side_effect=apply):
+            result = edits.export(token, empty, self.root / "saved", allow_empty=True)
+        self.assertEqual(writes, [(0, held, proof, True)])
+        # The saved model carries the written face bytes and the recipe the rows.
+        self.assertEqual(result["recipe"]["state"]["outlines"], held)
+        member = session["sources"][0]["member"]
+        with zipfile.ZipFile(result["preview_paths"][0]) as archive:
+            self.assertEqual(archive.read(member), session["sources"][0]["raw"] + b"held")
+        self.assertEqual(result["summary"][0]["outlines"], 1)
+        self.assertEqual(json.loads(Path(result["recipe_path"]).read_text())["state"]["outlines"], held)
+        # Restoring a recipe without them releases them.
+        edits.restore(token, dict(recipe, state=empty), allow_empty=True)
+        self.assertEqual((session["heldFaceOutlines"], session["heldFaceProof"]), ([], None))
 
 
 if __name__ == "__main__": unittest.main()

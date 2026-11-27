@@ -483,13 +483,8 @@ def require_body_editing(token):
     return session
 
 
-def validate_state(token, state, *, allow_empty=False, preview=False):
+def validate_state(token, state, *, allow_empty=False):
     session = _session(token)
-    if session.get("heldFaceOutlines") and not preview:
-        # A reopened Rina scene costume's masked view cannot show the face
-        # outline edits it carries; a copy saved from it would drop them.
-        _fail("This masked view cannot show the costume's saved face outline edits, so it cannot save them. "
-              "Open the costume's Without mask view to save it or create its Mod ZIP.")
     if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference", "physics", "accessoryUnclip", "outlines", "textures"}:
         _fail("The body edit state contains unsupported settings.")
     try:
@@ -984,7 +979,7 @@ def accessory_preview(token, state):
         session["busy"].release()
         _fail("Another model is being processed. Wait for it to finish.")
     try:
-        state = validate_state(token, state, allow_empty=True, preview=True)
+        state = validate_state(token, state, allow_empty=True)
         if "accessoryUnclip" not in state:
             return {"corrections": [], "summary": {"status": "disabled", "changed": 0}}
         output, summaries = [], []
@@ -1008,6 +1003,22 @@ def accessory_preview(token, state):
     finally:
         _EXPORT_SLOT.release()
         session["busy"].release()
+
+
+def held_outlines(session, index=None):
+    """Face outline rows a masked Rina view carries but cannot edit."""
+    rows = session.get("heldFaceOutlines") or []
+    return [row for row in rows if index is None or row["id"].split(":", 1)[0] == str(index)]
+
+
+def with_held(session, state):
+    """``state`` with the held face outline rows, as every saved recipe has it."""
+    held = held_outlines(session)
+    if not held:
+        return state
+    result = copy.deepcopy(state)
+    result["outlines"] = sorted(result.get("outlines", []) + copy.deepcopy(held), key=lambda row: row["id"])
+    return result
 
 
 def _source_signature(session):
@@ -1089,7 +1100,19 @@ def restore(token, recipe, *, allow_empty=False):
             row["node"] = mapping[row["node"]]
     except (TypeError, KeyError):
         _fail("The recipe contains an unbound body node.")
-    return validate_state(token, state, allow_empty=allow_empty)
+    held, proof = [], None
+    if isinstance(state.get("outlines"), list) and state["outlines"]:
+        # A masked Rina view lists its face meshes but cannot edit them. Rows
+        # for that face which the costume's unmasked body proves are held and
+        # written unchanged by every save; any other row is validated below.
+        from . import viewer_scene_roles
+        try:
+            state["outlines"], held, proof = viewer_scene_roles.split_held_face_outlines(session, state["outlines"])
+        except ValueError as error:
+            _fail(str(error))
+    restored = validate_state(token, state, allow_empty=allow_empty or bool(held))
+    session["heldFaceOutlines"], session["heldFaceProof"] = held, proof
+    return restored
 
 
 def _safe_root(directory):
@@ -1123,6 +1146,12 @@ def edit_source_state(session, index, state):
     if state.get("outlines"):
         from . import model_outlines
         blob = model_outlines.apply_edits(blob, index, state["outlines"], session["outlines"], original_raw=source["raw"])
+    held = held_outlines(session, index)
+    if held:
+        # Proven by the costume's unmasked body (viewer_scene_roles), with the
+        # same writer: the face gets exactly the bytes that view would save.
+        from . import model_outlines
+        blob = model_outlines.apply_edits(blob, index, held, session["heldFaceProof"], original_raw=source["raw"])
     if state.get("textures"):
         from . import viewer_texture_tools
         cheek = (viewer_texture_tools.cheek_payload(session)
@@ -1158,6 +1187,7 @@ def export(token, state, output_dir, *, log=lambda message: None, allow_empty=Fa
             physics = [row for row in state.get("physics", []) if row["id"].split(":", 1)[0] == str(index)]
             outlines = [row for row in state.get("outlines", []) if row["id"].split(":", 1)[0] == str(index)]
             textures = [row for row in state.get("textures", []) if row["texture"]["source"] == index]
+            outlines += held_outlines(session, index)
             if not selected and not physics and not outlines and not textures and "accessoryUnclip" not in state:
                 continue
             log("Saving body edits: " + source["name"])
@@ -1165,7 +1195,7 @@ def export(token, state, output_dir, *, log=lambda message: None, allow_empty=Fa
             replacements[(source["container"], source["member"])] = blob
             summaries.append({"source": index, "nodes": len(selected), "meshes": meshes, "physics": len(physics), "outlines": len(outlines),
                               "textures": len(textures), "textureEdits": copy.deepcopy(session.get("textureWriteSummary", {}).get(index, []))})
-        recipe = _recipe(session, state)
+        recipe = _recipe(session, with_held(session, state))
         root = _safe_root(output_dir)
         temporary = Path(tempfile.mkdtemp(prefix=".viewer-edit-", dir=root))
         originals_dir, models_dir = temporary / "originals", temporary / "models"
