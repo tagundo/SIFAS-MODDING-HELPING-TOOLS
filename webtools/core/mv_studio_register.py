@@ -51,8 +51,8 @@ PREVIEW_IMAGE = 512
 # Part of every fingerprint: a new bake or encode rule makes the next update rebuild that part.
 # 2: the native export grows m_MuscleClipSize of camera clips that a dense rewrite grew.
 FINGERPRINT_VERSION = "mv-studio-register-2"
-# Track fields the editor may change that the native timeline stores (editor-features adds "muted"
-# to mv_studio_timeline.EXPORTABLE_TRACK_FIELDS when it makes mute exportable).
+# Track fields the editor may change that the native timeline stores are
+# mv_studio_timeline.exportable_track_fields of each base track (a leaf track's mute).
 _DERIVED_TRACK_FIELDS = frozenset({"shaftSlot"})
 _UNITY_PLATFORMS = {13: "android", 9: "ios"}
 _TIMING = frozenset(mv_studio_timeline._CLIP_TIMING.values())
@@ -496,8 +496,9 @@ def _editable(event):
 def normalize(original_tracks, tracks):
     """Return (tracks ready for export_timeline, report) or raise StructureError.
 
-    Every non-``events`` track field goes back to the base parse except those in
-    ``mv_studio_timeline.EXPORTABLE_TRACK_FIELDS``. A value is baked only when its key is
+    Every non-``events`` track field goes back to the base parse except those
+    ``mv_studio_timeline.exportable_track_fields`` lists for the base track (a GroupTrack's mute,
+    or that of a track the game's quality settings switch, goes back and is reported). A value is baked only when its key is
     editable both in the base parse and in the posted clip (the editor only offers the
     posted clip's keys, and ``timeline_fingerprint`` hashes exactly those); every other
     value goes back to the base, and extra keys are dropped. Added, removed or reordered
@@ -515,10 +516,10 @@ def normalize(original_tracks, tracks):
         if not changed:
             changed = [_label(base[identity]) for identity, expected in zip(order, base) if identity != expected]
         raise StructureError(sorted(dict.fromkeys(changed)))
-    exportable = frozenset(getattr(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ()))
     normalized, settings, preview = [], [], []
     for track in tracks:
         before = base[track["id"]]
+        exportable = frozenset(mv_studio_timeline.exportable_track_fields(before))
         events = track.get("events")
         if (not isinstance(events, list) or any(not isinstance(event, dict) for event in events)
                 or [event.get("id") for event in events] != [event["id"] for event in before["events"]]):
@@ -585,11 +586,11 @@ def _exportable_view(tracks):
     It covers everything ``normalize`` bakes (a baked value's key is in the posted clip's
     editableValues), so an unchanged view means an unchanged bake for the same original.
     """
-    fields = tuple(getattr(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ()))
     view = []
     for track in tracks if isinstance(tracks, list) else ():
         if not isinstance(track, dict):
             continue
+        fields = mv_studio_timeline.exportable_track_fields(track)
         events = []
         for event in track.get("events") or ():
             if not isinstance(event, dict):

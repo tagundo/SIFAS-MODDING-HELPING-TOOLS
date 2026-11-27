@@ -431,6 +431,8 @@ class Case(unittest.TestCase):
 class NormalizeTests(unittest.TestCase):
     def test_restores_track_settings_and_preview_values_and_counts_edits(self):
         original = base_tracks()
+        # Directly in a quality category, so the game's quality settings decide its mute.
+        original[1]["label"] = "StageEffect/Expert/Post/Bloom"
         tracks = copy.deepcopy(original)
         tracks[1]["muted"] = True
         tracks[1]["editorHidden"] = True
@@ -442,7 +444,8 @@ class NormalizeTests(unittest.TestCase):
         tracks[2]["events"][0]["editableValues"] = ["clipIn"]
         tracks[0]["events"][0]["values"]["keyframes"][0]["fov"] = 40
         normalized, report = register.normalize(original, tracks)
-        self.assertEqual(report, {"trackSettings": ["StageEffect/Bloom"], "previewValues": ["StageEffect/Bloom"]})
+        self.assertEqual(report, {"trackSettings": ["StageEffect/Expert/Post/Bloom"],
+                                  "previewValues": ["StageEffect/Expert/Post/Bloom"]})
         self.assertFalse(normalized[1]["muted"])
         self.assertNotIn("editorHidden", normalized[1])
         self.assertNotIn("shaftSlot", normalized[0])
@@ -460,8 +463,7 @@ class NormalizeTests(unittest.TestCase):
         original = base_tracks()
         tracks = copy.deepcopy(original)
         tracks[1]["muted"] = True
-        with mock.patch.object(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ("muted",), create=True):
-            normalized, report = register.normalize(original, tracks)
+        normalized, report = register.normalize(original, tracks)
         self.assertTrue(normalized[1]["muted"])
         self.assertEqual(report["trackSettings"], [])
 
@@ -484,6 +486,7 @@ class NormalizeTests(unittest.TestCase):
 
     def test_fingerprint_is_stable_and_follows_exportable_content_only(self):
         tracks = base_tracks()
+        tracks[1]["label"] = "StageEffect/Expert/Post/Bloom"  # Its mute does not reach the game.
         first = register.timeline_fingerprint("android", "tl:0:4096:4:7", tracks)
         self.assertEqual(first, register.timeline_fingerprint("android", "tl:0:4096:4:7", copy.deepcopy(tracks)))
         noisy = copy.deepcopy(tracks)
@@ -530,15 +533,14 @@ class NormalizeTests(unittest.TestCase):
         muted[1]["muted"] = True
         identity = "tl:0:4096:4:7"
         plain = register.timeline_fingerprint("android", identity, original)
-        self.assertEqual(plain, register.timeline_fingerprint("android", identity, muted))
-        with mock.patch.object(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ("muted",), create=True):
-            self.assertNotEqual(register.timeline_fingerprint("android", identity, original),
-                                register.timeline_fingerprint("android", identity, muted))
-            # Without an exportable field the view (and every stored fingerprint) is unchanged.
-            without = copy.deepcopy(original)
-            for track in without:
-                del track["muted"]
-            self.assertEqual(register.timeline_fingerprint("android", identity, without), plain)
+        self.assertNotEqual(plain, register.timeline_fingerprint("android", identity, muted))
+        # A mute that does not reach the game (a group, a quality category's track) is not fingerprinted.
+        for label, native in (("StageEffect/Expert/Post/Bloom", "LiveBloomTrack"), ("StageEffect/Bloom", "GroupTrack")):
+            relabelled, quiet = copy.deepcopy(original), copy.deepcopy(muted)
+            for tracks in (relabelled, quiet):
+                tracks[1].update(label=label, nativeClass=native)
+            self.assertEqual(register.timeline_fingerprint("android", identity, relabelled),
+                             register.timeline_fingerprint("android", identity, quiet), label)
 
     def test_shift_beat_moves_the_first_beat_by_the_offset(self):
         beat = {"bpm": 120.0, "startSample": 44100, "endSample": 441000}
@@ -674,7 +676,7 @@ class PlanTests(Case):
 
     def test_counts_edits_and_lists_what_does_not_reach_the_game(self):
         project = self.edited(self.project(), timing=True)
-        project["tracks"][1]["muted"] = True
+        project["tracks"][1]["editorHidden"] = True
         project["tracks"][1]["events"][0]["values"]["mixIn"] = [0, 0.2]
         project["assets"] = [{"id": "0123456789abcdef", "kind": "stage", "label": "stage.glb", "path": "stage.glb",
                               "status": "loaded"}]

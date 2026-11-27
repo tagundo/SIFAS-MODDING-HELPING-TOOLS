@@ -39,7 +39,7 @@ REAL_PREPARE, REAL_REWRITE = mv_studio_timeline.prepare_tracks, mv_studio_timeli
 def fake_rewrite(raw, original, revised):
     """The native rewrite's own rules (_check_values, _changes) on the JSON stand-ins."""
     mv_studio_timeline._check_values(original, revised)
-    if not mv_studio_timeline._changes(original, revised):
+    if not mv_studio_timeline._changes(original, revised) and not mv_studio_timeline._track_changes(original, revised):
         return raw
     document = json.loads(raw[8:].rstrip(b" ").decode())
     document.update(tracks=revised["tracks"], tag="rewritten")

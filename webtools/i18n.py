@@ -4312,6 +4312,21 @@ for _source, (_korean, _japanese) in _MV_EDITOR_B_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 
+# MV Studio export slots (mv_studio_timeline): export refusals.
+_MV_EXPORT_SLOT_TRANSLATIONS = {
+    "A group track's mute does not reach the game. Mute the tracks inside it.": (
+        "그룹 트랙의 음소거는 게임에 반영되지 않습니다. 그 안의 트랙을 음소거하세요.",
+        "グループトラックのミュートはゲームに反映されません。中のトラックをミュートしてください。"),
+    "The game's quality settings turn this track on and off, so its mute does not reach the game.": (
+        "이 트랙은 게임의 품질 설정이 켜고 끄므로 음소거가 게임에 반영되지 않습니다.",
+        "このトラックはゲームの画質設定でオン・オフが決まるため、ミュートはゲームに反映されません。"),
+    "A track mute must be on or off.": ("트랙 음소거는 켜기나 끄기로만 정할 수 있습니다.", "トラックのミュートはオンかオフで指定してください。"),
+    "This native track has no mute to change.": ("이 원본 트랙에는 바꿀 수 있는 음소거가 없습니다.", "この元のトラックには変更できるミュートがありません。"),
+}
+for _source, (_korean, _japanese) in _MV_EXPORT_SLOT_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
 # MV Studio layout: the stage / side panel splitter and the side panel toggle (mv-studio.js
 # setupInspectorResizer). "Hidden" is the splitter's value text while the panel is folded.
 _MV_LAYOUT_TRANSLATIONS = {

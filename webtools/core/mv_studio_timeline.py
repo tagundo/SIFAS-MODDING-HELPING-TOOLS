@@ -735,6 +735,57 @@ _MEMBER_SLOT_VALUES = {
     ("LiveDepthOfFieldClip", "useMemberDistance"): ({1}, "Member focus needs the clip's member position to be 1 to 12."),
 }
 _TIMING_NATIVE = {label: field for field, label in _CLIP_TIMING.items()}
+# Track fields an export writes into the track's own MonoBehaviour, for a track whose
+# exportable_track_fields lists them (mv_studio_register.normalize sends every other
+# track field back to the original).
+EXPORTABLE_TRACK_FIELDS = ("muted",)
+# The client compiles each output track by its own m_Muted (TrackAsset.compilable 0x35b8c00 reads
+# +0x19; a GroupTrack is never compiled), so a GroupTrack's mute changes nothing in the game.
+GROUP_MUTE = "A group track's mute does not reach the game. Mute the tracks inside it."
+# LiveQualityOperator decides the mute of every direct child track of these category groups (GL
+# 3.12.0 libil2cpp): director setup (0x2924cdc) calls 0x20f3a00, which runs ApplyLiveQualityTo*
+# (0x20f2788, 0x20f2a98, 0x20f2b70 StageEffect, 0x20f3164 MemberEffect, 0x20f331c PropEffect). Each
+# fills {category: !option} and 0x20f28a0 calls ApplyMuteToChildTracks (0x20f348c) on every category
+# group it finds; that calls ApplyMuteToTrack (0x20f30e8) on each direct child, and with muted false
+# it calls TrackAsset.set_muted(false) (0x35d10e8). So an option that is on unmutes these tracks and one
+# that is off mutes them: their own m_Muted never reaches the game. Tracks one group deeper keep theirs.
+# StageEffect lists its ten categories by name (mv_studio_stage_motion._STAGE_QUALITY). The names in
+# the other four tables were not read (1, 1, 4 and 3 keys; every category these MVs have there fits one
+# of them), so every category under those roots counts.
+_QUALITY_CATEGORIES = {
+    "StageEffect": frozenset({"post", "ambient", "animation", "coloring", "control", "flashlight", "display",
+                              "audience", "emissive", "overlayeffect"}),
+    "MemberEffect": None, "PropEffect": None, "GlobalEffect": None, "MotionMisc": None,
+}
+QUALITY_MUTE = "The game's quality settings turn this track on and off, so its mute does not reach the game."
+
+
+def quality_category(label):
+    """The normalized name of the quality category group a track sits directly in, or None.
+
+    ``label`` is the parsed track path <root>/<difficulty>/<category>/<track>; the client matches the
+    category name without spaces and lower-cased (NormalizeTrackName). No stock group or track name
+    contains "/"."""
+    parts = label.split("/") if isinstance(label, str) else []
+    if len(parts) != 4 or parts[0] not in _QUALITY_CATEGORIES:
+        return None
+    category = parts[2].replace(" ", "").lower()
+    names = _QUALITY_CATEGORIES[parts[0]]
+    return category if names is None or category in names else None
+
+
+def track_mute_refusal(track):
+    """Why a mute of this parsed track does not reach the game, or None when it does."""
+    if not isinstance(track, dict) or track.get("nativeClass") == "GroupTrack":
+        return GROUP_MUTE
+    if quality_category(track.get("label")) is not None:
+        return QUALITY_MUTE
+    return None
+
+
+def exportable_track_fields(track):
+    """The EXPORTABLE_TRACK_FIELDS an export writes for this parsed (original) track."""
+    return () if track_mute_refusal(track) else EXPORTABLE_TRACK_FIELDS
 
 
 def _index_rows(items, name):
@@ -762,8 +813,10 @@ def _changes(original, revised):
     last_event_end = 0.
     for identity, before in old_tracks.items():
         after = new_tracks[identity]
-        if {k: v for k, v in before.items() if k != "events"} != {k: v for k, v in after.items() if k != "events"}:
+        fixed = lambda track: {k: v for k, v in track.items() if k != "events" and k not in EXPORTABLE_TRACK_FIELDS}  # noqa: E731
+        if before.keys() != after.keys() or fixed(before) != fixed(after):
             raise ValueError("Track identity, binding, and original metadata are read-only in native exports.")
+        _track_fields(before, after)
         old_events = _index_rows(before["events"], "event")
         new_events = _index_rows(after["events"], "event")
         if list(old_events) != list(new_events):
@@ -783,6 +836,29 @@ def _changes(original, revised):
     if revised["duration"] != original["duration"] and (not changes or revised["duration"] != last_event_end):
         raise ValueError("Change the original clip timings to set the native timeline duration.")
     return changes
+
+
+def _track_fields(before, after):
+    """[(field, value)] of the EXPORTABLE_TRACK_FIELDS ``after`` changes on one track, or ValueError
+    when the change cannot reach the game (a GroupTrack, a quality category's track) or is not a bool."""
+    result = []
+    for field in EXPORTABLE_TRACK_FIELDS:
+        if field not in before or after.get(field) == before[field]:
+            continue
+        if type(after.get(field)) is not bool:
+            raise ValueError("A track mute must be on or off.")
+        refusal = track_mute_refusal(before)
+        if refusal:
+            raise ValueError(refusal)
+        result.append((field, after[field]))
+    return result
+
+
+def _track_changes(original, revised):
+    """[(track id, field, value)] for a revision _changes accepted."""
+    revised_tracks = _index_rows(revised["tracks"], "track")
+    return [(track["id"], field, value) for track in original["tracks"]
+            for field, value in _track_fields(track, revised_tracks[track["id"]])]
 
 
 def _replace_value(native, value, field):
@@ -1352,7 +1428,8 @@ def synced_fields(base, ours):
 def _rewrite_timeline(raw, original, revised):
     _check_values(original, revised)
     changes = _changes(original, revised)
-    if not changes:
+    track_changes = _track_changes(original, revised)
+    if not changes and not track_changes:
         return raw
     deadline = time.monotonic() + 45
     env, objects, source = _read(raw, "original", deadline)
@@ -1413,6 +1490,16 @@ def _rewrite_timeline(raw, original, revised):
             for field in payload_fields:
                 _set_playable_value(asset_tree, asset_type, field, new["values"][field])
             dirty[asset] = asset_tree
+    for identity, field, value in track_changes:
+        # The track MonoBehaviour's own TrackAsset.m_Muted (the only EXPORTABLE_TRACK_FIELDS entry).
+        track = by_id[identity]
+        tree, native = mono[track]
+        if native == "GroupTrack":
+            raise ValueError(GROUP_MUTE)
+        if field != "muted" or type(tree.get("m_Muted")) not in (bool, int):
+            raise ValueError("This native track has no mute to change.")
+        tree["m_Muted"] = value if type(tree["m_Muted"]) is bool else int(value)
+        dirty[track] = tree
 
     import hashlib
     untouched = {key: hashlib.sha256(obj.get_raw_data()).digest() for key, obj in objects.items() if key not in dirty}
