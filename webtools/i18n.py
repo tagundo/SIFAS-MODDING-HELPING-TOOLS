@@ -2642,6 +2642,9 @@ _MV_EDITOR_C_TRANSLATIONS = {
     "Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.": (
         "내보내기 전에 카메라를 편집한 샷의 길이를 프레임(1/60초) 단위로 맞추세요.",
         "書き出す前に、カメラを編集したショットの長さをフレーム（1/60秒）単位にしてください。"),
+    "Keys past the end of this shot: {count}. They are hidden but still shape its motion, and come back if the shot is made longer.": (
+        "이 샷의 끝 뒤에 있는 키: {count}개. 숨겨져 있지만 움직임에는 계속 반영되며, 샷을 늘리면 다시 나타납니다.",
+        "このショットの終わりより後のキー：{count} 個。非表示ですが動きには反映され、ショットを長くすると戻ります。"),
     "The camera could not be baked.": ("카메라를 굽지 못했습니다.", "カメラを焼き込めませんでした。"),
     "Edit camera key": ("카메라 키 편집", "カメラキーを編集"),
     "Add camera key": ("카메라 키 추가", "カメラキーを追加"),

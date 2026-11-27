@@ -776,6 +776,79 @@ async function subCameras(browser, url) {
   await page.close();
 }
 
+// An edited shot shortened past one of its keys: the frames it keeps play as before, the key past
+// its end is hidden on the lane but stays in the record and still shapes the curve view's key
+// curve, and lengthening the shot again brings the key and the full bake back.
+async function shortenPastKeys(browser, url) {
+  const errors = [];
+  const page = await newPage(browser, errors);
+  await page.goto(url + '/#mv');
+  await page.waitForFunction(() => MVStudio.getState().visible);
+  const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
+  const project = gameProject(local);
+  project.name = 'Camera shorten MV';
+  await importGame(page, project);
+  await page.locator('#mv-camera-mode').waitFor();
+  const start = 241 / 60;
+  const samplesOf = async () => (await state(page)).project.tracks[0].events[1].values.keyframes;
+  const storedFrames = async () => (await state(page)).project.editor.camera.shots['cam:1'].keys.map((key) => key.frame);
+  const diamonds = () => page.locator('.mv-lane[data-track="cam"] .mv-cam-key[data-event="cam:1"]').evaluateAll((items) => items.map((item) => Number(item.dataset.frame)));
+  await page.locator('.mv-clip[data-event="cam:1"]').click();
+  const dolly = page.locator('#mv-camera-fields [data-mv-cam="offset.z"]');
+  for (const [frame, value] of [[30, '1'], [250, '-2']]) {
+    await seek(page, start + frame / 60);
+    await page.waitForFunction((text) => (document.getElementById('mv-cam-shot')?.textContent || '').includes(text), `프레임 ${frame} / 300`);
+    await dolly.fill(value);
+    await dolly.press('Tab');
+    await page.waitForFunction((count) => MVStudio.getState().project.editor?.camera?.shots?.['cam:1']?.keys.length === count, frame === 30 ? 1 : 2);
+  }
+  const full = await samplesOf();
+  await page.waitForFunction(() => document.querySelectorAll('.mv-lane[data-track="cam"] .mv-cam-key[data-event="cam:1"]').length === 2);
+
+  // 301 → 201 frames from the Duration field.
+  await page.locator('.mv-clip[data-event="cam:1"]').click();
+  const durationField = page.locator('#mv-event-fields [data-mv-field=duration]');
+  await durationField.fill(String(200 / 60));
+  await durationField.press('Tab');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks[0].events[1].values.keyframes.length === 201);
+  assert.deepEqual(await samplesOf(), full.slice(0, 201), 'the frames the shot keeps play as before, bit for bit');
+  assert.deepEqual(await storedFrames(), [30, 250], 'the key past the end stays in the record');
+  await page.waitForFunction(() => document.querySelectorAll('.mv-lane[data-track="cam"] .mv-cam-key[data-event="cam:1"]').length === 1);
+  assert.deepEqual(await diamonds(), [30], 'only the key on the shot has a diamond');
+  await seek(page, start + 100 / 60);
+  await page.waitForFunction(() => /^샷 2 \/ 2 · .* · 프레임 100 \/ 200/.test(document.getElementById('mv-cam-shot')?.textContent || ''));
+  assert.equal(await page.locator('.mv-cam-note').textContent(), '이 샷의 끝 뒤에 있는 키: 1개. 숨겨져 있지만 움직임에는 계속 반영되며, 샷을 늘리면 다시 나타납니다.');
+  // The curve view: one Dolly point, and its key curve runs toward the hidden key, on the baked curve.
+  await page.locator('#mv-cam-curves').scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('#mv-cam-curves .mv-cam-curve-key[data-channel="z"]').count(), 1);
+  const lines = await curveLines(page);
+  const points = (text) => text.split(' ').map((pair) => pair.split(',').map(Number));
+  const [key, dense] = [points(lines.curve.z), points(lines.dense.z)];
+  assert.equal(key.length, dense.length);
+  key.forEach(([x, y], index) => { near(x, dense[index][0], 1e-9, `x ${index}`); near(y, dense[index][1], .05, `the key curve follows the baked curve at ${index}`); });
+  assert(Math.abs(key.at(-1)[1] - key[0][1]) > 5, 'past frame 30 it bends toward the hidden key');
+  assert(await curvesAsDrawnFresh(page));
+
+  // Lengthened again: the key and the full bake come back.
+  await page.locator('.mv-clip[data-event="cam:1"]').click();
+  await durationField.fill('5');
+  await durationField.press('Tab');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks[0].events[1].values.keyframes.length === 301);
+  assert.deepEqual(await samplesOf(), full, 'the full shot bakes as before');
+  await page.waitForFunction(() => document.querySelectorAll('.mv-lane[data-track="cam"] .mv-cam-key[data-event="cam:1"]').length === 2);
+  assert.deepEqual(await diamonds(), [30, 250]);
+  // Undo both resizes.
+  await page.locator('#mv-timeline-label').click();
+  await page.keyboard.press('Control+z');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks[0].events[1].values.keyframes.length === 201);
+  await page.keyboard.press('Control+z');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks[0].events[1].values.keyframes.length === 301);
+  assert.equal((await state(page)).history.undoLabel, 'Edit camera key');
+  assert.deepEqual(await samplesOf(), full);
+  assert.deepEqual(errors, []);
+  await page.close();
+}
+
 async function extrapolation(browser, url) {
   const errors = [];
   const page = await newPage(browser, errors);
@@ -1303,6 +1376,7 @@ async function run() {
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     await synthetic(browser, server.url);
     await subCameras(browser, server.url);
+    await shortenPastKeys(browser, server.url);
     await extrapolation(browser, server.url);
     await multiKeys(browser, server.url);
     await multiKeysTouch(browser, server.url);

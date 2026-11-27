@@ -228,15 +228,19 @@
     return shots && Object.prototype.hasOwnProperty.call(shots, eventId) ? shots[eventId] : undefined;
   }
 
-  // A stored record, checked and cleaned against the shot's sample count.
+  // A stored record, checked and cleaned against the shot's sample count: { mode, space, keys,
+  // beyond }. `keys` are the keys on the shot's frames; `beyond` the keys past its last frame (a
+  // shot shortened past them). Those stay on their own frames: hidden, but still shaping the curve
+  // over the frames that remain (curveKeys), and back in `keys` when the shot is long enough again.
   function normalizeRecord(raw, count) {
     if (!raw || typeof raw !== "object" || !["offset", "keys"].includes(raw.mode)) return null;
     const byFrame = new Map();
-    for (const key of Array.isArray(raw.keys) ? raw.keys : []) {
+    const last = Math.max(0, count - 1);
+    for (const key of [...(Array.isArray(raw.keys) ? raw.keys : []), ...(Array.isArray(raw.beyond) ? raw.beyond : [])]) {
       if (!key || !Number.isInteger(key.frame) || !key.values || typeof key.values !== "object") continue;
       const values = {};
       for (const channel of CHANNELS) values[channel] = finite(key.values[channel]) ? key.values[channel] : (raw.mode === "keys" && channel === "fov" ? 30 : 0);
-      const clean = { frame: clamp(key.frame, 0, Math.max(0, count - 1)), values,
+      const clean = { frame: Math.max(0, key.frame), values,
         interp: M.INTERPOLATIONS.includes(key.interp) ? key.interp : "bezier",
         handle: M.HANDLES.includes(key.handle) ? key.handle : "auto-clamped" };
       if (clean.handle === "free" && key.handles && typeof key.handles === "object") {
@@ -249,8 +253,15 @@
       }
       byFrame.set(clean.frame, clean);
     }
-    return { mode: raw.mode, space: raw.space === "world" ? "world" : "view", keys: [...byFrame.values()].sort((a, b) => a.frame - b.frame) };
+    const sorted = [...byFrame.values()].sort((a, b) => a.frame - b.frame);
+    return { mode: raw.mode, space: raw.space === "world" ? "world" : "view",
+      keys: sorted.filter((key) => key.frame <= last), beyond: sorted.filter((key) => key.frame > last) };
   }
+
+  // Every key of a record in frame order, the hidden ones past the shot's end included: the
+  // curve the bake evaluates. A shortened shot keeps the motion of the frames it still has.
+  const curveKeys = (record) => record && Array.isArray(record.beyond) && record.beyond.length ? record.keys.concat(record.beyond) : record ? record.keys : [];
+  const hasKeys = (record) => !!record && (record.keys.length > 0 || (Array.isArray(record.beyond) && record.beyond.length > 0));
 
   // Everything the editor needs about one shot; null when it is not a main-camera shot.
   function shotInfo(ctx, track, event, time) {
@@ -277,13 +288,15 @@
     // shot (editStart).
     const raw = recordOf(ctx, event.id);
     const keyed = user && source ? normalizeRecord(raw, source.length) : null;
-    const owned = !!keyed && keyed.mode === "keys" && keyed.keys.length > 0;
+    const owned = !!keyed && keyed.mode === "keys" && hasKeys(keyed);
     if (owned) {
       const grid = userGrid(source, event.duration);
       regrid = grid !== source;
       source = grid;
     }
     // A resized shot bakes on the grid of its new length (the native writer writes that grid).
+    // `base` keeps the grid before that: the poses past a shortened shot's end, under its hidden keys.
+    const base = source;
     const resized = !user && !staticSource && !!source && !!original && original.duration !== event.duration;
     if (resized) {
       const grid = resizedGrid(source, event.duration);
@@ -301,7 +314,7 @@
     const partialFrame = !!(native && resized && !wholeFrames(event.duration));
     const count = source ? source.length : 0;
     const shots = cameraShots(ctx, cameraOf(track));
-    const info = { track, event, source, count, user, owned, native, staticSource, regrid, editable, reason, resized, partialFrame,
+    const info = { track, event, source, base, count, user, owned, native, staticSource, regrid, editable, reason, resized, partialFrame,
       sub: subSlot(track), camera: cameraOf(track),
       record: source && (!user || owned) ? normalizeRecord(raw, count) : null,
       lens: M.nativeLens(track), index: shots.findIndex((item) => item.event === event), total: shots.length,
@@ -409,7 +422,7 @@
   // Curve values at frame f: deltas (offset) or absolute values (keys). With no keys an offset
   // record is zero and a keys record follows the source.
   function channelValues(shot, record, frame) {
-    if (record && record.keys.length) return M.evaluate(record.keys, frame);
+    if (hasKeys(record)) return M.evaluate(curveKeys(record), frame);
     if (!record || record.mode === "offset") return zeros();
     return absoluteOf(sourcePose(shot, frame));
   }
@@ -417,6 +430,14 @@
   function sourcePose(shot, frame) {
     const sample = shot.source[frame];
     return { position: sample.position, rotation: sample.rotation, fov: finite(sample.fov) ? sample.fov : null };
+  }
+
+  // The source sample under frame f; past a shortened shot's end (a hidden key), the pose that frame
+  // had before (shot.base), the last one held further on.
+  function sampleAt(shot, frame) {
+    if (frame < shot.count) return shot.source[frame];
+    const base = shot.base || shot.source;
+    return base[Math.min(frame, base.length - 1)];
   }
 
   function absoluteOf(pose, near) {
@@ -428,10 +449,10 @@
   // The keyed pose at frame i, before layers. Untouched channels keep the source arrays
   // (by reference) so the output can copy them bit for bit.
   function basePose(shot, record, frame) {
-    const sample = shot.source[frame];
+    const sample = sampleAt(shot, frame);
     const pose = { position: sample.position, rotation: sample.rotation, fov: sample.fov === undefined ? null : sample.fov };
-    if (!record || !record.keys.length) return pose;
-    const value = M.evaluate(record.keys, frame);
+    if (!hasKeys(record)) return pose;
+    const value = M.evaluate(curveKeys(record), frame);
     if (record.mode === "keys") {
       return { position: [value.x, value.y, value.z], rotation: M.normalize(M.eulerZXYToQuaternion(value)), fov: clampFov(value.fov) };
     }
@@ -453,7 +474,7 @@
     const record = shot.record;
     const active = affecting(ctx, shot);
     // A shot whose keys own its pose always bakes (a resized one takes its new grid).
-    if ((!record || !record.keys.length) && !active.length) return { restore: true };
+    if (!hasKeys(record) && !active.length) return { restore: true };
     // Layers get copies (they may write into the arrays); a rotation still equal to its
     // untouched source sample is kept as stored, bit for bit.
     const untouched = [];
@@ -590,8 +611,9 @@
   }
 
   // ---- history commands -------------------------------------------------------------------------
+  // The record as stored: the hidden keys past the shot's end stay with the others.
   function cleanRecord(record) {
-    return { mode: record.mode, space: record.space, keys: record.keys.slice().sort((a, b) => a.frame - b.frame).map((key) => {
+    return { mode: record.mode, space: record.space, keys: curveKeys(record).slice().sort((a, b) => a.frame - b.frame).map((key) => {
       const item = { frame: key.frame, values: Object.fromEntries(CHANNELS.map((channel) => [channel, key.values[channel]])),
         interp: key.interp, handle: key.handle };
       if (key.handle === "free" && key.handles) item.handles = clone(key.handles);
@@ -838,7 +860,7 @@
   // Deltas at frame f that give the absolute target pose (position, euler, fov) from the
   // source sample, for the channel groups in `groups`; the others keep `current`.
   function deltasFor(shot, record, frame, target, groups, current) {
-    const sample = shot.source[frame], q = M.normalize(sample.rotation);
+    const sample = sampleAt(shot, frame), q = M.normalize(sample.rotation);
     const values = { ...current };
     if (groups.has("position")) {
       const world = [target.x - sample.position[0], target.y - sample.position[1], target.z - sample.position[2]];
@@ -867,7 +889,7 @@
     if (finite(out.fov)) {
       if (record.mode === "keys") out.fov = clampFov(out.fov);
       else {
-        const sample = shot.source[frame], base = finite(sample.fov) ? sample.fov : shot.fallbackFov;
+        const sample = sampleAt(shot, frame), base = finite(sample.fov) ? sample.fov : shot.fallbackFov;
         out.fov = clamp(out.fov, 1 - base, 170 - base);
       }
     }
@@ -1072,7 +1094,7 @@
     if (index < 0) return false;
     const key = record.keys[index];
     const handles = {};
-    for (const name of CHANNELS) handles[name] = M.handles(record.keys, index, name);
+    for (const name of CHANNELS) handles[name] = M.handles(curveKeys(record), index, name);
     handles[channel][side] = side === "in" ? [Math.min(0, handle[0]), handle[1]] : [Math.max(0, handle[0]), handle[1]];
     key.handle = "free";
     key.handles = handles;
@@ -1101,7 +1123,7 @@
     const handles = new Map();
     record.keys.forEach((key, index) => {
       if (chosen.has(key.frame) && property === "handle" && value === "free" && key.handle !== "free") {
-        handles.set(key, Object.fromEntries(CHANNELS.map((channel) => [channel, M.handles(record.keys, index, channel)])));
+        handles.set(key, Object.fromEntries(CHANNELS.map((channel) => [channel, M.handles(curveKeys(record), index, channel)])));
       }
     });
     for (const key of record.keys) {
@@ -1124,9 +1146,11 @@
     const record = clone(found.shot.record);
     const chosen = new Set(targetKeys(ctx, found));
     const handle = (item, type) => { if (item) { item.handle = type; delete item.handles; } };
-    record.keys.forEach((key, index) => {
+    // A segment may run on to a hidden key past the shot's end: its handle shapes what is shown.
+    const all = curveKeys(record);
+    all.forEach((key, index) => {
       if (!chosen.has(key.frame)) return;
-      const next = record.keys[index + 1];
+      const next = all[index + 1];
       if (preset === "linear") { key.interp = "linear"; return; }
       key.interp = "bezier";
       if (preset === "ease-in-out") { handle(key, "flat"); handle(next, "flat"); }
@@ -1318,7 +1342,7 @@
 
   // Offset deltas of one space in the other, at a frame of the shot.
   function otherSpace(shot, frame, values, space) {
-    const q = M.normalize(shot.source[frame].rotation);
+    const q = M.normalize(sampleAt(shot, frame).rotation);
     const moved = space === "world" ? M.rotateVector(q, [-values.x, values.y, -values.z]) : M.rotateVector(M.conjugate(q), [values.x, values.y, values.z]);
     return space === "world" ? { x: moved[0], y: moved[1], z: moved[2] } : { x: -moved[0], y: moved[1], z: -moved[2] };
   }
@@ -1373,9 +1397,10 @@
     return keys;
   }
 
+  // Hidden keys past a shortened shot's end convert with the others, at the poses under them.
   function convertRecord(shot, record, mode, space) {
     if (mode === "original") return null;
-    const frames = [0, shot.count - 1, ...(record ? record.keys.map((key) => key.frame) : [])];
+    const frames = [0, shot.count - 1, ...curveKeys(record).map((key) => key.frame)];
     if (mode === "keys") {
       if (record && record.mode === "keys") return record;
       return { mode: "keys", space: record ? record.space : space, keys: absoluteKeys(shot, record, frames) };
@@ -1385,13 +1410,13 @@
     if (record.mode === "offset") {
       if (record.space === space) return record;
       // Same deltas in the other space, at each key.
-      const keys = record.keys.map((key) => ({ ...clone(key), values: { ...key.values, ...otherSpace(shot, key.frame, key.values, space) } }));
+      const keys = curveKeys(record).map((key) => ({ ...clone(key), values: { ...key.values, ...otherSpace(shot, key.frame, key.values, space) } }));
       return { mode: "offset", space, keys };
     }
     // keys -> offset: deltas at the key frames.
     const target = { mode: "offset", space, keys: [] };
     let near = zeros();
-    for (const key of record.keys) {
+    for (const key of curveKeys(record)) {
       const pose = basePose(shot, record, key.frame);
       const values = deltasFor(shot, target, key.frame, { x: pose.position[0], y: pose.position[1], z: pose.position[2], rotation: pose.rotation, fov: pose.fov },
         new Set(["position", "rotation", "fov"]), near);
@@ -1413,7 +1438,7 @@
     const current = found.record ? found.record.mode : "original";
     if (current === mode) return false;
     if (found.user && mode !== "keys") return false;
-    const lossy = (current === "offset" && found.record.keys.length) || current === "keys" || (mode === "keys");
+    const lossy = (current === "offset" && hasKeys(found.record)) || current === "keys" || (mode === "keys");
     if (confirm && lossy && typeof global.confirm === "function" && !global.confirm(t(ctx, CONFIRM[mode]))) { renderPanel(ctx, true); return false; }
     // An added clip converts on the grid its keys will own (editStart), from its samples.
     const shot = editStart(ctx, found, ctx.time()).shot;
@@ -1897,6 +1922,7 @@
   // ---- the Camera editor panel ------------------------------------------------------------------
   const PARTIAL_FRAME = "This shot's length is not whole frames (1/60 s): its camera edits cannot be exported until it is.";
   const PARTIAL_FRAME_EXPORT = "Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.";
+  const HIDDEN_KEYS = "Keys past the end of this shot: {count}. They are hidden but still shape its motion, and come back if the shot is made longer.";
   const MODES = [["original", "Original motion"], ["offset", "Offset keys"], ["keys", "Keyframes (replace)"]];
   const LABELS = { x: "X", y: "Y", z: "Z", pan: "Pan", tilt: "Tilt", roll: "Roll", fov: "FOV" };
   const VIEW_LABELS = { x: "Truck", y: "Pedestal", z: "Dolly" };
@@ -2395,7 +2421,8 @@
       if (chip.getAttribute("aria-pressed") !== pressed) chip.setAttribute("aria-pressed", pressed);
     }
     if (refs.curves) {
-      refs.curves.update({ count: shot.count, keys, mode: record ? record.mode : "original", channels: state.channels,
+      // `shape`: the curve runs on to hidden keys past the shot's end; only `keys` are drawn as points.
+      refs.curves.update({ count: shot.count, keys, shape: curveKeys(record), mode: record ? record.mode : "original", channels: state.channels,
         dense: denseCurvesOf(ctx, shot, state.channels), playhead: (ctx.time() - shot.event.start) * FRAME_RATE,
         selected: key ? key.frame : null, selection: selectedFrames(ctx, shot), labels: Object.fromEntries(CHANNELS.map((channel) => [channel, t(ctx, LABELS[channel])])) });
     }
@@ -2403,6 +2430,7 @@
       const notes = [];
       if (layers.length && affecting(ctx, shot).length) notes.push(t(ctx, "A camera rig also moves this shot."));
       if (shot.partialFrame) notes.push(t(ctx, PARTIAL_FRAME));
+      if (record && record.beyond.length) notes.push(format(ctx, HIDDEN_KEYS, { count: record.beyond.length }));
       setText(refs.note, notes.join(" "));
     }
   }
@@ -2602,7 +2630,7 @@
     "Shot {index} / {count}", "Frame {frame} / {last}", "No camera shot at the playhead.", "New camera shot at playhead",
     "Camera shot", "Camera (editor)", "This camera shot cannot be edited.", "The camera samples of this shot cannot be exported.",
     "Switch the preview camera to Free camera to key the view.", "A camera rig also moves this shot.",
-    PARTIAL_FRAME, PARTIAL_FRAME_EXPORT, "The camera could not be baked.",
+    PARTIAL_FRAME, PARTIAL_FRAME_EXPORT, HIDDEN_KEYS, "The camera could not be baked.",
     "Edit camera key", "Move camera key", "Delete camera key", "Duplicate camera key", "Edit camera handle", "Change interpolation",
     "Change handle type", "Apply ease preset", "Change camera mode", "Change offset space", "New camera shot", "Add camera key",
     // Multi-key editing.

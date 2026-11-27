@@ -353,6 +353,85 @@ async function resizedShot(project, ctx, history, at, shot, baked) {
   await plugin.beforeExport(ctx);
 }
 
+// Shortening an edited shot past some of its keys trims it: the keys past the new end stay on their
+// frames in the record, hidden, and still shape the curve, so the frames that remain keep their
+// motion bit for bit. Edits on the short shot keep them, and lengthening it again brings them back.
+function shortenPastKeys() {
+  const project = nativeProject();
+  const { ctx, history, at } = harness(project);
+  const shot = event(project, 'cam:1');
+  const resize = (frames) => history.apply({ label: 'Resize clip', changes: [{ target: { kind: 'event', track: 'cam', event: 'cam:1' }, path: ['duration'], after: frames / 60 }] });
+  const stored = () => project.editor.camera.shots['cam:1'].keys.map((key) => [key.frame, key.values.x, key.values.y]);
+  for (const [frame, x] of [[30, .5], [150, 2], [170, -1]]) {
+    at(shot.start + frame / 60);
+    assert(K.setChannels(ctx, 'offset', { x }));
+  }
+  const full = copy(shot.values.keyframes), keys = stored();
+  assert.equal(full.length, 181);
+  // 181 → 101 frames.
+  assert(resize(100));
+  assert.equal(shot.values.keyframes.length, 101);
+  shot.values.keyframes.forEach((sample, index) => assert.deepEqual(sample, full[index], `frame ${index} keeps its motion`));
+  let info = K.findShot(ctx, 'cam:1');
+  assert.deepEqual(info.record.keys.map((key) => key.frame), [30], 'the editor shows the keys on the shot');
+  assert.deepEqual(info.record.beyond.map((key) => key.frame), [150, 170], 'the others are hidden, on their own frames');
+  assert.deepEqual(stored(), keys, 'the stored record is not rewritten by the resize');
+  // An edit on the short shot (a key on its last frame, another channel) keeps the hidden keys.
+  at(shot.start + 100 / 60);
+  assert(K.setChannels(ctx, 'offset', { y: .3 }));
+  const atEnd = M.evaluate([...keys.map(([frame, x, y]) => ({ frame, values: { x, y, z: 0, pan: 0, tilt: 0, roll: 0, fov: 0 }, interp: 'bezier', handle: 'auto-clamped' }))], 100).x;
+  assert.deepEqual(stored(), [[30, .5, 0], [100, atEnd, .3], [150, 2, 0], [170, -1, 0]], 'the new key holds the curve value there; 150 and 170 stay');
+  for (let index = 0; index < 30; index++) assert.deepEqual(shot.values.keyframes[index], full[index], `frame ${index} before the keys is untouched`);
+  // Lengthened again: the hidden keys come back where they were.
+  assert(resize(180));
+  info = K.findShot(ctx, 'cam:1');
+  assert.deepEqual(info.record.keys.map((key) => key.frame), [30, 100, 150, 170]);
+  assert.deepEqual(info.record.beyond, []);
+  history.undo();
+  history.undo();
+  assert.equal(shot.values.keyframes.length, 101);
+  history.undo();
+  assert.equal(shot.duration, 3);
+  assert.deepEqual(shot.values.keyframes, full, 'undo: the full shot and its bake, bit for bit');
+  // Shortened then lengthened back with no edit in between: the same samples as before.
+  assert(resize(100));
+  assert(resize(180));
+  assert.deepEqual(shot.values.keyframes, full, 'shorten and lengthen back: the same bake');
+  history.undo();
+  history.undo();
+
+  // Commands on the short shot that read the hidden keys give what they give on the full shot.
+  const onFull = (command) => { const before = history.size().undo; command(); const after = copy(project.editor.camera.shots['cam:1']); while (history.size().undo > before) history.undo(); return after; };
+  const onShort = (command) => { assert(resize(100)); const result = onFull(command); history.undo(); return result; };
+  const selectFirst = () => K.selectKey(ctx, 'cam:1', 30);
+  // Offset space view → world: every key's deltas, the hidden ones at the poses under them.
+  assert.deepEqual(onShort(() => K.setSpace(ctx, 'world')), onFull(() => K.setSpace(ctx, 'world')));
+  K.setSpace(ctx, 'view');
+  // An ease preset on the last shown key also sets the handle of the hidden key after it.
+  at(shot.start + 30 / 60);
+  assert.deepEqual(onShort(() => { selectFirst(); K.ease(ctx, 'ease-in-out'); }), onFull(() => { selectFirst(); K.ease(ctx, 'ease-in-out'); }));
+  // Free handles start from the handles the full curve gives (its neighbour is the hidden key).
+  assert.deepEqual(onShort(() => { selectFirst(); K.setKeyProperty(ctx, 'handle', 'free'); }),
+    onFull(() => { selectFirst(); K.setKeyProperty(ctx, 'handle', 'free'); }));
+  // Offset keys → keyframes: the hidden keys become keyframes at the same poses as on the full shot.
+  const converted = (record) => Object.fromEntries(record.keys.filter((key) => key.frame >= 150).map((key) => [key.frame, key.values]));
+  const shortKeys = onShort(() => { at(shot.start + 1); K.setMode(ctx, 'keys', { confirm: false }); });
+  const fullKeys = onFull(() => { at(shot.start + 1); K.setMode(ctx, 'keys', { confirm: false }); });
+  assert.deepEqual(Object.keys(converted(shortKeys)), ['150', '170']);
+  for (const frame of [150, 170]) for (const channel of M.CHANNELS) near(converted(shortKeys)[frame][channel], converted(fullKeys)[frame][channel], 1e-9, `${frame} ${channel}`);
+  // Deleting the shown keys keeps the hidden ones (the shot still bakes their curve).
+  assert(resize(100));
+  selectFirst();
+  assert(K.deleteKeys(ctx));
+  assert.deepEqual(stored().map(([frame]) => frame), [150, 170]);
+  assert.deepEqual(K.findShot(ctx, 'cam:1').record.keys, []);
+  assert.notDeepEqual(shot.values.keyframes, original('cam:1').slice(0, 101), 'the hidden keys still move the shot');
+  // The normalized record keeps every key but splits it at the shot's last frame.
+  const split = K.normalizeRecord({ mode: 'offset', keys: [{ frame: 5, values: { x: 1 } }, { frame: 9, values: { x: 2 } }, { frame: 10, values: { x: 3 } }, { frame: -2, values: { x: 4 } }] }, 10);
+  assert.deepEqual(split.keys.map((key) => key.frame), [0, 5, 9]);
+  assert.deepEqual(split.beyond.map((key) => key.frame), [10]);
+}
+
 function layers() {
   const project = nativeProject();
   const { ctx, history, at } = harness(project);
@@ -1288,6 +1367,7 @@ function multiKeys() {
   interpolation();
   keysMode();
   await followsMove();
+  shortenPastKeys();
   layers();
   await asyncLayers();
   keyView();
