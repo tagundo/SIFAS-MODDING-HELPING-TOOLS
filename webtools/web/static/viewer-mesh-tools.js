@@ -49,7 +49,7 @@
     'Enter a positive move distance.': ['0보다 큰 이동 간격을 입력하세요.', '0より大きい移動量を入力してください。'],
     'Move vertices at the same position together': ['같은 위치 정점 함께 이동', '同じ位置の頂点も一緒に移動'],
     '(+{count} at the same position)': ['(같은 위치 정점 +{count})', '(同じ位置の頂点 +{count})'],
-    'UV seams and material borders split one point into several vertices. Moving one also moves the others, so the surface stays closed. Selection and weights are unchanged.': ['UV 경계나 머티리얼 경계에서는 한 점이 여러 정점으로 나뉩니다. 하나를 옮기면 나머지도 함께 옮겨 표면이 벌어지지 않습니다. 선택과 웨이트는 바뀌지 않습니다.', 'UV境界やマテリアル境界では1つの点が複数の頂点に分かれます。1つを動かすと残りも一緒に動き、面が開きません。選択とウェイトは変わりません。'],
+    'UV seams and material borders split one point into several vertices. Moving one also moves the others, including copies in other materials or on deleted faces, so the surface stays closed. Selection and weights are unchanged.': ['UV 경계나 머티리얼 경계에서는 한 점이 여러 정점으로 나뉩니다. 하나를 옮기면 다른 머티리얼이나 삭제된 면에 있는 복사본까지 함께 옮겨 표면이 벌어지지 않습니다. 선택과 웨이트는 바뀌지 않습니다.', 'UV境界やマテリアル境界では1つの点が複数の頂点に分かれます。1つを動かすと、他のマテリアルや削除した面にあるコピーも一緒に動き、面が開きません。選択とウェイトは変わりません。'],
     'Show selection on model': ['모델에 선택 영역 표시', 'モデルに選択範囲を表示'], 'Show vertex targets': ['정점 선택점 표시', '頂点の選択点を表示'],
     'Delete selected faces': ['선택한 면 삭제', '選択面を削除'], 'Save mesh copy': ['메시 사본 저장', 'メッシュコピーを保存'],
     'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.': ['저장한 사본은 해당 버전을 유지합니다. 실행 취소로 화면의 메시를 복구한 후 다시 저장하면 복구한 사본이 만들어집니다.', '保存コピーはそのバージョンを保持します。元に戻すと表示中のメッシュが復元され、再保存で復元コピーを作成できます。'],
@@ -234,10 +234,12 @@
     options = options || {};
     var holder = document.getElementById('viewer-control-panel'); if (!holder) return null;
     var token = null, records = [], cache = {}, panels = [], disposed = false, busy = false, request = 0, lastSaved = null, editRevision = 0;
-    var listeners = [], labels = [], history = [], future = [], historyBytes = 0, activePanel = null, runtimeEngine = null, runtimeGesture = null, savedToken = null, savedFingerprint = null, uvCursor = null;
+    var listeners = [], labels = [], titles = [], history = [], future = [], historyBytes = 0, activePanel = null, runtimeEngine = null, runtimeGesture = null, savedToken = null, savedFingerprint = null, uvCursor = null;
     function t(key) { return translated(key, options.translate); }
     function interactive() { return !options.isInteractive || options.isInteractive(); }
     function el(tag, parent, key) { var e = document.createElement(tag); if (key) { e.textContent = t(key); labels.push([e, key]); } if (parent) parent.appendChild(e); return e; }
+    // Tooltips follow a language switch like labels: a key, or a function for composed text.
+    function titled(e, text) { e.title = typeof text === 'function' ? text() : t(text); titles.push([e, text]); return e; }
     function on(e, type, handler) { e.addEventListener(type, handler); listeners.push(function () { e.removeEventListener(type, handler); }); }
     function button(parent, key, handler) { var b = el('button', parent, key); b.type = 'button'; on(b, 'click', handler); return b; }
     function select(parent, key, values) { var label = el('label', parent), span = el('span', label, key), s = el('select', label); span.style.display = 'block'; (values || []).forEach(function (entry) { var o = el('option', s, entry[1]); o.value = entry[0]; }); return s; }
@@ -606,7 +608,7 @@
     function togetherBox(panel, parent, id) {
       var label = el('label', parent), input = el('input', label); label.className = 'mesh-together-label'; input.type = 'checkbox'; input.id = id; input.checked = panel.moveTogether;
       el('span', label, 'Move vertices at the same position together');
-      label.title = t('UV seams and material borders split one point into several vertices. Moving one also moves the others, so the surface stays closed. Selection and weights are unchanged.');
+      titled(label, 'UV seams and material borders split one point into several vertices. Moving one also moves the others, including copies in other materials or on deleted faces, so the surface stays closed. Selection and weights are unchanged.');
       on(input, 'change', function () { setMoveTogether(panel, input.checked); }); return input;
     }
     // A movement setting, not an edit: it changes no history and no save state.
@@ -794,7 +796,7 @@
         });
         p.moveTogetherRow = el('div', p.moveTools); p.moveTogetherRow.className = 'mesh-transform-row mesh-transform-together'; p.moveTogetherRow.hidden = true;
         p.samePosition = togetherBox(p, p.moveTogetherRow, p.root.id + '-same-position');
-        p.moveTools.title = t('Drag an axis arrow, or use the step buttons. Axis values use the source mesh coordinates.');
+        titled(p.moveTools, 'Drag an axis arrow, or use the step buttons. Axis values use the source mesh coordinates.');
       }
       var tools = el('div', main); tools.className = 'uv-edit-toolbar'; tools.setAttribute('role', 'toolbar'); tools.setAttribute('aria-label', t('Texture interaction'));
       var stage = el('div', main); stage.className = 'uv-canvas-stage'; stage.appendChild(p.canvas);
@@ -805,14 +807,14 @@
       var settings = button(tools, 'Tool settings', function () {}); settings.className = 'uv-icon-button uv-settings-button'; settings.dataset.uvSettings = ''; settings.setAttribute('aria-expanded', 'false');
       original.forEach(function (node) { if (node !== p.canvas) inspector.appendChild(node); });
       function move(control, destination) { if (!control) return; var node = control.parentElement && control.parentElement.tagName === 'LABEL' ? control.parentElement : control; destination.appendChild(node); }
-      move(p.load, source); p.load.classList.add('uv-refresh-button'); p.load.title = t('Load meshes'); move(p.mesh, source); move(p.submesh, source);
+      move(p.load, source); p.load.classList.add('uv-refresh-button'); titled(p.load, 'Load meshes'); move(p.mesh, source); move(p.submesh, source);
       var quick = [];
       [['paint', 'Brush'], ['erase', 'Erase'], ['connected', 'Linked'], ['pan', 'Pan']].forEach(function (row) {
         var b = button(null, row[1], function () {
           activePanel = p; p.textureMode.value = row[0] === 'erase' ? 'paint' : row[0]; p.mode.value = row[0] === 'erase' ? 'erase' : 'paint';
           p.textureMode.dispatchEvent(new Event('change', { bubbles: true })); if (uvCursor) uvCursor.hidden = true;
         });
-        b.id = p.root.id + '-tool-' + row[0]; b.dataset.uvTool = row[0]; b.title = t(row[0] === 'connected' ? 'Connected faces' : row[0] === 'pan' ? 'Move texture' : row[1]) + ' (' + ({ paint: 'B', erase: 'E', connected: 'L', pan: 'V' }[row[0]]) + ')'; tools.insertBefore(b, settings); quick.push(b);
+        b.id = p.root.id + '-tool-' + row[0]; b.dataset.uvTool = row[0]; titled(b, function () { return t(row[0] === 'connected' ? 'Connected faces' : row[0] === 'pan' ? 'Move texture' : row[1]) + ' (' + ({ paint: 'B', erase: 'E', connected: 'L', pan: 'V' }[row[0]]) + ')'; }); tools.insertBefore(b, settings); quick.push(b);
       });
       move(p.radius, tools); p.radius.parentElement.classList.add('uv-compact-radius');
       tools.insertBefore(p.undo, settings); tools.insertBefore(p.redo, settings); p.undo.classList.add('uv-undo-button'); p.redo.classList.add('uv-redo-button');
@@ -973,7 +975,7 @@
     }
     build(false); build(true);
     initializeRuntime(); initializeShortcuts(); refresh();
-    return { refresh: refresh, getStatus: quickStatus, canClearSelection: canClearSelection, clearSelection: clearSelection, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.updateLanguage(); }); redraw(); },
+    return { refresh: refresh, getStatus: quickStatus, canClearSelection: canClearSelection, clearSelection: clearSelection, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); titles.forEach(function (pair) { pair[0].title = typeof pair[1] === 'function' ? pair[1]() : t(pair[1]); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.updateLanguage(); }); redraw(); },
       getEdits: function () { return clone(operationState()); }, getEditRevision: function () { return editRevision; }, restoreEdits: restoreEdits,
       getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, hasUnappliedSelection: summary.hasUnappliedSelection, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved,
         samePosition: (function () { var p = panels.filter(function (panel) { return panel.modify; })[0], m = activePanel && activePanel.modify ? current(activePanel) : null, together = m ? samePosition(activePanel, m) : null;

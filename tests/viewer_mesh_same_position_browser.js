@@ -6,7 +6,8 @@
  * nudge, axis and free drag, delta and absolute position, Undo/Redo, OFF =
  * selected vertices only, regrouping by current position (tear, Undo, join,
  * recipe), weights and Select connected unchanged, save + reopen + open copy +
- * recipe restore, and phone/touch and narrow layouts. */
+ * recipe restore, ja labels and tooltips after a language switch, and
+ * phone/touch and narrow layouts. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -288,6 +289,18 @@ async function desktop(url) {
     await page.locator('#viewer-mesh-modify-undo').click(); assert.deepEqual((await snapshot(page)).mesh.edits.meshes, [], 'one Undo removes the restored recipe');
     assert.equal(sha(fs.readFileSync(source)), sha(original), 'source stays byte-identical');
     result.cases.push('Recipe restore applies the partner edits with no server change; one Undo step');
+    // Language switch: labels, the count line and the tooltips follow (ja).
+    await pick(page, data, 2); await page.locator('#viewer-mesh-modify-quick-drag').click();
+    await page.evaluate(() => { localStorage.setItem('sifas_lang', 'ja'); window.__meshTool.updateLanguage(); });
+    const together = page.locator('#viewer-mesh-modify .mesh-transform-together label');
+    assert.equal((await together.textContent()).trim(), '同じ位置の頂点も一緒に移動');
+    assert.match(await together.getAttribute('title'), /^UV境界やマテリアル境界では/, 'the tooltip is translated too');
+    assert.match(await page.locator('#viewer-mesh-modify .mesh-transform-tools').getAttribute('title'), /^軸の矢印をドラッグ/);
+    assert.match(await page.locator('#viewer-mesh-modify-count').textContent(), /\(同じ位置の頂点 \+1\)/);
+    await page.screenshot({ path: path.join(evidence, 'desktop-ja.png') });
+    await page.evaluate(() => { localStorage.setItem('sifas_lang', 'en'); window.__meshTool.updateLanguage(); });
+    assert.match(await together.getAttribute('title'), /^UV seams and material borders .* including copies in other materials or on deleted faces/);
+    result.cases.push('Language switch to ja and back: checkbox label, count line and tooltips follow');
     await stage(page); await page.screenshot({ path: path.join(evidence, 'desktop.png') }); result.status = 'PASS';
   } finally { await context.close(); }
 }
