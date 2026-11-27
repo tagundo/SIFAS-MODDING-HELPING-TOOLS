@@ -522,7 +522,7 @@ async function nonNativeBlends(browser, url) {
 }
 
 /* Lane labels on narrow touch screens, where the label column is at most 7.5rem: a phone in
-   either orientation (390 x 844, 844 x 390). Group rows stay headings: bold, as high as their
+   either orientation (390 x 844, 844 x 390) and a tablet (768 x 1024). Group rows stay headings: bold, as high as their
    text lines (their 16 px marks do not raise a line), wrapping only after a "/" or a space. No
    label breaks a word that fits its width (the mute toggle and the badge sit in the text flow),
    track rows draw small marks (a 20 px toggle, a 16 px badge), and every toggle and badge keeps
@@ -575,6 +575,7 @@ async function narrowLanes(browser, url, project, name, viewport) {
     assert(rows.some((row) => !row.group && row.marks.some((mark) => mark.quality)), `${name}: track rows keep their quality badges`);
     assert(!groups.some((row) => row.marks.some((mark) => mark.quality)), `${name}: no badge line on a group heading`);
     assert(rows.filter((row) => !row.group).every((row) => row.marks.some((mark) => !mark.quality)), `${name}: every track row has its mute toggle`);
+    assert.equal(groups.filter((row) => row.marks.length).length, 1, `${name}: only the muted group shows a mark`);
     for (const row of rows) {
       assert.deepEqual(row.broken, [], `${name} ${row.label}: no word that fits is broken`);
       for (const mark of row.marks) assert(mark.target >= 32, `${name} ${row.label}: a 32 px touch target (${mark.target})`);
@@ -845,6 +846,30 @@ async function run() {
     // A group's mute never reaches the game: a group row has no toggle (a muted one shows a mark, below).
     assert(await page.locator('.mv-lane-group').count() > 0);
     assert.equal(await page.locator('.mv-lane-group .mv-lane-mute').count(), 0);
+    // Where the export's own rule is loaded (MVStudioEventFields.trackMuteNote), it decides the lock,
+    // not the lanes' fallback: here a stand-in rule locks the lip-sync track and frees the LED panel.
+    const lockNote = 'The export refuses this mute.';
+    await page.evaluate((note) => {
+      window.mvFieldsBefore = window.MVStudioEventFields;
+      window.MVStudioEventFields = Object.freeze({ ...window.mvFieldsBefore,
+        trackMuteNote: (track) => track.nativeClass === 'GroupTrack' ? 'group' : track.label === 'Member1/LipSync' ? note : null });
+    }, lockNote);
+    await page.locator('#mv-tab-mouth').click();
+    await page.locator('#mv-tab-all').click();
+    assert.equal(await muteLips.getAttribute('aria-disabled'), 'true', 'the loaded rule locks the lip-sync mute');
+    await muteLips.click({ force: true });
+    assert.equal(await page.locator('#mv-status').textContent(), lockNote);
+    assert.equal((await state(page)).history.undo, muteBase.history.undo, 'no history step');
+    assert.equal(await ledMute.getAttribute('aria-disabled'), null, 'and frees the LED panel');
+    await ledMute.click();
+    assert.equal(findTrack((await state(page)).project, led.id).muted, true);
+    await page.keyboard.press('Control+z');
+    assert.equal(!!findTrack((await state(page)).project, led.id).muted, false);
+    await page.evaluate(() => { window.MVStudioEventFields = window.mvFieldsBefore; delete window.mvFieldsBefore; });
+    await page.locator('#mv-tab-mouth').click();
+    await page.locator('#mv-tab-all').click();
+    assert.equal(await muteLips.getAttribute('aria-disabled'), null);
+    assert.equal(await ledMute.getAttribute('aria-disabled'), 'true');
 
     // ---- Drag a camera shot by one second ----------------------------------------------------
     await page.locator('#mv-tab-camera').click();
@@ -1159,6 +1184,17 @@ async function run() {
     assert.equal(await page.locator('.mv-lane-group .mv-lane-mute').count(), 1, 'only the muted group has a mark');
     assert.equal(await groupMark.getAttribute('aria-disabled'), 'true');
     assert.equal(await groupMark.getAttribute('aria-label'), '음소거된 그룹');
+    // Its heading is dimmed (another is not), and its marks stay 16 px, so they do not raise the heading's line.
+    const groupRow = (id) => page.locator(`.mv-lane-group[data-track="${id}"]`);
+    const nameOpacity = (id) => groupRow(id).locator('.mv-lane-group-name').evaluate((name) => getComputedStyle(name).opacity);
+    assert(await groupRow(mutedGroup.id).evaluate((label) => label.classList.contains('mv-lane-muted')));
+    assert.equal(await nameOpacity(mutedGroup.id), '0.55');
+    const coloringGroup = legacy.tracks.find((track) => track.label === 'StageEffect/Expert/Coloring');
+    assert.equal(await nameOpacity(coloringGroup.id), '1');
+    assert.deepEqual(await groupRow(mutedGroup.id).locator('.mv-lane-mute, .mv-lane-quality').evaluateAll((marks) => marks.map((mark) => {
+      const box = mark.getBoundingClientRect();
+      return [mark.classList[0], box.width, box.height];
+    })), [['mv-lane-mute', 16, 16], ['mv-lane-quality', 16, 16]]);
     await groupMark.click({ force: true });
     assert.equal(await page.locator('#mv-status').textContent(),
       '그룹 음소거는 게임에 반영되지 않습니다. 게임은 그룹 안의 각 트랙을 그 트랙의 음소거 설정대로 재생합니다.');
@@ -1218,8 +1254,12 @@ async function run() {
     await page.waitForFunction(() => document.querySelector('#mv-tab-all')?.firstChild.textContent.trim() === '전체');
 
     assert.deepEqual(errors, []);
-    for (const [name, viewport] of [['phone', { width: 390, height: 844 }], ['landscape', { width: 844, height: 390 }]]) {
-      await narrowLanes(browser, server.url, original, name, viewport);
+    // With a muted group, whose heading shows a mark (stock 11054 mutes its Member1 and Member2 groups).
+    const narrow = JSON.parse(JSON.stringify(original));
+    narrow.tracks.find((track) => track.label === 'Member1' && track.nativeClass === 'GroupTrack').muted = true;
+    for (const [name, viewport] of [['phone', { width: 390, height: 844 }], ['landscape', { width: 844, height: 390 }],
+      ['tablet', { width: 768, height: 1024 }]]) {
+      await narrowLanes(browser, server.url, narrow, name, viewport);
     }
     await nonNativeBlends(browser, server.url);
     await pluginContract(browser, server.url);
