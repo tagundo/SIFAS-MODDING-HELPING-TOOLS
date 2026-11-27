@@ -526,11 +526,37 @@
     replaceOptions(trackControls.group, lastPlan.groups.map((id) => ({ id, label: id })), lastPlan.group, t("All groups"));
     trackControls.editable.disabled = activeTab === "edit";
     trackControls.editable.title = activeTab === "edit" ? t("The Edit tab already lists edited and editable tracks.") : "";
-    const edited = history.editedEvents();
-    let clips = 0, changed = 0;
-    for (const track of lastPlan.tracks) for (const event of track.events) { clips++; if (edited.has(event.id)) changed++; }
-    trackControls.summary.textContent = format("{tracks} tracks · {clips} clips · {edited} edited",
-      { tracks: lastPlan.tracks.length, clips, edited: changed });
+    const edited = history.editedEvents(), follow = followingClips();
+    let clips = 0, changed = 0, following = 0;
+    for (const track of lastPlan.tracks) {
+      for (const event of track.events) { clips++; if (edited.has(event.id)) changed++; else if (follow.has(event.id)) following++; }
+    }
+    const values = { tracks: lastPlan.tracks.length, clips, edited: changed, follow: following };
+    trackControls.summary.textContent = following
+      ? format("{tracks} tracks · {clips} clips · {edited} edited · {follow} with recomputed blends or times", values)
+      : format("{tracks} tracks · {clips} clips · {edited} edited", values);
+  }
+
+  /* Clips whose only change from their original is a blend or extrapolation time recomputed
+     after a neighbour's edit. They are not "edited" (compareView leaves those fields out), but
+     the export writes them, so the register and apply plans count them among changed clips:
+     the Tracks summary lists them beside the edited ones. */
+  let followCache = null;
+  function followingClips() {
+    if (!history || !project) return new Set();
+    if (followCache && followCache.version === history.version && followCache.project === project) return followCache.ids;
+    const ids = new Set(), edited = history.editedEvents(), originals = project.editor && project.editor.originals;
+    const { stable, editedView } = global.MVStudioEditHistory;
+    if (originals && typeof originals === "object") {
+      for (const track of project.tracks) {
+        for (const event of track.events) {
+          const original = Object.prototype.hasOwnProperty.call(originals, event.id) ? originals[event.id] : null;
+          if (original && !edited.has(event.id) && stable(editedView(event)) !== stable(editedView(original))) ids.add(event.id);
+        }
+      }
+    }
+    followCache = { version: history.version, project, ids };
+    return ids;
   }
 
   function activeEvent() {

@@ -693,10 +693,14 @@ async function run() {
     assert(changedBlends.includes(blendClip.id) && changedBlends.length >= 2, `the moved clip and a neighbour: ${changedBlends}`);
     assert.equal(Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent()), editsBefore + 1,
       'only the moved clip counts as edited; derived blends do not');
+    // The Tracks summary lists the neighbours whose blends follow (the register and apply plans count them).
+    assert.match(await page.locator('#mv-track-summary').textContent(),
+      new RegExp(` · 블렌드나 시간만 다시 계산된 클립 ${changedBlends.length - 1}개$`));
     await page.locator('#mv-timeline-label').click();
     await page.keyboard.press('Control+z');
     assert.deepEqual((await state(page)).project.tracks.find((track) => track.id === lipTrack.id),
       blendBase.project.tracks.find((track) => track.id === lipTrack.id), 'undo restores the clip and every blend');
+    assert.doesNotMatch(await page.locator('#mv-track-summary').textContent(), /다시 계산된/);
     await page.locator('#mv-zoom').selectOption('fit');
 
     // ---- Track mute: the toggle on a leaf lane label (undoable, counted in the Edit tab) -------
