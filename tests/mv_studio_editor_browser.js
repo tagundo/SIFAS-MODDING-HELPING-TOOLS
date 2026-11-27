@@ -894,6 +894,8 @@ async function run() {
     await page.evaluate(() => { MVStudioScene.cameraLocalTime = window.mvSceneLocalTime || (() => 0); });
     await reselectShot();
     assert.deepEqual(await shotModes(), ['0', '1', '2', '3', '4'], 'every mode the preview plays');
+    assert.deepEqual(await page.locator('#mv-event-fields [data-mv-field=postExtrapolationMode] option').evaluateAll(
+      (options) => options.map((option) => option.textContent)), ['없음', '정지', '반복', '왕복', '계속'], 'every mode name in Korean');
     assert.equal(await page.locator('#mv-event-fields [data-mv-field=clipIn]').count(), 0, 'the offset stays read only');
     assert.equal(await page.locator('#mv-event-fields [data-mv-field=timeScale]').count(), 0);
     assert.equal(await capsNote(), '카메라 샷은 오프셋과 속도를 바꿀 수 없습니다. 미리보기는 샷에서 읽은 샘플을 그대로 재생합니다.');

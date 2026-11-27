@@ -3183,6 +3183,8 @@ _MV_EDITOR_E2_TRANSLATIONS = {
         "카메라 샷은 오프셋과 속도를 바꿀 수 없습니다. 미리보기는 샷에서 읽은 샘플을 그대로 재생합니다.",
         "カメラショットはオフセットと速度を変えられません。プレビューはショットから読んだサンプルをそのまま再生します。"),
     "Restore original value": ("원래 값으로 되돌리기", "元の値に戻す"),
+    # The extrapolation mode after None, Hold (and before Ping-pong, Continue), which have theirs.
+    "Loop": ("반복", "ループ"),
     "This shot overlaps another: the game crossfades them, the preview cuts to the later shot.": (
         "이 샷은 다른 샷과 겹칩니다. 게임은 두 샷을 겹쳐 전환하지만, 미리보기는 뒤의 샷으로 바로 바뀝니다.",
         "このショットは別のショットと重なっています。ゲームでは重ねて切り替わりますが、プレビューは後のショットにすぐ切り替わります。"),
