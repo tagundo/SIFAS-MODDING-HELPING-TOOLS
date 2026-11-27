@@ -529,6 +529,11 @@ class NormalizeTests(unittest.TestCase):
             self.assertNotEqual(register.timeline_fingerprint("android", identity, edited),
                                 register.timeline_fingerprint("android", identity, original))
 
+    def test_songs_registered_before_track_mutes_rebake(self):
+        # Track mutes changed what a bake writes: a song registered under an older version rebakes on
+        # its next update instead of keeping its timeline by fingerprint.
+        self.assertNotIn(register.FINGERPRINT_VERSION, ("mv-studio-register-1", "mv-studio-register-2"))
+
     def test_exportable_track_fields_are_fingerprinted(self):
         original = base_tracks()
         muted = copy.deepcopy(original)
