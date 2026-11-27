@@ -310,6 +310,37 @@ class CheckValuesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
             studio._check_values(bound, revise("rim:2", colorSpecifiedType=1))
 
+    def test_base_light_colour_sources_follow_their_own_member_positions(self):
+        # LiveBaseLightClip has two colour sources, each with its own member position field.
+        light = {"ambientColorType": 0, "ambientMemberPosition": 0, "rimlightColorType": 0, "rimlightMemberPosition": 0}
+        original = timeline(("base", [event("base:0", "LiveBaseLightClip", light)]))
+        original["tracks"].extend({"id": f"d{slot}", "kind": "dance", "nativeClass": "AnimationTrack", "label": f"d{slot}",
+                                   "binding": f"/EntryPoint/Live/Members/Member{slot}/Model", "events": []} for slot in (1, 2, 3))
+
+        def revise(**values):
+            revised = deepcopy(original)
+            revised["tracks"][0]["events"][0]["values"].update(values)
+            return revised
+
+        for kind in (1, 2):
+            with self.subTest(kind=kind):
+                studio._check_values(original, revise(ambientColorType=kind, ambientMemberPosition=3))
+                studio._check_values(original, revise(rimlightColorType=kind, rimlightMemberPosition=2))
+                # Each source reads its own position: the other source's slot does not count.
+                with self.assertRaisesRegex(ValueError, r"^This colour source needs the clip's member position to be 1 to 12\.$"):
+                    studio._check_values(original, revise(ambientColorType=kind, rimlightMemberPosition=2))
+                with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
+                    studio._check_values(original, revise(rimlightColorType=kind, ambientMemberPosition=3))
+                with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
+                    studio._check_values(original, revise(ambientColorType=kind))
+                with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
+                    studio._check_values(original, revise(rimlightColorType=kind))
+        studio._check_values(original, revise(ambientColorType=0, rimlightColorType=0))
+        with self.assertRaisesRegex(ValueError, r"^Choose a member this MV has\.$"):
+            studio._check_values(original, revise(ambientColorType=1, ambientMemberPosition=4))
+        with self.assertRaisesRegex(ValueError, "Choose a member this MV has"):
+            studio._check_values(original, revise(rimlightColorType=1, rimlightMemberPosition=4))
+
     def test_a_penlight_palette_entry_names_a_performer_slot(self):
         def entry(slot, kind=1):
             return {"color": {"r": 1., "g": 1., "b": 1., "a": 1.}, "colorSpecifiedType": kind, "memberPosition": slot}
@@ -614,6 +645,41 @@ class GroupMemberTests(unittest.TestCase):
         item["values"]["memberPosition"] = max(studio.performer_slots(parsed["tracks"])) + 1
         with self.assertRaisesRegex(ValueError, "Choose a member this MV has"):
             studio.export_timeline(raw, path.name, tracks)
+
+
+class BaseLightTests(unittest.TestCase):
+    """Base light colour sources on a real timeline (12056 here): export, parse back, Elichika's validator."""
+
+    FIELDS = ("ambientColorType", "ambientMemberPosition", "rimlightColorType", "rimlightMemberPosition")
+
+    @classmethod
+    def setUpClass(cls):
+        for path in sample_timelines():
+            raw = path.read_bytes()
+            parsed = studio.parse_timeline(raw, path.name)
+            if len(studio.performer_slots(parsed["tracks"])) >= 3 and any(
+                    set(cls.FIELDS) <= set(item["editableValues"]) for track in parsed["tracks"] for item in track["events"]):
+                cls.sample = path, raw, parsed
+                return
+        raise unittest.SkipTest("No original timeline sample with an editable base light clip and three members")
+
+    def test_member_colour_sources_export_parse_back_and_pass_the_install_validator(self):
+        path, raw, parsed = self.sample
+        slots = sorted(studio.performer_slots(parsed["tracks"]))
+        tracks = deepcopy(parsed["tracks"])
+        clip = next(item for track in tracks for item in track["events"] if set(self.FIELDS) <= set(item["editableValues"]))
+        clip["values"].update(ambientColorType=2, ambientMemberPosition=slots[2], rimlightColorType=1,
+                              rimlightMemberPosition=slots[1])
+        output = studio.export_timeline(raw, path.name, tracks)
+        self.assertEqual(studio.parse_timeline(output, path.name)["tracks"], tracks)
+        try:
+            import UnityPy
+            import mv_studio_native_assets as native
+        except ImportError:
+            return
+        import time
+        platform = int(list(UnityPy.load(raw).assets)[0].target_platform)
+        native._validate_timeline(output, raw, platform, time.monotonic() + 120)
 
 
 class PenlightTests(unittest.TestCase):
