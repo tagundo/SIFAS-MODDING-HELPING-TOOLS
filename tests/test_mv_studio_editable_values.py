@@ -189,8 +189,8 @@ class WhitelistTests(unittest.TestCase):
     def test_the_track_mute_note_data_is_the_export_rule(self):
         rule = descriptors()["trackMute"]
         self.assertEqual(rule["notes"], {"group": studio.GROUP_MUTE, "quality": studio.QUALITY_MUTE})
-        self.assertEqual({root: None if names is None else set(names) for root, names in rule["qualityRoots"].items()},
-                         {root: None if names is None else set(names) for root, names in studio._QUALITY_CATEGORIES.items()})
+        self.assertEqual({root: set(names) for root, names in rule["qualityRoots"].items()},
+                         {root: set(names) for root, names in studio._QUALITY_CATEGORIES.items()})
 
     def test_colour_source_classes_are_the_ones_with_a_member_colour_preview(self):
         self.assertEqual(studio._COLOR_SOURCE_CLASSES, {

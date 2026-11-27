@@ -39,6 +39,12 @@ class RuleTests(unittest.TestCase):
                  ("StageEffect/Expert/Coloring/LightShaft/LED_p", "LiveColoringTrack"),
                  # A StageEffect category the quality table has no entry for (12023's "Overlay").
                  ("StageEffect/Expert/Overlay/Flash", "CustomControlTrack"),
+                 # The same under the other roots (12029's and 12035's prop animation; no stock names
+                 # for the last three): each root's own names only.
+                 ("PropEffect/Expert/PropAnimation/x", "AnimationTrack"),
+                 ("MemberEffect/Expert/Member Coloring/x", "LiveColoringTrack"),
+                 ("GlobalEffect/Expert/Split Screen/x", "CustomControlTrack"),
+                 ("MotionMisc/Expert/BaseLight/x", "CustomControlTrack"),
                  ("Top", "LiveBloomTrack")]
         for label, native_class in reach:
             with self.subTest(label=label):
@@ -49,7 +55,12 @@ class RuleTests(unittest.TestCase):
                    ("StageEffect/Expert/OverlayEffect/Glow", "overlayeffect"),
                    ("StageEffect/Normal/Post/Bloom", "post"),
                    ("MemberEffect/Expert/Member Rim Light/Rim1", "memberrimlight"),
+                   ("MemberEffect/Expert/Member Ambient/A", "memberambient"),
+                   ("MemberEffect/Expert/Member Spot Light Area/A", "memberspotlightarea"),
+                   ("MemberEffect/Expert/MemberSpotLightShaft/S", "memberspotlightshaft"),
                    ("PropEffect/Expert/Prop Ambient/Ambient", "propambient"),
+                   ("PropEffect/Expert/Prop Rim Light/R", "proprimlight"),
+                   ("PropEffect/Expert/Prop Coloring/C", "propcoloring"),
                    ("GlobalEffect/Expert/Base Light/Base", "baselight"),
                    ("MotionMisc/Expert/Split Screen/Split", "splitscreen")]
         for label, category in quality:
@@ -208,9 +219,22 @@ class ActualTimelineTests(unittest.TestCase):
                 self.assertNotEqual(edited, raw)
                 self.assertEqual(studio.parse_timeline(edited, path.name)["tracks"], tracks)
                 self.assertLess(seconds, 30)
+                platform = int(list(UnityPy.load(raw).assets)[0].target_platform)
                 if native is not None:
-                    platform = int(list(UnityPy.load(raw).assets)[0].target_platform)
                     native._validate_timeline(edited, raw, platform, time.monotonic() + 120)
+                # A track directly in a category group of a quality root whose name no quality option
+                # has (PropEffect/<difficulty>/PropAnimation on 12029 and 12035, 12023's Overlay).
+                tracks = deepcopy(parsed["tracks"])
+                other = next((item for item in tracks if item["nativeClass"] != "GroupTrack"
+                              and item["label"].count("/") == 3
+                              and item["label"].split("/")[0] in studio._QUALITY_CATEGORIES
+                              and studio.track_mute_refusal(item) is None), None)
+                if other is not None:
+                    other["muted"] = not other["muted"]
+                    edited = studio.export_timeline(raw, path.name, tracks)
+                    self.assertEqual(studio.parse_timeline(edited, path.name)["tracks"], tracks)
+                    if native is not None:
+                        native._validate_timeline(edited, raw, platform, time.monotonic() + 120)
                 for refused in (next((item for item in parsed["tracks"]
                                       if studio.track_mute_refusal(item) == studio.QUALITY_MUTE), None),
                                 next(item for item in parsed["tracks"] if item["nativeClass"] == "GroupTrack")):

@@ -791,18 +791,22 @@ EXPORTABLE_TRACK_FIELDS = ("muted",)
 GROUP_MUTE = "A group track's mute does not reach the game. Mute the tracks inside it."
 # LiveQualityOperator decides the mute of every direct child track of these category groups (GL
 # 3.12.0 libil2cpp): director setup (0x2924cdc) calls 0x20f3a00, which runs ApplyLiveQualityTo*
-# (0x20f2788, 0x20f2a98, 0x20f2b70 StageEffect, 0x20f3164 MemberEffect, 0x20f331c PropEffect). Each
-# fills {category: !option} and 0x20f28a0 calls ApplyMuteToChildTracks (0x20f348c) on every category
-# group it finds; that calls ApplyMuteToTrack (0x20f30e8) on each direct child, and with muted false
-# it calls TrackAsset.set_muted(false) (0x35d10e8). So an option that is on unmutes these tracks and one
-# that is off mutes them: their own m_Muted never reaches the game. Tracks one group deeper keep theirs.
-# StageEffect lists its ten categories by name (mv_studio_stage_motion._STAGE_QUALITY). The names in
-# the other four tables were not read (1, 1, 4 and 3 keys; every category these MVs have there fits one
-# of them), so every category under those roots counts.
+# (0x20f2788 motionMiscTracks, 0x20f2a98 globalEffectTracks, 0x20f2b70 stageEffectTracks, 0x20f3164
+# memberEffectTracks, 0x20f331c propEffectTracks: the operator's fields +0x18..+0x38). Each fills
+# {category name: !option} and 0x20f28a0 calls ApplyMuteToChildTracks (0x20f348c) on each category group
+# of its root with one of those names; that calls ApplyMuteToTrack (0x20f30e8) on each direct child, and
+# with muted false it calls TrackAsset.set_muted(false) (0x35d10e8). So an option that is on unmutes these
+# tracks and one that is off mutes them: their own m_Muted never reaches the game. Tracks one group
+# deeper, and tracks in a category with another name, keep theirs. The names are the string literals of
+# those five functions, matched without spaces and lower-cased (StageEffect's are
+# mv_studio_stage_motion._STAGE_QUALITY).
 _QUALITY_CATEGORIES = {
     "StageEffect": frozenset({"post", "ambient", "animation", "coloring", "control", "flashlight", "display",
                               "audience", "emissive", "overlayeffect"}),
-    "MemberEffect": None, "PropEffect": None, "GlobalEffect": None, "MotionMisc": None,
+    "MemberEffect": frozenset({"memberambient", "memberrimlight", "memberspotlightarea", "memberspotlightshaft"}),
+    "PropEffect": frozenset({"propambient", "proprimlight", "propcoloring"}),
+    "GlobalEffect": frozenset({"baselight"}),
+    "MotionMisc": frozenset({"splitscreen"}),
 }
 QUALITY_MUTE = "The game's quality settings turn this track on and off, so its mute does not reach the game."
 
@@ -817,8 +821,7 @@ def quality_category(label):
     if len(parts) != 4 or parts[0] not in _QUALITY_CATEGORIES:
         return None
     category = parts[2].replace(" ", "").lower()
-    names = _QUALITY_CATEGORIES[parts[0]]
-    return category if names is None or category in names else None
+    return category if category in _QUALITY_CATEGORIES[parts[0]] else None
 
 
 def track_mute_refusal(track):

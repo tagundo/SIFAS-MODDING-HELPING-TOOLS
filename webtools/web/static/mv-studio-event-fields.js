@@ -19,8 +19,8 @@
   // The table is JSON (tests/test_mv_studio_editable_values.py reads it):
   //   trackMute: which track mutes reach the game (trackMuteNote; the export's own rule is
   //            mv_studio_timeline.track_mute_refusal): the notes, and per quality root the
-  //            category names whose direct child tracks the game's quality settings switch
-  //            (null: every category);
+  //            category names (no spaces, lower case) whose direct child tracks the game's
+  //            quality settings switch;
   //   sets:    named option lists [[value, English label]];
   //   labels:  English label per value key (a descriptor's "label" overrides it);
   //   classes: playable class → value key → { control, ... }.
@@ -40,7 +40,10 @@
       "qualityRoots": {
         "StageEffect": ["ambient", "animation", "audience", "coloring", "control", "display", "emissive", "flashlight",
                         "overlayeffect", "post"],
-        "MemberEffect": null, "PropEffect": null, "GlobalEffect": null, "MotionMisc": null
+        "MemberEffect": ["memberambient", "memberrimlight", "memberspotlightarea", "memberspotlightshaft"],
+        "PropEffect": ["propambient", "propcoloring", "proprimlight"],
+        "GlobalEffect": ["baselight"],
+        "MotionMisc": ["splitscreen"]
       }
     },
     "sets": {
@@ -425,8 +428,7 @@
     if (!isObject(track) || track.nativeClass === "GroupTrack") return rule.notes.group;
     const parts = typeof track.label === "string" ? track.label.split("/") : [];
     if (parts.length === 4 && own(rule.qualityRoots, parts[0])) {
-      const names = rule.qualityRoots[parts[0]], category = parts[2].replace(/ /g, "").toLowerCase();
-      if (names === null || names.includes(category)) return rule.notes.quality;
+      if (rule.qualityRoots[parts[0]].includes(parts[2].replace(/ /g, "").toLowerCase())) return rule.notes.quality;
     }
     return null;
   }
