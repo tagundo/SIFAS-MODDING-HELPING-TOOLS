@@ -228,5 +228,67 @@ class ActualDisplayVariantTests(unittest.TestCase):
         self.assertNotIn("sub_01", screens, "a display without materialReferences switches nothing")
 
 
+class ActualDisplayExportTests(unittest.TestCase):
+    """The whole model_viewer export of real ETC2_RGBA8 screen textures (decoded in numpy, not stubbed).
+    Set SIFAS_TEST_STAGE_EFFECT_11005 and SIFAS_TEST_STAGE_EFFECT_11046 to the original Android
+    stage_effect bundles of 11005/3 and 11046/3."""
+
+    def export(self, live):
+        import io
+        import json
+        import struct
+        from PIL import Image
+        raw = os.environ.get(f"SIFAS_TEST_STAGE_EFFECT_{live}")
+        if not raw or not Path(raw).is_file():
+            self.skipTest(f"Set SIFAS_TEST_STAGE_EFFECT_{live} to the original stage_effect bundle")
+        prepared = model_viewer.prepare([raw], rigged=False, face_context={
+            "enabled": False, "allow_download": False, "_mv_stage": True, "_mv_authored_motion": False,
+            "_mv_stage_motion_bindings": (), "_mv_performer": False, "_mv_native_stage_effect": True})
+        payload = model_viewer.get_model(prepared["id"])
+        size = struct.unpack_from("<I", payload, 12)[0]
+        doc, binary = json.loads(payload[20:20 + size]), payload[28 + size:]
+        screens = {extras["mvStageDisplay"]["target"].rsplit("/", 1)[-1]: extras["mvStageDisplay"]
+                   for mesh in doc["meshes"] for primitive in mesh["primitives"]
+                   for extras in [primitive.get("extras") or {}] if "mvStageDisplay" in extras}
+
+        def image(index):
+            source = doc["images"][doc["textures"][index]["source"]]
+            view = doc["bufferViews"][source["bufferView"]]
+            start = view.get("byteOffset", 0)
+            return source["name"], Image.open(io.BytesIO(binary[start:start + view["byteLength"]])).convert("RGBA")
+        codes = [item.get("code") for item in prepared.get("warnings") or () if isinstance(item, dict)]
+        return screens, image, codes, raw
+
+    @staticmethod
+    def source(path, name):
+        import UnityPy
+        texture, = [obj.read() for obj in UnityPy.load(path).objects
+                    if obj.type.name == "Texture2D" and obj.read().m_Name == name]
+        return int(texture.m_TextureFormat), texture.image.convert("RGBA")
+
+    def assert_exact(self, embedded, path):
+        from PIL import ImageChops
+        name, image = embedded
+        texture_format, original = self.source(path, name)
+        self.assertEqual(texture_format, 47, "ETC2_RGBA8")
+        self.assertEqual(image.size, original.size, "no resampling")
+        self.assertIsNone(ImageChops.difference(image, original).getbbox(), f"{name} is decoded exactly")
+
+    def test_11005_wave_screen_draws_its_etc2_wave_texture(self):
+        screens, image, codes, path = self.export(11005)
+        self.assertNotIn(coverage.DISPLAY_VARIANTS_UNSUPPORTED, codes)
+        wave = screens["main"]["variants"][6]["background"]
+        self.assertEqual(wave["kind"], "waveTexture")
+        self.assertIsInstance(wave["wave"]["texture"], int)
+        self.assert_exact(image(wave["wave"]["texture"]), path)
+
+    def test_11046_logo_draws_its_etc2_texture(self):
+        screens, image, codes, path = self.export(11046)
+        self.assertNotIn(coverage.DISPLAY_VARIANTS_UNSUPPORTED, codes)
+        logo = screens["main"]["variants"][5]["logo"]
+        self.assertEqual((logo["kind"], logo["saturate"]), ("transparent", True))
+        self.assert_exact(image(logo["texture"]), path)
+
+
 if __name__ == "__main__":
     unittest.main()
