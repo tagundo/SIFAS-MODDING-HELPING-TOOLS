@@ -130,6 +130,8 @@ const report = {};
     assert.equal(state.holds, 0, 'no hold');
     assert(state.snaps <= 1, 'only the lock at the start may snap');
     assert.equal(steps(settled).filter((step) => step.advance === 0).length, 0, 'no frame repeats a time');
+    const exact = steps(settled).filter((step) => Math.abs(step.ratio - 1) < 1e-9).length;
+    assert(exact >= 0.8 * (settled.length - 1), `coarse seed ${seed}: the dead zone leaves most frames at rate 1 (${exact} of ${settled.length - 1})`);
     naive += naiveZeroFrames(settled);
     total += settled.length - 1;
     worst = Math.max(worst, offset);
@@ -202,6 +204,21 @@ const report = {};
   evenSteps(after(twice.rows, 1000), 'two late readings');
   assert.equal(twice.state.holds, 0, 'two late readings do not hold the picture');
 
+  // One early reading leaves the rate alone (errors beyond snap are not filtered in).
+  let early = false;
+  const ahead = run({ seconds: 4, events: { 120: (audio, clock, t, host) => {
+    host.reading = (track, now) => {
+      const value = track.read(now);
+      if (!early && value !== host.lastValue && host.lastValue !== undefined) { early = true; host.lastValue = value; return value + 0.2; }
+      host.lastValue = value;
+      return value;
+    };
+  } } });
+  assert(early);
+  const around = ahead.rows.filter((row) => row.k >= 110 && row.k <= 140);
+  assert(around.every((row) => row.rate === around[0].rate), 'one early reading does not change the rate');
+  assert.equal(ahead.state.snaps, 1, 'nor snap');
+
   const back = run({ seconds: 5, events: { 120: (audio, clock, t) => audio.jump(-0.2, t) } });
   monotonic(back.rows, 'backward step');
   assert.equal(back.state.holds, 1, 'a confirmed backward step holds once');
@@ -250,6 +267,11 @@ const report = {};
   const edit = run({ seconds: 3, events: { 120: (audio, clock) => clock.seek(clock.state().time, false) } });
   evenSteps(after(edit.rows, 1000), 'an edit while playing');
   assert(edit.rows.every((row, i) => i < 5 || row.mode === 'sync'), 'stays locked');
+  // A seek to another time with the soundtrack left alone starts over from that time.
+  const plugin = run({ seconds: 3, events: { 120: (audio, clock) => clock.seek(clock.state().time + 0.3, false) } });
+  const jumped = plugin.rows.find((row) => row.k === 120), before = plugin.rows.find((row) => row.k === 119);
+  assert.equal(jumped.mode, 'wait', 'waits for the soundtrack');
+  assert(Math.abs(jumped.time - (before.time + 0.3)) < 1e-9, 'shows the sought time');
   // Moving the soundtrack (an offset change: seek(time, true)) resynchronises.
   const offset = run({ seconds: 3, events: { 120: (audio, clock, t) => { const now = clock.state().time; audio.seek(now, t); clock.seek(now, true); } } });
   monotonic(offset.rows, 'offset change');
@@ -294,6 +316,7 @@ const report = {};
   assert(free.length > 60, 'frames only after giveUp');
   for (const step of steps(free)) assert(Math.abs(step.advance - step.interval) < 1e-9, 'free-running advances by the frame interval');
   assert.equal(long.state.realigns, 1, 'one realignment');
+  assert(!long.rows.some((row) => row.holding), 'the far-behind soundtrack is moved, not waited for');
   assert.equal(long.audio.seeks, 1, 'the host moved the soundtrack');
   assert(maxAbs(offsets(long.rows.filter((row) => row.k >= 330))) <= 0.030, 'after the realignment: within 30 ms');
 
@@ -303,6 +326,10 @@ const report = {};
   assert.equal(stuck.state.realigns, 1);
   assert.equal(stuck.state.ignored, true, 'the lagging soundtrack is ignored');
   assert(stuck.rows.slice(-60).every((row) => row.mode === 'free'), 'frames only');
+  const restarted = run({ seconds: 8, audio: { seekable: false }, events: { 120: (audio, clock, t) => audio.stall(t),
+    300: (audio, clock, t) => audio.resume(t), 420: (audio, clock, t) => clock.start(audio.truth(t), t) } });
+  assert.equal(restarted.rows.find((row) => row.k === 419).mode, 'free');
+  assert(restarted.rows.slice(-50).every((row) => row.mode === 'sync'), 'a new start uses the soundtrack again');
 
   // Never advancing (a broken media clock): hold for giveUp, then frames only.
   const broken = run({ seconds: 3, events: { 1: (audio, clock, t, host) => { host.reading = () => 0; } } });
@@ -349,6 +376,18 @@ const report = {};
   monotonic(gap.rows, 'gap');
   const index = gap.rows.findIndex((row) => row.k === 120);
   assert(Math.abs(gap.rows[index].time - gap.rows[index].truth) <= 0.030, 'in sync on the frame after the gap');
+  // The soundtrack skipped during the gap: corrected on the frame after it, with no confirmation.
+  const skipped = run({ seconds: 4, frames: (k) => k === 120 ? 900 : 1000 / 60, events: { 120: (audio, clock, t) => audio.jump(0.3, t - 450) } });
+  monotonic(skipped.rows, 'skip during a gap');
+  const skip = skipped.rows.find((row) => row.k === 120);
+  assert(Math.abs(skip.time - skip.truth) <= 0.030, `the skip is caught up on the frame after the gap (${skip.time - skip.truth})`);
+  // A rate correction in progress is not applied over the whole of a long gap.
+  const slewing = run({ seconds: 6, frames: (k) => k === 150 ? 3000 : 1000 / 60, events: { 120: (audio, clock, t) => audio.jump(0.04, t) } });
+  monotonic(slewing.rows, 'gap while slewing');
+  assert(slewing.rows.find((row) => row.k === 149).rate > 1.01, 'slewing when the gap starts');
+  assert.equal(slewing.state.holds, 0, 'no hold after the gap');
+  const landed = slewing.rows.find((row) => row.k === 150);
+  assert(Math.abs(landed.time - landed.truth) <= D.snap, `the slew carries on after the gap, below snap (${landed.time - landed.truth})`);
 }
 
 // ---- Heavy load: irregular frames (16-230 ms) and stale readings --------------------------------
