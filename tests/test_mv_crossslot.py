@@ -634,6 +634,64 @@ class RealSampleCameraEditTests(unittest.TestCase):
                 self.assertNotEqual(edited, stock)
                 self.check(edited, stock)
 
+    def test_12035_turns_just_over_the_legacy_camera_tolerance(self):
+        """Keys turned 1.0e-6 to 1.02e-6 (largest quaternion component change) from the stock sample's
+        legacy ZXY rotation: the export of the project keeps every turn (over the legacy step's 1e-6),
+        and some parse back within 1e-6 of the legacy rotation. The checks and conversions re-export
+        that parse, which is never a legacy project, so the legacy step must not turn those keys back.
+        Also quaternions saved unnormalized (x3.7, with 1e-9 jitter), whose parse is normalized."""
+        import math
+        import random
+
+        def change(a, b):
+            return max(abs(x - y) for x, y in zip(a, b))
+
+        def turned(rotation, angle):  # rotation * a yaw of ``angle`` about the camera's own up axis
+            x, y, z, w = rotation
+            s, c = math.sin(angle / 2), math.cos(angle / 2)
+            return [c * x - s * z, c * y + s * w, c * z + s * x, c * w - s * y]
+
+        def by(rotation, wanted):  # the turn just over ``wanted``
+            low, high = 0., 1e-5
+            for _ in range(80):
+                middle = (low + high) / 2
+                low, high = (middle, high) if change(turned(rotation, middle), rotation) < wanted else (low, middle)
+            return turned(rotation, high)
+
+        for name, other_name in (("a", "i"), ("i", "a")):
+            stock = (SAMPLES / f"{name}-1203503-live_timeline.unity").read_bytes()
+            other = (SAMPLES / f"{other_name}-1203503-live_timeline.unity").read_bytes()
+            source = _camera_shots(register._parse(stock)["tracks"], sub=False)[3][1]
+            legacy = mv_studio_timeline._legacy_camera_frames(stock, "camera-edits", [source])[source["id"]]
+            self.assertEqual(len(legacy), len(source["values"]["keyframes"]))
+            with self.subTest(platform=name, edit="band"):
+                tracks = register._parse(stock)["tracks"]
+                event = _camera_shots(tracks, sub=False)[3][1]
+                event["values"]["keyframes"] = [{**key, "rotation": by(old["rotation"], 1e-6 + index * 3e-10)}
+                                                for index, (key, old) in enumerate(zip(event["values"]["keyframes"],
+                                                                                       legacy))]
+                self.assertLessEqual(max(change(key["rotation"], old["rotation"]) for key, old in
+                                         zip(event["values"]["keyframes"], legacy)), 1.02e-6)
+                edited = mv_studio_timeline.export_timeline(stock, "camera-edits", tracks)
+                written = next(item for track in register._parse(edited)["tracks"] for item in track["events"]
+                               if item["id"] == event["id"])["values"]["keyframes"]
+                stocked = source["values"]["keyframes"]
+                self.assertTrue(all(key["rotation"] != old["rotation"] for key, old in zip(written, stocked)),
+                                "The export keeps every turn")
+                self.assertTrue(any(mv_studio_timeline._same_rotation(key["rotation"], old["rotation"])
+                                    for key, old in zip(written, legacy)), "Some keys parse back into the band")
+                self.check(edited, stock, other)
+            with self.subTest(platform=name, edit="unnormalized"):
+                tracks = register._parse(stock)["tracks"]
+                event = _camera_shots(tracks, sub=False)[3][1]
+                jitter = random.Random(7)
+                event["values"]["keyframes"] = [{**key, "rotation": [3.7 * value + 1e-9 * jitter.random()
+                                                                     for value in key["rotation"]]}
+                                                for key in event["values"]["keyframes"]]
+                edited = mv_studio_timeline.export_timeline(stock, "camera-edits", tracks)
+                self.assertNotEqual(edited, stock)
+                self.check(edited, stock, other)
+
 
 class ConversionMessageTests(unittest.TestCase):
     def test_every_conversion_and_check_message_has_korean_and_japanese(self):
@@ -735,7 +793,12 @@ class CrossSlotTests(reg_tests.Case):
         with self.assertRaisesRegex(ValueError, apply.CROSS_EDITS):
             apply.validate_apply(self.root, {"mode": "edits", "project": project, "platforms": ["android", "ios"],
                                              "target": {"assetId": 2201}, "expected": plan["expected"]})
+        reg_tests.EXPORTS.clear()
         job, summary = self.run_cross(project, plan)
+        # The saved project is exported onto its own platform's stock with the legacy camera step; the
+        # conversion re-exports the parse of that result onto the other stock, without it.
+        self.assertEqual([(export["base"]["platform"], export["legacyCamera"]) for export in reg_tests.EXPORTS],
+                         [("android", True), ("ios", False)])
         self.assertTrue(summary.startswith("Applied to the game: ") and summary.endswith(" · 3D 2201."), summary)
         validate = [call for call in self.store.calls if call[0] == "validate"]
         self.assertEqual(validate, [("validate", "gl", 2101, ["android", "ios"])])  # the SOURCE asset's stock
@@ -1414,7 +1477,7 @@ class RealStoreCrossSlotTests(reg_tests.Case):
             self.skipTest("This Elichika store cannot apply another slot")
         mv_studio_stock._VALIDATED.clear()
         self.addCleanup(mv_studio_stock._VALIDATED.clear)
-        for name, value in (("prepare_tracks", lambda raw, name, tracks, original: tracks),
+        for name, value in (("prepare_tracks", lambda raw, name, tracks, original, **options: tracks),
                             ("_rewrite_timeline", __import__("test_mv_studio_apply").fake_rewrite)):
             patcher = mock.patch.object(mv_studio_timeline, name, side_effect=value)
             patcher.start()

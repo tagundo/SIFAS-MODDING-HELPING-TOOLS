@@ -1500,18 +1500,26 @@ def restore_legacy_camera_keyframes(raw, name, tracks, originals):
     return restored
 
 
-def prepare_tracks(raw: bytes, name: str, tracks, original_tracks):
+def prepare_tracks(raw: bytes, name: str, tracks, original_tracks, *, legacy_camera=True):
     """Bring saved tracks up to the current parse rules of their source bytes, keeping every edit.
 
     The steps every native export runs first: emissive track metadata, the current editableValues
     lists, legacy (ZXY) camera rotations of unedited points, and the derived shaftSlot. Without
     them a project saved by an older version would differ from its own source where nothing was
-    edited."""
+    edited.
+
+    ``legacy_camera`` False skips the legacy camera step, for tracks that are the parse of timeline
+    bytes (convert_parsed: a conversion, another slot's other platform, check_editor_bytes), never a
+    saved project: their points are what the current parse reads. The step would turn a point back
+    to the stock rotation when its float32 parse lands within the step's tolerance (1e-6 per
+    quaternion component) of the stock sample's legacy rotation, although the point was an edit, and
+    the result would no longer be the bytes it was parsed from."""
     if not isinstance(tracks, list):
         return tracks
     tracks = restore_emissive_track_metadata(tracks, original_tracks)
     tracks = sync_editable_values(tracks, original_tracks)
-    tracks = restore_legacy_camera_keyframes(raw, name, tracks, original_tracks)
+    if legacy_camera:
+        tracks = restore_legacy_camera_keyframes(raw, name, tracks, original_tracks)
     # Shaft targets are derived preview metadata, independent of any clip's
     # member color selector. The original track identity remains read-only.
     return [
@@ -1522,10 +1530,13 @@ def prepare_tracks(raw: bytes, name: str, tracks, original_tracks):
     ]
 
 
-def export_timeline(raw: bytes, name: str, tracks: list) -> bytes:
-    """Derive the base from these source bytes and export the submitted tracks."""
+def export_timeline(raw: bytes, name: str, tracks: list, *, legacy_camera=True) -> bytes:
+    """Derive the base from these source bytes and export the submitted tracks.
+
+    ``legacy_camera`` False: ``tracks`` are the parse of timeline bytes, not a saved project, and
+    the legacy camera step of prepare_tracks is skipped."""
     original = parse_timeline(raw, name)
-    tracks = prepare_tracks(raw, name, tracks, original["tracks"])
+    tracks = prepare_tracks(raw, name, tracks, original["tracks"], legacy_camera=legacy_camera)
     if original["tracks"] == tracks:
         return raw
     return _rewrite_timeline(raw, original, {**original, "tracks": tracks})

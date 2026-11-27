@@ -253,8 +253,11 @@ def _parse(raw, name="base"):
     return copy.deepcopy(parsed)
 
 
-def _export(raw, name, tracks):
-    return mv_studio_timeline.export_timeline(raw, name, tracks)
+def _export(raw, name, tracks, *, legacy_camera=True):
+    """``tracks`` exported onto ``raw``. ``legacy_camera`` False when ``tracks`` are the parse of
+    timeline bytes (mv_timeline_platform.convert_parsed), never a saved project: see
+    mv_studio_timeline.prepare_tracks."""
+    return mv_studio_timeline.export_timeline(raw, name, tracks, legacy_camera=legacy_camera)
 
 
 def _blob_platform(raw):

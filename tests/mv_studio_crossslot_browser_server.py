@@ -45,7 +45,7 @@ def main():
     os.chdir(root)
     stock = stand_in_timelines()
     mv_studio_timeline._rewrite_timeline = fake_rewrite
-    mv_studio_timeline.prepare_tracks = lambda raw, name, tracks, original: tracks
+    mv_studio_timeline.prepare_tracks = lambda raw, name, tracks, original, **options: tracks
     store = FakeStore()
     register.store = lambda: store
     sys.modules["mv_timeline_pack"] = fake_pack_module([])

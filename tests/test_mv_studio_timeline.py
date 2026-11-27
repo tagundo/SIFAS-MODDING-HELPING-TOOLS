@@ -206,6 +206,16 @@ class TimelineContractTests(unittest.TestCase):
                 patch.object(studio, "_read", return_value=(None, objects, {})):
             self.assertIs(studio.export_timeline(raw, "x", deepcopy([native, bloom])), raw)
             self.assertIs(studio.export_timeline(raw, "x", deepcopy(saved)), raw)
+        # The parse of timeline bytes (convert_parsed) is never a legacy project: without the legacy
+        # step its points are written as they are, and the bundle is not read for legacy rotations.
+        with patch.object(studio, "parse_timeline", return_value=original), patch.object(studio, "_read") as read, \
+                patch.object(studio, "_rewrite_timeline", return_value=b"rewritten") as rewrite:
+            self.assertEqual(studio.prepare_tracks(raw, "x", deepcopy(saved), [native, bloom], legacy_camera=False),
+                             saved)
+            self.assertIs(studio.export_timeline(raw, "x", deepcopy([native, bloom]), legacy_camera=False), raw)
+            self.assertEqual(studio.export_timeline(raw, "x", deepcopy(saved), legacy_camera=False), b"rewritten")
+        read.assert_not_called()
+        self.assertEqual(rewrite.call_args.args[2]["tracks"], saved)
 
     def test_legacy_camera_edit_is_kept_and_written_in_the_binding_order(self):
         trees, native, legacy, objects = self.legacy_camera_fixture()

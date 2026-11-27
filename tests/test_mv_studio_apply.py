@@ -59,7 +59,7 @@ class ApplyCase(reg_tests.Case):
             self.skipTest("The Elichika server app is not importable")
         mv_studio_stock._VALIDATED.clear()
         self.addCleanup(mv_studio_stock._VALIDATED.clear)
-        for name, value in (("prepare_tracks", lambda raw, name, tracks, original: tracks),
+        for name, value in (("prepare_tracks", lambda raw, name, tracks, original, **options: tracks),
                             ("_rewrite_timeline", fake_rewrite)):
             patcher = mock.patch.object(mv_studio_timeline, name, side_effect=value)
             patcher.start()

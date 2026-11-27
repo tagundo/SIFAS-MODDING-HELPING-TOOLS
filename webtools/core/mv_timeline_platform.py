@@ -167,7 +167,9 @@ def convert_parsed(src_bytes, dst_template, *, name="timeline"):
         normalized, _ = register.normalize(reference["tracks"], source["tracks"])
     except register.StructureError as error:
         raise ConversionError(NOT_THIS_ASSET, error.labels) from error
-    output = register._export(dst_template, name, normalized)
+    # The source is timeline bytes, never a project an older MV Studio saved: no legacy camera step,
+    # which could turn an edited camera point back to the template's rotation.
+    output = register._export(dst_template, name, normalized, legacy_camera=False)
     converted = register._parse(output, "verify")["tracks"]
     if converted != source["tracks"]:
         raise ConversionError(LOSSY, _differing(source["tracks"], converted))

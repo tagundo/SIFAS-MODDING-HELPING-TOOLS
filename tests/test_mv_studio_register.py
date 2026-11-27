@@ -237,9 +237,10 @@ def fake_parse(raw, name, **_options):
 EXPORTS = []
 
 
-def fake_export(raw, name, tracks):
+def fake_export(raw, name, tracks, *, legacy_camera=True):
     original = fake_parse(raw, name)
-    EXPORTS.append({"base": json.loads(raw[8:].rstrip(b" ").decode()), "tracks": copy.deepcopy(tracks)})
+    EXPORTS.append({"base": json.loads(raw[8:].rstrip(b" ").decode()), "tracks": copy.deepcopy(tracks),
+                    "legacyCamera": legacy_camera})
     if original["tracks"] == tracks:
         return raw
     mv_studio_timeline._changes(original, {**original, "tracks": tracks})  # the exporter's own structure rules
@@ -1798,9 +1799,9 @@ class RealSampleUpdateTests(Case):
         forbid_real_server_kills(self, serverctl)
         self.exports = []
 
-        def export(raw, name, tracks):
+        def export(raw, name, tracks, **options):
             self.exports.append(name)
-            return REAL_EXPORT(raw, name, tracks)
+            return REAL_EXPORT(raw, name, tracks, **options)
 
         for target, name, value in ((mv_studio_timeline, "parse_timeline", REAL_PARSE),
                                     (mv_studio_timeline, "export_timeline", export),

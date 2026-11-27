@@ -55,7 +55,7 @@ def main():
     os.chdir(root)
     stock = stand_in_timelines()
     mv_studio_timeline._rewrite_timeline = fake_rewrite
-    mv_studio_timeline.prepare_tracks = lambda raw, name, tracks, original: tracks
+    mv_studio_timeline.prepare_tracks = lambda raw, name, tracks, original, **options: tracks
     project = native_project(stock)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
