@@ -1180,8 +1180,10 @@ def _camera_rotation_samples(rotation, euler_order, reference):
     parsed rotation is normalized already): b, the point rounded to float32 samples, or for a
     quaternion one of b's float32 neighbours. When none is (an edited point), the point becomes b's
     parse and the search repeats; what it finds is what the next export, starting from that parse,
-    finds first. Measured: every camera shot of 11 MVs and random rotations, near-gimbal ones too,
-    are found within the eight rounds; past them, b is written."""
+    finds first. Measured: the camera shots of 12035, 12056 and 12023, as parsed and turned, need at
+    most three rounds. Within 1e-3 degrees of the middle-axis gimbal, 6 of 24,000 searches (12,000
+    keys, each written and its parse written again) found none in eight rounds and wrote b; each of
+    those keys still wrote the same samples twice."""
     euler = euler_order is not None
     target = list(rotation)
     for _ in range(8):
@@ -1209,7 +1211,7 @@ def _write_camera(tree, clip, old_event, new_event):
     `clip` is the TimelineClip as it will be saved (its new timing). A resized shot (new_event's
     duration) brings the points of its new grid, ceil(duration·60) + 1 of them at min(i/60,
     duration): the clip is written for that length. The export of a parse of the result writes the
-    same samples again (_camera_rotation_samples; positions and FOV are float32 already)."""
+    same samples again (_camera_rotation_samples; positions and FOV parse back to their float32)."""
     after = new_event["values"]["keyframes"]
     span = new_event["duration"]
     if old_event["values"].get("clipIn", 0) != 0 or old_event["values"].get("timeScale", 1) != 1:
