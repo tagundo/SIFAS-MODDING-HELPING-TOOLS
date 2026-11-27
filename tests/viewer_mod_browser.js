@@ -14,6 +14,8 @@ const { spawn, spawnSync } = require('child_process');
 const { chromium } = require('playwright');
 const product = path.resolve(__dirname, '..');
 const python = process.env.VIEWER_PYTHON || 'python3';
+// A folder made here (no EVIDENCE_DIR) is removed after a passing run and kept after a failing one.
+const madeEvidence = !process.env.EVIDENCE_DIR;
 const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-mod-evidence-'));
 const library = fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-mod-library-'));
 const inputs = path.join(library, 'extracted/3d_model');
@@ -79,6 +81,13 @@ async function startServer() {
     await wait(100);
   }
   child.kill(); throw new Error('Product server was not ready');
+}
+function stopped(child) {
+  return new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    child.once('exit', () => resolve());
+    child.kill();
+  });
 }
 async function show(page, selector) {
   const target = typeof selector === 'string' ? page.locator(selector) : selector; await target.evaluate(element => { for (let p = element.parentElement; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true; });
@@ -288,9 +297,16 @@ async function downloads(page, modPath, locale) {
     }
     report.frontendAfter = frontendHashes(); assert.deepStrictEqual(report.frontendAfter, report.frontendBefore, 'The tested shared UI source stayed unchanged');
     report.status = 'PASS'; fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n');
-    console.log(JSON.stringify({ status: report.status, cases: report.cases.length, evidence }));
+    console.log(JSON.stringify({ status: report.status, cases: report.cases.length, evidence: madeEvidence ? null : evidence }));
   } finally {
     if (browser) await browser.close();
-    if (server) { server.child.kill(); server.child.stdout.unpipe(server.stream); server.child.stderr.unpipe(server.stream); server.stream.end(); }
+    if (server) {
+      server.child.stdout.unpipe(server.stream); server.child.stderr.unpipe(server.stream);
+      await stopped(server.child); await new Promise(resolve => server.stream.end(resolve));
+    }
+    // The product server has ended: its library (about 4 MB) goes with this run.
+    fs.rmSync(library, { recursive: true, force: true });
+    if (madeEvidence && report.status === 'PASS') fs.rmSync(evidence, { recursive: true, force: true });
+    else if (madeEvidence) console.error('Evidence kept: ' + evidence);
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
