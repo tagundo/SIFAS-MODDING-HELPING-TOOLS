@@ -1,6 +1,7 @@
-/* "Move vertices at the same position together": the position groups (exact
- * float32 values or within SAME_POSITION_ULPS steps on every axis), the partner
- * sets an edit writes, and the free-drag rule that keeps a group coincident. */
+/* "Move vertices at the same position together": the position groups (current
+ * positions within SAME_POSITION_TOLERANCE model units on every axis), the
+ * partner sets an edit writes, and the free-drag rule that keeps a group
+ * coincident. */
 'use strict';
 const assert = require('assert');
 const fs = require('fs');
@@ -10,7 +11,7 @@ const THREE = require('../webtools/web/static/vendor/three-r128/three.min.js');
 const context = { window: { THREE } };
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../webtools/web/static/viewer-mesh-tools.js'), 'utf8'), context);
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../webtools/web/static/viewer-mesh-runtime.js'), 'utf8'), context);
-const { buildPositionGroups: build, samePositionPartners: partners, samePositionUlps } = context.window.ViewerMeshTools;
+const { buildPositionGroups: build, samePositionPartners: partners, samePositionTolerance } = context.window.ViewerMeshTools;
 const { planeDragPlan, planeDragValues, skinMatrix } = context.window.ViewerMeshRuntime;
 const plain = value => JSON.parse(JSON.stringify(value));
 const groupsOf = (positions, tolerance) => plain(build(positions.length, v => positions[v], tolerance).groups);
@@ -20,67 +21,119 @@ const f32 = new Float32Array(1), i32 = new Int32Array(f32.buffer);
 function step(value, k) { f32[0] = value; i32[0] += k; return f32[0]; }
 function ulps(a, b) { const o = x => { f32[0] = x; const bits = i32[0]; return bits < 0 ? -(bits & 0x7fffffff) : bits; }; return Math.abs(o(a) - o(b)); }
 
-assert.equal(samePositionUlps, 4, 'the census-chosen tolerance is four float32 steps per axis');
+assert.equal(samePositionTolerance, 5e-7, 'the census-chosen tolerance is 5e-7 model units per axis');
+const T = samePositionTolerance;
 
 // 1. Exact seams, signed zero, several groups and ascending order.
 const exact = [[0, 1, 2], [0.5, 0.25, 0], [0, 1, 2], [-0, 0.25, 0], [0.5, 0.25, -0], [3, 3, 3], [0, 1, 2]];
 assert.deepStrictEqual(groupsOf(exact, 0), [[0, 2, 6], [1, 4]], 'exact equality');
 assert.deepStrictEqual(groupsOf([[0, 0.25, 0], [-0, 0.25, -0]], 0), [[0, 1]], '-0 and +0 are the same position');
+assert.deepStrictEqual(groupsOf([[0, 0.25, 0], [1e-300, 0.25, 0]], 0), [], 'the exact rule keeps any difference apart');
 assert.deepStrictEqual(groupsOf([[1, 2, 3]], 0), [], 'a single vertex is never a group');
-assert.deepStrictEqual(groupsOf([], 4), [], 'an empty mesh has no groups');
+assert.deepStrictEqual(groupsOf([], T), [], 'an empty mesh has no groups');
+assert.deepStrictEqual(groupsOf(exact), [[0, 2, 6], [1, 4]], 'the default rule keeps exact groups');
 
-// 2. Float32 steps: within 4 steps on every axis join, 5 do not. Values are
-// compared as the float32 the mesh stores: a double below one step rounds.
+// 2. Absolute tolerance: within 5e-7 on every axis join, beyond it stay apart,
+// at any magnitude (float32 steps shrink towards zero, model units do not).
 const base = 0.0234375, high = 1.4375;
-assert.deepStrictEqual(groupsOf([[base, high, -0.5], [step(base, 1), high, -0.5]]), [[0, 1]], 'one step (real Hair seam noise) joins');
-assert.deepStrictEqual(groupsOf([[base, high, -0.5], [step(base, 4), step(high, 4), -0.5]]), [[0, 1]], 'four steps on two axes join');
-assert.deepStrictEqual(groupsOf([[base, high, -0.5], [step(base, 5), high, -0.5]]), [], 'five steps stay apart');
+assert.deepStrictEqual(groupsOf([[base, high, -0.5], [step(base, 1), high, -0.5]]), [[0, 1]], 'one float32 step joins');
+assert.deepStrictEqual(groupsOf([[base, high, -0.5], [base + 4.9e-7, high - 4.9e-7, -0.5]]), [[0, 1]], '4.9e-7 on two axes joins');
+assert.deepStrictEqual(groupsOf([[base, high, -0.5], [base + 5.1e-7, high, -0.5]]), [], '5.1e-7 stays apart');
+assert.deepStrictEqual(groupsOf([[base, high, -0.5], [base, high, -0.5 - 5.1e-7]]), [], 'on any axis');
 assert.deepStrictEqual(groupsOf([[base, high, -0.5], [step(base, 1), high, -0.5]], 0), [], 'the exact rule keeps one step apart');
-assert.deepStrictEqual(groupsOf([[base, high, 0], [base + 1e-12, high, 0]], 0), [[0, 1]], 'doubles closer than half a float32 step are one stored value');
-// The smallest distinct pair in the census: two vertices of one triangle
-// 1.2e-6 apart (81 float32 steps at their magnitude). Never merged.
-const near = 0.1220703125, far = near + 1.2073619305464415e-6;
-assert(ulps(near, far) >= 80);
-assert.deepStrictEqual(groupsOf([[near, 0.5, 0.5], [far, 0.5, 0.5]]), [], 'distinct sliver-edge vertices stay apart');
-// Negative values and the step across zero.
-assert.deepStrictEqual(groupsOf([[-base, 1, 1], [-step(base, 3), 1, 1]]), [[0, 1]], 'negative coordinates count steps the same way');
-assert.deepStrictEqual(groupsOf([[1e-45, 1, 1], [-1e-45, 1, 1]]), [[0, 1]], 'the smallest values either side of zero are two steps apart');
-// Chains are one group (every link is within the tolerance).
-assert.deepStrictEqual(groupsOf([[step(base, 8), 0, 0], [base, 0, 0], [step(base, 4), 0, 0]]), [[0, 1, 2]], 'a chain of near copies is one group');
-
-// 3. The spatial hash equals a brute-force comparison, including values on
-// both sides of a cell edge (cells are 256 float32 steps wide).
-function ordered32(x) { f32[0] = x; const bits = i32[0]; return bits < 0 ? -(bits & 0x7fffffff) : bits; }
-for (const sign of [1, -1]) {
-  let edge = sign * 0.3; while (((ordered32(edge) % 256) + 256) % 256 !== 255) edge = step(edge, 1);
-  for (const [a, b] of [[0, 1], [-3, 1], [0, 4], [-1, 4]]) {
-    const positions = [[step(edge, a), 0.5, 0.5], [step(edge, b), 0.5, 0.5]], gap = ulps(positions[0][0], positions[1][0]);
-    assert.deepStrictEqual(groupsOf(positions), gap <= 4 ? [[0, 1]] : [], 'across a cell edge: ' + [sign, a, b]);
-    assert.deepStrictEqual(groupsOf([positions[1], positions[0]]), gap <= 4 ? [[0, 1]] : [], 'either order: ' + [sign, a, b]);
-  }
-  const corner = [step(edge, 0), step(edge, 0), step(edge, 0)];
-  assert.deepStrictEqual(groupsOf([corner, corner.map(x => step(x, 2))]), [[0, 1]], 'across a cell corner on all three axes');
+// Seams at and across zero. Real Hair copies of member 1 (Android): X
+// 2.78e-9 and 6.41e-9 (3.6e-9 apart, ten million float32 steps), Z 2.7e-9
+// apart near -0.0017 (23 steps). Four-step rules missed them.
+const hairX = [2.7830977522569356e-09, 6.410225239505962e-09], hairZ = [-0.00167236162815243, -0.001672358950600028];
+assert(ulps(hairX[0], hairX[1]) > 1e7 && ulps(hairZ[0], hairZ[1]) === 23);
+assert.deepStrictEqual(groupsOf([[hairX[0], 1.3842971324920654, -0.10343645513057709], [hairX[1], 1.3842971324920654, -0.10343645513057709]]), [[0, 1]], 'real Hair seam 3.6e-9 apart at x≈0');
+assert.deepStrictEqual(groupsOf([[-0.07500281929969788, 1.440385103225708, hairZ[0]], [-0.07500281929969788, 1.440385103225708, hairZ[1]]]), [[0, 1]], 'real Hair seam 23 steps apart');
+assert.deepStrictEqual(groupsOf([[1e-9, 0.5, 0.1], [-1e-9, 0.5, 0.1]]), [[0, 1]], '+1e-9 and -1e-9 join across zero');
+assert.deepStrictEqual(groupsOf([[0, 0.5, 0.1], [3.6e-9, 0.5, 0.1]]), [[0, 1]], '0 and 3.6e-9 join');
+assert.deepStrictEqual(groupsOf([[0, 0.5, 0.1], [1e-30, 0.5, 0.1], [-1e-45, 0.5, 0.1]]), [[0, 1, 2]], '0, 1e-30 and -1e-45 join');
+assert.deepStrictEqual(groupsOf([[2.5e-7, 0.5, 0.1], [-2.6e-7, 0.5, 0.1]]), [], 'but 5.1e-7 across zero stays apart');
+// The smallest distinct pairs in the census: two corners of one triangle,
+// 1.207e-6 (Hat) and 1.28e-6 (Body) apart on their widest axis. Never merged.
+const near = 0.1220703125;
+assert.deepStrictEqual(groupsOf([[near, 0.5, 0.5], [near + 1.2069940567016602e-06, 0.5, 0.5]]), [], 'distinct sliver-edge vertices stay apart');
+assert.deepStrictEqual(groupsOf([[near, 0.5, 0.5], [near + 1.2814998626708984e-06, 0.5 + 1e-7, 0.5]]), [], 'and the other sliver');
+// Every pair the four-step rule grouped below 2 is still grouped.
+let seed = 12345; const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+for (let i = 0; i < 400; i++) {
+  const sign = random() < 0.5 ? -1 : 1, value = Math.fround(sign * 2 * Math.pow(random(), 6)), k = 1 + Math.floor(random() * 4), other = step(value, sign * k);
+  if (!value || !Number.isFinite(other) || Math.abs(other) >= 2) continue;
+  assert.deepStrictEqual(groupsOf([[value, 0.5, 0.5], [other, 0.5, 0.5]]), [[0, 1]], 'four steps below 2: ' + value + ' ' + other);
 }
+// Chains are one group (every link is within the tolerance).
+assert.deepStrictEqual(groupsOf([[base + 8e-7, 0, 0], [base, 0, 0], [base + 4e-7, 0, 0]]), [[0, 1, 2]], 'a chain of near copies is one group');
+
+// 3. Moved together, still together: a shared move keeps the absolute gap,
+// across zero and across powers of two (float32 steps double or halve there).
+function translate(positions, members, delta) { return positions.map((p, v) => members.includes(v) ? p.map((x, axis) => x + delta[axis]) : p.slice()); }
+{
+  const at = [[0.26, 0.5, 0.1], [step(0.26, 3), 0.5, 0.1]];
+  assert.deepStrictEqual(groupsOf(translate(at, [0, 1], [-0.02, 0, 0])), [[0, 1]], 'a 3-step pair at 0.26 moved by -0.02 together (now 6 steps)');
+  const at75 = [[0.75, 0.5, 0.1], [step(0.75, 1), 0.5, 0.1]];
+  assert.deepStrictEqual(groupsOf(translate(at75, [0, 1], [-0.7, 0, 0])), [[0, 1]], 'a 1-step pair at 0.75 moved by -0.7 (now 16 steps)');
+  assert.deepStrictEqual(groupsOf(translate(at75, [0, 1], [-0.75, 0, 0])), [[0, 1]], 'and onto zero');
+  // Real member 207 Hair copies 645/1344: 4 steps at -0.086; Translate X +0.084716
+  // made them 256 steps apart at -0.0013 and the four-step rule split them.
+  const m207 = [[-0.08606104552745819, 1.4599024057388306, 0.013800970278680325], [-0.0860610157251358, 1.4599024057388306, 0.013800970278680325]];
+  const moved = translate(m207, [0, 1], [0.084716, 0, 0]); assert(ulps(moved[0][0], moved[1][0]) >= 256);
+  assert.deepStrictEqual(groupsOf(moved), [[0, 1]], 'the m207 Hair pair translated to -0.0013 is still one group');
+  const index = build(moved.length, v => moved[v]); assert.deepStrictEqual(plain(partners(index, [0]).partners), [1], 'and the next nudge moves both');
+}
+// Random near groups and shared moves: the grouping never changes.
+for (let round = 0; round < 40; round++) {
+  const positions = [];
+  for (let i = 0; i < 60; i++) {
+    if (positions.length && random() < 0.5) { const from = positions[Math.floor(random() * positions.length)]; positions.push(from.map(x => x + (random() - 0.5) * 0.9 * T)); }
+    else positions.push([0, 0, 0].map(() => Math.fround((random() - 0.5) * (random() < 0.3 ? 2e-5 : 3))));
+  }
+  const before = groupsOf(positions);
+  // Move whole groups (and some ungrouped vertices) by one random delta each.
+  let moved = positions;
+  const loose = positions.map((_, v) => v).filter(v => !before.some(group => group.includes(v)));
+  before.concat(loose.length ? [[loose[Math.floor(random() * loose.length)]]] : []).forEach(group => { const delta = [0, 0, 0].map(() => (random() - 0.5) * (random() < 0.5 ? 2 : 0.01)); moved = translate(moved, group, delta); });
+  const after = groupsOf(moved), stillTogether = before.every(group => after.some(other => group.every(v => other.includes(v))));
+  assert(stillTogether, 'groups moved together stay together, round ' + round);
+}
+
+// 4. The spatial hash equals a brute-force comparison, including values on
+// both sides of a cell edge (cells are a power of two, 2^-15 by default).
+const CELL = 1 / 32768;
+for (const sign of [1, -1]) {
+  const edge = sign * 9830 * CELL;
+  for (const [a, b] of [[-1e-7, 1e-7], [-4.9e-7, 0], [0, 4.99e-7], [-3e-7, 3e-7], [-2.6e-7, 2.6e-7], [-1e-12, 0]]) {
+    const positions = [[edge + a, 0.5, 0.5], [edge + b, 0.5, 0.5]], gap = Math.abs(positions[0][0] - positions[1][0]);
+    assert.deepStrictEqual(groupsOf(positions), gap <= T ? [[0, 1]] : [], 'across a cell edge: ' + [sign, a, b]);
+    assert.deepStrictEqual(groupsOf([positions[1], positions[0]]), gap <= T ? [[0, 1]] : [], 'either order: ' + [sign, a, b]);
+  }
+  const corner = [edge, edge, edge];
+  assert.deepStrictEqual(groupsOf([corner.map(x => x - 2e-7), corner.map(x => x + 2e-7)]), [[0, 1]], 'across a cell corner on all three axes');
+}
+assert.deepStrictEqual(groupsOf([[1e6, -1e6, 999999.99], [1e6, -1e6, 999999.99]]), [[0, 1]], 'very large coordinates still hash to one cell');
 function brute(positions, tolerance) {
   const parent = positions.map((_, i) => i), root = v => parent[v] === v ? v : (parent[v] = root(parent[v]));
   for (let a = 0; a < positions.length; a++) for (let b = a + 1; b < positions.length; b++)
-    if (positions[a].every((x, axis) => ulps(x, positions[b][axis]) <= tolerance)) { const ra = root(a), rb = root(b); if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb); }
+    if (positions[a].every((x, axis) => Math.abs(x - positions[b][axis]) <= tolerance)) { const ra = root(a), rb = root(b); if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb); }
   const groups = new Map(); positions.forEach((_, v) => { const r = root(v); groups.set(r, (groups.get(r) || []).concat([v])); });
   return Array.from(groups.values()).filter(g => g.length > 1);
 }
-let seed = 12345; const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
-for (const tolerance of [0, 1, 4, 9]) {
+for (const tolerance of [0, 1e-7, T, 4e-6, 5e-5]) {
   for (let round = 0; round < 6; round++) {
     const positions = [];
     for (let i = 0; i < 160; i++) {
-      if (positions.length && random() < 0.55) { const from = positions[Math.floor(random() * positions.length)]; positions.push(from.map(x => step(x, Math.floor(random() * 13) - 6))); }
+      if (positions.length && random() < 0.55) { const from = positions[Math.floor(random() * positions.length)]; positions.push(from.map(x => random() < 0.3 ? x : x + (random() - 0.5) * 3 * tolerance)); }
       else positions.push([0, 0, 0].map(() => Math.fround((random() - 0.5) * (random() < 0.3 ? 0.001 : 3))));
+      // Some values right at cell edges.
+      if (random() < 0.1) positions[positions.length - 1][0] = Math.round(positions[positions.length - 1][0] / CELL) * CELL + (random() - 0.5) * 2 * tolerance;
     }
     assert.deepStrictEqual(groupsOf(positions, tolerance), brute(positions, tolerance), 'spatial hash = brute force, tolerance ' + tolerance + ' round ' + round);
   }
 }
 
-// 4. Partners: the chosen vertices' other group members, each tied to the
+// 5. Partners: the chosen vertices' other group members, each tied to the
 // group's lowest chosen vertex; ungrouped and out-of-range picks are ignored.
 const index = build(exact.length, v => exact[v], 0);
 let result = partners(index, new Set([6, 5]));
@@ -93,15 +146,15 @@ assert.deepStrictEqual(plain(Array.from(result.seeds.entries())), [[6, 0], [1, 4
 assert.deepStrictEqual(plain(result.groups), [{ members: [0, 2, 6], chosen: [0, 2] }, { members: [1, 4], chosen: [4] }]);
 assert.deepStrictEqual(plain(partners(index, []).partners), []);
 
-// 5. Grouping follows the current positions: a group moved together stays a
+// 6. Grouping follows the current positions: a group moved together stays a
 // group; a vertex moved alone (option off) leaves it.
 const current = exact.map(p => p.slice());
 [0, 2, 6].forEach(v => { current[v] = current[v].map((x, axis) => x + [0.025, 0, -0.5][axis]); });
-assert.deepStrictEqual(groupsOf(current, 4)[0], [0, 2, 6], 'moved together, still one point');
+assert.deepStrictEqual(groupsOf(current)[0], [0, 2, 6], 'moved together, still one point');
 current[2][1] += 0.01;
-assert.deepStrictEqual(groupsOf(current, 4)[0], [0, 6], 'a vertex torn away earlier is no longer grouped');
+assert.deepStrictEqual(groupsOf(current)[0], [0, 6], 'a vertex torn away earlier is no longer grouped');
 
-// 6. Free camera-plane drag. A real skinned mesh: vertices 0 and 1 share a
+// 7. Free camera-plane drag. A real skinned mesh: vertices 0 and 1 share a
 // position but not their weights (277 of 113,025 real groups do), vertex 2 is
 // alone. Each vertex's own inverse skin map gives the seam copies different
 // deltas (the seam opens); the plan gives the group one delta.
@@ -136,4 +189,4 @@ plan = planeDragPlan(new Set([0]), together, 0, positionOf, singular);
 assert.deepStrictEqual(plain(planeDragValues(plan, delta)), {}, 'no invertible member: the group stays');
 assert.deepStrictEqual(Object.keys(plan.positions), [], 'and is not part of the drag');
 
-console.log('PASS: exact and four-step float32 groups, brute-force spatial hash, partners and seeds, current-position regrouping, shared free-drag delta');
+console.log('PASS: exact and 5e-7 absolute groups (zero crossings, real near-zero seams, moved groups stay), brute-force spatial hash, partners and seeds, current-position regrouping, shared free-drag delta');
