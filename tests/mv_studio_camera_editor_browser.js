@@ -18,9 +18,18 @@
    - every camera editor string has Korean and Japanese copy, and the whole panel follows a
      language switch (en, ja, back to ko).
 
+   Split-screen sub cameras (synthetic): selecting a sub camera shot opens the editor on that
+   camera (the Camera choice), an offset key moves only that shot along its own view, its key
+   diamonds show on its lane, Ctrl+Z / Ctrl+Shift+Z restore and redo it, it resizes with its keys
+   on their frames, and the main camera's shots stay untouched.
+
+   Camera extrapolation (synthetic): in a gap after a shot, Loop, Ping-pong and Continue show the
+   pose Unity's TimelineClip gives (the shot's own pose at the wrapped time), and None no shot.
+
    Real 12035 timeline (skipped unless ELICHIKA_STUDIO_TIMELINE_DIR holds
    a-1203503-live_timeline.unity; no game data in Git): an unedited project exports the
-   original bytes, and the export of an edited shot re-parses to the baked samples.
+   original bytes, and the export of an edited shot re-parses to the baked samples, also
+   after the edited shot is shortened by ten frames.
 
    Screenshots go to EVIDENCE_DIR (a temporary folder otherwise). */
 'use strict';
@@ -94,6 +103,22 @@ function gameProject(local) {
         events: [{ id: 'light:0', start: 0, duration: 9, values: { playableClass: 'LiveBaseLightClip' } }] },
     ],
   };
+}
+
+// gameProject with two split-screen sub cameras (SubCamera1: two shots, SubCamera2: one).
+const SPLIT = '/EntryPoint/Live/Cameras/SplitScreenEffect/Cameras';
+function splitProject(local) {
+  const project = gameProject(local);
+  project.name = 'Split camera MV';
+  const base = project.tracks[0].events[0];
+  const shot = (id, start, count, from, to) => ({ ...JSON.parse(JSON.stringify(base)), id, start, duration: (count - 1) / 60, label: id,
+    values: { ...JSON.parse(JSON.stringify(base.values)), keyframes: shotSamples(count, from, to) } });
+  project.tracks.push(
+    { id: 'sub1', kind: 'camera', label: 'SplitScreen/SubCamera1', nativeClass: 'AnimationTrack', binding: `${SPLIT}/SubCamera1`,
+      events: [shot('sub1:0', 1, 121, 60, 80), shot('sub1:1', 6, 61, 90, 100)] },
+    { id: 'sub2', kind: 'camera', label: 'SplitScreen/SubCamera2', nativeClass: 'AnimationTrack', binding: `${SPLIT}/SubCamera2`,
+      events: [shot('sub2:0', 1, 121, -60, -40)] });
+  return project;
 }
 
 async function importGame(page, project) {
@@ -568,9 +593,9 @@ async function synthetic(browser, url) {
   await page.locator('#mv-cam-curves').screenshot({ path: path.join(evidence, 'camera-curves-ko.png') });
   await page.setViewportSize({ width: 1400, height: 1000 });
 
-  // Resize is locked for an edited shot; moving stays allowed.
+  // An edited shot can be moved and resized.
   await page.locator('.mv-clip[data-event="cam:1"]').click();
-  assert.equal(await page.locator('#mv-event-fields [data-mv-field=duration]').count(), 0, 'duration locked');
+  assert.equal(await page.locator('#mv-event-fields [data-mv-field=duration]').count(), 1, 'an edited shot keeps its resize');
   assert.equal(await page.locator('#mv-event-fields [data-mv-field=start]').count(), 1);
 
   // Closed, the panel skips playhead updates; opened again elsewhere, it shows the playhead shot.
@@ -678,6 +703,223 @@ async function synthetic(browser, url) {
   current = await state(page);
   assert.equal(current.project.editor.camera.shots[copyId], undefined);
   assert.deepEqual(userClip(current, copyId).values.keyframes, copySamples, 'undo gives the copy its samples back');
+  assert.deepEqual(errors, []);
+  await page.close();
+}
+
+async function subCameras(browser, url) {
+  const errors = [];
+  const page = await newPage(browser, errors);
+  await page.goto(url + '/#mv');
+  await page.waitForFunction(() => MVStudio.getState().visible);
+  const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
+  const project = splitProject(local);
+  await importGame(page, project);
+  await page.locator('#mv-camera-mode').waitFor();
+  assert.deepEqual((await state(page)).project, project, 'the opened project is unchanged');
+  const find = (value, id) => value.tracks.flatMap((track) => track.events).find((item) => item.id === id);
+  const original = find(project, 'sub1:0').values.keyframes;
+
+  // A sub camera shot opens the editor on its camera.
+  await page.locator('.mv-clip[data-event="sub1:0"]').click();
+  assert(await page.locator('#mv-panel-camera').evaluate((panel) => panel.open), 'selecting a sub camera shot opens the camera editor');
+  await page.waitForFunction((camera) => document.getElementById('mv-cam-camera')?.value === camera, `${SPLIT}/SubCamera1`);
+  assert.deepEqual(await page.locator('#mv-cam-camera option').allTextContents(), ['메인 카메라', '서브 카메라 1', '서브 카메라 2']);
+  await seek(page, 1.5);
+  await page.waitForFunction(() => /^샷 1 \/ 2 · sub1:0 · 프레임 30 \/ 120/.test(document.getElementById('mv-cam-shot')?.textContent || ''));
+  assert.equal(await page.locator('#mv-cam-align').count(), 0, 'Align view (main camera only) is not offered');
+  const dolly = page.locator('#mv-camera-fields [data-mv-cam="offset.z"]');
+  await dolly.fill('1');
+  await dolly.press('Tab');
+  await page.waitForFunction(() => !!MVStudio.getState().project.editor?.camera?.shots?.['sub1:0']);
+  let current = await state(page);
+  assert.deepEqual(current.project.editor.camera.shots['sub1:0'].keys.map((key) => [key.frame, key.values.z]), [[30, 1]]);
+  assert.equal(current.history.undoLabel, 'Edit camera key');
+  const moved = await page.evaluate(([before, after]) => after.every((sample, index) => {
+    const M = window.MVStudioCameraMath, forward = M.rotateVector(M.normalize(before[index].rotation), [0, 0, -1]);
+    return sample.position.every((value, axis) => Math.abs(value - before[index].position[axis] - forward[axis]) < 1e-9);
+  }), [original, find(current.project, 'sub1:0').values.keyframes]);
+  assert(moved, 'every sample moved 1 m along the sub camera\'s own view');
+  for (const id of ['cam:0', 'cam:1', 'sub1:1', 'sub2:0']) assert.deepEqual(find(current.project, id), find(project, id), `${id} untouched`);
+  const diamond = page.locator('.mv-lane[data-track="sub1"] .mv-cam-key[data-event="sub1:0"]');
+  await diamond.waitFor();
+  assert.equal(await diamond.getAttribute('data-frame'), '30');
+  await page.screenshot({ path: path.join(evidence, 'camera-sub-ko.png') });
+
+  // Undo and redo.
+  await page.locator('#mv-timeline-label').click();
+  await page.keyboard.press('Control+z');
+  current = await state(page);
+  assert.equal(current.project.editor?.camera?.shots?.['sub1:0'], undefined);
+  assert.deepEqual(find(current.project, 'sub1:0').values.keyframes, original, 'undo restores the sub camera samples');
+  await page.keyboard.press('Control+Shift+z');
+  await page.waitForFunction(() => !!MVStudio.getState().project.editor?.camera?.shots?.['sub1:0']);
+  const redone = find((await state(page)).project, 'sub1:0');
+  assert.notDeepEqual(redone.values.keyframes, original);
+
+  // Resize: ten frames longer, its key stays on frame 30 and the edit covers the new frames.
+  await page.locator('.mv-clip[data-event="sub1:0"]').click();
+  const durationField = page.locator('#mv-event-fields [data-mv-field=duration]');
+  assert.equal(await durationField.count(), 1, 'an edited shot can be resized');
+  await durationField.fill(String(130 / 60));
+  await durationField.press('Tab');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks.find((track) => track.id === 'sub1').events[0].values.keyframes.length === 131);
+  current = await state(page);
+  assert.deepEqual(current.project.editor.camera.shots['sub1:0'].keys.map((key) => key.frame), [30]);
+
+  // The main camera is edited again from the Camera choice; its shots were never touched.
+  await page.locator('#mv-cam-camera').selectOption('main');
+  await page.waitForFunction(() => /^샷 1 \/ 2 · /.test(document.getElementById('mv-cam-shot')?.textContent || '') &&
+    document.getElementById('mv-cam-align') !== null);
+  for (const id of ['cam:0', 'cam:1']) assert.deepEqual(find(current.project, id), find(project, id), `${id} untouched`);
+
+  // A key diamond on the sub camera's lane, clicked while the main camera is edited: the editor
+  // switches to that camera and shot, and a field edit keys that shot.
+  await page.locator('.mv-lane[data-track="sub1"] .mv-cam-key[data-event="sub1:0"][data-frame="30"]').click();
+  await page.waitForFunction((camera) => document.getElementById('mv-cam-camera')?.value === camera, `${SPLIT}/SubCamera1`);
+  await page.waitForFunction(() => /^샷 1 \/ 2 · sub1:0 · 프레임 30 \/ 130/.test(document.getElementById('mv-cam-shot')?.textContent || ''));
+  assert.deepEqual((await page.evaluate(() => MVStudioCameraKeys.selected(window.probeCtx))).frames, [30]);
+  const pedestal = page.locator('#mv-camera-fields [data-mv-cam="offset.y"]');
+  await pedestal.fill('0.25');
+  await pedestal.press('Tab');
+  await page.waitForFunction(() => MVStudio.getState().project.editor.camera.shots['sub1:0'].keys[0].values.y === .25);
+  current = await state(page);
+  assert.deepEqual(current.project.editor.camera.shots['sub1:0'].keys.map((key) => [key.frame, key.values.y]), [[30, .25]]);
+  assert.deepEqual(Object.keys(current.project.editor.camera.shots), ['sub1:0'], 'no main camera shot was keyed');
+  // Back on the main camera, the sub camera's key is no longer selected.
+  await page.locator('#mv-cam-camera').selectOption('main');
+  await page.waitForFunction(() => document.getElementById('mv-cam-align') !== null);
+  assert.equal(await page.evaluate(() => MVStudioCameraKeys.selected(window.probeCtx)), null);
+  assert.equal(await page.locator('.mv-cam-key[aria-selected="true"]').count(), 0);
+  // "Open camera editor" in the inspector (still showing sub1:0) picks the inspected clip's camera.
+  assert.equal(await page.locator('#mv-event-fields .mv-cam-open').count(), 1);
+  await page.locator('#mv-event-fields .mv-cam-open').click();
+  await page.waitForFunction((camera) => document.getElementById('mv-cam-camera')?.value === camera, `${SPLIT}/SubCamera1`);
+  await page.waitForFunction(() => document.getElementById('mv-cam-align') === null);
+  assert.deepEqual(errors, []);
+  await page.close();
+}
+
+// An edited shot shortened past one of its keys: the frames it keeps play as before, the key past
+// its end is hidden on the lane but stays in the record and still shapes the curve view's key
+// curve, and lengthening the shot again brings the key and the full bake back.
+async function shortenPastKeys(browser, url) {
+  const errors = [];
+  const page = await newPage(browser, errors);
+  await page.goto(url + '/#mv');
+  await page.waitForFunction(() => MVStudio.getState().visible);
+  const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
+  const project = gameProject(local);
+  project.name = 'Camera shorten MV';
+  await importGame(page, project);
+  await page.locator('#mv-camera-mode').waitFor();
+  const start = 241 / 60;
+  const samplesOf = async () => (await state(page)).project.tracks[0].events[1].values.keyframes;
+  const storedFrames = async () => (await state(page)).project.editor.camera.shots['cam:1'].keys.map((key) => key.frame);
+  const diamonds = () => page.locator('.mv-lane[data-track="cam"] .mv-cam-key[data-event="cam:1"]').evaluateAll((items) => items.map((item) => Number(item.dataset.frame)));
+  await page.locator('.mv-clip[data-event="cam:1"]').click();
+  const dolly = page.locator('#mv-camera-fields [data-mv-cam="offset.z"]');
+  for (const [frame, value] of [[30, '1'], [250, '-2']]) {
+    await seek(page, start + frame / 60);
+    await page.waitForFunction((text) => (document.getElementById('mv-cam-shot')?.textContent || '').includes(text), `프레임 ${frame} / 300`);
+    await dolly.fill(value);
+    await dolly.press('Tab');
+    await page.waitForFunction((count) => MVStudio.getState().project.editor?.camera?.shots?.['cam:1']?.keys.length === count, frame === 30 ? 1 : 2);
+  }
+  const full = await samplesOf();
+  await page.waitForFunction(() => document.querySelectorAll('.mv-lane[data-track="cam"] .mv-cam-key[data-event="cam:1"]').length === 2);
+
+  // 301 → 201 frames from the Duration field.
+  await page.locator('.mv-clip[data-event="cam:1"]').click();
+  const durationField = page.locator('#mv-event-fields [data-mv-field=duration]');
+  await durationField.fill(String(200 / 60));
+  await durationField.press('Tab');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks[0].events[1].values.keyframes.length === 201);
+  assert.deepEqual(await samplesOf(), full.slice(0, 201), 'the frames the shot keeps play as before, bit for bit');
+  assert.deepEqual(await storedFrames(), [30, 250], 'the key past the end stays in the record');
+  await page.waitForFunction(() => document.querySelectorAll('.mv-lane[data-track="cam"] .mv-cam-key[data-event="cam:1"]').length === 1);
+  assert.deepEqual(await diamonds(), [30], 'only the key on the shot has a diamond');
+  await seek(page, start + 100 / 60);
+  await page.waitForFunction(() => /^샷 2 \/ 2 · .* · 프레임 100 \/ 200/.test(document.getElementById('mv-cam-shot')?.textContent || ''));
+  assert.equal(await page.locator('.mv-cam-note').textContent(), '이 샷의 끝 뒤에 있는 키: 1개. 숨겨져 있지만 움직임에는 계속 반영되며, 샷을 늘리면 다시 나타납니다.');
+  // The curve view: one Dolly point, and its key curve runs toward the hidden key, on the baked curve.
+  await page.locator('#mv-cam-curves').scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('#mv-cam-curves .mv-cam-curve-key[data-channel="z"]').count(), 1);
+  const lines = await curveLines(page);
+  const points = (text) => text.split(' ').map((pair) => pair.split(',').map(Number));
+  const [key, dense] = [points(lines.curve.z), points(lines.dense.z)];
+  assert.equal(key.length, dense.length);
+  key.forEach(([x, y], index) => { near(x, dense[index][0], 1e-9, `x ${index}`); near(y, dense[index][1], .05, `the key curve follows the baked curve at ${index}`); });
+  assert(Math.abs(key.at(-1)[1] - key[0][1]) > 5, 'past frame 30 it bends toward the hidden key');
+  assert(await curvesAsDrawnFresh(page));
+
+  // Lengthened again: the key and the full bake come back.
+  await page.locator('.mv-clip[data-event="cam:1"]').click();
+  await durationField.fill('5');
+  await durationField.press('Tab');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks[0].events[1].values.keyframes.length === 301);
+  assert.deepEqual(await samplesOf(), full, 'the full shot bakes as before');
+  await page.waitForFunction(() => document.querySelectorAll('.mv-lane[data-track="cam"] .mv-cam-key[data-event="cam:1"]').length === 2);
+  assert.deepEqual(await diamonds(), [30, 250]);
+  // Undo both resizes.
+  await page.locator('#mv-timeline-label').click();
+  await page.keyboard.press('Control+z');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks[0].events[1].values.keyframes.length === 201);
+  await page.keyboard.press('Control+z');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks[0].events[1].values.keyframes.length === 301);
+  assert.equal((await state(page)).history.undoLabel, 'Edit camera key');
+  assert.deepEqual(await samplesOf(), full);
+  assert.deepEqual(errors, []);
+  await page.close();
+}
+
+async function extrapolation(browser, url) {
+  const errors = [];
+  const page = await newPage(browser, errors);
+  await page.goto(url + '/#mv');
+  await page.waitForFunction(() => MVStudio.getState().visible);
+  const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
+  const project = gameProject(local);
+  project.name = 'Camera extrapolation MV';
+  // cam:0 plays 0-4 s, then a 2 s gap its post-extrapolation covers, then cam:1 from 6 s.
+  const [first, second] = project.tracks[0].events;
+  second.start = 6;
+  Object.assign(first.values, { postExtrapolationMode: 2, postExtrapolationTime: 2 });
+  await importGame(page, project);
+  await page.locator('#mv-camera-mode').waitFor();
+  const pose = async (time) => { await seek(page, time); return { camera: await camera(page), shot: await page.evaluate(() => window.probeCtx.scene().inspect().cameraEvent) }; };
+  const setMode = (mode) => page.evaluate((value) => window.probeCtx.history.apply({ label: 'Edit value',
+    changes: [{ target: { kind: 'event', track: 'cam', event: 'cam:0' }, path: ['values', 'postExtrapolationMode'], after: value }] }), mode);
+  // [mode, time in the gap, the time inside the shot that shows the same pose]
+  for (const [mode, time, same] of [[2, 4.5, .5], [2, 5.25, 1.25], [3, 4.5, 3.5], [3, 5.25, 2.75], [4, 5, 4], [1, 5, 4]]) {
+    await setMode(mode);
+    const gap = await pose(time), inside = await pose(same);
+    assert.equal(gap.shot && gap.shot.event, 'cam:0', `mode ${mode} at ${time}: the shot extrapolates`);
+    assert.deepEqual(gap.camera.position, inside.camera.position, `mode ${mode} at ${time}: the pose at ${same}`);
+    assert.deepEqual(gap.camera.quaternion, inside.camera.quaternion);
+    assert.equal(gap.camera.fov, inside.camera.fov);
+  }
+  await setMode(0);
+  const none = await pose(4.5);
+  assert.notEqual(none.shot && none.shot.event, 'cam:0', 'None: the shot does not extrapolate');
+  // A native shot set to Continue says that the preview holds its end pose, until it has camera
+  // edits (the writer then ends its source with the shot, as the preview does).
+  await page.evaluate(() => { window.probeCtx.project().nativeTimeline = true; });
+  await page.locator('.mv-clip[data-event="cam:0"]').click();
+  await seek(page, 1);
+  const note = () => page.locator('.mv-cam-note').textContent();
+  const continueNote = '계속: 미리보기는 이 샷의 마지막 포즈를 유지합니다. 카메라 클립이 샷보다 길면 게임에서는 이어서 재생될 수 있습니다.';
+  await setMode(4);
+  await page.waitForFunction((text) => document.querySelector('.mv-cam-note')?.textContent === text, continueNote);
+  await setMode(1);
+  await page.waitForFunction(() => document.querySelector('.mv-cam-note')?.textContent === '');
+  await setMode(4);
+  const dolly = page.locator('#mv-camera-fields [data-mv-cam="offset.z"]');
+  await dolly.fill('1');
+  await dolly.press('Tab');
+  await page.waitForFunction(() => !!MVStudio.getState().project.editor?.camera?.shots?.['cam:0']);
+  await page.waitForFunction(() => document.querySelector('.mv-cam-note')?.textContent === '');
+  assert.equal(await note(), '', 'an edited shot ends with its source');
   assert.deepEqual(errors, []);
   await page.close();
 }
@@ -1140,9 +1382,32 @@ async function exportRoundTrip(browser, url) {
   });
   assert(worst.position < 1e-4 && worst.rotation < 1e-3 && worst.fov < 1e-4, `re-parse matches the baked samples ${JSON.stringify(worst)}`);
   main.events.slice(1).forEach((event, index) => assert.deepEqual(again.events[index + 1].values.keyframes, event.values.keyframes, `shot ${index + 1} untouched`));
+
+  // The edited shot ten frames shorter: it rebakes on its new grid and exports that grid. (Selected
+  // through the editor: its key diamonds cover the clip.)
+  await page.evaluate(([trackId, eventId]) => window.probeCtx.select(trackId, eventId), [main.id, shot.id]);
+  const length = Math.round(shot.duration * 60 - 10) / 60;
+  await page.locator('#mv-event-fields [data-mv-field=duration]').fill(String(length));
+  await page.locator('#mv-event-fields [data-mv-field=duration]').press('Tab');
+  await page.waitForFunction(([trackId, count]) => MVStudio.getState().project.tracks.find((track) => track.id === trackId).events[0].values.keyframes.length === count,
+    [main.id, baked.length - 10]);
+  const shorter = (await state(page)).project.tracks.find((track) => track.id === main.id).events[0];
+  const resized = await page.request.post(url + '/api/mv-studio/open', { data: { path: await exportPath() }, timeout: 600000 }).then((reply) => reply.json());
+  const cut = resized.tracks.find((track) => track.id === main.id).events[0];
+  assert.equal(cut.duration, shorter.duration);
+  assert.equal(cut.values.keyframes.length, shorter.values.keyframes.length, 'the shorter grid');
+  const resizedWorst = { position: 0, rotation: 0, fov: 0 };
+  cut.values.keyframes.forEach((frame, index) => {
+    const want = shorter.values.keyframes[index];
+    assert.equal(frame.time, want.time, 'same sample times');
+    resizedWorst.position = Math.max(resizedWorst.position, distance(frame.position, want.position));
+    resizedWorst.rotation = Math.max(resizedWorst.rotation, angleBetween(frame.rotation, want.rotation));
+    resizedWorst.fov = Math.max(resizedWorst.fov, Math.abs(frame.fov - want.fov));
+  });
+  assert(resizedWorst.position < 1e-4 && resizedWorst.rotation < 1e-3 && resizedWorst.fov < 1e-4, `resized re-parse ${JSON.stringify(resizedWorst)}`);
   assert.deepEqual(errors, []);
   await page.close();
-  return worst;
+  return { worst, resized: resizedWorst };
 }
 
 async function run() {
@@ -1152,6 +1417,9 @@ async function run() {
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     await synthetic(browser, server.url);
+    await subCameras(browser, server.url);
+    await shortenPastKeys(browser, server.url);
+    await extrapolation(browser, server.url);
     await multiKeys(browser, server.url);
     await multiKeysTouch(browser, server.url);
     const roundTrip = await exportRoundTrip(browser, server.url);

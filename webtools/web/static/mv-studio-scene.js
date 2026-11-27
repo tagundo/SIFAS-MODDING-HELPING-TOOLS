@@ -90,6 +90,14 @@
       time <= event.start + event.duration && (!current || event.start >= current.start) ? event : current, null);
   }
 
+  // TimelineClip extrapolation modes: None 0, Hold 1, Loop 2, PingPong 3, Continue 4. A camera
+  // shot is an AnimationPlayableAsset, whose ClipCaps include Extrapolation: all four play.
+  const extrapolates = (mode) => mode === 1 || mode === 2 || mode === 3 || mode === 4;
+  // How far a mode's stored window reaches. A JSON null is an infinite time in the bundle (a last
+  // shot): Loop, PingPong and Continue then go on to the end, as Unity's do. Hold keeps the rule
+  // original MVs always played with (null: no window; mainCameraAt holds a game source's last shot).
+  const reach = (mode, seconds) => seconds === null && mode !== 1 ? Infinity : seconds;
+
   function activeCameraEvent(track, time) {
     const active = activeEvent(track, time);
     if (active) return active;
@@ -99,12 +107,29 @@
     for (const event of track.events) {
       const values = event.values || {};
       const end = event.start + event.duration;
-      if (time > end && values.postExtrapolationMode === 1 && time <= end + values.postExtrapolationTime &&
+      if (time > end && extrapolates(values.postExtrapolationMode) && time <= end + reach(values.postExtrapolationMode, values.postExtrapolationTime) &&
           (!previous || event.start > previous.start)) previous = event;
-      if (time < event.start && values.preExtrapolationMode === 1 && time >= event.start - values.preExtrapolationTime &&
+      if (time < event.start && extrapolates(values.preExtrapolationMode) && time >= event.start - reach(values.preExtrapolationMode, values.preExtrapolationTime) &&
           (!next || event.start < next.start)) next = event;
     }
     return previous || next;
+  }
+
+  // Seconds into a camera shot's own samples at `time`: Unity's TimelineClip.ToLocalTime
+  // (GetExtrapolatedTime) before clipIn and timeScale, which the samples already hold. Outside
+  // the shot, Loop wraps and PingPong bounces over its length; Hold and Continue keep the first or
+  // last pose (Continue plays the source on, and a SIFAS camera source is not looping and ends
+  // with its shot: its last pose holds).
+  function cameraLocalTime(event, time) {
+    const duration = event.duration, local = time - event.start;
+    if (local >= 0 && local <= duration) return local;
+    const values = event.values || {}, mode = local < 0 ? values.preExtrapolationMode : values.postExtrapolationMode;
+    if (duration > 0 && mode === 2) return local < 0 ? duration - (-local % duration) : local % duration;
+    if (duration > 0 && mode === 3) {
+      const wrapped = local < 0 ? duration * 2 - (-local % (duration * 2)) : local % (duration * 2);
+      return duration - Math.abs(wrapped - duration);
+    }
+    return Math.min(duration, Math.max(0, local));
   }
 
   // The camera clip that ends last, when `time` is past its end: an original MV
@@ -1699,7 +1724,7 @@
 
     function poseCamera(event, time, track, camera = liveCamera) {
       const value = event.values || {};
-      const local = Math.min(event.duration, Math.max(0, time - event.start));
+      const local = cameraLocalTime(event, time);
       const frames = value.keyframes;
       if (Array.isArray(frames) && !sortedCameraFrames.has(frames)) {
         sortedCameraFrames.set(frames, frames.every((frame, index) => !index || frame.time >= frames[index - 1].time));
@@ -3077,5 +3102,5 @@
     return height;
   }
 
-  global.MVStudioScene = { create, nativeRenderHeight };
+  global.MVStudioScene = { create, nativeRenderHeight, activeCameraEvent, cameraLocalTime };
 }(window));

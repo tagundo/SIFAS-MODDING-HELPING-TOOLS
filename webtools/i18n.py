@@ -2632,17 +2632,22 @@ _MV_EDITOR_C_TRANSLATIONS = {
     "This camera shot cannot be edited.": ("이 카메라 샷은 편집할 수 없습니다.", "このカメラショットは編集できません。"),
     "The camera samples of this shot cannot be exported.": (
         "이 샷의 카메라 샘플은 내보낼 수 없습니다.", "このショットのカメラサンプルは書き出せません。"),
-    "Restore this shot's original length to edit its camera.": (
-        "카메라를 편집하려면 이 샷의 길이를 원래대로 되돌리세요.", "カメラを編集するには、このショットの長さを元に戻してください。"),
     "Switch the preview camera to Free camera to key the view.": (
         "시점을 키로 저장하려면 미리보기 카메라를 자유 카메라로 바꾸세요.",
         "視点をキーにするには、プレビューカメラを自由カメラに切り替えてください。"),
-    "Duration is locked while this shot has camera edits.": (
-        "카메라를 편집한 샷은 길이를 바꿀 수 없습니다.", "カメラを編集したショットは長さを変えられません。"),
     "A camera rig also moves this shot.": ("카메라 리그도 이 샷을 움직입니다.", "カメラリグもこのショットを動かしています。"),
-    "Restore the original length of camera shots with camera edits before exporting.": (
-        "내보내기 전에 카메라를 편집한 샷의 길이를 원래대로 되돌리세요.",
-        "書き出す前に、カメラを編集したショットの長さを元に戻してください。"),
+    "This shot's length is not whole frames (1/60 s): its camera edits cannot be exported until it is.": (
+        "이 샷의 길이가 프레임(1/60초) 단위가 아닙니다. 프레임 단위로 맞추기 전에는 카메라 편집을 내보낼 수 없습니다.",
+        "このショットの長さがフレーム（1/60秒）単位ではありません。フレーム単位にするまでカメラの編集は書き出せません。"),
+    "Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.": (
+        "내보내기 전에 카메라를 편집한 샷의 길이를 프레임(1/60초) 단위로 맞추세요.",
+        "書き出す前に、カメラを編集したショットの長さをフレーム（1/60秒）単位にしてください。"),
+    "Keys past the end of this shot: {count}. They are hidden but still shape its motion, and come back if the shot is made longer.": (
+        "이 샷의 끝 뒤에 있는 키: {count}개. 숨겨져 있지만 움직임에는 계속 반영되며, 샷을 늘리면 다시 나타납니다.",
+        "このショットの終わりより後のキー：{count} 個。非表示ですが動きには反映され、ショットを長くすると戻ります。"),
+    "Continue: the preview holds this shot's end pose. In the game it may play on if the camera clip is longer than the shot.": (
+        "계속: 미리보기는 이 샷의 마지막 포즈를 유지합니다. 카메라 클립이 샷보다 길면 게임에서는 이어서 재생될 수 있습니다.",
+        "続ける：プレビューはこのショットの最後のポーズを保ちます。カメラクリップがショットより長いと、ゲームでは再生が続くことがあります。"),
     "The camera could not be baked.": ("카메라를 굽지 못했습니다.", "カメラを焼き込めませんでした。"),
     "Edit camera key": ("카메라 키 편집", "カメラキーを編集"),
     "Add camera key": ("카메라 키 추가", "カメラキーを追加"),
@@ -2711,6 +2716,9 @@ _MV_EDITOR_C_TRANSLATIONS = {
         "タッチ: 「複数選択」をオンにするかキーを長押しして、キーをタップします。カメラレーンやグラフを横にドラッグすると範囲選択します。"
         "選択したキーをドラッグするとまとめて動きます。"),
     "Delete selected keys": ("선택한 키 삭제", "選択したキーを削除"),
+    # Split-screen sub cameras ("Camera" is translated in the MV Studio table).
+    "Main camera": ("메인 카메라", "メインカメラ"),
+    "Sub camera {slot}": ("서브 카메라 {slot}", "サブカメラ {slot}"),
 }
 for _source, (_korean, _japanese) in _MV_EDITOR_C_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
@@ -3482,11 +3490,14 @@ _MV_REGISTER_TRANSLATIONS = {
     "This camera animation is shared or external. Edit its timing only.": (
         "이 카메라 애니메이션은 공유되거나 외부에 있습니다. 타이밍만 편집하세요.",
         "このカメラアニメーションは共有または外部のものです。タイミングだけを編集してください。"),
-    "Camera point edits require an untrimmed, full native shot with unchanged sample times.": (
-        "카메라 포인트를 편집하려면 잘리지 않은 원래 컷 전체와 바뀌지 않은 샘플 시간이 필요합니다.",
-        "カメラポイントの編集には、切り詰めていない元のカット全体と変わっていないサンプル時刻が必要です。"),
-    "Keep the original camera point count and times.": (
-        "카메라 포인트의 원래 개수와 시간을 유지하세요.", "カメラポイントの元の数と時刻を保ってください。"),
+    "Keep one camera point per frame of the shot, at its frame times.": (
+        "샷의 프레임마다 카메라 포인트를 하나씩, 그 프레임 시간에 두세요.",
+        "ショットのフレームごとにカメラポイントを1つずつ、そのフレームの時刻に置いてください。"),
+    "Camera point edits need an untrimmed native shot: clip offset 0, speed 1 and its own camera bindings.": (
+        "카메라 포인트를 편집하려면 잘리지 않은 원래 샷이어야 합니다: 클립 오프셋 0, 속도 1, 원래 카메라 바인딩.",
+        "カメラポイントを編集するには、切り詰めていない元のショットが必要です（クリップオフセット0、速度1、元のカメラバインディング）。"),
+    "A camera shot with camera edits needs a length of whole frames (1/60 s).": (
+        "카메라를 편집한 샷의 길이는 프레임(1/60초) 단위여야 합니다.", "カメラを編集したショットの長さは、フレーム（1/60秒）単位にしてください。"),
     "The native copy changed unrelated Unity objects or resources.": (
         "게임용 사본에서 관계없는 Unity 오브젝트나 리소스가 바뀌었습니다.",
         "ゲーム用のコピーで無関係なUnityオブジェクトまたはリソースが変わりました。"),

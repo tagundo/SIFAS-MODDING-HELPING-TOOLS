@@ -248,15 +248,51 @@ def _camera_binding(binding):
     return None
 
 
-def _camera_frames(obj, clip, duration, deadline, remaining_frames, euler_order=None):
-    """Sample a camera shot. `euler_order` overrides an Euler binding's own order (legacy project checks only)."""
+_CAMERA_SOURCE = "Camera point edits need an untrimmed native shot: clip offset 0, speed 1 and its own camera bindings."
+_CAMERA_FRAMES = "A camera shot with camera edits needs a length of whole frames (1/60 s)."
+_CAMERA_POINTS = "Keep one camera point per frame of the shot, at its frame times."
+
+
+def _camera_count(duration, rate):
+    """The samples of a camera shot on its grid: one every 1/rate s, the last one at the clip's end."""
+    return math.ceil(duration * rate - 1e-9) + 1
+
+
+def _camera_rewrite_refusal(tree, clip, duration):
+    """Why _write_camera cannot give this clip dense samples for a shot of `duration`, or None.
+
+    One rule for the parse (which marks keyframes editable) and the writer: an untrimmed source
+    (clip-in 0, speed 1, source start 0), a 1-60 Hz sample rate, a length of whole samples (two at
+    least), and the native position, rotation and FOV bindings. The source's stop time may differ
+    from the clip's length (split-screen sub cameras: 1.7833 s of motion in a 1.8 s clip, or 1.8 s in
+    a 0.8667 s one); the writer sets it to the length it writes."""
+    muscle = tree.get("m_MuscleClip") if isinstance(tree.get("m_MuscleClip"), dict) else {}
+    rate, start = tree.get("m_SampleRate"), muscle.get("m_StartTime", 0)
+    if (clip.get("m_ClipIn", 0) != 0 or clip.get("m_TimeScale", 1) != 1 or type(start) not in (int, float)
+            or abs(start) > 1e-6 or type(rate) not in (int, float) or not 1 <= rate <= 60):
+        return _CAMERA_SOURCE
+    if (type(duration) not in (int, float) or not 0 < duration <= _MAX_SECONDS
+            or abs(duration * rate - (_camera_count(duration, rate) - 1)) > 1e-3):
+        return _CAMERA_FRAMES
+    try:
+        _camera_sample_order(tree)
+    except (ValueError, KeyError, TypeError):
+        return _CAMERA_SOURCE
+    return None
+
+
+def _camera_frames(obj, clip, duration, deadline, remaining_frames, euler_order=None, tree=None):
+    """Sample a camera shot. `euler_order` overrides an Euler binding's own order (legacy project checks only).
+
+    `tree` is the AnimationClip's type tree when the caller has read it already."""
     if duration <= 0:
         return []
-    tree = obj.read_typetree()
+    if tree is None:
+        tree = obj.read_typetree()
     rate = _time(tree.get("m_SampleRate", 60), "camera sample rate", minimum=1, maximum=1000)
     speed = _time(clip.get("m_TimeScale", 1), "camera clip speed", minimum=.000001, maximum=100)
     rate = min(60, max(1, rate * speed))
-    count = math.ceil(duration * rate - 1e-9) + 1
+    count = _camera_count(duration, rate)
     if count > remaining_frames:
         raise ValueError("The project camera sample limit was reached.")
     channels = _camera_channels(tree, deadline)
@@ -320,9 +356,12 @@ def _event(track_obj, clip, key, index, kind, objects, mono, references, animati
                 values["animationName"] = _label(animation_obj.peek_name())
                 if kind == "camera":
                     try:
-                        values["keyframes"] = _camera_frames(animation_obj, clip, duration, deadline, remaining_frames)
+                        camera_tree = animation_obj.read_typetree()
+                        values["keyframes"] = _camera_frames(animation_obj, clip, duration, deadline, remaining_frames,
+                                                             tree=camera_tree)
+                        # Editable exactly when the writer can rewrite them (one shared rule).
                         if (values["keyframes"] and references[asset] == 1 and animations[animation_key] == 1
-                                and values.get("clipIn", 0) == 0 and values.get("timeScale", 1) == 1):
+                                and _camera_rewrite_refusal(camera_tree, clip, duration) is None):
                             editable.append("keyframes")
                     except (ValueError, KeyError, TypeError) as error:
                         warnings.add(f"Camera clip '{label}' could not be sampled: {error}")
@@ -1087,19 +1126,26 @@ def _camera_vector(value, length, label):
 
 
 def _write_camera(tree, clip, old_event, new_event):
+    """Write a shot's points as the clip's dense 60 Hz samples, its stop time at the shot's end.
+
+    `clip` is the TimelineClip as it will be saved (its new timing). A resized shot (new_event's
+    duration) brings the points of its new grid, ceil(duration·60) + 1 of them at min(i/60,
+    duration): the clip is written for that length."""
     unity_euler_near = animation.unity_euler_near
 
-    before, after = old_event["values"]["keyframes"], new_event["values"]["keyframes"]
-    span = old_event["duration"]
+    after = new_event["values"]["keyframes"]
+    span = new_event["duration"]
+    if old_event["values"].get("clipIn", 0) != 0 or old_event["values"].get("timeScale", 1) != 1:
+        raise ValueError(_CAMERA_SOURCE)
+    refusal = _camera_rewrite_refusal(tree, clip, span)
+    if refusal:
+        raise ValueError(refusal)
     rate = float(tree["m_SampleRate"])
     muscle = tree["m_MuscleClip"]
-    first, last = float(muscle["m_StartTime"]), float(muscle["m_StopTime"])
-    if (not isinstance(after, list) or len(after) != len(before) or not 2 <= len(after) <= _MAX_CAMERA_FRAMES
-            or new_event["duration"] != span or old_event["values"].get("clipIn", 0) != 0
-            or old_event["values"].get("timeScale", 1) != 1 or clip.get("m_ClipIn", 0) != 0
-            or clip.get("m_TimeScale", 1) != 1 or abs(first) > 1e-6 or abs(last - span) > 1e-3
-            or not 1 <= rate <= 60 or abs(span * rate - (len(after) - 1)) > 1e-3):
-        raise ValueError("Camera point edits require an untrimmed, full native shot with unchanged sample times.")
+    first = float(muscle["m_StartTime"])
+    count = _camera_count(span, rate)
+    if not isinstance(after, list) or len(after) != count or not 2 <= count <= _MAX_CAMERA_FRAMES:
+        raise ValueError(_CAMERA_POINTS)
     order = _camera_sample_order(tree)
     sample_array, previous_euler = [], None
     if "euler" in order:
@@ -1107,10 +1153,11 @@ def _write_camera(tree, clip, old_event, new_event):
         euler_order = channels["eulerOrder"]
         # Start from the original first sample's angles; later samples follow their predecessor.
         previous_euler = [animation._evaluate(curve, first) for curve in channels["euler"]]
-    for index, (old_point, point) in enumerate(zip(before, after)):
+    for index, point in enumerate(after):
+        # The times the parse gives this shot: index / rate, the last one at the shot's end.
         if (not isinstance(point, dict) or set(point) != {"time", "position", "rotation", "fov"}
-                or point["time"] != old_point["time"] or abs(point["time"] - index / rate) > 1e-5):
-            raise ValueError("Keep the original camera point count and times.")
+                or point["time"] != min(span, index / rate)):
+            raise ValueError(_CAMERA_POINTS)
         position = _camera_vector(point["position"], 3, "position")
         rotation = _camera_vector(point["rotation"], 4, "rotation")
         length = math.sqrt(sum(axis * axis for axis in rotation))
@@ -1128,8 +1175,12 @@ def _write_camera(tree, clip, old_event, new_event):
     packed = muscle["m_Clip"]["data"]
     packed["m_StreamedClip"].update(data=[], curveCount=0)
     packed["m_ConstantClip"]["data"] = []
-    packed["m_DenseClip"].update(m_FrameCount=len(after), m_CurveCount=len(sample_array) // len(after),
+    packed["m_DenseClip"].update(m_FrameCount=count, m_CurveCount=len(sample_array) // count,
                                  m_SampleRate=rate, m_BeginTime=0., m_SampleArray=sample_array)
+    # The clip now ends where the shot does. A source that stopped a frame early (or ran past the
+    # shot, as some split-screen sub cameras do) would clamp or extend the written samples.
+    if _float32(float(muscle["m_StopTime"])) != _float32(span):
+        muscle["m_StopTime"] = span
 
 
 def _bundle_facts(env):
