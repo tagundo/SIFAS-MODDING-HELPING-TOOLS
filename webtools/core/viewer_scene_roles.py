@@ -148,6 +148,18 @@ def _source_bytes(context, index):
     return raw
 
 
+def _face_sources(context):
+    """Session sources that are a face: automatic companions, or the face
+    companion a selected costume ZIP declares (bound by its exact bytes)."""
+    faces = set(context.get("outline_only_sources", []))
+    declared = set()
+    for container in context["containers"]:
+        if zipfile.is_zipfile(io.BytesIO(container["raw"])):
+            declared.update(fmt.sha(raw) for raw in _literal_faces(container["raw"]).values())
+    faces.update(index for index, source in enumerate(context["sources"]) if source["sha256"] in declared)
+    return faces
+
+
 def _face_originals_and_recipes(context, result, platforms, runtime_faces):
     """Keep face authoring authority separate from private execution bytes."""
     originals, declared = {}, set()
@@ -191,6 +203,13 @@ def _originals_and_recipes(context, result, pair, goldens, state):
     # A texture edit changes one explicitly selected image layout. It does not
     # authorize copying pixels into a board/bare or Android/iOS counterpart.
     partner_state = {key: value for key, value in state.items() if key != "textures"}
+    # A face's own outline edits belong to the face authoring recipe, which
+    # both variants share. They do not change either body, so an unchanged
+    # counterpart stays its original, as pairing already treats them.
+    faces = _face_sources(context)
+    if faces and partner_state.get("outlines"):
+        partner_state["outlines"] = [row for row in partner_state["outlines"]
+                                     if int(row["id"].split(":", 1)[0]) not in faces]
     partner_body_changed = edits.has_changes(partner_state)
     originals = {}
     for container in context["containers"]:
@@ -441,10 +460,22 @@ def register_reopened(token, scene):
                                           for row in value["state"]["textures"]]
         return value
     bind(recipe)
+    catalog = session.get("outlines", {})
+    editable = {row["id"] for row in catalog.get("meshes", [])}
+    excluded = {row["id"] for row in catalog.get("excludedMeshes", [])}
+    held = []
     for face in copy.deepcopy(scene.get("face_recipes", [])):
         bind(face)
         _require(not face["nodeIdentities"] and not face["state"].get("edits") and not face["state"].get("physics"),
                  "The face authoring recipe contains unsupported model changes.")
+        if scene.get("variant") == "primary" and face["state"].get("outlines"):
+            # The masked view draws Rina's board over this face, so its face
+            # meshes are listed but cannot be proven editable here. Open the
+            # view without them; saving from it is refused below, so the
+            # costume's face outline edits are never dropped.
+            hidden = [row for row in face["state"]["outlines"] if row["id"] not in editable and row["id"] in excluded]
+            held.extend(hidden)
+            face["state"]["outlines"] = [row for row in face["state"]["outlines"] if row not in hidden]
         for field in ("textures", "outlines"):
             if face["state"].get(field):
                 recipe["state"].setdefault(field, []).extend(face["state"][field])
@@ -452,6 +483,8 @@ def register_reopened(token, scene):
     recipe["originals"] = [{"name": item["name"], "sha256": item["sha256"]} for item in session["containers"]]
     session["allowEmptySceneReset"] = True
     state = edits.restore(token, recipe)
+    if held:
+        session["heldFaceOutlines"] = held
     with _LOCK:
         _SCENES[token] = copy.deepcopy(scene["metadata"])
         while len(_SCENES) > edits.MAX_SESSIONS:

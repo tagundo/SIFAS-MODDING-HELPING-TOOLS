@@ -483,8 +483,13 @@ def require_body_editing(token):
     return session
 
 
-def validate_state(token, state, *, allow_empty=False):
+def validate_state(token, state, *, allow_empty=False, preview=False):
     session = _session(token)
+    if session.get("heldFaceOutlines") and not preview:
+        # A reopened Rina scene costume's masked view cannot show the face
+        # outline edits it carries; a copy saved from it would drop them.
+        _fail("This masked view cannot show the costume's saved face outline edits, so it cannot save them. "
+              "Open the costume's Without mask view to save it or create its Mod ZIP.")
     if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference", "physics", "accessoryUnclip", "outlines", "textures"}:
         _fail("The body edit state contains unsupported settings.")
     try:
@@ -979,7 +984,7 @@ def accessory_preview(token, state):
         session["busy"].release()
         _fail("Another model is being processed. Wait for it to finish.")
     try:
-        state = validate_state(token, state, allow_empty=True)
+        state = validate_state(token, state, allow_empty=True, preview=True)
         if "accessoryUnclip" not in state:
             return {"corrections": [], "summary": {"status": "disabled", "changed": 0}}
         output, summaries = [], []

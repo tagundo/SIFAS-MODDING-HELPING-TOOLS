@@ -59,22 +59,62 @@ def _check(job):
         raise ValueError("Mod packaging was cancelled.")
 
 
-def cached_receipts(context, cache_root):
-    """Read bounded, selected-SHA receipts in fixed current/legacy caches."""
+MAX_RECEIPT_ENTRIES = 16384
+
+
+def _receipt_roots(cache_root):
     from .viewer_cache import legacy_cache_roots
     root = Path(cache_root).resolve()
+    bases = (root, *legacy_cache_roots(root, "models"))
+    return [candidate for base in bases for candidate in (base, base / "transplant-bodies")
+            if candidate.is_dir() and not candidate.is_symlink() and candidate.resolve() == candidate]
+
+
+def _provenance(receipt_root, path):
+    return receipt_root / (".provenance-" + hashlib.sha256(path.encode()).hexdigest()[:32] + ".json")
+
+
+def _receipt_row(receipt_root, manifest, selected):
+    """One bounded receipt that binds a selected path to its exact SHA."""
+    try:
+        if manifest.is_symlink() or manifest.stat().st_size > 16 * 1024:
+            return None
+        with manifest.open("rb") as handle:
+            encoded = handle.read(16 * 1024 + 1)
+        if len(encoded) > 16 * 1024:
+            return None
+        data = json.loads(encoded.decode("utf-8"))
+        if manifest.name.startswith(".provenance-"):
+            model = Path(data["path"]).resolve()
+            record = data.get("record")
+        else:
+            relative = PurePosixPath(data["model"])
+            if relative.is_absolute() or ".." in relative.parts or any(":" in p for p in relative.parts):
+                return None
+            model = (receipt_root / relative).resolve()
+            if not model.is_relative_to(receipt_root):
+                return None
+            record = data.get("selection_record")
+        if selected.get(str(model)) != data.get("sha256"):
+            return None
+        if isinstance(record, dict):
+            return {"path": str(model), "sha256": data["sha256"], "record": record}
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        pass
+    return None
+
+
+def cached_receipts(context, cache_root):
+    """Read bounded, selected-SHA receipts in fixed current/legacy caches."""
     selected = {str(Path(row["path"]).resolve()): row["sha256"] for row in context["containers"]}
     result = []
-    bases = (root, *legacy_cache_roots(root, "models"))
-    roots = [candidate for base in bases for candidate in (base, base / "transplant-bodies")
-             if candidate.is_dir() and not candidate.is_symlink() and candidate.resolve() == candidate]
+    roots = _receipt_roots(cache_root)
     if not roots:
         return result
     # A specifically selected old cache file should not be starved behind a
     # full new cache. The total bound still covers all roots together.
     roots.sort(key=lambda candidate: not any(Path(path).is_relative_to(candidate) for path in selected))
-    preserved = ((candidate, candidate / (".provenance-" + hashlib.sha256(path.encode()).hexdigest()[:32] + ".json"))
-                 for candidate in roots for path in selected)
+    preserved = ((candidate, _provenance(candidate, path)) for candidate in roots for path in selected)
     def selections():
         for candidate in roots:
             try:
@@ -86,32 +126,38 @@ def cached_receipts(context, cache_root):
     for index, (receipt_root, manifest) in enumerate(chain(preserved, selections())):
         if index >= 256:
             break
-        try:
-            if manifest.is_symlink() or manifest.stat().st_size > 16 * 1024:
-                continue
-            with manifest.open("rb") as handle:
-                encoded = handle.read(16 * 1024 + 1)
-            if len(encoded) > 16 * 1024:
-                continue
-            data = json.loads(encoded.decode("utf-8"))
-            if manifest.name.startswith(".provenance-"):
-                model = Path(data["path"]).resolve()
-                record = data.get("record")
-            else:
-                relative = PurePosixPath(data["model"])
-                if relative.is_absolute() or ".." in relative.parts or any(":" in p for p in relative.parts):
-                    continue
-                model = (receipt_root / relative).resolve()
-                if not model.is_relative_to(receipt_root):
-                    continue
-                record = data.get("selection_record")
-            if selected.get(str(model)) != data.get("sha256"):
-                continue
-            if isinstance(record, dict):
-                result.append({"path": str(model), "sha256": data["sha256"], "record": record})
-        except (OSError, ValueError, TypeError, KeyError, RecursionError):
-            continue
+        row = _receipt_row(receipt_root, manifest, selected)
+        if row is not None:
+            result.append(row)
     return result
+
+
+def stored_receipt(path, sha256, cache_root):
+    """The receipt that binds one model's exact bytes, however full the cache.
+
+    A preserved original's receipt is named after its path. A Game-assets
+    model's selection receipt is in the cache folder that holds the model, so
+    only such folders are listed, and only their receipts are read.
+    """
+    model = str(Path(path).resolve())
+    selected = {model: sha256}
+    roots = _receipt_roots(cache_root)
+    for receipt_root in roots:
+        row = _receipt_row(receipt_root, _provenance(receipt_root, model), selected)
+        if row is not None:
+            return row
+    for receipt_root in roots:
+        if not Path(model).is_relative_to(receipt_root):
+            continue
+        try:
+            for manifest in islice(receipt_root.iterdir(), MAX_RECEIPT_ENTRIES):
+                if manifest.name.startswith(".selection-") and manifest.name.endswith(".json"):
+                    row = _receipt_row(receipt_root, manifest, selected)
+                    if row is not None:
+                        return row
+        except OSError:
+            continue
+    return None
 
 
 def remember_export_sources(context, result, *, repo_root, cache_root):

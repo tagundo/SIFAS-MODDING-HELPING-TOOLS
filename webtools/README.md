@@ -352,6 +352,19 @@ This lookup uses the costume's character, across the installed GL/JP and
 Android/iOS catalogs; it is not limited to one member. Users do not need to
 select or upload facial files. Existing game downloads are reused before CDN
 downloads, and subsequent previews reuse the private cache.
+The face that the body's own BodyPartManager names is preferred: the selected
+game costume's own face (an installed costume's private face), cached or
+extracted originals, a face saved next to the body file, then catalog
+originals. A catalog original is fetched
+only to compare it while no local face matches. That search skips another
+region's copy of an original already checked and stops at the first asset
+server that does not answer. A face elsewhere in the library can be an edited copy
+of a stock face with the same Unity names, so the catalog's own copy is tried
+before it. Face, Mouth and Eye outlines are editable only with the face the
+body names. Another face of the same character is shown as a fallback, and its
+face meshes are listed as not editable. To reopen a copied body alone, copy
+the face saved beside it as well; Game assets also finds an installed
+costume's private face.
 Original LZMA-compressed facial bundles are decoded with bounded memory; manual
 repacking is unnecessary and the source files remain unchanged.
 
@@ -510,6 +523,10 @@ repacking is unnecessary and the source files remain unchanged.
   source-bound recipes and exact source ZIP metadata stay inside the package
   for later editing, so reopening, changing Node to Mesh, or resetting starts
   from the original shape. Other Node controls retain their existing behavior.
+  A Rina costume's masked view draws the board over the face, so it cannot
+  show or edit face outline edits. Reopening it keeps them, and saving or
+  packaging from that view asks for the **Without mask** view instead. An
+  outline edit of only the face keeps both board and unmasked bodies original.
   Previously installed Rina mods are not rewritten automatically. Reopen the
   original ZIP or saved edited source, choose **Save mod ZIP** or **Add to game**,
   then select the newly installed costume. Old app versions cannot install

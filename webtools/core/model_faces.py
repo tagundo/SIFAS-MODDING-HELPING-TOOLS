@@ -5,7 +5,7 @@ comes from the selected Unity assets, never from the app's character picker.
 Only the viewer decides which Face/Eyes renderers from a donor can be exported.
 """
 import ast
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import json
 from itertools import islice
@@ -96,6 +96,15 @@ def _serialized_names(path):
         names.add(ntpath.basename(info[cursor:end].decode("utf-8", "replace")).casefold())
         cursor = end + 1
     return names
+
+
+def _asset(descriptor):
+    """A catalog asset across regions: one asset path and section size.
+
+    The JP and GL catalogs list the same asset in their own packs with their
+    own keys; its serialized file names are the same in each.
+    """
+    return descriptor.get("asset_path"), descriptor.get("size")
 
 
 def _inside(path, roots):
@@ -827,41 +836,33 @@ class FacePlan:
         # Archive members and motion copies have another origin; only the
         # imported model file itself carries the server's receipt.
         eligible = [source for source in sorted(hashes) if origins.get(source, source) == source]
-        records, stored = [], None
+        records = []
         for source in eligible:
             record = imported_record(source, hashes[source])
             if record is None:
                 # A restart empties the in-memory registry. The import cache
                 # keeps its own receipt binding these exact bytes to the suit.
-                if stored is None:
-                    stored = self._stored_records({source: hashes[source] for source in eligible})
-                record = stored.get((str(Path(source).resolve()), hashes[source]))
+                record = self._stored_record(source, hashes[source])
             if record is not None and record not in records:
                 records.append(record)
         return records
 
-    def _stored_records(self, hashes):
-        """Selections the Game-assets import cache persisted for these bytes.
+    def _stored_record(self, source, digest):
+        """The selection the Game-assets import cache persisted for these bytes.
 
-        The same bounded, SHA-bound receipt scan that pairs game sources for
-        packaging; only the application's own game-model cache is read.
+        Only the application's own game-model cache is read, and only a
+        receipt bound to this file's path and SHA counts.
         """
         root = self.context.get("game_models_dir")
-        if not isinstance(root, str) or not root or not hashes:
-            return {}
-        from .viewer_mod_flow import cached_receipts
+        if not isinstance(root, str) or not root:
+            return None
+        from .viewer_mod_flow import stored_receipt
         from .viewer_mod_sources import _record
         try:
-            rows = cached_receipts({"containers": [{"path": path, "sha256": digest} for path, digest in hashes.items()]}, root)
+            row = stored_receipt(source, digest, root)
+            return None if row is None else _record(row["record"])
         except Exception:
-            return {}
-        result = {}
-        for row in rows:
-            try:
-                result.setdefault((row["path"], row["sha256"]), _record(row["record"]))
-            except (KeyError, TypeError, ValueError):
-                continue
-        return result
+            return None
 
     def warn(self, code, message):
         warning = {"code": code, "message": message}
@@ -1410,6 +1411,8 @@ class FacePlan:
             # Exact original/cache identities come before the broad Unity-file
             # search. A populated library must not consume the entire facial
             # budget before we can reuse its already-downloaded original pack.
+            # ``checked`` holds the catalog assets already decrypted here.
+            checked = set()
             try:
                 if self.needed:
                     for descriptor in self._descriptor_iter():
@@ -1422,73 +1425,84 @@ class FacePlan:
                             pending.append(descriptor)
                             continue
                         try:
-                            if self._accept(self._resource(descriptor, download=False), exact=True):
+                            path = self._resource(descriptor, download=False)
+                            checked.add(_asset(descriptor))
+                            if self._accept(path, exact=True):
                                 break
                         except Exception:
                             pending.append(descriptor)
             except Exception:
                 # Standalone/local-only viewers do not need an asset catalog.
                 pass
-            # The client downloads its own suit's missing face pack, and a
-            # stock body's referenced face may only be on the CDN while another
-            # prefab of this member is cached. Download those exact candidates
-            # before settling for another prefab, but leave time for it.
+            # Downloads that may still find the referenced face leave the last
+            # FALLBACK_SECONDS of the face budget to another prefab.
+            allow = self.context.get("allow_download", True)
+            reserve = max(time.monotonic(), self.deadline - FALLBACK_SECONDS)
+            # The client downloads its own suit's missing face pack; do the
+            # same before settling for another prefab of this member.
+            answered = True
+            try:
+                if self.needed and allow and selected_pending:
+                    with self._until(reserve):
+                        answered = self._fetch_exact(selected_pending, set(), set())
+            except Exception:
+                pass
+            # The referenced face may sit next to the body: the viewer saves an
+            # edited face beside it, and that face is used at once. One found
+            # elsewhere in the library may be an edited copy of a catalog face
+            # with the same serialized names, so it waits until the catalog's
+            # own copy has been tried. Every other same-member file is kept,
+            # in the old order, for the fallback.
+            local_span, local_time, later = None, None, []
+            if self.needed and self.face_references:
+                start = len(self._deferred)
+                local_time = self._search_local(pending, exact=True, later=later)
+                local_span = (start, len(self._deferred))
+            # A stock body's referenced face may only be on the CDN while
+            # another prefab of this member is cached. Fetch the catalog
+            # candidates that may still be it. One that is not keeps its old,
+            # late place below; a failed one is not tried twice.
             failed = set()
             try:
-                if self.needed and self.context.get("allow_download", True) and (
-                        selected_pending or self.face_references and pending):
-                    original_deadline = self.deadline
-                    self.deadline = min(self.deadline, max(time.monotonic(), self.deadline - FALLBACK_SECONDS))
-                    try:
-                        for descriptor in selected_pending:
-                            _check(self.deadline)
-                            try:
-                                if self._accept(self._resource(descriptor), exact=True):
-                                    break
-                            except Exception:
-                                continue
-                        if self.needed and self.face_references:
-                            for index, descriptor in enumerate(pending):
-                                if self._suit_model(descriptor):
-                                    continue
-                                _check(self.deadline)
-                                try:
-                                    path = self._resource(descriptor)
-                                except Exception:
-                                    # Tried once; the late pass does not repeat it.
-                                    failed.add(index)
-                                    continue
-                                # Another downloaded prefab keeps its old place,
-                                # after the local search, in the late pass below.
-                                if self._accept(path, exact=True, defer=False):
-                                    break
-                    finally:
-                        self.deadline = original_deadline
+                if self.needed and allow and answered and self.face_references and pending:
+                    with self._until(reserve):
+                        self._fetch_exact(pending, checked, failed, compare=True)
+            except Exception:
+                pass
+            # The broad search keeps one bound for its walk and the candidates
+            # it kept, as before.
+            limit = []
+
+            def accept_local(path):
+                if local_time is None:
+                    return self._accept(path)
+                if not limit:
+                    limit.append(time.monotonic() + local_time)
+                with self._until(limit[0]):
+                    return self._accept(path)
+
+            try:
+                for path in later:
+                    if not self.needed or accept_local(path):
+                        break
             except Exception:
                 pass
             # None of those is the face the body references, e.g. a mod
             # renamed its face but left it out. Keep the earlier choice: the
             # first same-owner candidate, in the same order as before.
             try:
-                for path in list(self._deferred):
-                    if not self.needed or self._accept(path):
+                for position, path in enumerate(list(self._deferred)):
+                    if not self.needed:
+                        break
+                    if local_span and local_span[0] <= position < local_span[1]:
+                        if accept_local(path):
+                            break
+                    elif self._accept(path):
                         break
             except Exception:
                 pass
-            if self.needed:
-                original_deadline = self.deadline
-                if pending and self.context.get("allow_download", True):
-                    # Leave time to obtain a known original when a large local
-                    # collection contains no usable same-character donor.
-                    self.deadline = min(self.deadline, time.monotonic() + 8)
-                try:
-                    for path in self._local():
-                        if self._accept(path):
-                            break
-                except Exception:
-                    pass
-                finally:
-                    self.deadline = original_deadline
+            if self.needed and local_span is None:
+                self._search_local(pending)
             if self.needed:
                 for index, descriptor in enumerate(pending):
                     if index in failed:
@@ -1519,17 +1533,89 @@ class FacePlan:
     def _suit_model(self, descriptor):
         return tuple(descriptor.get(key) for key in ("pack_name", "head", "size", "key1", "key2", "pack_size")) in self._suit_models
 
+    @contextmanager
+    def _until(self, deadline):
+        original = self.deadline
+        self.deadline = min(original, deadline)
+        try:
+            yield
+        finally:
+            self.deadline = original
+
+    def _search_local(self, pending, *, exact=False, later=None):
+        """The broad same-member file search, with its old bound.
+
+        With a catalog original still to download, the walk and the
+        candidates it accepts share 8 seconds. Returns what remains of them
+        for candidates kept for later, or None when unbounded. With ``later``,
+        only a referenced face beside a selected body is accepted here; one
+        elsewhere is added to ``later`` and any other file is deferred.
+        """
+        bounded = bool(pending) and self.context.get("allow_download", True)
+        beside = {os.path.dirname(os.path.realpath(path)) for path in self.paths}
+        started = time.monotonic()
+        try:
+            # Leave time to obtain a known original when a large local
+            # collection contains no usable same-character donor.
+            with self._until(started + 8 if bounded else self.deadline):
+                for path in self._local():
+                    if later is not None and os.path.dirname(path) not in beside:
+                        if self._referenced(path):
+                            later.append(path)
+                        elif path not in self._deferred:
+                            self._deferred.append(path)
+                        continue
+                    if self._accept(path, exact=exact):
+                        break
+        except Exception:
+            pass
+        return max(0., 8 - (time.monotonic() - started)) if bounded else None
+
+    def _referenced(self, path):
+        try:
+            return bool(_serialized_names(path) & self.face_references)
+        except Exception:
+            return False
+
+    def _fetch_exact(self, descriptors, checked, failed, *, compare=False):
+        """Download catalog candidates that may be the referenced face.
+
+        A ``compare`` candidate that is not that face is not deferred: its
+        old place is the late download pass. Other regions' copies of an
+        asset already decrypted here (same path and size, so the same
+        serialized names) and further assets of a pack that just failed are
+        not fetched. Returns False once the CDN does not answer at all, so
+        nothing else waits for it.
+        """
+        from urllib.error import HTTPError
+        broken = set()
+        for index, descriptor in enumerate(descriptors):
+            if not self.needed:
+                break
+            if descriptor.get("pack_name") in broken or compare and (
+                    self._suit_model(descriptor) or _asset(descriptor) in checked):
+                continue
+            _check(self.deadline)
+            try:
+                path = self._resource(descriptor)
+            except Exception as error:
+                failed.add(index)
+                broken.add(descriptor.get("pack_name"))
+                if isinstance(error, OSError) and not isinstance(error, HTTPError):
+                    return False
+                continue
+            checked.add(_asset(descriptor))
+            if self._accept(path, exact=True, defer=not compare):
+                break
+        return True
+
     def _accept(self, path, exact=False, defer=True):
         if path in self.paths or path in self.auto_paths or len(self.auto_paths) >= MAX_AUTO_FILES:
             return False
         if exact and self.face_references:
             # Another face prefab of the same member is only a fallback while
             # the face this body references may still be found.
-            try:
-                referenced = bool(_serialized_names(path) & self.face_references)
-            except Exception:
-                referenced = False
-            if not referenced:
+            if not self._referenced(path):
                 if defer and path not in self._deferred:
                     self._deferred.append(path)
                 return False

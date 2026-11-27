@@ -302,6 +302,27 @@ class OutlineFaceRoundTripTests(unittest.TestCase):
         self.assertEqual([_sha(Path(row["path"]).read_bytes()) for row in companions], [_sha(stock_face)])
         self.assertEqual(served, [stock_pack])
 
+        # (f) The viewer saves an edited body with its face beside it. That
+        # body opened alone, with no receipt and its face no longer cached,
+        # uses the face beside it, not the cached stock face.
+        from webtools.core.member_identity import native_from_member
+        viewer_mod_sources._REGISTRY.clear()
+        for path in list((self.library / ".viewer-cache" / "models").glob("*.unity")):
+            if path.read_bytes() == installed["F"]:
+                path.unlink()
+                Path(str(path) + ".json").unlink(missing_ok=True)
+        saved = self.library / "extracted" / "saved"
+        saved.mkdir()
+        saved_body = saved / Path(installed_body).name
+        shutil.copyfile(installed_body, saved_body)
+        (saved / f"ch{native_from_member(self.member):04}_{_sha(installed['F'])[:24]}.unity").write_bytes(installed["F"])
+        with patch.object(model_faces, "_download", download):
+            editing, companions = self.open([saved_body])
+        _, proof = self.assert_face_editable(editing)
+        self.assertEqual([_sha(Path(row["path"]).read_bytes()) for row in companions], [_sha(installed["F"])])
+        self.assertEqual({proof["faceAsset"]}, {name.casefold() for name in bundle_identity._cab_names(installed["F"])})
+        self.assertEqual(served, [stock_pack])
+
     def pack_of(self, raw):
         """The runtime pack whose decrypted catalog section is ``raw``."""
         catalog = self.runtime / "assets" / "db" / "gl" / "asset_a_en.db"

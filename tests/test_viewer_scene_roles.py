@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 from webtools.core import model_edits as edits, model_viewer, viewer_archive
@@ -324,6 +325,120 @@ class SceneRolesTests(unittest.TestCase):
         _, repaired = self.package(token, {"version": 1, "savedSettingsEnabled": True, "edits": []})
         self.assertEqual(set(repaired["manifest"]["navi_sync"]["android"]), {"BreastSize", "HipsSize"})
         for variant in fmt.VARIANTS: self.assertEqual(self.golden(repaired, "android", variant), originals["android", variant])
+
+    def raw_pair(self):
+        """A raw game body with its automatic face companion and its pair."""
+        primary, unmasked = (bundle_fixture(fmt.PLATFORMS["android"], variant) for variant in fmt.VARIANTS)
+        face = bundle_fixture(fmt.PLATFORMS["android"], "primary", unit_breast=True)
+        paths = {}
+        for name, raw in (("primary", primary), ("unmasked", unmasked), ("face", face)):
+            paths[name] = self.root / (name + ".unity")
+            paths[name].write_bytes(raw)
+        context = {"containers": [{"raw": face}, {"raw": unmasked}],
+                   "sources": [{"container": 0, "member": None, "sha256": fmt.sha(face)},
+                               {"container": 1, "member": None, "sha256": fmt.sha(unmasked)}],
+                   "outline_only_sources": [0]}
+        result = {"preview_paths": [str(paths["face"]), str(paths["unmasked"])],
+                  "recipe": {"format": "elichika-viewer-body-edit", "version": 1, "nodeIdentities": [],
+                             "sources": [{"name": "face.unity", "sha256": fmt.sha(face), "container": 0, "member": None},
+                                         {"name": "unmasked.unity", "sha256": fmt.sha(unmasked), "container": 1, "member": None}],
+                             "originals": [], "state": {}}}
+        pair = {variant: {"path": str(paths[variant])} for variant in fmt.VARIANTS}
+        goldens = {("android", "primary"): primary, ("android", "unmasked"): unmasked}
+        return context, result, pair, goldens
+
+    def test_face_only_outline_edits_keep_both_scene_bodies_original(self):
+        context, result, pair, goldens = self.raw_pair()
+        face_row = {"id": "0:0:111", "factor": 1.0, "absolute": 40}
+        state = {"version": 1, "savedSettingsEnabled": True, "edits": [], "unsupported": [],
+                 "compensationReference": [], "outlines": [face_row]}
+        result["recipe"]["state"] = copy.deepcopy(state)
+        originals, recipes = roles._originals_and_recipes(context, result, pair, goldens, state)
+        self.assertEqual(originals, goldens)
+        for key in goldens:
+            self.assertFalse(recipes[key]["state"].get("outlines"))
+            self.assertEqual(recipes[key]["sources"][0]["sha256"], fmt.sha(goldens[key]))
+        # A body outline edit still needs its edited counterpart.
+        state["outlines"].append({"id": "1:0:222", "factor": 0.75})
+        with self.assertRaisesRegex(ValueError, "no complete native original family"):
+            roles._originals_and_recipes(context, result, pair, goldens, state)
+
+    def test_a_costume_zip_declared_face_is_a_face_source(self):
+        face = bundle_fixture(fmt.PLATFORMS["android"], "primary", unit_breast=True)
+        path = self.source()
+        with zipfile.ZipFile(path) as archive:
+            members = {info.filename: archive.read(info.filename) for info in archive.infolist()}
+        members["modinstall.txt"] += b"costume_facedynamic_file = 'face.unity'\n"
+        members["face.unity"] = face
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, raw in members.items():
+                archive.writestr(name, raw)
+        raw = path.read_bytes()
+        context = {"containers": [{"raw": raw}],
+                   "sources": [{"container": 0, "member": "face.unity", "sha256": fmt.sha(face)},
+                               {"container": 0, "member": "android_unmasked.unity",
+                                "sha256": fmt.sha(self.originals["android", "unmasked"])}]}
+        self.assertEqual(roles._face_sources(context), {0})
+        self.assertEqual(roles._face_sources(dict(context, outline_only_sources=[1])), {0, 1})
+        # A reopened costume ZIP whose only edit is on its declared face keeps
+        # both bodies as their own originals with no body edit.
+        unmasked = self.originals["android", "unmasked"]
+        state = {"version": 1, "savedSettingsEnabled": True, "edits": [], "unsupported": [],
+                 "compensationReference": [], "outlines": [{"id": "0:0:111", "factor": 1.0, "absolute": 40}]}
+        result = {"preview_paths": [str(path)], "recipe": {
+            "format": "elichika-viewer-body-edit", "version": 1, "nodeIdentities": [], "originals": [],
+            "sources": [{"name": "face.unity", "sha256": fmt.sha(face), "container": 0, "member": "face.unity"},
+                        {"name": "android_unmasked.unity", "sha256": fmt.sha(unmasked), "container": 0,
+                         "member": "android_unmasked.unity"}], "state": copy.deepcopy(state)}}
+        goldens = {key: value for key, value in self.originals.items()}
+        originals, recipes = roles._originals_and_recipes(context, result, None, goldens, state)
+        self.assertEqual(originals, goldens)
+        self.assertFalse(any(recipe["state"].get("outlines") for recipe in recipes.values()))
+
+    def test_masked_view_holds_face_outline_edits_and_refuses_to_save_them(self):
+        face_id, mouth = "0:0:-3871884669349275213", "0:0:-1"
+        session = {"sources": [{"name": "android_face.unity", "sha256": "f" * 64, "container": 0, "member": "f"},
+                               {"name": "android_primary.unity", "sha256": "b" * 64, "container": 0, "member": "b"}],
+                   "containers": [{"name": "canonical-originals.zip", "sha256": "c" * 64}],
+                   "outlines": {"meshes": [{"id": "1:0:5538708582486367566"}],
+                                "excludedMeshes": [{"id": face_id}, {"id": mouth}]}}
+
+        def recipe(sha, rows):
+            return {"sources": [{"sha256": sha}], "nodeIdentities": [], "state": {"edits": [], "outlines": rows}}
+
+        restored = []
+
+        def restore(token, value):
+            restored.append(copy.deepcopy(value))
+            return value["state"]
+
+        scene = {"recipe": recipe("b" * 64, [{"id": "0:0:5538708582486367566", "factor": 1.5}]),
+                 "face_recipes": [recipe("f" * 64, [{"id": "0:0:-3871884669349275213", "factor": 1.0, "absolute": 40},
+                                                     # Not a mesh of this face at all: still refused.
+                                                     {"id": "0:0:999", "factor": 1.0}])],
+                 "metadata": {}}
+        for variant, held in (("primary", [{"id": face_id, "factor": 1.0, "absolute": 40}]), ("unmasked", None)):
+            restored.clear()
+            current = copy.deepcopy(session)
+            with self.subTest(variant=variant), \
+                    patch.object(edits, "_session", return_value=current), \
+                    patch.object(edits, "restore", side_effect=restore):
+                roles.register_reopened("a" * 32, dict(scene, variant=variant))
+            outlines = restored[0]["state"]["outlines"]
+            self.assertEqual(current.get("heldFaceOutlines"), held)
+            # The masked view restores the body's edit only; the unmasked view
+            # passes the face rows on, and their validation stays strict.
+            self.assertEqual([row["id"] for row in outlines],
+                             ["1:0:5538708582486367566"] + ([] if held else [face_id]) + ["0:0:999"])
+        # A held view refuses every save path; read-only previews still work.
+        token, _, _ = self.prepare(self.source(), "primary")
+        empty = {"version": 1, "savedSettingsEnabled": True, "edits": []}
+        edits.validate_state(token, empty, allow_empty=True)
+        edits._session(token)["heldFaceOutlines"] = [{"id": face_id, "factor": 1.0}]
+        with self.assertRaisesRegex(ValueError, "Without mask view"):
+            edits.validate_state(token, empty, allow_empty=True)
+        edits.validate_state(token, empty, allow_empty=True, preview=True)
+        self.assertEqual(edits.accessory_preview(token, empty)["corrections"], [])
 
 
 if __name__ == "__main__": unittest.main()
