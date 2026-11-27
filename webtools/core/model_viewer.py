@@ -1682,7 +1682,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             stage_metadata[identity] = mv_studio_stage_materials.read_material(
                                 scene, candidate, ambient_materials, single_ambient)
                         descriptor = stage_metadata[identity]
-                        if descriptor and descriptor["shader"] == "general":
+                        if descriptor and descriptor["shader"] in ("general", "cutout"):
                             stage_opaque = descriptor
                 if stage_beam is not None or stage_opaque is not None or stage_transparent is not None:
                     stage_motion = binding
@@ -2097,8 +2097,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     except ValueError:
                         descriptor = None
                 if descriptor and "queue" in descriptor:
-                    descriptor.pop("queue")
-                    queue = stage_metadata[_key(material_obj)]["queue"]
+                    # AS/Stage, TransparentCutout and Coloring/Opaque keep it for their pass state.
+                    queue = (descriptor["queue"] if descriptor["shader"] in mv_studio_stage_materials.QUEUED_PASS_STATE
+                             else descriptor.pop("queue"))
                     if renderer_type == "MeshRenderer" and queue <= 2500:
                         if opaque_center is False:
                             opaque_center = mv_studio_stage_materials.opaque_sort_center(
@@ -2118,10 +2119,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         custom["_STAGE_EMISSIVE_UV"] = stage_emissive_uv
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], **custom}
                     primitives[-1]["extras"]["mvStageMaterial"] = descriptor
-                    if descriptor["shader"] in {"stage", "general"}:
+                    if descriptor["shader"] in {"stage", "general", "cutout", "coloring"}:
                         mv_studio_stage_materials.collect_main_sampler(
                             scene, materials, material_obj, descriptor,
-                            static_opaque=descriptor["shader"] == "general" and stage_opaque is None,
+                            static_opaque=descriptor["shader"] in {"general", "cutout", "coloring"} and stage_opaque is None,
                         )
                     if descriptor["shader"] == "stage":
                         mv_studio_stage_materials.collect_texture_sampler(

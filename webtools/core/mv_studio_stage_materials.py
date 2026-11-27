@@ -19,25 +19,55 @@ _SHADERS = {
     # with no keyword variants, reads both maps through their own _ST, COLOR
     # unconditionally, and fixes Blend One Zero, ZWrite On, ZTest LEqual.
     ("cab-f8a6d724e5bbefa191ed2e1f27102738", -3111404110691668338): "blend",
+    # AS/General/TransparentCutout: its colour pass and its DEPTH pass discard
+    # below _Cutoff without a keyword; Cull, ZWrite, ZTest and the stencil are
+    # material floats.
+    ("cab-ac0988328357841c205babac78d7cf4e", -6136900368392166873): "cutout",
+    # Hidden/AS/Coloring/Opaque: fixed Blend One Zero, ZWrite On and ZTest
+    # LEqual with Cull [_CullMode]; _PaletteTex (UV1 * _ColorIdTex_ST) scales
+    # _TintColor, and UsePass "Hidden/AS/Depth/DEPTH" writes plain depth.
+    ("cab-a82d81c63f90a9578a472659ba4c195f", -6110577314968069779): "coloring",
 }
-# Every shader above declares Tags { "Queue" = "Geometry" } on its subshader.
-_DEFAULT_QUEUE = 2000
+# Each shader's keyword space. Unity ignores a material keyword its shader
+# does not declare, so only these select a compiled variant.
+_KEYWORDS = {
+    "stage": frozenset({
+        "_ALPHATEST_ON", "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA", "_ALPHA_TRANSPARENCY_MULTIPLY",
+        "_ALPHA_TRANSPARENCY_VERTEX_ALPHA", "_CUBEMAP_BLEND_OP_ADD", "_CUBEMAP_BLEND_OP_ALPHA_BLEND",
+        "_CUBEMAP_MODE_FRAGMENT", "_CUBEMAP_MODE_OFF", "_CUBEMAP_MODE_VERTEX", "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA",
+        "_CUBEMAP_REFLECTIVITY_MULTIPLY", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA", "_FRESNEL_ON",
+        "_PARALLAX_CORRECTED_CUBEMAP_ON", "_THIRD_TEX_MODE_DECAL", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_OFF"}),
+    "cutout": frozenset({"PROCEDURAL_INSTANCING_ON", "SOFTPARTICLES_ON", "_SATURATE_ON", "_VERTEX_COLOR_ON"}),
+    # _AUTO_PLAY_ON compiles to the same programs as its absence.
+    "coloring": frozenset({"_AUTO_PLAY_ON", "_VERTEX_COLOR_ON"}),
+}
+# Tags { "Queue" } of each shader's subshader: TransparentCutout's AlphaTest,
+# Geometry for every other shader above.
+_SHADER_QUEUES = {"stage": 2000, "solid": 2000, "general": 2000, "blend": 2000, "cutout": 2450, "coloring": 2000}
+# The shaders whose descriptor keeps its queue for the editor's pass state:
+# a queue above 2500 draws in Unity's transparent order.
+QUEUED_PASS_STATE = frozenset({"stage", "cutout", "coloring"})
 # AS/Blend/Opaque m_PropInfo defaults: _TintColor (1, 1, 1, 1), _AmbientColor
 # (1, 1, 1, 0), _BlendRate Range(0, 1) = 0, and "white" for both 2D maps.
 _BLEND_DEFAULTS = {"_TintColor": [1., 1., 1., 1.], "_AmbientColor": [1., 1., 1., 0.]}
 _BLEND_MAPS = ("_MainTexA", "_MainTexB")
+# _ALPHA_TRANSPARENCY: the alpha the variant tests against _Cutoff and multiplies by _TintColor.a.
+_ALPHA_SOURCES = {"_ALPHA_TRANSPARENCY_VERTEX_ALPHA": "vertex", "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA": "texture",
+                  "_ALPHA_TRANSPARENCY_MULTIPLY": "multiply"}
 _RIMLIGHT_DEPTH = ("cab-6cf8387efa4151b6220fceb9384d0e8e", 7983779172275908372)
 _AMBIENT_SCRIPT = ("LiveCoreStageAmbient", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll")
 _MODEL_SCRIPT = ("LiveCoreStageModel", *_AMBIENT_SCRIPT[1:])
 _EMISSIVE_SCRIPT = ("LiveCoreStageEmissive", *_AMBIENT_SCRIPT[1:])
 _MAIN_STAGE = "/EntryPoint/Live/Stages/MainStage"
 _COLOR_FIELDS = ("_AmbientColor", "_TintColor", "_BlendColor")
-_PARALLAX_REFLECTION = {"_CUBEMAP_MODE_FRAGMENT", "_PARALLAX_CORRECTED_CUBEMAP_ON"}
-_REFLECTION_BLENDS = {
-    ("_CUBEMAP_BLEND_OP_ALPHA_BLEND", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA"): "vertex-alpha",
-    ("_CUBEMAP_BLEND_OP_ADD", "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA"): "add-texture-alpha",
-    ("_CUBEMAP_BLEND_OP_ADD", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA"): "add-vertex-alpha",
-}
+# AS/Stage reflection keywords. Every combination selects its own compiled
+# variant: the cube direction per fragment or per vertex, optionally parallax
+# corrected against _BoxMin/_BoxMax, a reflectivity from COLOR.a, _MainTex.a
+# or both, an optional Schlick fresnel on it, and an add or alpha-blend op.
+_CUBE_MODES = {"_CUBEMAP_MODE_FRAGMENT": "fragment", "_CUBEMAP_MODE_VERTEX": "vertex"}
+_REFLECTION_OPS = {"_CUBEMAP_BLEND_OP_ADD": "add", "_CUBEMAP_BLEND_OP_ALPHA_BLEND": "alpha-blend"}
+_REFLECTIVITY = {"_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA": "vertex", "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA": "texture",
+                 "_CUBEMAP_REFLECTIVITY_MULTIPLY": "multiply"}
 _CUBE_FORMATS = {34: "etc1", 32: "pvrtc4"}
 _MAX_CUBE_SIZE = 256
 MAIN_SAMPLERS, AUXILIARY_SAMPLERS, STATIC_OPAQUE_SAMPLERS = range(3)
@@ -165,9 +195,71 @@ def camera_depth(scene, material, renderer_tree, *, supports_cutout):
     if ((key not in _SHADERS and key != _RIMLIGHT_DEPTH) or type(queue) is not int or not -1 <= queue <= 2500
             or tree.get("disabledShaderPasses")):
         return None
-    if _SHADERS.get(key) == "stage" and "_ALPHATEST_ON" in tree.get("m_ShaderKeywords", "").split():
+    # AS/Stage's DEPTH pass alpha-tests with _ALPHATEST_ON; TransparentCutout's always does.
+    if (_SHADERS.get(key) == "stage" and "_ALPHATEST_ON" in tree.get("m_ShaderKeywords", "").split()
+            or _SHADERS.get(key) == "cutout"):
         return {"kind": "cutout"} if supports_cutout else None
     return {"kind": "opaque"}
+
+
+def _enum(floats, name, default, count):
+    value = floats.get(name, default)
+    if type(value) not in (int, float) or not math.isfinite(value) or value != int(value) or not 0 <= value < count:
+        return None
+    return int(value)
+
+
+def _stencil(floats):
+    """The float-bound stencil state: {} when it never tests nor writes, None when unreadable.
+
+    Unity enums: CompareFunction (0 Disabled ... 8 Always) and StencilOp (0 Keep ... 7 DecrementWrap).
+    """
+    values = [_enum(floats, *field) for field in (("_StencilRef", 2, 256), ("_StencilComp", 8, 9),
+                                                  ("_StencilPassOp", 0, 8), ("_StencilZFailOp", 0, 8))]
+    if None in values:
+        return None
+    ref, comp, passing, failing = values
+    if comp == 0 or (comp, passing, failing) == (8, 0, 0):
+        return {}
+    return {"stencil": {"ref": ref, "comp": comp, "pass": passing, "zfail": failing}}
+
+
+def _stage_state(tree, floats):
+    """AS/Stage binds Blend [_SrcBlend] [_DstBlend], ZWrite [_ZWrite] and the stencil to floats.
+
+    The shader GUI's _BlendMode only writes those floats, the keywords and the
+    queue; the pass reads the floats themselves.
+    """
+    source, target = _enum(floats, "_SrcBlend", 1, 11), _enum(floats, "_DstBlend", 0, 11)
+    write, queue, stencil = _enum(floats, "_ZWrite", 1, 2), tree.get("m_CustomRenderQueue", -1), _stencil(floats)
+    # UnityEngine.Rendering.BlendMode 9 (SrcAlphaSaturate) is a source factor only.
+    if None in (source, target, write, stencil) or target == 9 or type(queue) is not int or not -1 <= queue <= 5000:
+        return None
+    state = {"queue": _SHADER_QUEUES["stage"] if queue == -1 else queue, **stencil}
+    if (source, target) != (1, 0):
+        state["blend"] = [source, target]
+    if not write:
+        state["depthWrite"] = False
+    return state
+
+
+def _cutout_state(tree, floats):
+    """AS/General/TransparentCutout: Cull [_CullMode], ZWrite [_ZWriteParam], ZTest [_ZTestMode] and the stencil.
+
+    Blend is fixed (One Zero). The float defaults are the shader's m_PropInfo
+    values: Cull Off, ZWrite On, ZTest LEqual.
+    """
+    cull, write, test = _enum(floats, "_CullMode", 0, 3), _enum(floats, "_ZWriteParam", 1, 2), _enum(floats, "_ZTestMode", 4, 9)
+    queue, stencil, cutoff = tree.get("m_CustomRenderQueue", -1), _stencil(floats), floats.get("_Cutoff", .5)
+    if (None in (cull, write, test, stencil) or type(queue) is not int or not -1 <= queue <= 5000
+            or type(cutoff) not in (int, float) or not math.isfinite(cutoff)):
+        return None
+    state = {"cull": cull, "queue": _SHADER_QUEUES["cutout"] if queue == -1 else queue, "alphaCutoff": cutoff, **stencil}
+    if not write:
+        state["depthWrite"] = False
+    if test != 4:
+        state["depthTest"] = test
+    return state
 
 
 def read_material(scene, material, ambient, single_ambient):
@@ -179,13 +271,21 @@ def read_material(scene, material, ambient, single_ambient):
         return None
     floats = _properties(tree, "m_Floats")
     keywords = set(tree.get("m_ShaderKeywords", "").split())
-    # AS/General/Opaque and AS/Blend/Opaque fix blend and depth in their
-    # compiled passes. Serialized values for those properties can survive a
-    # material shader swap.
-    if mode not in ("general", "blend") and (
+    if mode in _KEYWORDS:
+        keywords &= _KEYWORDS[mode]
+    state = {}
+    if mode in ("stage", "cutout"):
+        state = (_stage_state if mode == "stage" else _cutout_state)(tree, floats)
+        if state is None:
+            return None
+    # AS/General/Opaque, AS/Blend/Opaque and Hidden/AS/Coloring/Opaque fix
+    # blend and depth in their compiled passes. Serialized values for those
+    # properties can survive a material shader swap.
+    elif mode not in ("general", "blend", "coloring") and (
             floats.get("_SrcBlend", 1), floats.get("_DstBlend", 0), floats.get("_ZWrite", 1)) != (1, 0, 1):
         return None
-    if (floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
+    if mode in ("general", "solid", "blend") and (
+            floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
             or floats.get("_StencilZFailOp", 0) != 0):
         return None
     colors = _colors(tree)
@@ -203,7 +303,7 @@ def read_material(scene, material, ambient, single_ambient):
     queue = tree.get("m_CustomRenderQueue", -1)
     if type(queue) is int and (queue == -1 or 0 <= queue <= 5000):
         # Unity draws the opaque queues (2500 and below) front to back.
-        meta["queue"] = _DEFAULT_QUEUE if queue == -1 else queue
+        meta["queue"] = _SHADER_QUEUES[mode] if queue == -1 else queue
     if single := single_ambient.get(identity):
         meta["singleAmbientBinding"] = single
     if "_ALPHATEST_ON" in keywords:
@@ -237,20 +337,41 @@ def read_material(scene, material, ambient, single_ambient):
     if mode == "general":
         meta["vertexColor"] = "_VERTEX_COLOR_ON" in keywords
         return meta
+    if mode == "cutout":
+        # PROCEDURAL_INSTANCING_ON and SOFTPARTICLES_ON belong to its particle users.
+        if keywords - {"_VERTEX_COLOR_ON", "_SATURATE_ON"} or not 0 <= state["alphaCutoff"] <= 1:
+            return None
+        meta.update(state, vertexColor="_VERTEX_COLOR_ON" in keywords)
+        if "_SATURATE_ON" in keywords:
+            meta["saturate"] = True
+        return meta
+    if mode == "coloring":
+        # No component sets these materials' palette, so Unity binds the
+        # property's "white" default: the palette lookup leaves _TintColor as is.
+        palette = _properties(tree, "m_TexEnvs").get("_PaletteTex", {}).get("m_Texture") or {}
+        cull, queue = _enum(floats, "_CullMode", 0, 3), tree.get("m_CustomRenderQueue", -1)
+        if palette.get("m_PathID") or cull is None or type(queue) is not int or not -1 <= queue <= 5000:
+            return None
+        return dict(meta, cull=cull, queue=_SHADER_QUEUES["coloring"] if queue == -1 else queue,
+                    vertexColor="_VERTEX_COLOR_ON" in keywords)
     third_modes = keywords & {"_THIRD_TEX_MODE_OFF", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_DECAL"}
-    if ("_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA" not in keywords or len(third_modes) != 1
-            or "_THIRD_TEX_MODE_DECAL" in third_modes):
+    alpha = [source for name, source in _ALPHA_SOURCES.items() if name in keywords]
+    if len(alpha) != 1 or len(third_modes) != 1 or "_THIRD_TEX_MODE_DECAL" in third_modes:
         return None
+    meta.update(state)
+    if alpha[0] != "texture":
+        meta["alphaSource"] = alpha[0]
     modes = keywords & {"_CUBEMAP_MODE_OFF", "_CUBEMAP_MODE_FRAGMENT", "_CUBEMAP_MODE_VERTEX"}
     if len(modes) != 1:
         return None
     bias = floats.get("_MainTexMipmapBias", 0)
     if type(bias) not in (float, int) or not math.isfinite(bias) or "_BlendColor" not in colors:
         return None
+    # The emissive third texture and the cube reflection are independent
+    # keyword groups: their variants apply the reflection, then tint and
+    # _BlendColor, then lerp to the emission by _EmissiveTex.r.
     reflection = "_CUBEMAP_MODE_OFF" not in modes
     emissive = "_THIRD_TEX_MODE_EMISSIVE" in third_modes
-    if emissive and reflection:
-        return None
     return dict(meta, vertexColor=True, mipBias=bias, reflectionToggle=reflection, usesEmissive=emissive)
 
 
@@ -460,20 +581,31 @@ def _cube_pixels(cube, remaining_pixels, deadline):
     return data, side, pixels
 
 
+def reflection_variant(keywords):
+    """The AS/Stage cube reflection variant a keyword set selects, or None."""
+    keywords = set(keywords) & _KEYWORDS["stage"]
+    picked = [[value for name, value in table.items() if name in keywords]
+              for table in (_CUBE_MODES, _REFLECTION_OPS, _REFLECTIVITY)]
+    if any(len(values) != 1 for values in picked) or "_CUBEMAP_MODE_OFF" in keywords:
+        return None
+    (mode,), (op,), (reflectivity,) = picked
+    return {"mode": mode, "parallax": "_PARALLAX_CORRECTED_CUBEMAP_ON" in keywords, "op": op,
+            "reflectivity": reflectivity, "fresnel": "_FRESNEL_ON" in keywords}
+
+
 def export_reflection(scene, glb, materials, material, cube_cache):
     tree = scene.tree(material)
-    keywords = set(tree.get("m_ShaderKeywords", "").split())
-    if not _PARALLAX_REFLECTION <= keywords or "_FRESNEL_ON" in keywords:
+    variant = reflection_variant(tree.get("m_ShaderKeywords", "").split())
+    if variant is None:
         return None
-    blends = {name for name in keywords if name.startswith(("_CUBEMAP_BLEND_OP_", "_CUBEMAP_REFLECTIVITY_"))}
-    blend = _REFLECTION_BLENDS.get(tuple(sorted(blends)))
-    if blend is None:
-        return None
-    colors = _properties(tree, "m_Colors")
-    vectors = {field: _numbers(colors.get(source), "rgb") for field, source in
-               (("boxMin", "_BoxMin"), ("boxMax", "_BoxMax"), ("origin", "_CubemapPos"))}
-    if any(value is None for value in vectors.values()):
-        return None
+    vectors = {}
+    if variant["parallax"]:
+        # Only the parallax-corrected variants declare _BoxMin, _BoxMax and _CubemapPos.
+        colors = _properties(tree, "m_Colors")
+        vectors = {field: _numbers(colors.get(source), "rgb") for field, source in
+                   (("boxMin", "_BoxMin"), ("boxMax", "_BoxMax"), ("origin", "_CubemapPos"))}
+        if any(value is None for value in vectors.values()):
+            return None
     cube_ref = _properties(tree, "m_TexEnvs").get("_Cube", {}).get("m_Texture")
     cube = _ref(material, cube_ref)
     if cube is None or cube.type.name != "Cubemap":
@@ -492,7 +624,7 @@ def export_reflection(scene, glb, materials, material, cube_cache):
             cube_cache[key] = {"bufferView": glb.view(data), "size": size}
             materials.pixels += pixels
     data = cube_cache[key]
-    return {**vectors, **data, "blend": blend} if data is not None else None
+    return {**vectors, **data, **variant} if data is not None else None
 
 
 def read_vertex_inputs(handler, output, count):

@@ -28,7 +28,12 @@
       uniform vec4 emissiveUVTransform;
       varying vec2 vStageEmissiveUV;
     #endif
-    #ifdef CUBEMAP
+    #if defined(CUBEMAP) && defined(CUBEMAP_VERTEX)
+      // _CUBEMAP_MODE_VERTEX: the direction and N.V are per-vertex varyings.
+      uniform vec3 reflectionBoxMin, reflectionBoxMax, reflectionOrigin;
+      varying vec3 vReflectionDirection;
+      varying float vReflectionFacing;
+    #elif defined(CUBEMAP)
       varying vec3 vReflectionPosition;
       varying vec3 vReflectionNormal;
     #endif
@@ -55,9 +60,23 @@
         #include <beginnormal_vertex>
         #include <skinnormal_vertex>
         const vec3 unityAxes = vec3(-1.0, 1.0, 1.0);
-        vReflectionPosition = (modelMatrix * vec4(transformed, 1.0)).xyz * unityAxes;
+        vec3 reflectionPosition = (modelMatrix * vec4(transformed, 1.0)).xyz * unityAxes;
         vec3 worldNormal = (vec4(normalMatrix * objectNormal, 0.0) * viewMatrix).xyz;
-        vReflectionNormal = normalize(worldNormal) * unityAxes;
+        vec3 reflectionNormal = normalize(worldNormal) * unityAxes;
+        #ifdef CUBEMAP_VERTEX
+          vec3 view = normalize(cameraPosition * unityAxes - reflectionPosition);
+          vec3 ray = reflect(-view, reflectionNormal);
+          #ifdef CUBEMAP_PARALLAX
+            vec3 walls = max((reflectionBoxMax - reflectionPosition) / ray, (reflectionBoxMin - reflectionPosition) / ray);
+            vReflectionDirection = ray * min(min(walls.x, walls.y), walls.z) + reflectionPosition - reflectionOrigin;
+          #else
+            vReflectionDirection = ray;
+          #endif
+          vReflectionFacing = dot(view, reflectionNormal);
+        #else
+          vReflectionPosition = reflectionPosition;
+          vReflectionNormal = reflectionNormal;
+        #endif
       #endif
       gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
     }
@@ -96,33 +115,73 @@
     #ifdef CUBEMAP
       uniform bool useReflection;
       uniform samplerCube reflectionCube;
-      uniform vec3 reflectionBoxMin, reflectionBoxMax, reflectionOrigin;
-      varying vec3 vReflectionPosition;
-      varying vec3 vReflectionNormal;
+      #ifdef CUBEMAP_VERTEX
+        varying vec3 vReflectionDirection;
+        varying float vReflectionFacing;
+      #else
+        uniform vec3 reflectionBoxMin, reflectionBoxMax, reflectionOrigin;
+        varying vec3 vReflectionPosition;
+        varying vec3 vReflectionNormal;
+      #endif
     #endif
     void main() {
       #ifdef LIGHTMAPPED
         vec4 surface = texture2D(mainMap, vStageUV, mipBias);
+        // _ALPHA_TRANSPARENCY_VERTEX_ALPHA (0), _MAIN_TEX_ALPHA (1), _MULTIPLY (2):
+        // the alpha _Cutoff tests and _TintColor.a scales.
+        #if STAGE_ALPHA == 0
+          float alpha = vStageColor.a;
+        #elif STAGE_ALPHA == 2
+          float alpha = surface.a * vStageColor.a;
+        #else
+          float alpha = surface.a;
+        #endif
         #ifdef CUTOUT
-          if (surface.a < alphaCutoff) discard;
+          if (alpha < alphaCutoff) discard;
         #endif
         vec3 baked = 2.0 * texture2D(lightMap, vStageLightUV).rgb;
         vec3 ambientSurface = mix(surface.rgb, ambient.rgb, ambient.a);
         vec3 lit = ambientSurface * baked * vStageColor.rgb;
         #ifdef CUBEMAP
           if (useReflection) {
-            vec3 nativeCamera = cameraPosition * vec3(-1.0, 1.0, 1.0);
-            vec3 ray = reflect(normalize(vReflectionPosition - nativeCamera), normalize(vReflectionNormal));
-            vec3 walls = max((reflectionBoxMax - vReflectionPosition) / ray, (reflectionBoxMin - vReflectionPosition) / ray);
-            float distance = min(min(walls.x, walls.y), walls.z);
-            vec3 direction = ray * distance + vReflectionPosition - reflectionOrigin;
-            vec3 reflected = mix(textureCube(reflectionCube, direction).rgb, ambient.rgb, ambient.a);
-            #if defined(CUBEMAP_ADD)
-              lit += reflected * clamp(surface.a, 0.0, 1.0);
-            #elif defined(CUBEMAP_ADD_VERTEX_ALPHA)
-              lit += reflected * clamp(vStageColor.a, 0.0, 1.0);
+            // AS/Stage _CUBEMAP_* variants, in Unity's world axes.
+            #ifdef CUBEMAP_VERTEX
+              vec3 direction = vReflectionDirection;
+              float facing = vReflectionFacing;
             #else
-              lit = mix(lit, reflected, clamp(vStageColor.a, 0.0, 1.0));
+              vec3 nativeCamera = cameraPosition * vec3(-1.0, 1.0, 1.0);
+              vec3 view = normalize(nativeCamera - vReflectionPosition);
+              vec3 normal = normalize(vReflectionNormal);
+              vec3 ray = reflect(-view, normal);
+              #ifdef CUBEMAP_PARALLAX
+                vec3 walls = max((reflectionBoxMax - vReflectionPosition) / ray, (reflectionBoxMin - vReflectionPosition) / ray);
+                float distance = min(min(walls.x, walls.y), walls.z);
+                vec3 direction = ray * distance + vReflectionPosition - reflectionOrigin;
+              #else
+                vec3 direction = ray;
+              #endif
+              float facing = dot(normal, view);
+            #endif
+            vec3 reflected = mix(textureCube(reflectionCube, direction).rgb, ambient.rgb, ambient.a);
+            // _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA (0), _MAIN_TEX_ALPHA (1), _MULTIPLY (2).
+            #if CUBEMAP_REFLECTIVITY == 1
+              float reflectivity = surface.a;
+            #elif CUBEMAP_REFLECTIVITY == 2
+              float reflectivity = surface.a * vStageColor.a;
+            #else
+              float reflectivity = vStageColor.a;
+            #endif
+            #ifdef CUBEMAP_FRESNEL
+              // Schlick: (1 - N.V)^5 lifts the reflectivity towards 1.
+              float rim = 1.0 - facing;
+              float rim2 = rim * rim;
+              reflectivity = (1.0 - reflectivity) * (rim * rim2 * rim2) + reflectivity;
+            #endif
+            reflectivity = clamp(reflectivity, 0.0, 1.0);
+            #ifdef CUBEMAP_ADD
+              lit += reflected * reflectivity;
+            #else
+              lit = mix(lit, reflected, reflectivity);
             #endif
           }
         #endif
@@ -131,7 +190,24 @@
           vec3 emission = mix(ambientSurface, emissiveColor.rgb, emissiveColor.a) * emissiveIntensity;
           color = mix(color, emission, texture2D(emissiveMap, vStageEmissiveUV).r);
         #endif
-        gl_FragColor = vec4(color, surface.a * tint.a);
+        gl_FragColor = vec4(color, alpha * tint.a);
+      #elif defined(TINT_THEN_COLOR)
+        // AS/General/TransparentCutout and Hidden/AS/Coloring/Opaque: ambient,
+        // then tint (times the palette), then COLOR; the cutout's
+        // _SATURATE_ON adds _MainTex.rgb to the fourth power.
+        vec4 surface = texture2D(mainMap, vStageUV);
+        #ifdef CUTOUT
+          if (surface.a < alphaCutoff) discard;
+        #endif
+        vec4 color = vec4(mix(surface.rgb, ambient.rgb, ambient.a) * tint.rgb, surface.a * tint.a);
+        #ifdef VERTEX_COLOR
+          color *= vStageColor;
+        #endif
+        #ifdef SATURATE
+          vec3 square = surface.rgb * surface.rgb;
+          color.rgb += square * square;
+        #endif
+        gl_FragColor = color;
       #elif defined(TEXTURED)
         vec4 surface = texture2D(mainMap, vStageUV);
         #ifdef BLEND
@@ -186,12 +262,92 @@
       Array.isArray(value.center) && value.center.length === 3 && value.center.every(Number.isFinite);
   }
 
+  // The AS/Stage reflection variant (mv_studio_stage_materials.reflection_variant).
+  const reflectivities = {vertex: 0, texture: 1, multiply: 2};
+  // Stage GLBs converted before the variant fields named one of three
+  // parallax-corrected fragment variants in `blend`.
+  const legacyReflections = {
+    "vertex-alpha": {op: "alpha-blend", reflectivity: "vertex"},
+    "add-texture-alpha": {op: "add", reflectivity: "texture"},
+    "add-vertex-alpha": {op: "add", reflectivity: "vertex"},
+  };
+
+  function reflectionVariant(value) {
+    const legacy = value?.mode === undefined && legacyReflections[value?.blend];
+    return legacy ? {...value, mode: "fragment", parallax: true, fresnel: false, ...legacy} : value;
+  }
+
   function reflectionSource(value) {
     return Number.isSafeInteger(value?.bufferView) && value.bufferView >= 0 &&
       Number.isSafeInteger(value.size) && value.size >= 8 && value.size <= 256 &&
       (value.size & (value.size - 1)) === 0 &&
-      ["vertex-alpha", "add-texture-alpha", "add-vertex-alpha"].includes(value.blend) &&
-      [value.boxMin, value.boxMax, value.origin].every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite));
+      ["fragment", "vertex"].includes(value.mode) && ["add", "alpha-blend"].includes(value.op) &&
+      Object.hasOwn(reflectivities, value.reflectivity) && typeof value.fresnel === "boolean" &&
+      typeof value.parallax === "boolean" && (!value.parallax ||
+        [value.boxMin, value.boxMax, value.origin].every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite)));
+  }
+
+  // Float-bound pass state, by Unity enum value: UnityEngine.Rendering.BlendMode,
+  // CompareFunction (0 Disabled) and StencilOp.
+  function renderState(T) {
+    return {
+      factors: [T.ZeroFactor, T.OneFactor, T.DstColorFactor, T.SrcColorFactor, T.OneMinusDstColorFactor,
+        T.SrcAlphaFactor, T.OneMinusSrcColorFactor, T.DstAlphaFactor, T.OneMinusDstAlphaFactor,
+        T.SrcAlphaSaturateFactor, T.OneMinusSrcAlphaFactor],
+      stencilFunctions: [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc, T.EqualStencilFunc,
+        T.LessEqualStencilFunc, T.GreaterStencilFunc, T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc],
+      stencilOps: [T.KeepStencilOp, T.ZeroStencilOp, T.ReplaceStencilOp, T.IncrementStencilOp, T.DecrementStencilOp,
+        T.InvertStencilOp, T.IncrementWrapStencilOp, T.DecrementWrapStencilOp],
+      depthFunctions: [T.AlwaysDepth, T.NeverDepth, T.LessDepth, T.EqualDepth, T.LessEqualDepth, T.GreaterDepth,
+        T.NotEqualDepth, T.GreaterEqualDepth, T.AlwaysDepth],
+    };
+  }
+
+  const enumIn = (value, count) => Number.isInteger(value) && value >= 0 && value < count;
+
+  function passStateReady(meta) {
+    return (meta.queue === undefined || Number.isInteger(meta.queue) && meta.queue >= 0 && meta.queue <= 5000) &&
+      (meta.blend === undefined || Array.isArray(meta.blend) && meta.blend.length === 2 &&
+        enumIn(meta.blend[0], 11) && enumIn(meta.blend[1], 11) && meta.blend[1] !== 9) &&
+      (meta.depthWrite === undefined || meta.depthWrite === false) &&
+      (meta.depthTest === undefined || enumIn(meta.depthTest, 9) && meta.depthTest !== 4) &&
+      (meta.stencil === undefined || enumIn(meta.stencil.ref, 256) && enumIn(meta.stencil.comp, 9) &&
+        enumIn(meta.stencil.pass, 8) && enumIn(meta.stencil.zfail, 8));
+  }
+
+  function applyPassState(T, material, meta) {
+    const state = renderState(T);
+    if (meta.blend) {
+      material.blending = T.CustomBlending;
+      material.blendSrc = material.blendSrcAlpha = state.factors[meta.blend[0]];
+      material.blendDst = material.blendDstAlpha = state.factors[meta.blend[1]];
+      material.blendEquation = material.blendEquationAlpha = T.AddEquation;
+    }
+    if (meta.depthWrite === false) material.depthWrite = false;
+    if (meta.depthTest === 0) material.depthTest = false;  // ZTest Disabled
+    else if (meta.depthTest !== undefined) material.depthFunc = state.depthFunctions[meta.depthTest];
+    // Unity sorts the queues above 2500 back to front after every opaque queue.
+    material.transparent = meta.queue > 2500;
+    // Blend One Zero stays unblended there too.
+    if (material.transparent && !meta.blend) material.blending = T.NoBlending;
+    if (meta.stencil) {
+      material.stencilWrite = true;
+      material.stencilRef = meta.stencil.ref;
+      material.stencilFunc = state.stencilFunctions[meta.stencil.comp];
+      material.stencilFuncMask = material.stencilWriteMask = 0xff;
+      material.stencilFail = T.KeepStencilOp;
+      material.stencilZPass = state.stencilOps[meta.stencil.pass];
+      material.stencilZFail = state.stencilOps[meta.stencil.zfail];
+    }
+  }
+
+  function reflectionDefines(source) {
+    const defines = {CUBEMAP: 1, CUBEMAP_REFLECTIVITY: reflectivities[source.reflectivity]};
+    if (source.mode === "vertex") defines.CUBEMAP_VERTEX = 1;
+    if (source.parallax) defines.CUBEMAP_PARALLAX = 1;
+    if (source.op === "add") defines.CUBEMAP_ADD = 1;
+    if (source.fresnel) defines.CUBEMAP_FRESNEL = 1;
+    return defines;
   }
 
   async function loadCube(T, parser, source) {
@@ -386,7 +542,8 @@
     root.traverse((node) => {
       sampler.retainOriginalMaterial(node.material);
       const meta = node.geometry?.userData?.mvStageMaterial;
-      if (!node.isMesh || !["stage", "general", "solid", "blend"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
+      if (!node.isMesh || !["stage", "general", "solid", "blend", "cutout", "coloring"].includes(meta?.shader) ||
+          !isColor(meta.colors?._TintColor)) return;
       if (meta.shader !== "solid" && ((meta.shader !== "blend" && !node.material?.map) || !isColor(meta.uvTransform) ||
           !isColor(meta.colors._AmbientColor))) return;
       if (meta.shader === "blend" && (!parser || !blendReady(meta))) return;
@@ -394,9 +551,12 @@
       if (meta.shader === "stage" && (!parser || !Number.isSafeInteger(meta.lightmap) ||
           meta.lightmap < 0 || !node.geometry.getAttribute("_stage_light_uv") ||
           !isColor(meta.colors._BlendColor) || !Number.isFinite(meta.mipBias))) return;
-      if (meta.alphaCutoff !== undefined && (meta.shader !== "stage" || !Number.isFinite(meta.alphaCutoff) ||
-          meta.alphaCutoff < 0 || meta.alphaCutoff > 1)) return;
-      if (meta.emissive && (meta.shader !== "stage" || meta.reflectionToggle ||
+      if ((meta.alphaCutoff !== undefined || meta.shader === "cutout") && (!["stage", "cutout"].includes(meta.shader) ||
+          !Number.isFinite(meta.alphaCutoff) || meta.alphaCutoff < 0 || meta.alphaCutoff > 1)) return;
+      if (meta.saturate !== undefined && (meta.shader !== "cutout" || meta.saturate !== true)) return;
+      if (!passStateReady(meta) || meta.alphaSource !== undefined &&
+          (meta.shader !== "stage" || !Object.hasOwn(reflectivities, meta.alphaSource))) return;
+      if (meta.emissive && (meta.shader !== "stage" ||
           !node.geometry.getAttribute("_stage_emissive_uv") || !Number.isSafeInteger(meta.emissive.texture) ||
           meta.emissive.texture < 0 || !isColor(meta.emissive.color) ||
           !isColor(meta.emissive.uvTransform) || !Number.isFinite(meta.emissive.intensity))) return;
@@ -452,11 +612,19 @@
         uniforms.ambient = {value: new T.Vector4().fromArray(meta.colors._AmbientColor)};
       }
       if (meta.vertexColor) defines.VERTEX_COLOR = 1;
+      // Hidden/AS/Coloring/Opaque with its "white" default palette shares the cutout's order without the test.
+      if (meta.shader === "coloring") defines.TINT_THEN_COLOR = 1;
+      if (meta.shader === "cutout") {
+        defines.TINT_THEN_COLOR = defines.CUTOUT = 1;
+        if (meta.saturate) defines.SATURATE = 1;
+        uniforms.alphaCutoff = {value: meta.alphaCutoff};
+      }
       if (meta.shader === "stage") {
         const lightMap = await sampledNativeTexture(meta.lightmap, meta.lightmapSampler);
         if (!active()) break;
         if (!lightMap) continue;
         defines.LIGHTMAPPED = 1;
+        defines.STAGE_ALPHA = reflectivities[meta.alphaSource ?? "texture"];
         uniforms.lightMap = {value: lightMap};
         uniforms.mipBias = {value: meta.mipBias};
         uniforms.blendColor = {value: new T.Vector4().fromArray(meta.colors._BlendColor)};
@@ -474,20 +642,20 @@
           uniforms.emissiveColor = {value: new T.Vector4().fromArray(meta.emissive.color)};
           uniforms.emissiveIntensity = {value: meta.emissive.intensity};
         }
-        const source = meta.reflection;
+        const source = reflectionVariant(meta.reflection);
         if (meta.reflectionToggle && reflectionSource(source)) {
           if (!cubes.has(source.bufferView)) cubes.set(source.bufferView, await loadCube(T, parser, source));
           if (!active()) break;
           reflectionCube = cubes.get(source.bufferView);
           if (reflectionCube) {
-            defines.CUBEMAP = 1;
-            if (source.blend === "add-texture-alpha") defines.CUBEMAP_ADD = 1;
-            else if (source.blend === "add-vertex-alpha") defines.CUBEMAP_ADD_VERTEX_ALPHA = 1;
+            Object.assign(defines, reflectionDefines(source));
             uniforms.useReflection = {value: false};
             uniforms.reflectionCube = {value: null};
-            uniforms.reflectionBoxMin = {value: new T.Vector3().fromArray(source.boxMin)};
-            uniforms.reflectionBoxMax = {value: new T.Vector3().fromArray(source.boxMax)};
-            uniforms.reflectionOrigin = {value: new T.Vector3().fromArray(source.origin)};
+            if (source.parallax) {
+              uniforms.reflectionBoxMin = {value: new T.Vector3().fromArray(source.boxMin)};
+              uniforms.reflectionBoxMax = {value: new T.Vector3().fromArray(source.boxMax)};
+              uniforms.reflectionOrigin = {value: new T.Vector3().fromArray(source.origin)};
+            }
           }
         }
       }
@@ -495,9 +663,14 @@
         name: original.name, defines, uniforms, vertexShader, fragmentShader, skinning, toneMapped: false,
         side: meta.cull === 0 ? T.DoubleSide : meta.cull === 1 ? T.BackSide : T.FrontSide,
       });
+      applyPassState(T, material, meta);
       // A mesh without a COLOR stream reads opaque white.
       if (meta.vertexColor && !node.geometry.getAttribute("_stage_color")) material.defaultAttributeValues._stage_color = [1, 1, 1, 1];
       if (!meta.reflectionToggle || uniforms.useReflection) node.material = material;
+      if (material.transparent) {
+        entry.renderOrder = node.renderOrder;
+        node.renderOrder = meta.queue;
+      }
       // LivePropBasic swaps in its own material instance, which only the prop's
       // LivePropAmbient changes; stage ambient components keep the original asset.
       const propLight = node.geometry.userData?.mvPropLight;
@@ -695,8 +868,9 @@
       dispose() {
         for (const entry of uvRecords) if (uvOwners.get(entry.owner) === entry) uvOwners.delete(entry.owner);
         for (const entry of blendEntries) if (blendOwners.get(entry.owner) === entry) blendOwners.delete(entry.owner);
-        for (const {node, original, material} of records) {
+        for (const {node, original, material, renderOrder} of records) {
           node.material = original;
+          if (renderOrder !== undefined) node.renderOrder = renderOrder;
           material.dispose();
         }
         opaqueEntries.length = 0;

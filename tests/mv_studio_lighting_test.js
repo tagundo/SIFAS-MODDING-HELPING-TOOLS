@@ -555,6 +555,11 @@ async function testStageAuxiliarySamplers() {
 
 async function testStageCubemapQuality() {
   const root = new T.Group(), base = new T.Texture(), lightmap = new T.Texture();
+  const variants = {
+    "add-vertex-alpha": {op: "add", reflectivity: "vertex"},
+    "add-texture-alpha": {op: "add", reflectivity: "texture"},
+    "vertex-alpha": {op: "alpha-blend", reflectivity: "vertex"},
+  };
   const addSurface = (blend, controlled, bufferView = 0) => {
     const geometry = new T.PlaneGeometry();
     geometry.setAttribute("_stage_light_uv", geometry.getAttribute("uv"));
@@ -564,7 +569,9 @@ async function testStageCubemapQuality() {
     geometry.userData.mvStageMaterial = {
       shader: "stage", lightmap: 0, mipBias: 0, uvTransform: [1, 1, 0, 0], vertexColor: true,
       reflectionToggle: true, reflectionQualityControlled: controlled,
-      reflection: {bufferView, size: 8, boxMin: [-2, -1, -4], boxMax: [2, 5, 4], origin: [0, 2, 0], blend},
+      reflection: {bufferView, size: 8, boxMin: [-2, -1, -4], boxMax: [2, 5, 4], origin: [0, 2, 0],
+        // "legacy" keeps the field a stage GLB converted before the variant fields carried.
+        ...(controlled === undefined ? {blend} : {mode: "fragment", parallax: true, fresnel: false, ...variants[blend]})},
       colors: {_TintColor: [1, 1, 1, 1], _AmbientColor: [0, 0, 0, 0], _BlendColor: [0, 0, 0, 0]},
     };
     const node = new T.Mesh(geometry, new T.MeshBasicMaterial({map: base}));
@@ -591,11 +598,13 @@ async function testStageCubemapQuality() {
   controller.update(0, project);
   const cube = cage.material.uniforms.reflectionCube.value;
   assert(cube.isCubeTexture && cube.image.length === 6 && cube.mipmaps.length === 3);
-  assert.equal(cage.material.defines.CUBEMAP_ADD_VERTEX_ALPHA, 1);
-  assert.equal(cage.material.defines.CUBEMAP_ADD, undefined);
-  assert.equal(floor.material.defines.CUBEMAP_ADD, 1);
-  assert.equal(legacy.material.defines.CUBEMAP_ADD_VERTEX_ALPHA, undefined);
-  assert.equal(legacy.material.defines.CUBEMAP_ADD, undefined);
+  assert.deepEqual([cage.material.defines.CUBEMAP_ADD, cage.material.defines.CUBEMAP_REFLECTIVITY], [1, 0]);
+  assert.deepEqual([floor.material.defines.CUBEMAP_ADD, floor.material.defines.CUBEMAP_REFLECTIVITY], [1, 1]);
+  assert.deepEqual([legacy.material.defines.CUBEMAP_ADD, legacy.material.defines.CUBEMAP_REFLECTIVITY], [undefined, 0]);
+  for (const node of [cage, floor, legacy]) {
+    assert.deepEqual([node.material.defines.CUBEMAP_PARALLAX, node.material.defines.CUBEMAP_VERTEX,
+      node.material.defines.CUBEMAP_FRESNEL], [1, undefined, undefined]);
+  }
   for (const node of [cage, floor, legacy, independent]) {
     assert.equal(node.material.uniforms.reflectionCube.value, cube);
     assert.equal(node.material.side, T.FrontSide);
