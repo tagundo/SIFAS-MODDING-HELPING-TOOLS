@@ -1227,6 +1227,44 @@ class RealPackModuleTests(reg_tests.Case):
         self.assertEqual([warning["reason"] for warning in install(pack, accept_unchecked=True)],
                          [conversion.VALUES_NEWER])
 
+    def test_a_missing_platform_this_conversion_cannot_make_is_asked_about(self):
+        """Elichika's install with adminui's own conversion and check: a single-platform pack whose timeline holds
+        a value this export does not write cannot be converted (LOSSY). The install does not refuse it: it asks
+        about both (the timeline's values, the platform left unconverted) and, once the caller consents, installs
+        the pack's timeline while the other platform plays the source MV's original."""
+        import database_maintenance
+        import mv_studio_stock
+        try:
+            from adminui.tools import mv_timeline as admin
+        except ImportError:
+            self.skipTest("Elichika's Server content tools are not importable")
+        if not hasattr(self.pack, "CannotConvert"):
+            self.skipTest("This Elichika's pack install refuses a lossy conversion")
+        with mock.patch.object(admin, "repo_root", return_value=self.root):
+            convert, _, _, _, check = admin._modtools()
+        tracks = reg_tests.base_tracks()
+        tracks[1]["events"][0]["values"]["mixIn"] = [0, 0.5]  # a value this export does not write
+        lossy = timeline_bytes("android", tracks, tag="lossy")
+        with self.assertRaises(self.pack.CannotConvert) as refused:
+            convert(lossy, "android", "ios", "gl", 2101)
+        self.assertEqual((str(refused.exception), refused.exception.labels), (conversion.LOSSY, ["StageEffect/Bloom"]))
+        pack = self.pack.write_pack(name="lossy", song={"liveId": 21, "title": "Base song"},
+                                    source={"region": "gl", "assetId": 2101}, target_asset_id=2201,
+                                    timelines={"android": lossy})
+        with self.assertRaises(self.pack.UncheckedValues) as caught:
+            self.pack.install_pack(self.root, pack, regions=("gl",), log=None, check=check, convert=convert)
+        self.assertEqual(caught.exception.items, [{"platform": "android", "text": conversion.VALUES_UNKNOWN},
+                                                  {"platform": "ios", "text": self.pack.CANNOT_CONVERT}])
+        self.assertFalse(mv_studio_stock.describe_mv_timeline(self.root, region="gl", asset_id=2201)["override"])
+        result = self.pack.install_pack(self.root, pack, regions=("gl",), log=None, check=check, convert=convert,
+                                        accept_unchecked=True)
+        self.assertEqual((result["regions"][0]["converted"], result["regions"][0]["missing"]), ([], ["ios"]))
+        described = mv_studio_stock.describe_mv_timeline(self.root, region="gl", asset_id=2201)
+        self.assertEqual(described["platforms"], {"android": "custom", "ios": "stock"})
+        with database_maintenance.guard(self.root):
+            mv_studio_stock.restore_mv_timeline(self.root, region="gl", asset_id=2201,
+                                                expected_key=described["timelineKey"], log=None)
+
     def test_a_damaged_compressed_entry_is_not_a_pack(self):
         """A corrupt deflate stream or LZMA entry is a refusal (ValueError, HTTP 400), whether the reader
         names it itself or lets zlib.error / LZMAError out."""
