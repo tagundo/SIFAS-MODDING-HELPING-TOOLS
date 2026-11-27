@@ -226,7 +226,8 @@ async function testStageEmissive() {
   const bound = addSurface({...defaults, binding});
   const shared = addSurface({...defaults, binding});
   const unbound = addSurface(defaults);
-  const wrongBinding = addSurface({...defaults, binding: binding + "/Other"});
+  // Only the stage model and its children hold LiveCoreStageEmissive receivers.
+  const wrongBinding = addSurface({...defaults, binding: "/EntryPoint/Live/Stages/MainStage/Effect"});
 
   const controller = await MVStudioStageMaterial.apply(T, root, {
     getDependency: async (type, index) => type === "texture" ? decoded[index] : null,
@@ -241,7 +242,7 @@ async function testStageEmissive() {
     {start: 1, duration: 2, values: {playableClass: "LiveStageEmissiveClip",
       colorSpecifiedType: 1, memberPosition: 1, color: [.5, .5, 1, .5], intensity: .25, blendIn: 1}},
   ]);
-  const wrong = track("LiveStageEmissiveTrack", binding + "/Other", enabled.events);
+  const wrong = track("LiveStageEmissiveTrack", "/EntryPoint/Live/Stages/MainStage/Effect", enabled.events);
   const stageProject = {
     tracks: [wrong, enabled], quality: {values: {stage_emissive: true}},
     performers: [{position: 1, themeColor: [.25, .5, .5, .5]}],
@@ -334,6 +335,60 @@ async function testStageEmissiveHold() {
   assert(MVStudioLighting.approximately(0, 7 * epsilon) && !MVStudioLighting.approximately(0, 8 * epsilon) &&
     !MVStudioLighting.approximately(0, 1e-40), "Mathf.Approximately has an 8 * FloatMinDenormal floor");
   console.log("Native stage emissive holds (CheckSame color, Approximately intensity) passed");
+}
+
+// 10001/3: LiveCoreStageModel.emissives lists four receivers on Model/Emissives/Emissive1..4, each
+// with its own materials, LiveStageEmissiveTrack and CheckSame/Approximately hold.
+async function testStageChildEmissives() {
+  const model = "/EntryPoint/Live/Stages/MainStage/Model";
+  const [first, second] = [1, 2].map(index => `${model}/Emissives/Emissive${index}`);
+  const root = new T.Group(), decoded = [new T.Texture(), new T.Texture()];
+  const defaults = {texture: 1, uvTransform: [1, 1, 0, 0], color: [1, 1, 1, 1], intensity: 1};
+  const addSurface = (binding) => {
+    const geometry = new T.PlaneGeometry();
+    geometry.setAttribute("_stage_light_uv", geometry.getAttribute("uv"));
+    geometry.setAttribute("_stage_emissive_uv", geometry.getAttribute("uv"));
+    geometry.userData.mvStageMaterial = {
+      shader: "stage", uvTransform: [1, 1, 0, 0], lightmap: 1, mipBias: 0, emissive: {...defaults, binding},
+      colors: {_TintColor: [1, 1, 1, 1], _AmbientColor: [0, 0, 0, 0], _BlendColor: [0, 0, 0, 0]},
+    };
+    const node = new T.Mesh(geometry, new T.MeshBasicMaterial({map: decoded[0]}));
+    root.add(node);
+    return node;
+  };
+  const [one, two, whole] = [first, second, model].map(addSurface);
+  const controller = await MVStudioStageMaterial.apply(T, root, {
+    getDependency: async (type, index) => type === "texture" ? decoded[index] : null,
+  });
+  const read = (node) => [node.material.uniforms.emissiveColor.value.toArray(), node.material.uniforms.emissiveIntensity.value];
+  const firstTrack = track("LiveStageEmissiveTrack", first, [
+    {start: 0, duration: 2, values: {playableClass: "LiveStageEmissiveClip", colorSpecifiedType: 0,
+      color: [.2, .2, .2, 1], intensity: 1, blendOut: 1}},
+    {start: 1, duration: 3, values: {playableClass: "LiveStageEmissiveClip", colorSpecifiedType: 0,
+      color: [.2, .2, .205, 1], intensity: 1.0000005, blendIn: 1}},
+  ]);
+  const secondTrack = track("LiveStageEmissiveTrack", second, [
+    {start: 0, duration: 4, values: {playableClass: "LiveStageEmissiveClip", colorSpecifiedType: 0,
+      color: [.9, .1, .1, 1], intensity: 3}},
+  ]);
+  const stageProject = {tracks: [secondTrack, firstTrack], quality: {values: {stage_emissive: true}}};
+  const exact = (time) => (controller.update(time, stageProject), [read(one), read(two)]);
+  const [at12, at15] = [1.2, 1.5].map(exact);
+  assert.deepEqual(at15[1], [[.9, .1, .1, 1].map(Math.fround), 3], "each receiver samples its own track");
+  assert.notDeepEqual(at15[0], at12[0], "precondition: the first receiver's color moves between 1.2 s and 1.5 s");
+  assert.deepEqual(read(whole), [defaults.color, defaults.intensity], "the model binding has no track here");
+
+  // Advancing frames: the first receiver keeps its 1.2 s write while the second writes its own color.
+  controller.update(1.2, stageProject, {}, {advancing: false, history: []});
+  controller.update(1.5, stageProject, {}, {advancing: true, history: []});
+  assert.deepEqual([read(one), read(two)], [at12[0], at15[1]], "every receiver holds its own last write");
+
+  stageProject.tracks = [secondTrack, firstTrack, {...secondTrack}];
+  controller.update(1.5, stageProject, {}, {advancing: false, history: []});
+  assert.deepEqual(read(two), [defaults.color, defaults.intensity], "two tracks on one receiver keep its defaults");
+  assert.deepEqual(read(one), at15[0], "another receiver's ambiguity does not matter");
+  controller.dispose();
+  console.log("Native stage emissive receivers below the model, one track and hold each, passed");
 }
 
 async function testStageMainSampler() {
@@ -691,7 +746,7 @@ async function testWeightedStageMaterial() {
   console.log("Weighted native stage material selects Three skinning, opaque state and authored texture sampling.");
 }
 
-testStageAmbientHold().then(testStageAmbientComponentHolds).then(testSingleStageAmbient).then(testStageEmissive).then(testStageEmissiveHold).then(testStageMainSampler).then(testStageAuxiliarySamplers)
+testStageAmbientHold().then(testStageAmbientComponentHolds).then(testSingleStageAmbient).then(testStageEmissive).then(testStageEmissiveHold).then(testStageChildEmissives).then(testStageMainSampler).then(testStageAuxiliarySamplers)
   .then(testStageCubemapQuality).then(testWeightedStageMaterial).catch(error => {
     console.error(error);
     process.exitCode = 1;

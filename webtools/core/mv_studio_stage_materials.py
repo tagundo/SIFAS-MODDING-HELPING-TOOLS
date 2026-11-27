@@ -154,38 +154,84 @@ def cubemap_model_ownership(scene, component, tree):
     return True, {_key(material) for material in materials}
 
 
-def emissive_materials(scene, component, tree):
-    """Resolve the unique root receiver targeted by the stage model binding."""
-    sources = tree.get("emissives")
-    if (not isinstance(sources, list) or not 0 < len(sources) <= 128 or getattr(scene, "native_stage_effect", False)
-            or _component_identity(scene, component, tree) != _MODEL_SCRIPT):
-        return ()
-    root = _ref(component, tree.get("m_GameObject"))
-    if len(_object_path(scene, root)) != 1:
-        return ()
-    models, receivers = [], []
-    for entry in scene.tree(root).get("m_Component", ()):
-        node = _ref(root, entry.get("component"))
+def _components(scene, game, identity):
+    """The MonoBehaviours of one GameObject whose script is ``identity``."""
+    found = []
+    for entry in scene.tree(game).get("m_Component", ()):
+        node = _ref(game, entry.get("component"))
         if node is None or node.type.name != "MonoBehaviour":
             continue
         data = scene.tree(node)
-        if _ref(node, data.get("m_GameObject")) is not root:
+        if _ref(node, data.get("m_GameObject")) is game and _component_identity(scene, node, data) == identity:
+            found.append(node)
+    return found
+
+
+def _below(scene, root, game):
+    """Names from ``root`` (exclusive) down to ``game``, or None when ``game`` is not under ``root``
+    or a name on the way is shared by a sibling (the path would not name one GameObject)."""
+    names, visited = [], set()
+    while game is not None and len(names) <= 64:
+        if game is root:
+            return tuple(reversed(names))
+        key = _key(game)
+        transform = scene.transforms.get(key)
+        name = scene.name(game)
+        if key in visited or transform is None or not name or "/" in name:
+            return None
+        visited.add(key)
+        names.append(name)
+        father = _ref(transform, scene.tree(transform).get("m_Father"))
+        if father is None:
+            return None
+        siblings = [_ref(child, scene.tree(child).get("m_GameObject"))
+                    for child in (_ref(father, pointer) for pointer in scene.tree(father).get("m_Children", ()))
+                    if child is not None]
+        if sum(sibling is not None and scene.name(sibling) == name for sibling in siblings) != 1:
+            return None
+        game = _ref(father, scene.tree(father).get("m_GameObject"))
+    return None
+
+
+def emissive_materials(scene, component, tree):
+    """Map each material of the stage model's LiveCoreStageEmissive receivers to its track binding.
+
+    Every receiver in LiveCoreStageModel.emissives keeps its own materials and is driven by the
+    LiveStageEmissiveTrack bound to its GameObject: the model itself (MainStage/Model) or a child
+    such as Model/Emissives/Emissive1 (10001/3 has four). A binding is used only when it names one
+    GameObject with one receiver, and a material only when one binding writes it.
+    """
+    sources = tree.get("emissives")
+    if (not isinstance(sources, list) or not 0 < len(sources) <= 128 or getattr(scene, "native_stage_effect", False)
+            or _component_identity(scene, component, tree) != _MODEL_SCRIPT):
+        return {}
+    root = _ref(component, tree.get("m_GameObject"))
+    if len(_object_path(scene, root)) != 1 or _components(scene, root, _MODEL_SCRIPT) != [component]:
+        return {}
+    receivers = {}  # binding -> (receiver, its GameObject)
+    for pointer in sources:
+        receiver = _ref(component, pointer) if isinstance(pointer, dict) else None
+        if receiver is None or receiver.type.name != "MonoBehaviour":
             continue
-        identity = _component_identity(scene, node, data)
-        if identity == _MODEL_SCRIPT:
-            models.append(node)
-        elif identity == _EMISSIVE_SCRIPT:
-            receivers.append(node)
-    if len(models) != 1 or models[0] is not component or len(receivers) != 1:
-        return ()
-    receiver = receivers[0]
-    if not any(_ref(component, pointer) is receiver for pointer in sources):
-        return ()
-    materials = scene.tree(receiver).get("materials")
-    if not isinstance(materials, list) or not 0 < len(materials) <= 128:
-        return ()
-    return {_key(material) for ref in materials
-            if (material := _ref(receiver, ref)) is not None and material.type.name == "Material"}
+        game = _ref(receiver, scene.tree(receiver).get("m_GameObject"))
+        names = _below(scene, root, game) if game is not None else None
+        if names is None:
+            continue
+        receivers["/".join((_MAIN_STAGE, "Model", *names))] = receiver, game
+    owners = {}
+    for binding, (receiver, game) in receivers.items():
+        # The binding names one GameObject (no sibling shares a name on its path); its only
+        # LiveCoreStageEmissive must be this entry, or the track's target is ambiguous.
+        if _components(scene, game, _EMISSIVE_SCRIPT) != [receiver]:
+            continue
+        materials = scene.tree(receiver).get("materials")
+        if not isinstance(materials, list) or not 0 < len(materials) <= 128:
+            continue
+        for pointer in materials:
+            material = _ref(receiver, pointer)
+            if material is not None and material.type.name == "Material":
+                owners.setdefault(_key(material), set()).add(binding)
+    return {key: next(iter(bindings)) for key, bindings in owners.items() if len(bindings) == 1}
 
 
 def _shader_key(material, tree):
@@ -388,7 +434,8 @@ def read_material(scene, material, ambient, single_ambient):
     return dict(meta, vertexColor=True, mipBias=bias, reflectionToggle=reflection, usesEmissive=emissive)
 
 
-def export_emissive(scene, materials, material, controlled=False):
+def export_emissive(scene, materials, material, binding=None):
+    """The AS/Stage emissive inputs; ``binding`` names the LiveStageEmissiveTrack binding that drives them."""
     tree = scene.tree(material)
     env = _properties(tree, "m_TexEnvs").get("_EmissiveTex", {})
     scale = _numbers(env.get("m_Scale"), "xy")
@@ -403,8 +450,8 @@ def export_emissive(scene, materials, material, controlled=False):
     if index is not None:
         result = {"texture": index, "color": color, "intensity": intensity,
                   "uvTransform": [*scale, offset[0], 1 - scale[1] - offset[1]]}
-        if controlled:
-            result["binding"] = _MAIN_STAGE + "/Model"
+        if binding is not None:
+            result["binding"] = binding
         collect_texture_sampler(materials, texture, result, "sampler")
         return result
     return None

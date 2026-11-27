@@ -682,45 +682,108 @@ class StageCubemapTests(unittest.TestCase):
             self.assertEqual(stage.cubemap_model_ownership(scene, model, model_tree), (False, None))
 
 class StageEmissiveOwnershipTests(unittest.TestCase):
-    def test_model_binding_uses_only_the_unique_root_receiver(self):
-        stage_file, materials_file = object(), object()
+    """LiveCoreStageModel.emissives: each receiver's materials follow the track bound to its GameObject."""
 
-        def node(kind, identifier, serialized=stage_file):
-            return SimpleNamespace(type=SimpleNamespace(name=kind), path_id=identifier, assets_file=serialized)
+    MODEL = "/EntryPoint/Live/Stages/MainStage/Model"
 
-        def ref(identifier, file_id=0):
-            return {"m_FileID": file_id, "m_PathID": identifier}
+    def setUp(self):
+        self.stage_file, self.materials_file = object(), object()
+        self.objects, self.trees, self.names, self.transforms = {}, {}, {}, {}
+        self.model_script = self.node("MonoScript", 20, self.materials_file)
+        self.receiver_script = self.node("MonoScript", 21, self.materials_file)
+        fields = ("m_ClassName", "m_Namespace", "m_AssemblyName")
+        self.trees[stage._key(self.model_script)] = dict(zip(fields, stage._MODEL_SCRIPT))
+        self.trees[stage._key(self.receiver_script)] = dict(zip(fields, stage._EMISSIVE_SCRIPT))
+        # bg0001_01_mdl -> Emissives -> Emissive1, Emissive2 (10001/3), plus a receiver on the root.
+        self.root = self.game(1, "bg0001_01_mdl", None)
+        self.folder = self.game(2, "Emissives", self.root)
+        self.first, self.second = self.game(3, "Emissive1", self.folder), self.game(4, "Emissive2", self.folder)
+        self.model = self.behaviour(10, self.root, self.model_script, emissives=[])
+        self.receivers = {name: self.behaviour(number, owner, self.receiver_script, materials=[self.ref(material, 1)])
+                          for name, number, owner, material in (("root", 11, self.root, 30), ("first", 12, self.first, 31),
+                                                                ("second", 13, self.second, 32))}
+        for material in (30, 31, 32):
+            self.node("Material", material, self.materials_file)
+        self.list(*self.receivers.values())
 
-        root, child = node("GameObject", 1), node("GameObject", 2)
-        model, receiver, child_receiver = (node("MonoBehaviour", value) for value in (10, 11, 12))
-        extra_root_receiver = node("MonoBehaviour", 13)
-        model_script, receiver_script = (node("MonoScript", value, materials_file) for value in (20, 21))
-        material, child_material = (node("Material", value, materials_file) for value in (30, 31))
-        objects = {stage._key(obj): obj for obj in (root, child, model, receiver, child_receiver, extra_root_receiver,
-                                                    model_script, receiver_script, material, child_material)}
-        root_data = {"m_Component": [{"component": ref(10)}, {"component": ref(11)}]}
-        model_data = {"m_GameObject": ref(1), "m_Script": ref(20, 1), "emissives": [ref(11), ref(12)]}
-        receiver_data = {"m_GameObject": ref(1), "m_Script": ref(21, 1), "materials": [ref(30, 1)]}
-        child_data = {**receiver_data, "m_GameObject": ref(2), "materials": [ref(31, 1)]}
-        script_fields = ("m_ClassName", "m_Namespace", "m_AssemblyName")
-        trees = {stage._key(obj): data for obj, data in (
-            (root, root_data), (model, model_data), (receiver, receiver_data), (child_receiver, child_data),
-            (extra_root_receiver, receiver_data), (model_script, dict(zip(script_fields, stage._MODEL_SCRIPT))),
-            (receiver_script, dict(zip(script_fields, stage._EMISSIVE_SCRIPT))),
-        )}
-        scene = SimpleNamespace(tree=lambda obj: trees[stage._key(obj)])
+    @staticmethod
+    def ref(identifier, file_id=0):
+        return {"m_FileID": file_id, "m_PathID": identifier}
+
+    def node(self, kind, identifier, serialized=None):
+        obj = SimpleNamespace(type=SimpleNamespace(name=kind), path_id=identifier, assets_file=serialized or self.stage_file)
+        self.objects[stage._key(obj)] = obj
+        return obj
+
+    def game(self, identifier, name, parent):
+        game = self.node("GameObject", identifier)
+        transform = self.node("Transform", identifier + 100)
+        self.names[stage._key(game)] = name
+        self.transforms[stage._key(game)] = transform
+        self.trees[stage._key(game)] = {"m_Component": [{"component": self.ref(identifier + 100)}]}
+        father = self.transforms[stage._key(parent)] if parent is not None else None
+        self.trees[stage._key(transform)] = {"m_GameObject": self.ref(identifier), "m_Children": [],
+                                             "m_Father": self.ref(father.path_id if father else 0)}
+        if father is not None:
+            self.trees[stage._key(father)]["m_Children"].append(self.ref(transform.path_id))
+        return game
+
+    def behaviour(self, identifier, game, script, **fields):
+        node = self.node("MonoBehaviour", identifier)
+        self.trees[stage._key(node)] = {"m_GameObject": self.ref(game.path_id), "m_Script": self.ref(script.path_id, 1), **fields}
+        self.trees[stage._key(game)]["m_Component"].append({"component": self.ref(identifier)})
+        return node
+
+    def list(self, *receivers):
+        self.trees[stage._key(self.model)]["emissives"] = [self.ref(receiver.path_id) for receiver in receivers]
+
+    def owners(self):
+        scene = SimpleNamespace(tree=lambda obj: self.trees[stage._key(obj)], transforms=self.transforms,
+                                name=lambda game: self.names.get(stage._key(game)))
 
         def resolve(owner, pointer):
             if pointer is None:
                 return None
-            target = owner.assets_file if pointer["m_FileID"] == 0 else materials_file
-            return objects.get((id(target), pointer["m_PathID"]))
+            target = owner.assets_file if pointer["m_FileID"] == 0 else self.materials_file
+            return self.objects.get((id(target), pointer["m_PathID"]))
 
         with patch.object(stage, "_ref", side_effect=resolve), patch.object(stage, "_object_path", return_value=("Model",)):
-            self.assertEqual(stage.emissive_materials(scene, model, model_data), {stage._key(material)})
-            self.assertFalse(stage.emissive_materials(scene, model, {**model_data, "emissives": [ref(12)]}))
-            root_data["m_Component"].append({"component": ref(13)})
-            self.assertFalse(stage.emissive_materials(scene, model, model_data))
+            found = stage.emissive_materials(scene, self.model, self.trees[stage._key(self.model)])
+        return {key[1]: binding for key, binding in found.items()}
+
+    def test_every_listed_receiver_drives_its_materials_by_its_own_binding(self):
+        self.assertEqual(self.owners(), {30: self.MODEL, 31: self.MODEL + "/Emissives/Emissive1",
+                                         32: self.MODEL + "/Emissives/Emissive2"})
+        self.list(self.receivers["first"])
+        self.assertEqual(self.owners(), {31: self.MODEL + "/Emissives/Emissive1"}, "unlisted receivers are not driven")
+
+    def test_a_material_two_bindings_write_keeps_its_own_values(self):
+        self.trees[stage._key(self.receivers["second"])]["materials"].append(self.ref(31, 1))
+        self.assertEqual(self.owners(), {30: self.MODEL, 32: self.MODEL + "/Emissives/Emissive2"})
+
+    def test_a_binding_that_names_no_single_receiver_is_left_out(self):
+        # Two receivers on the root GameObject, listed or not: the track's target is ambiguous.
+        extra = self.behaviour(14, self.root, self.receiver_script, materials=[])
+        self.assertEqual(self.owners(), {31: self.MODEL + "/Emissives/Emissive1", 32: self.MODEL + "/Emissives/Emissive2"})
+        self.list(*self.receivers.values(), extra)
+        self.assertNotIn(30, self.owners())
+        # A sibling with the same name: the path names two GameObjects.
+        self.game(5, "Emissive2", self.folder)
+        self.assertEqual(self.owners(), {31: self.MODEL + "/Emissives/Emissive1"})
+
+    def test_receivers_outside_the_model_and_other_models_are_ignored(self):
+        elsewhere = self.game(6, "Emissive9", None)
+        self.list(*self.receivers.values(), self.behaviour(15, elsewhere, self.receiver_script, materials=[self.ref(30, 1)]))
+        self.assertEqual(set(self.owners()), {30, 31, 32}, "a receiver under another root has no Model binding")
+        other_script = self.node("MonoScript", 22, self.materials_file)
+        self.trees[stage._key(other_script)] = {"m_ClassName": "LiveCoreStageAmbient", "m_Namespace": stage._EMISSIVE_SCRIPT[1],
+                                                "m_AssemblyName": stage._EMISSIVE_SCRIPT[2]}
+        folder = self.behaviour(17, self.folder, other_script, materials=[self.ref(33, 1)])
+        self.node("Material", 33, self.materials_file)
+        self.list(*self.receivers.values(), folder)
+        self.assertEqual(set(self.owners()), {30, 31, 32}, "only LiveCoreStageEmissive receivers are driven")
+        self.behaviour(16, self.root, self.model_script, emissives=[])
+        self.assertEqual(self.owners(), {}, "the root must hold one LiveCoreStageModel")
 
 
 class StagePassQueueTests(unittest.TestCase):
@@ -783,9 +846,14 @@ class ActualStageFloorTests(unittest.TestCase):
             self.assertEqual({key: descriptor["reflection"][key] for key in ("mode", "parallax", "op", "reflectivity", "fresnel")},
                              {"mode": "fragment", "parallax": True, "op": "alpha-blend", "reflectivity": "vertex", "fresnel": True})
             self.assertEqual(descriptor["emissive"]["intensity"], 1)
+            # bg0001_01_mdl/Emissives/EmissiveN holds the LiveCoreStageEmissive of stageBN; the
+            # 10001/3 timeline binds one LiveStageEmissiveTrack to each of them.
+            self.assertEqual(descriptor["emissive"]["binding"],
+                             f"/EntryPoint/Live/Stages/MainStage/Model/Emissives/Emissive{index}")
         plain, = found["bg0001_01_stageB_opa_ref_mt"]
         self.assertFalse(plain["mvStageMaterial"]["reflection"]["fresnel"])
         self.assertIn("emissive", plain["mvStageMaterial"])
+        self.assertNotIn("binding", plain["mvStageMaterial"]["emissive"], "no receiver lists stageB")
 
     def test_12035_position_1_and_2_floor_reflections(self):
         first, = self.descriptors("SIFAS_TEST_STAGE_12035_1")["bg0007_02_stageA_opa_ref_mt"]

@@ -715,9 +715,13 @@
     }
 
     const singleBindings = new Set(records.map(({meta}) => meta.singleAmbientBinding).filter(Boolean));
-    const hasEmissiveBinding = records.some(({meta}) => meta.emissive?.binding === stageModel);
+    // One LiveCoreStageEmissive per binding: the stage model itself or a child of it
+    // (10001/3 drives Model/Emissives/Emissive1..4, each by its own track).
+    const emissiveBindings = new Set(records.map(({meta}) => meta.emissive?.binding)
+      .filter(binding => binding === stageModel || binding?.startsWith?.(stageModel + "/")));
+    const emissiveTracks = new Map();
     const singleTracks = new Map();
-    let sourceTracks, ambientTrack, emissiveTrack, propProject;
+    let sourceTracks, ambientTrack, propProject;
     // LiveCoreStageAmbient components: the last color each wrote per property.
     // Apply{Ambient,Tint,Blend}Color (0x2f703f8, 0x2f70788, 0x2f70ab4) and the
     // ApplyDefault* writers (ApplyDefaultAmbientColor 0x2f70594 ...) share one
@@ -728,14 +732,13 @@
     // fed the same colors and defaults) share a hold.
     const componentHolds = new Map(), stageSamples = new Map();
     const held = global.MVStudioLighting?.heldColor;
-    // LiveCoreStageEmissive (one component for the stage model) keeps the color and intensity
-    // it last wrote: ApplyEmissiveColor (0x2f74e18) skips Material.SetColor while
+    // Each LiveCoreStageEmissive keeps the color and intensity it last wrote: ApplyEmissiveColor (0x2f74e18) skips Material.SetColor while
     // UtilColor.CheckSame(color, cachedEmissiveColor) holds, and ApplyEmissiveIntensity
     // (0x2f74f5c) skips SetFloat while Mathf.Approximately(intensity, cachedIntensity).
     // The .ctor (0x2f75064) starts them at UtilColor.InvalidColor and -1, so the first
     // mixer frame always writes. LiveStageEmissiveMixer.PostProcess (0x20f69e8) is the
-    // only writer, so the base light track does not touch this hold.
-    const emissiveHold = {color: {}, intensity: {}};
+    // only writer, so the base light track does not touch these holds (one per binding).
+    const emissiveHolds = new Map([...emissiveBindings].map(binding => [binding, {color: {}, intensity: {}}]));
     const heldScalar = global.MVStudioLighting?.heldScalar;
     function componentHold(key) {
       if (!componentHolds.has(key)) componentHolds.set(key, {});
@@ -753,10 +756,10 @@
           const matches = sourceTracks?.filter(track => track.nativeClass === "LiveStageAmbientTrack" &&
             track.binding === mainStage);
           ambientTrack = matches?.length === 1 ? matches[0] : null;
-          if (hasEmissiveBinding) {
+          for (const binding of emissiveBindings) {
             const emissiveMatches = sourceTracks?.filter(track => track.nativeClass === "LiveStageEmissiveTrack" &&
-              track.binding === stageModel);
-            emissiveTrack = emissiveMatches?.length === 1 ? emissiveMatches[0] : null;
+              track.binding === binding);
+            emissiveTracks.set(binding, emissiveMatches?.length === 1 ? emissiveMatches[0] : null);
           }
           singleTracks.clear();
           for (const track of sourceTracks || []) {
@@ -784,16 +787,22 @@
           if (!stageSamples.has(key)) stageSamples.set(key, stageAmbient(project, time, track));
           return stageSamples.get(key);
         };
-        let emissive = stageEmissive(project, seconds, emissiveTrack);
-        if (held && heldScalar && hasEmissiveBinding) {
-          const emissiveSamples = new Map([[seconds, emissive]]);
-          const emissiveAt = (time) => {
-            if (!emissiveSamples.has(time)) emissiveSamples.set(time, stageEmissive(project, time, emissiveTrack));
-            return emissiveSamples.get(time);
-          };
-          const color = held(emissiveHold.color, (time) => emissiveAt(time)?.color ?? null, seconds, frames);
-          const intensity = heldScalar(emissiveHold.intensity, (time) => emissiveAt(time)?.intensity ?? null, seconds, frames);
-          if (emissive) emissive = {color, intensity};
+        const emissives = new Map();
+        for (const binding of emissiveBindings) {
+          const emissiveTrack = emissiveTracks.get(binding);
+          let emissive = stageEmissive(project, seconds, emissiveTrack);
+          if (held && heldScalar) {
+            const emissiveHold = emissiveHolds.get(binding);
+            const emissiveSamples = new Map([[seconds, emissive]]);
+            const emissiveAt = (time) => {
+              if (!emissiveSamples.has(time)) emissiveSamples.set(time, stageEmissive(project, time, emissiveTrack));
+              return emissiveSamples.get(time);
+            };
+            const color = held(emissiveHold.color, (time) => emissiveAt(time)?.color ?? null, seconds, frames);
+            const intensity = heldScalar(emissiveHold.intensity, (time) => emissiveAt(time)?.intensity ?? null, seconds, frames);
+            if (emissive) emissive = {color, intensity};
+          }
+          emissives.set(binding, emissive);
         }
         const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
         for (const {node, original, meta, material, reflectionCube, prop, motionHeld} of records) {
@@ -808,8 +817,8 @@
             node.material = enable && !reflection ? original : material;
             if (node.material === original) continue;
           }
-          if (meta.emissive?.binding === stageModel) {
-            const {color, intensity} = emissive || meta.emissive;
+          if (emissiveBindings.has(meta.emissive?.binding)) {
+            const {color, intensity} = emissives.get(meta.emissive.binding) || meta.emissive;
             material.uniforms.emissiveColor.value.fromArray(color);
             material.uniforms.emissiveIntensity.value = intensity;
           }

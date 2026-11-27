@@ -1509,7 +1509,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         from . import mv_studio_axis_billboard, mv_studio_soft_billboards, mv_studio_stage_props, unity_builtin_meshes
         from . import mv_studio_lossy_scale
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
-        single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
+        single_ambient, stage_emissive, stage_cubemap_owners = {}, {}, []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
         axis_billboards, stage_props, lossy_scales = set(), [], {}
@@ -1559,7 +1559,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             defaults, ambient_binding = mv_studio_stage_materials.ambient_materials(scene, obj, tree)
             ambient_materials.update(defaults)
             try:
-                stage_emissive.update(mv_studio_stage_materials.emissive_materials(scene, obj, tree))
+                for identity, binding in mv_studio_stage_materials.emissive_materials(scene, obj, tree).items():
+                    # A material two stage models drive has no single writer.
+                    stage_emissive[identity] = None if stage_emissive.get(identity, binding) != binding else binding
             except (TypeError, ValueError, KeyError, EOFError, struct.error):
                 pass
             try:
@@ -2080,7 +2082,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     if "emissiveUV" in stage_inputs:
                         try:
                             emissive = mv_studio_stage_materials.export_emissive(
-                                scene, materials, material_obj, controlled=_key(material_obj) in stage_emissive)
+                                scene, materials, material_obj, binding=stage_emissive.get(_key(material_obj)))
                         except ValueError:
                             pass
                     if emissive is None:
