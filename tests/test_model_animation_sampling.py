@@ -100,6 +100,27 @@ class ArraySamplingTests(unittest.TestCase):
                 if mode != "constant":
                     self.assertEqual(bits(ma._sample_array(curve, np.array(times))), bits(expected))
 
+    def test_unordered_key_tables_keep_the_per_stamp_bisect(self):
+        # bisect_right over keys that are not ascending lands on keys a forward walk never
+        # reaches; small grids (the walk) and large ones (the array path) both repeat it.
+        rng = random.Random(5)
+        for mode in ("cubic", "linear"):
+            keys = keys_for(rng, mode, 40)
+            keys[10], keys[30] = keys[30], keys[10]
+            keys.insert(3, (keys[-1][0] + 1., keys[3][1]))
+            curve = (mode, keys)
+            for count in (5, 63, 64, 400):
+                times = grid(rng, count)
+                expected = [reference_evaluate(curve, stamp) for stamp in times]
+                with self.subTest(mode=mode, samples=count):
+                    self.assertIsNone(ma._sample_array(curve, np.array(times)))
+                    self.assertEqual(bits(ma._sample(curve, times)), bits(expected))
+                    self.assertEqual(bits(ma._columns([curve], times)[0]), bits(expected))
+        # A table whose walk and bisect disagree: the walk would stop at the key at 5.
+        curve = ("linear", [(0., 0.), (5., 10.), (1., 20.), (6., 30.)])
+        times = [0.5, 2., 5.5]
+        self.assertEqual(ma._sample(curve, times), [reference_evaluate(curve, stamp) for stamp in times])
+
     def test_unordered_grid_and_empty_curve_keep_reference_behaviour(self):
         curve = ("linear", [(0., 1.), (1., 3.)])
         times = [.5, .25, 1.]

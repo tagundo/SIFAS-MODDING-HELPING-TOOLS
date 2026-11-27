@@ -8,7 +8,7 @@ axis toward the drawing camera (RunAxisBillboardY). Components outside a
 stage effect never receive targets and stay as authored.
 """
 
-from . import model_viewer as viewer
+from . import model_viewer as viewer, transient_failures
 from .mv_studio_shaft import _STAGE_EFFECT
 from .mv_studio_stage_coloring import _path
 
@@ -38,7 +38,8 @@ def owners(scene, component, tree):
             continue
         try:
             billboard_tree = scene.tree(billboard)
-        except Exception:
+        except Exception as error:
+            transient_failures.note_if_environmental(error)
             continue
         if _script(scene, billboard, billboard_tree) != _AXIS_BILLBOARD:
             continue

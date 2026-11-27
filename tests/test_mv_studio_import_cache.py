@@ -201,6 +201,34 @@ class ReceiptTests(unittest.TestCase):
             self.assertIsNotNone(cache.open_cache(self.media))
             self.assertIsNotNone(mv_studio_actor_cache.open_cache(("gl", "android"), self.media))
 
+    def test_closed_receipt_stores_are_reported_once_per_process(self):
+        import io
+        readable = cache._module_bytes
+
+        def unreadable(spec):
+            return None if spec is not None and spec.name == "webtools.core.decode" else readable(spec)
+
+        cache._source_recipe.cache_clear()
+        self.addCleanup(cache._source_recipe.cache_clear)
+        private = self.root / "private"
+        private.mkdir(mode=0o700)
+        with patch.object(cache, "_module_bytes", side_effect=unreadable), \
+                patch.object(cache, "_CLOSED_REPORTED", False), patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                patch.dict(os.environ, {"ELICHIKA_MV_PRIVATE_CACHE": str(private.resolve())}):
+            for _ in range(3):
+                self.assertIsNone(cache.open_cache(self.media))
+                self.assertIsNone(cache.open_texture_cache(self.media))
+                cache._source_recipe.cache_clear()  # every reading of the code, not only the first
+            lines = stderr.getvalue().splitlines()
+            self.assertEqual(len(lines), 1, lines)
+            self.assertIn("MV import receipts are off", lines[0])
+            self.assertIn("webtools.core.decode", lines[0])
+        # Readable code says nothing.
+        with patch.object(cache, "_CLOSED_REPORTED", False), patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                patch.dict(os.environ, {"ELICHIKA_MV_PRIVATE_CACHE": str(private.resolve())}):
+            self.assertIsNotNone(cache.open_cache(self.media))
+            self.assertEqual(stderr.getvalue(), "")
+
     def test_recipe_holds_the_format_library_releases_and_zlib_builds(self):
         cache._source_recipe.cache_clear()
         self.addCleanup(cache._source_recipe.cache_clear)
@@ -532,6 +560,45 @@ class TransientFailureTests(unittest.TestCase):
                                                mv_studio_external_clips.SharedReads(lambda descriptor: b"pack"), None,
                                                cache=self.store())
             self.assertEqual(clips.call_count, 2)
+
+
+class SwallowedFailureTests(unittest.TestCase):
+    """A broad handler on the stage, effect or timeline path that goes on without what failed
+    must note a failure of memory or stack, so the degraded result is never kept."""
+
+    cases = ((MemoryError(), True), (RecursionError("maximum recursion depth exceeded"), True),
+             (ValueError("a damaged component"), False))
+
+    def test_stage_effect_props_note_a_component_lost_to_memory_or_stack(self):
+        from types import SimpleNamespace
+        from webtools.core import mv_studio_stage_props as props, transient_failures
+        assets = object()
+        component = SimpleNamespace(type=SimpleNamespace(name="MonoBehaviour"), assets_file=assets)
+        game = SimpleNamespace(type=SimpleNamespace(name="GameObject"))
+        for error, noted in self.cases:
+            def tree(obj, error=error):
+                raise error
+            scene = SimpleNamespace(env=SimpleNamespace(objects=[component]), tree=tree)
+            with (self.subTest(error=type(error).__name__),
+                  patch.object(props, "_script", return_value=(*props._NAMESPACE, "LiveCoreStageEffect")),
+                  patch.object(props.viewer, "_ref", return_value=game),
+                  patch.object(props, "_path", return_value=("Effect",))):
+                watch = transient_failures.Watch()
+                self.assertEqual(props.props(scene, component, {}), [])
+                self.assertEqual(watch.clean, not noted)
+
+    def test_clip_names_note_a_resolve_lost_to_memory_or_stack(self):
+        from webtools.core import transient_failures
+        project = {"tracks": [{"id": "t", "label": "Dance", "events": [
+            {"id": "e", "label": "clip", "values": {"playableClass": "AnimationPlayableAsset", "animation": "cab-1:5"}}]}],
+            "warnings": []}
+        for error, noted in self.cases:
+            with self.subTest(error=type(error).__name__), patch.object(mv_studio_external_clips, "resolve", side_effect=error):
+                watch = transient_failures.Watch()
+                self.assertEqual(mv_studio_external_clips.apply(
+                    json.loads(json.dumps(project)), b"timeline", [{"asset": "dance"}],
+                    mv_studio_external_clips.SharedReads(lambda descriptor: b"pack"), None), {})
+                self.assertEqual(watch.clean, not noted)
 
 
 class TextureStoreTests(unittest.TestCase):

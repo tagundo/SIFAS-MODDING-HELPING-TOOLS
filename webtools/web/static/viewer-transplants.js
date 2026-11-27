@@ -180,7 +180,8 @@
     "Island {island} of {islands} ({width}×{height} px) found no free texels in {slot}.",
     "The search stopped after {count} positions for island {island} of {islands}.",
     "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}.",
-    "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show."
+    "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show.",
+    "{donor} (_CullMode {donor_value}) keeps its culling: it becomes its own submesh drawn by {copy}, a copy of {receiver} (_CullMode 0) with _CullMode {donor_value}."
   ];
   TEXT[REASON_TEMPLATES[0]] = ["{slot} — 이식할 부분: {part} (메인 텍스처 {part_main} 기준), 머리 텍스처: {head} (메인 텍스처 {head_main} 기준).",
     "{slot}：パーツは{part_main}のメインテクスチャに対して{part}、頭は{head_main}に対して{head}を使います。"];
@@ -196,6 +197,8 @@
     "{donor}：_CullModeは{donor_value}ですが、{receiver}は{receiver_value}です。"];
   TEXT[REASON_TEMPLATES[6]] = ["{donor}(_CullMode {donor_value})는 {receiver}(_CullMode 0)처럼 앞뒷면 모두 그려지므로 뒷면이 보일 수 있습니다.",
     "{donor}（_CullMode {donor_value}）は{receiver}（_CullMode 0）と同じく両面が描画されるため、裏面が見えることがあります。"];
+  TEXT[REASON_TEMPLATES[7]] = ["{donor}(_CullMode {donor_value}) — 컬링 유지: 별도 서브메시로 나뉘어 {receiver}(_CullMode 0)의 복사본인 {copy}(_CullMode {donor_value}) 머티리얼로 그려집니다.",
+    "{donor}（_CullMode {donor_value}）はカリングを保ちます。別のサブメッシュに分かれ、{receiver}（_CullMode 0）を複製して_CullMode {donor_value}にした{copy}で描画されます。"];
   TEXT["Selected bones"] = ["선택 본", "選択ボーン"];
   TEXT["Selected faces"] = ["이식할 면", "移植する面"];
   function selectedBoneManifest(parts, selected) {

@@ -260,6 +260,9 @@ def _preflight_bundle(data, _with_layout=False):
     except ModelViewerError:
         raise
     except Exception as error:
+        # A caller may skip a bundle refused here (a particle template, a clip
+        # pack): a refusal caused by memory or stack must still keep receipts out.
+        transient_failures.note_if_environmental(error)
         raise ModelViewerError("The selected Unity bundle is damaged or unsupported.") from error
 
 
@@ -1538,7 +1541,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             continue
         try:
             tree = scene.tree(obj)
-        except Exception:
+        except Exception as error:
+            # A component that cannot be read is left out; one lost to memory or
+            # stack is not a property of the bundle, so the stage is not kept.
+            transient_failures.note_if_environmental(error)
             continue
         if getattr(scene, "preview_stage", False) and not auto_only:
             try:
