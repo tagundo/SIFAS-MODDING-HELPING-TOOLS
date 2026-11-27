@@ -161,6 +161,63 @@
     return changes;
   }
 
+  /* Port of the Unity editor's ComputeBlendsFromOverlaps (TrackExtensions), which the
+     editor runs after a clip is moved or trimmed. The client has no copy of it
+     (global-metadata.dat has no such name), so the game plays the stored values. Every
+     clip gets -1; in start order (equal starts: the shorter clip first) a clip that
+     starts before the previous one ends blends with it: the overlap becomes this clip's
+     blendIn and the previous clip's blendOut, 0 for an overlap of at most EPSILON. A clip
+     that ends inside the previous one gets no blend (stock data has none).
+     clips: [{ id, start, duration }] → Map<id, { blendIn, blendOut }>. */
+  function blendTimes(clips) {
+    const ordered = clips.map((clip, index) => ({ clip, index }))
+      .sort((first, second) => first.clip.start - second.clip.start || first.clip.duration - second.clip.duration ||
+        first.index - second.index).map((item) => item.clip);
+    const result = new Map(ordered.map((clip) => [clip.id, { blendIn: -1, blendOut: -1 }]));
+    for (let i = 1; i < ordered.length; i++) {
+      const previous = ordered[i - 1], clip = ordered[i];
+      const end = previous.start + previous.duration;
+      if (!(end > clip.start) || clip.start + clip.duration < end) continue;
+      const overlap = end - clip.start <= EPSILON ? 0 : end - clip.start;
+      result.get(clip.id).blendIn = overlap;
+      result.get(previous.id).blendOut = overlap;
+    }
+    return result;
+  }
+
+  // Gate: the port reproduces every stored blendIn/blendOut of the track. Stock data (773
+  // tracks of 13 timelines): 621 pass with no difference at all, among them every
+  // Live*/Member* track; the 152 others are Activation, CustomControl and LiveMemberCuller
+  // tracks, whose clips all keep 0/0 because the editor never blended them.
+  function blendGate(track) {
+    const events = track && Array.isArray(track.events) ? track.events : [];
+    if (!events.length) return false;
+    for (const event of events) {
+      const values = event && event.values;
+      if (!values || !finite(values.blendIn) || !finite(values.blendOut)) return false;
+    }
+    const times = blendTimes(clipsOf(track));
+    return events.every((event) => {
+      const computed = times.get(event.id);
+      return computed && near(computed.blendIn, event.values.blendIn) && near(computed.blendOut, event.values.blendOut);
+    });
+  }
+
+  /* Writes that keep a gated track's blends equal to the port after the timing
+     (start/duration) of some events changes. overrides as for extrapolationChanges. */
+  function blendChanges(track, overrides) {
+    const times = blendTimes(clipsOf(track, overrides));
+    const changes = [];
+    for (const event of track.events || []) {
+      const computed = times.get(event.id);
+      if (!computed) continue;
+      for (const key of ["blendIn", "blendOut"]) {
+        if (!near(computed[key], Number(event.values[key]))) changes.push({ event, key, value: computed[key] });
+      }
+    }
+    return changes;
+  }
+
   const coarse = () => !!(global.matchMedia && global.matchMedia("(pointer: coarse)").matches);
 
   /* Drag/trim on one element.
@@ -297,5 +354,6 @@
   global.MVStudioTimelineInteract = Object.freeze({
     FRAME_RATE, FRAME, UNBOUNDED, snapFrame, snapTime, moveRange, resizeRange, nudgeRange,
     extrapolationTimes, extrapolationGate, extrapolationChanges, storedTime, attachDrag,
+    blendTimes, blendGate, blendChanges,
   });
 })(typeof window !== "undefined" ? window : globalThis);

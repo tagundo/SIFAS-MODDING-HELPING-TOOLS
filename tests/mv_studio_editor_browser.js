@@ -14,6 +14,8 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { chromium } = require('playwright');
 const { fixture } = require('./viewer_rig_browser');
+require('../webtools/web/static/mv-studio-timeline-interact.js');
+const Interact = globalThis.MVStudioTimelineInteract;
 
 const library = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-editor-library-'));
 const modded = path.join(library, 'modded');
@@ -39,6 +41,10 @@ function timeline({ duet = false } = {}) {
     }
     delete track.editableValues;
   }
+  // Member1/LipSync keeps the Unity editor's overlap blends, as every stock lip-sync track does.
+  const lips = data.tracks.find((track) => track.label === 'Member1/LipSync');
+  const blends = Interact.blendTimes(lips.events);
+  for (const event of lips.events) Object.assign(event.values, blends.get(event.id));
   if (duet) {
     // A second member: copies of the Member1 lip-sync and eye tracks bound to Member2.
     for (const label of ['Member1/Eye', 'Member1/LipSync']) {
@@ -582,6 +588,37 @@ async function run() {
     await page.locator('#mv-timeline-label').click();
     await page.keyboard.press('Control+z');
     assert.equal(findEvent((await state(page)).project, lip.id).duration, lip.duration);
+
+    // ---- Overlap blends follow a move: Member1/LipSync stores the editor's overlap blends -------
+    await page.locator('#mv-tab-mouth').click();
+    await page.locator('#mv-zoom').selectOption('48');
+    const blendClip = lipTrack.events.find((event) => event.id === lipTrack.id + ':4');
+    const blendTarget = page.locator(`.mv-clip[data-event="${blendClip.id}"]`);
+    await blendTarget.scrollIntoViewIfNeeded();
+    await blendTarget.click();
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=blendIn]').count(), 0, 'derived blends are read-only');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=blendOut]').count(), 0);
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=blend]').textContent(), '앞뒤 클립과 겹치는 길이로 정해집니다');
+    const blendBase = await state(page);
+    const editsBefore = Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent());
+    await blendTarget.focus();
+    await page.keyboard.press('Alt+ArrowRight');
+    current = await state(page);
+    const lipsNow = current.project.tracks.find((track) => track.id === lipTrack.id);
+    assert.equal(current.history.undo, blendBase.history.undo + 1, 'the move and its blends are one step');
+    assert(Interact.blendGate(lipsNow), 'the stored blends follow the new overlaps');
+    const blendsBefore = Object.fromEntries(blendBase.project.tracks.find((track) => track.id === lipTrack.id).events
+      .map((event) => [event.id, [event.values.blendIn, event.values.blendOut]]));
+    const changedBlends = lipsNow.events.filter((event) => blendsBefore[event.id][0] !== event.values.blendIn ||
+      blendsBefore[event.id][1] !== event.values.blendOut).map((event) => event.id);
+    assert(changedBlends.includes(blendClip.id) && changedBlends.length >= 2, `the moved clip and a neighbour: ${changedBlends}`);
+    assert.equal(Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent()), editsBefore + 1,
+      'only the moved clip counts as edited; derived blends do not');
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert.deepEqual((await state(page)).project.tracks.find((track) => track.id === lipTrack.id),
+      blendBase.project.tracks.find((track) => track.id === lipTrack.id), 'undo restores the clip and every blend');
+    await page.locator('#mv-zoom').selectOption('fit');
 
     // ---- Drag a camera shot by one second ----------------------------------------------------
     await page.locator('#mv-tab-camera').click();

@@ -3165,6 +3165,16 @@ for _source, (_korean, _japanese) in _MV_EDITOR_A_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 
+# MV Studio timeline host (mv-studio.js): derived blends, timing fields per clip type,
+# track mute and quality badges.
+_MV_EDITOR_E2_TRANSLATIONS = {
+    "Set by the overlap with the next or previous clip": (
+        "앞뒤 클립과 겹치는 길이로 정해집니다", "前後のクリップと重なる長さで決まります"),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_E2_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
 # MV Studio free camera views (mv-studio-free-camera.js). Front, Back, Left side, Right side
 # and FOV are the 3D model tab's and the camera editor's strings.
 _MV_FREE_CAMERA_TRANSLATIONS = {

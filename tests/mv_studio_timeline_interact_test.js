@@ -225,8 +225,69 @@ function holdGap() {
   assert.equal(I.storedTime(null), Infinity);
 }
 
+// The Unity editor's overlap blends (ComputeBlendsFromOverlaps).
+function blends() {
+  const clip = (id, start, duration, blendIn = -1, blendOut = -1) => ({ id, start, duration, values: { blendIn, blendOut } });
+  const times = (events) => Object.fromEntries([...I.blendTimes(events)].map(([id, value]) => [id, [value.blendIn, value.blendOut]]));
+  // An overlap of 0.5 s blends both clips; a gap and a touching edge do not.
+  assert.deepEqual(times([clip('a', 0, 2), clip('b', 1.5, 2), clip('c', 4, 1), clip('d', 5, 1)]),
+    { a: [-1, .5], b: [.5, -1], c: [-1, -1], d: [-1, -1] });
+  // Equal starts: the shorter clip comes first (so0120's DoF and 11054's coloring keep this order).
+  assert.deepEqual(times([clip('long', 0, 4), clip('short', 0, 3.5)]), { short: [-1, 3.5], long: [3.5, -1] });
+  // Start order, not list order; an overlap of float noise is 0; a clip inside the previous one does not blend.
+  assert.deepEqual(times([clip('b', 1, 1), clip('a', 0, 1 + 1e-13)]), { a: [-1, 0], b: [0, -1] });
+  assert.deepEqual(times([clip('outer', 0, 4), clip('inner', 1, 1)]), { outer: [-1, -1], inner: [-1, -1] });
+
+  // Gate: every stored value reproduced.
+  const lips = { id: 'lips', events: [clip('a', 0, 2, -1, .5), clip('b', 1.5, 2, .5, -1), clip('c', 4, 1)] };
+  assert(I.blendGate(lips));
+  assert.deepEqual(I.blendChanges(lips, new Map()), [], 'nothing to rewrite before an edit');
+  // A track the editor never blended (Activation, CustomControl, Culler: 0/0) fails the gate.
+  assert.equal(I.blendGate({ id: 'act', events: [clip('a', 0, 1, 0, 0), clip('b', 2, 1, 0, 0)] }), false);
+  assert.equal(I.blendGate({ id: 'stale', events: [clip('a', 0, 2, -1, .4), clip('b', 1.5, 2, .4, -1)] }), false, 'a stale blend fails');
+  assert.equal(I.blendGate({ id: 'none', events: [{ id: 'a', start: 0, duration: 1, values: {} }] }), false, 'no stored blends');
+  assert.equal(I.blendGate({ id: 'empty', events: [] }), false);
+
+  // Moving b later shrinks the overlap; moving it to a's end clears both blends; a trim of a shrinks it too.
+  const write = (changes) => Object.fromEntries(changes.map((change) => [`${change.event.id}.${change.key}`, change.value]));
+  assert.deepEqual(write(I.blendChanges(lips, new Map([['b', { start: 1.75 }]]))), { 'a.blendOut': .25, 'b.blendIn': .25 });
+  assert.deepEqual(write(I.blendChanges(lips, new Map([['b', { start: 2 }]]))), { 'a.blendOut': -1, 'b.blendIn': -1 }, 'touching edges do not blend');
+  assert.deepEqual(write(I.blendChanges(lips, new Map([['a', { duration: 1.75 }]]))), { 'a.blendOut': .25, 'b.blendIn': .25 });
+  // c dragged onto b: b blends out into c, and c blends in.
+  assert.deepEqual(write(I.blendChanges(lips, new Map([['c', { start: 3 }]]))), { 'b.blendOut': .5, 'c.blendIn': .5 });
+}
+
+// Real timelines (optional): MV_STUDIO_TRACKS_JSON is the per-MV parse_timeline track dump
+// ({ label: tracks }) of the 13 stock timelines the editing census used. Without it, skipped.
+function blendsOnStockTimelines() {
+  const file = process.env.MV_STUDIO_TRACKS_JSON;
+  if (!file || !fs.existsSync(file)) return 'skipped (no MV_STUDIO_TRACKS_JSON)';
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  let gated = 0, ungated = 0;
+  const ungatedClasses = new Set();
+  for (const tracks of Object.values(data)) {
+    for (const track of tracks) {
+      if (!track.events.length || !('blendIn' in track.events[0].values)) continue;
+      if (I.blendGate(track)) {
+        gated++;
+        assert.deepEqual(I.blendChanges(track, new Map()), [], track.label);
+      } else {
+        ungated++;
+        ungatedClasses.add(track.nativeClass);
+        // Never blended by the editor: 0/0 on every clip.
+        assert(track.events.every((event) => event.values.blendIn === 0 && event.values.blendOut === 0), track.label);
+      }
+    }
+  }
+  assert.deepEqual({ gated, ungated }, { gated: 621, ungated: 152 });
+  assert.deepEqual([...ungatedClasses].sort(), ['ActivationTrack', 'CustomControlTrack', 'LiveMemberCullerTrack']);
+  return `${gated} tracks gated, ${ungated} never blended`;
+}
+
 snapping();
 dragging();
 extrapolation12035();
 holdGap();
-console.log('MV Studio clip interaction: snaps (frame, targets, Alt), clamps, one commit per drag, Escape, blocked resize, nudges, extrapolation port on 12035.');
+blends();
+const stock = blendsOnStockTimelines();
+console.log('MV Studio clip interaction: snaps (frame, targets, Alt), clamps, one commit per drag, Escape, blocked resize, nudges, extrapolation port on 12035, overlap blends; stock timelines: ' + stock + '.');

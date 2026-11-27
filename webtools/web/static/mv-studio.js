@@ -53,7 +53,7 @@
   const searchKey = "elichika.mv.timelineSearch.v1", editableKey = "elichika.mv.timelineEditableOnly.v1";
   let history, ctx, plugins = [], panelList = [], lastPlan = null, lastTimeEmit = 0, renderQueued = 0;
   let preferredTab = "all", activeTab = "all", preferredMember = null, searchText = "", editableOnly = false, groupFilter = "";
-  let extrapolationGates = new Map(), trackControls = null;
+  let extrapolationGates = new Map(), blendGates = new Map(), trackControls = null;
   const timelineLanes = new Map(), timelineLabels = new Map();
   const audio = document.createElement("audio");
   audio.preload = "metadata";
@@ -619,34 +619,45 @@
     return extrapolationGates.get(id) === true;
   }
 
-  // Recomputed extrapolation times of a gated track, as history changes.
-  function extrapolationWrites(track, overrides) {
-    if (!autoExtrapolation(track)) return [];
-    return Interact.extrapolationChanges(track, overrides).map((write) => ({
-      target: eventTarget(track, write.event), path: ["values", write.key], after: write.value }));
+  // Blends of a track whose stored blendIn/blendOut follow the overlaps (the Unity
+  // editor's rule) are derived from the clip timing.
+  function autoBlend(track) {
+    const id = track && typeof track === "object" ? track.id : track;
+    return blendGates.get(id) === true;
   }
+
+  // Recomputed extrapolation times and blends of a gated track, as history changes.
+  function derivedWrites(track, overrides) {
+    const writes = [];
+    if (autoExtrapolation(track)) writes.push(...Interact.extrapolationChanges(track, overrides));
+    if (autoBlend(track)) writes.push(...Interact.blendChanges(track, overrides));
+    return writes.map((write) => ({ target: eventTarget(track, write.event), path: ["values", write.key], after: write.value }));
+  }
+
+  const derivedKey = (track, key) => (autoExtrapolation(track) && (key === "preExtrapolationTime" || key === "postExtrapolationTime")) ||
+    (autoBlend(track) && (key === "blendIn" || key === "blendOut"));
 
   function writableValue(track, event, key) {
     const editable = track.editable !== false && event.editable !== false;
     if (!editable || (Array.isArray(event.editableValues) && !event.editableValues.includes(key))) return false;
-    return !((key === "preExtrapolationTime" || key === "postExtrapolationTime") && autoExtrapolation(track));
+    return !derivedKey(track, key);
   }
 
   function setEventValue(track, event, segments, next) {
     const changes = [{ target: eventTarget(track, event), path: ["values", ...segments], after: next }];
     if (segments.length === 1 && segments[0] === "postExtrapolationMode" && finite(next)) {
-      changes.push(...extrapolationWrites(track, new Map([[event.id, { postMode: next }]])));
+      changes.push(...derivedWrites(track, new Map([[event.id, { postMode: next }]])));
     }
     return edit({ label: "Edit value", detail: segments.join("."), changes }, "events");
   }
 
-  // Start/duration change as one command, with the recomputed extrapolation times.
+  // Start/duration change as one command, with the recomputed extrapolation times and blends.
   function timingCommand(track, event, next, label) {
     const target = eventTarget(track, event), changes = [];
     if (finite(next.start) && next.start !== event.start) changes.push({ target, path: ["start"], after: next.start });
     if (finite(next.duration) && next.duration !== event.duration) changes.push({ target, path: ["duration"], after: next.duration });
     if (!changes.length) return null;
-    changes.push(...extrapolationWrites(track, new Map([[event.id, { start: next.start, duration: next.duration }]])));
+    changes.push(...derivedWrites(track, new Map([[event.id, { start: next.start, duration: next.duration }]])));
     return { label, changes };
   }
 
@@ -722,7 +733,7 @@
     if (rules.reason && (rules.move === false || rules.resize === false)) box.append(make("p", rules.reason, { class: "mv-field-note" }));
     for (const element of callPlugins("eventHeader", { track, event })) if (element) box.append(element);
     const values = event.values || {}, original = history.originals.get(event.id);
-    let noted = false;
+    let noted = false, blendNoted = false;
     for (const key of Object.keys(values).slice(0, 48)) {
       const writable = writableValue(track, event, key);
       const access = valueAccess(track, event, key);
@@ -734,6 +745,10 @@
       if (!noted && control === undefined && autoExtrapolation(track) && (key === "preExtrapolationTime" || key === "postExtrapolationTime")) {
         noted = true;
         box.append(make("p", t("Recomputed by the game"), { class: "mv-field-note" }));
+      }
+      if (!blendNoted && control === undefined && autoBlend(track) && (key === "blendIn" || key === "blendOut")) {
+        blendNoted = true;
+        box.append(make("p", t("Set by the overlap with the next or previous clip"), { class: "mv-field-note", "data-mv-note": "blend" }));
       }
     }
     for (const element of callPlugins("eventFooter", { track, event })) if (element) box.append(element);
@@ -869,10 +884,10 @@
     const target = eventTarget(track, event), values = copy(original.values || {});
     const changes = [{ target, path: ["start"], after: original.start }, { target, path: ["duration"], after: original.duration },
       { target, path: ["label"], after: original.label }, { target, path: ["values"], after: values }];
-    // A gated track's times are recomputed on the reverted state: the original's own
-    // stored times are stale once a neighbour has been retimed since it was captured.
+    // A gated track's times and blends are recomputed on the reverted state: the original's
+    // own stored values are stale once a neighbour has been retimed since it was captured.
     const reverted = { ...event, start: original.start, duration: original.duration, values: copy(values) };
-    changes.push(...extrapolationWrites({ ...track, events: track.events.map((item) => item === event ? reverted : item) }, new Map()));
+    changes.push(...derivedWrites({ ...track, events: track.events.map((item) => item === event ? reverted : item) }, new Map()));
     edit({ label: "Revert clip", changes });
   }
 
@@ -891,12 +906,8 @@
     delete clone.editable;
     const index = track.events.indexOf(event) + 1;
     const virtual = { ...track, events: [...track.events.slice(0, index), clone, ...track.events.slice(index)] };
-    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "insert", index, value: clone }];
-    if (autoExtrapolation(track)) {
-      for (const write of Interact.extrapolationChanges(virtual, new Map())) {
-        changes.push({ target: eventTarget(track, write.event), path: ["values", write.key], after: write.value });
-      }
-    }
+    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "insert", index, value: clone },
+      ...derivedWrites(virtual, new Map())];
     if (edit({ label: "Duplicate clip", changes })) {
       const found = findEvent(track.id, clone.id);
       if (found) chooseEvent(found.track, found.event);
@@ -908,12 +919,8 @@
     const index = track.events.indexOf(event);
     if (index < 0) return;
     const virtual = { ...track, events: track.events.filter((item) => item !== event) };
-    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "remove", index }];
-    if (autoExtrapolation(track)) {
-      for (const write of Interact.extrapolationChanges(virtual, new Map())) {
-        changes.push({ target: eventTarget(track, write.event), path: ["values", write.key], after: write.value });
-      }
-    }
+    const changes = [{ target: { kind: "track", track: track.id }, path: ["events"], op: "remove", index },
+      ...derivedWrites(virtual, new Map())];
     edit({ label: "Delete clip", changes });
   }
 
@@ -1518,11 +1525,15 @@
     callPlugins("projectChanged", { reason: "history", command, direction });
   }
 
-  // Track id → whether the extrapolation port reproduces its stored times (spec §5.3).
+  // Track id → whether the extrapolation port reproduces its stored times (spec §5.3), and
+  // whether the overlap port reproduces its stored blends.
   function computeGates(value) {
-    const gates = new Map();
-    for (const track of value.tracks) gates.set(track.id, Interact.extrapolationGate(track));
-    return gates;
+    const extrapolation = new Map(), blends = new Map();
+    for (const track of value.tracks) {
+      extrapolation.set(track.id, Interact.extrapolationGate(track));
+      blends.set(track.id, Interact.blendGate(track));
+    }
+    return { extrapolation, blends };
   }
 
   // Costume re-import of the same MV: the native ids are identical, so every
@@ -1731,7 +1742,7 @@
     const previous = selected;
     project = next;
     // Gates are decided on the data as loaded, before any carried edit.
-    extrapolationGates = computeGates(next);
+    ({ extrapolation: extrapolationGates, blends: blendGates } = computeGates(next));
     let reason = preserveTime ? "reload" : "load", complete = true;
     if (carry && before && before.editor) {
       complete = carryEdits(before, next);
@@ -2530,11 +2541,11 @@
     history = global.MVStudioEditHistory.create({ getProject: () => project, onChange: historyChanged, limit: 200, onBegin: gestureBegan,
       compareView: (track, event) => {
         const view = global.MVStudioEditHistory.editedView(event);
-        // Extrapolation times of a gated track are derived from the clip timing.
-        if (view && view.values && autoExtrapolation(track)) {
+        // Extrapolation times and blends of a gated track are derived from the clip timing.
+        if (view && view.values && (autoExtrapolation(track) || autoBlend(track))) {
           const values = { ...view.values };
-          delete values.preExtrapolationTime;
-          delete values.postExtrapolationTime;
+          if (autoExtrapolation(track)) { delete values.preExtrapolationTime; delete values.postExtrapolationTime; }
+          if (autoBlend(track)) { delete values.blendIn; delete values.blendOut; }
           view.values = values;
         }
         return view;
