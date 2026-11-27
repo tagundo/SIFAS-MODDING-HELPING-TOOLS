@@ -648,6 +648,9 @@ class PackTests(reg_tests.Case):
         self.assertTrue(summary.startswith("Converted: "))
         self.assertEqual(sorted(self.written[-1]["platforms"]), ["android", "ios"])
         self.assertEqual(self.written[-1]["stage"], STAGE_2101)
+        # The legacy layout's inputs survive the conversion: the target slot's stage and the source's stock key.
+        self.assertEqual((self.written[-1]["targetStage"]["live_stage_master_id"], self.written[-1]["sourceKey"]),
+                         (102, "A2101"))
         # A raw .unity needs the region and the 3D asset id of its MV.
         source = self.library / "modded" / "edited.unity"
         source.write_bytes(timeline_bytes("android", tag="edited"))
@@ -657,6 +660,65 @@ class PackTests(reg_tests.Case):
         with self.assertRaisesRegex(ValueError, conversion.ASSET):
             mv_timeline.run_mv_timeline_platform(job, {"direction": "android_to_ios", "source": str(source),
                                                        "out_dir": str(out)})
+
+
+@NEEDS_STORE
+class RealPackConversionTests(reg_tests.Case):
+    """The platform tool rewrites a pack with Elichika's own mv_timeline_pack (reader and writer)."""
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import mv_timeline_pack
+        except ImportError:
+            self.skipTest("This Elichika has no MV timeline packs")
+        self.pack = mv_timeline_pack
+
+    def hand_made(self, stage):
+        """A pack whose manifest stage names only ``stage`` (the reader accepts it, the writer does not)."""
+        import io
+        import zipfile
+        data = self.pack.write_pack(name="hand", song={"liveId": 21, "title": "Base song"},
+                                    source={"region": "gl", "assetId": 2101}, target_asset_id=2201,
+                                    timelines={"android": self.local["tl2101"]}, stage=None)
+        source, output = zipfile.ZipFile(io.BytesIO(data)), io.BytesIO()
+        with source, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            for info in source.infolist():
+                raw = source.read(info)
+                if info.filename == "manifest.json":
+                    raw = json.dumps(dict(json.loads(raw), stage=stage)).encode()
+                archive.writestr(info.filename, raw)
+        path = self.library / "modded" / "hand.sifasmv"
+        path.write_bytes(output.getvalue())
+        return path
+
+    def test_a_partial_stage_is_completed_from_the_source_stock_stage(self):
+        import io
+        import zipfile
+        from webtools.tools import mv_timeline
+        path = self.hand_made({"live_stage_master_id": 102})
+        self.assertEqual(self.pack.read_pack(path)["manifest"]["stage"], {"live_stage_master_id": 102})
+        out = self.library / "modded" / "out"
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
+        logs = []
+        job = types.SimpleNamespace(log=logs.append, progress=lambda done, total: None, outputs=[])
+        job.add_output = job.outputs.append
+        mv_timeline.run_mv_timeline_platform(job, {"direction": "android_to_ios", "source": str(path),
+                                                   "out_dir": str(out)})
+        written = Path(job.outputs[-1]).read_bytes()
+        result = self.pack.read_pack(written)
+        self.assertEqual(sorted(result["timelines"]), ["android", "ios"])
+        # The left-out fields come from 3D 2101's original stage; the named one stays.
+        self.assertEqual(result["manifest"]["stage"], {**STAGE_2101, "live_stage_master_id": 102})
+        self.assertTrue(any("stage_effect_asset_path" in line and "3D 2101" in line for line in logs), logs)
+        # The legacy layout is kept: the target's file and the source's stock key.
+        with zipfile.ZipFile(io.BytesIO(written)) as archive:
+            self.assertIn("2201android.unity", archive.namelist())
+            text = archive.read("livetimeline.txt").decode()
+        self.assertIn("timeline = 'A2101'", text)
+        self.assertIn("live_stage_master_id = 102", text)
 
 
 if __name__ == "__main__":
