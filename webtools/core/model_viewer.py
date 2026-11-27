@@ -1509,7 +1509,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         from . import mv_studio_axis_billboard, mv_studio_soft_billboards, mv_studio_stage_props, unity_builtin_meshes
         from . import mv_studio_lossy_scale
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
-        single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
+        single_ambient, stage_emissive, stage_cubemap_owners = {}, {}, []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
         axis_billboards, stage_props, lossy_scales = set(), [], {}
@@ -1559,7 +1559,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             defaults, ambient_binding = mv_studio_stage_materials.ambient_materials(scene, obj, tree)
             ambient_materials.update(defaults)
             try:
-                stage_emissive.update(mv_studio_stage_materials.emissive_materials(scene, obj, tree))
+                for identity, binding in mv_studio_stage_materials.emissive_materials(scene, obj, tree).items():
+                    # A material two stage models drive has no single writer.
+                    stage_emissive[identity] = None if stage_emissive.get(identity, binding) != binding else binding
             except (TypeError, ValueError, KeyError, EOFError, struct.error):
                 pass
             try:
@@ -1682,7 +1684,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             stage_metadata[identity] = mv_studio_stage_materials.read_material(
                                 scene, candidate, ambient_materials, single_ambient)
                         descriptor = stage_metadata[identity]
-                        if descriptor and descriptor["shader"] == "general":
+                        if descriptor and descriptor["shader"] in mv_studio_stage_materials.SKINNED_MOTION_KINDS:
                             stage_opaque = descriptor
                 if stage_beam is not None or stage_opaque is not None or stage_transparent is not None:
                     stage_motion = binding
@@ -2012,8 +2014,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 except ValueError:
                     pass
                 if display is not None:
-                    if "color" in stage_inputs and (display["fallback"].get("vertexColor")
-                            or any(variant["background"].get("vertexColor") for variant in display["variants"])):
+                    drawn = [display["fallback"] or {}, *((variant or {}).get(part) or {} for variant in
+                             (display["initial"], *display["variants"]) for part in ("background", "logo"))]
+                    if "color" in stage_inputs and any(fields.get("vertexColor") for fields in drawn):
                         stage_color = glb.attribute(stage_inputs["color"], "VEC4")
                         primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR": stage_color}
                     primitives[-1]["extras"]["mvStageDisplay"] = display
@@ -2079,7 +2082,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     if "emissiveUV" in stage_inputs:
                         try:
                             emissive = mv_studio_stage_materials.export_emissive(
-                                scene, materials, material_obj, controlled=_key(material_obj) in stage_emissive)
+                                scene, materials, material_obj, binding=stage_emissive.get(_key(material_obj)))
                         except ValueError:
                             pass
                     if emissive is None:
@@ -2097,8 +2100,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     except ValueError:
                         descriptor = None
                 if descriptor and "queue" in descriptor:
-                    descriptor.pop("queue")
-                    queue = stage_metadata[_key(material_obj)]["queue"]
+                    # AS/Stage, TransparentCutout and Coloring/Opaque keep it for their pass state.
+                    queue = mv_studio_stage_materials.pass_queue(descriptor)
                     if renderer_type == "MeshRenderer" and queue <= 2500:
                         if opaque_center is False:
                             opaque_center = mv_studio_stage_materials.opaque_sort_center(
@@ -2118,10 +2121,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         custom["_STAGE_EMISSIVE_UV"] = stage_emissive_uv
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], **custom}
                     primitives[-1]["extras"]["mvStageMaterial"] = descriptor
-                    if descriptor["shader"] in {"stage", "general"}:
+                    if descriptor["shader"] in {"stage", "general", "cutout", "coloring"}:
                         mv_studio_stage_materials.collect_main_sampler(
                             scene, materials, material_obj, descriptor,
-                            static_opaque=descriptor["shader"] == "general" and stage_opaque is None,
+                            static_opaque=descriptor["shader"] in {"general", "cutout", "coloring"} and stage_opaque is None,
                         )
                     if descriptor["shader"] == "stage":
                         mv_studio_stage_materials.collect_texture_sampler(

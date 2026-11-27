@@ -18,6 +18,10 @@ from . import model_viewer as viewer
 KNOWN = {
     ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367): "AS/General/Opaque",
     ("cab-adf9ba7b61bd035c754bf74ae44927cb", 7151384334892346267): "AS/General/Transparent",
+    # Stage display backgrounds (asblendadditiveopaque, asso1005/asso2030displaywavetexture bundles).
+    ("cab-9b14c1288a63e4bfda7afe956b0ce17b", 6587279542658938980): "AS/Blend/AdditiveOpaque",
+    ("cab-50c15e8e4856cd1191205c7ef2174cb2", -7370209258363462652): "AS/Uniq/so1005-DisplayWaveTexture",
+    ("cab-b94f8af06023bbfed851c74a2ab68729", 2891630227281558959): "AS/Uniq/so2030-DisplayWaveTexture",
     ("cab-6cf8387efa4151b6220fceb9384d0e8e", 7983779172275908372): "AS/Rimlight/Opaque",
     ("cab-31fad648db7286e0012ae8cc07024bff", -1043432931367049882): "AS/Color/Opaque",
     ("cab-da18667fd7e5e991d56b5d877869e6c6", 7366096703533297961): "AS/Coloring/Transparent",

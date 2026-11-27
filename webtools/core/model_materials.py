@@ -135,7 +135,8 @@ def _original_mips(obj, texture, *, stage=False):
     crunch65 = name == "ETC2_RGBA8Crunched"
     pvrtc = stage and name in ("PVRTC_RGB4", "PVRTC_RGBA4")
     etc1 = stage and name == "ETC_RGB4"
-    if channels is None and astc is None and not (crunch65 or pvrtc or etc1):
+    etc2a8 = stage and name == "ETC2_RGBA8"
+    if channels is None and astc is None and not (crunch65 or pvrtc or etc1 or etc2a8):
         raise ValueError("The authored mip format is unavailable in this preview.")
     if pvrtc and (width & (width - 1) or height & (height - 1)):
         raise ValueError("Authored PVRTC mip chains require power-of-two dimensions.")
@@ -165,6 +166,8 @@ def _original_mips(obj, texture, *, stage=False):
             size = max(8, w) * max(8, h) // 2
         elif etc1:
             size = ((w + 3) // 4) * ((h + 3) // 4) * 8
+        elif etc2a8:
+            size = ((w + 3) // 4) * ((h + 3) // 4) * 16
         else:
             block = int(astc.group(1))
             size = ((w + block - 1) // block) * ((h + block - 1) // block) * 16
@@ -186,7 +189,7 @@ def _original_mips(obj, texture, *, stage=False):
                 path_id=(obj.path_id, "authored-mip", level),
                 type=SimpleNamespace(name="Texture2D"), read=lambda value=proxy: value))
         offset += size
-    if (pvrtc or etc1) and offset != len(data):
+    if (pvrtc or etc1 or etc2a8) and offset != len(data):
         raise ValueError("The authored block-compressed mip data does not match the declared levels.")
     return output
 

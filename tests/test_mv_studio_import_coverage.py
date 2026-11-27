@@ -324,6 +324,31 @@ class LoadGamePropCoverageTests(unittest.TestCase):
         self.assertIn(("LiveMemberShadowTrack", coverage.NOT_RENDERED, coverage.SHADOW_PREFABS_UNAVAILABLE), rows)
         self.assertIn(f"Stage effects: {message}", project["warnings"])
 
+    def test_stage_effect_display_variant_warning_reaches_coverage(self):
+        # The stage effect preview warns that one display variant cannot be drawn; load_game
+        # passes it to the coverage report, which marks the clips selecting it not rendered.
+        self.selection["stage"]["effect"] = {"table": "stage_effect", "asset": "effect", "available": True}
+        target = "/EntryPoint/Live/Stages/MainStage/Effect/dis_01/main"
+        track = _track("display", "LiveDisplayTrack", binding=target, clips=3)
+        for event, material in zip(track["events"], (0, 1, 5)):
+            event["values"] = {"materialIndex": material}
+        self.tracks.append(track)
+        reason = "_WaveTex could not be decoded"
+
+        def preview(path, *, warnings=None, native_stage_effect=False, **_):
+            if native_stage_effect and warnings is not None:
+                warnings.append({"code": coverage.DISPLAY_VARIANTS_UNSUPPORTED, "name": target, "message": "Some variants.",
+                                 "target": target, "variants": 2, "unsupported": [[1, reason]]})
+            return "/api/mv-studio/media/" + "a" * 32 + ".glb", {}
+
+        patch.object(self.mv_studio, "_preview", side_effect=preview).start()
+        project = self.mv_studio.load_game(self.root, region="gl", platform="ios", live_id=1, asset_id=2, language="en")
+        rows = {(row["nativeClass"], row["status"], row["note"]): row["clips"] for row in project["importCoverage"]["tracks"]
+                if row["nativeClass"] == "LiveDisplayTrack"}
+        self.assertEqual(rows, {
+            ("LiveDisplayTrack", coverage.RENDERED, "Stage display screens."): 1,
+            ("LiveDisplayTrack", coverage.NOT_RENDERED, coverage._DISPLAY_VARIANT.format(reason)): 2})
+
     def test_each_case_without_an_attached_prop_names_its_reason(self):
         def expect(note):
             self.assertEqual(self.import_rows(), {("AnimationTrack", coverage.NOT_RENDERED, note): 2,
