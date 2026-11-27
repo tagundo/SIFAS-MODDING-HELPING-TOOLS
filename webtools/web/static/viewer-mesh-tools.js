@@ -338,8 +338,20 @@
     function snapshot() { var out = {}; Object.keys(cache).forEach(function (k) { var m = cache[k]; out[k] = { deleted: Array.from(m.deleted), marked: Array.from(m.marked || []), selected: Array.from(m.selected), positions: clone(m.positions), weights: clone(m.weights) }; }); return out; }
     function remember(value) { value = typeof value === 'string' ? value : JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; while (history.length > 24 || historyBytes > 8 * 1024 * 1024) historyBytes -= history.shift().length; future = []; }
     function geometryChanged(m) { m.geometryRevision = (m.geometryRevision || 0) + 1; }
+    // Counts writes of current positions only (not weights, deleted faces or
+    // the selection), so the same-position groups are rebuilt only when a
+    // position may have changed.
+    function positionsChanged(m) { m.positionRevision = (m.positionRevision || 0) + 1; }
+    // Whether two position-edit sets give every vertex the same current position.
+    function samePositions(m, a, b) {
+      if (a === b) return true;
+      return Object.keys(a).concat(Object.keys(b)).every(function (vertex) {
+        var x = a[vertex] || m.data.positions[vertex], y = b[vertex] || m.data.positions[vertex];
+        return !!x && !!y && x[0] === y[0] && x[1] === y[1] && x[2] === y[2];
+      });
+    }
     // Same-position groups follow the current positions. The index is rebuilt
-    // once per geometry revision; a drag freezes the groups it started with.
+    // once per position revision; a drag freezes the groups it started with.
     var groupStats = { builds: 0, lastBuildMs: 0, lastBuildVertices: 0, lookups: 0 };
     // Vertex selections count their changes, so the partner lookup is reused
     // until the selection or the position groups change (paint strokes and
@@ -353,10 +365,10 @@
     }
     function currentPosition(m, vertex) { return m.positions[vertex] || m.data.positions[vertex]; }
     function positionIndex(m) {
-      if (!m.positionGroups || m.positionGroups.revision !== m.geometryRevision) {
+      if (!m.positionGroups || m.positionGroups.revision !== m.positionRevision) {
         var started = performance.now(), index = buildPositionGroups(m.data.positions.length, function (vertex) { return currentPosition(m, vertex); });
         groupStats.builds++; groupStats.lastBuildMs = performance.now() - started; groupStats.lastBuildVertices = index.count;
-        m.positionGroups = { revision: m.geometryRevision, index: index };
+        m.positionGroups = { revision: m.positionRevision, index: index };
       }
       return m.positionGroups.index;
     }
@@ -374,7 +386,7 @@
       var vertices = Array.from(m.selected), together = samePosition(panel, m);
       return together ? vertices.concat(together.partners) : vertices;
     }
-    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = selectionSet(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); panels.forEach(function (p) { p.positionDraft = false; }); changed(); }
+    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; if (!samePositions(m, m.positions, row.positions)) positionsChanged(m); m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = selectionSet(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); panels.forEach(function (p) { p.positionDraft = false; }); changed(); }
     function undo() { if (busy || runtimeGesture || !interactive() || !history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
     function redo() { if (busy || runtimeGesture || !interactive() || !future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
     function status(panel, text, error) { panel.status.textContent = text; panel.status.classList.toggle('mesh-error', !!error); }
@@ -394,7 +406,7 @@
       finally { if (ticket === request) { busy = false; redraw(); if (options.onChange) options.onChange(); } }
     }
     function makeMesh(data) {
-        var m = { data: data, deleted: new Set(), marked: new Set(), selected: selectionSet(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, geometryRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
+        var m = { data: data, deleted: new Set(), marked: new Set(), selected: selectionSet(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, geometryRevision: 0, positionRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
         if (data.uv) {
           var grid = {}, cells = 0; data.triangles.forEach(function (face, index) {
             if (cells > 500000) return; var points = face.map(function (v) { return data.uv[v]; });
@@ -495,8 +507,8 @@
         Object.keys(cache).forEach(function (id) { previous.values[id] = Object.assign({}, cache[id]); });
         var panelState = panels.map(function (p) { return { mesh: p.mesh.value, submesh: p.submesh.value, bone: p.bone && p.bone.value, sourceBone: p.sourceBone && p.sourceBone.value }; });
         var next = {};
-        Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: selectionSet(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1, geometryRevision: (old.geometryRevision || 0) + 1 }); });
-        Object.keys(prepared).forEach(function (id) { var item = prepared[id], mesh = next[id] || makeMesh(item.data); mesh.deleted = item.edits.deleted; mesh.positions = item.edits.positions; mesh.weights = item.edits.weights; geometryChanged(mesh); next[id] = mesh; });
+        Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: selectionSet(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1, geometryRevision: (old.geometryRevision || 0) + 1, positionRevision: (old.positionRevision || 0) + 1 }); });
+        Object.keys(prepared).forEach(function (id) { var item = prepared[id], mesh = next[id] || makeMesh(item.data); mesh.deleted = item.edits.deleted; mesh.positions = item.edits.positions; mesh.weights = item.edits.weights; geometryChanged(mesh); positionsChanged(mesh); next[id] = mesh; });
         function restorePanels(values, fallback) {
           fillMeshes(); panels.forEach(function (p, index) {
             var value = values[index]; p.mesh.value = cache[value.mesh] ? value.mesh : fallback || '';
@@ -654,7 +666,7 @@
             if (!stored) { delete mesh.positions[vertex]; altered = true; }
             else if (value.some(function (part, axis) { return part !== original[axis]; })) { mesh.positions[vertex] = original.slice(); altered = true; }
           });
-          if (altered) geometryChanged(mesh);
+          if (altered) { geometryChanged(mesh); positionsChanged(mesh); }
         });
       }
       if (gesture && (cancel || JSON.stringify(snapshot()) === gesture.before)) {
@@ -682,7 +694,7 @@
       });
       if (!valid) return;
       activePanel = panel; panel.positionDraft = false; remember();
-      Object.keys(updates).forEach(function (vertex) { m.positions[vertex] = updates[vertex]; }); geometryChanged(m); changed();
+      Object.keys(updates).forEach(function (vertex) { m.positions[vertex] = updates[vertex]; }); geometryChanged(m); positionsChanged(m); changed();
     }
     function togetherBox(panel, parent, id) {
       var label = el('label', parent), input = el('input', label); label.className = 'mesh-together-label'; input.type = 'checkbox'; input.id = id; input.checked = panel.moveTogether;
@@ -818,7 +830,7 @@
       if (fields.some(function (i) { return !i.checkValidity() || !i.value.trim(); }) || value.some(function (v) { return !Number.isFinite(v); })) return;
       // Partners of the one absolutely placed vertex take the same value.
       var vertices = movingVertices(panel, m);
-      remember(); panel.positionDraft = false; vertices.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); geometryChanged(m); changed();
+      remember(); panel.positionDraft = false; vertices.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); geometryChanged(m); positionsChanged(m); changed();
     }
     function applyWeights(panel) {
       var m = current(panel); if (!m || !m.data.skinWritable || !m.selected.size) return;
@@ -974,7 +986,7 @@
         var lock = el('details', weight); el('summary', lock, 'Lock bone weights'); p.locks = el('div', lock); p.locks.className = 'mesh-weights';
         el('p', weight, 'Locked bones retain their current weights. Remaining weights normalize to a total of 1, with at most four influences.').className = 'viewer-render-note';
       }
-      p.reset = button(box, 'Restore mesh changes', function () { var m = current(p); if (!m) return; remember(); m.deleted.clear(); m.marked.clear(); m.selected.clear(); m.positions = {}; m.weights = {}; m.weightRevision++; geometryChanged(m); changed(); }); p.reset.className = 'mesh-reset'; p.actions.push(p.reset);
+      p.reset = button(box, 'Restore mesh changes', function () { var m = current(p); if (!m) return; remember(); if (Object.keys(m.positions).length) positionsChanged(m); m.deleted.clear(); m.marked.clear(); m.selected.clear(); m.positions = {}; m.weights = {}; m.weightRevision++; geometryChanged(m); changed(); }); p.reset.className = 'mesh-reset'; p.actions.push(p.reset);
       p.save = button(box, 'Save mesh copy', function () { save(p); }); p.save.className = 'mesh-save'; el('p', box, 'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.').className = 'viewer-render-note'; p.result = el('ul', box);
       p.status = el('p', box, 'Open a model first.'); p.status.className = 'viewer-render-note'; p.status.setAttribute('role', 'status'); p.status.setAttribute('aria-live', 'polite');
       var prefix = box.id;
@@ -1023,7 +1035,7 @@
         onPaint: function (indices, erase, modify) { var m = activePanel && current(activePanel); if (!m) return; var set = modify ? m.selected : m.marked, altered = false; indices.forEach(function (index) { if (erase) { if (set.delete(index)) altered = true; } else if ((modify || !m.deleted.has(index)) && !set.has(index)) { set.add(index); altered = true; } }); if (altered) redraw(); },
         onSelect: chooseVertex,
         onConnected: function (face, erase, toggle) { if (activePanel) selectConnected(activePanel, [face], erase, toggle, false); },
-        onDrag: function (values) { var m = activePanel && current(activePanel); if (!m) return; Object.keys(values).forEach(function (vertex) { m.positions[vertex] = values[vertex]; }); geometryChanged(m); changed(); },
+        onDrag: function (values) { var m = activePanel && current(activePanel); if (!m) return; Object.keys(values).forEach(function (vertex) { m.positions[vertex] = values[vertex]; }); geometryChanged(m); positionsChanged(m); changed(); },
         onEnd: endRuntimeGesture
       });
     }

@@ -10,6 +10,8 @@
  * group that already has an edit), delta and absolute position, Undo/Redo
  * (the partner lookup is reused after Undo), OFF = selected vertices only,
  * regrouping by current position (tear, Undo, join, recipe, deselecting),
+ * group rebuilds only on position writes (none for weights, face deletion or
+ * selection-only Undo/Redo),
  * weights and Select connected unchanged, save + reopen + open copy + recipe
  * restore, ja labels and tooltips after a language switch, ko count line, and
  * phone/touch and narrow layouts. */
@@ -258,6 +260,63 @@ async function desktop(url) {
     value = await snapshot(page); assert.deepEqual(value.mesh.edits, untorn.mesh.edits);
     await selectIndex(page, 2); assert.deepEqual((await snapshot(page)).mesh.samePosition.partners, [6]);
     result.cases.push('Regrouping by current position: torn with the option off stays apart (and Undo joins), Set onto another vertex joins, a tearing recipe leaves no partner');
+    // The groups are rebuilt only when a position may have changed: Apply
+    // weights, face deletion and selection-only Undo/Redo build nothing;
+    // every position write (nudge and its Undo/Redo, a tear and its Undo/Redo,
+    // recipe restore, Restore mesh changes) builds once, and the partners
+    // always follow the current positions.
+    const builds = async () => (await snapshot(page)).mesh.samePosition.builds;
+    let built = await builds(); const flat = await snapshot(page);
+    await inspector(page, true); await page.locator('#viewer-mesh-modify-weight-bone').selectOption('2'); await page.locator('#viewer-mesh-modify-weight-value').fill('.3');
+    await page.locator('#viewer-mesh-modify-weight-apply').click(); value = await snapshot(page);
+    assert.deepEqual(value.mesh.edits.meshes[0].weights.map(row => row.vertex), [2]); assert.equal(value.mesh.samePosition.builds, built, 'Apply weights moves no vertex: no rebuild');
+    assert.deepEqual(value.mesh.samePosition.partners, [6]);
+    await page.locator('#viewer-mesh-modify-undo').click(); assert.equal(await builds(), built, 'nor its Undo'); await inspector(page, false);
+    await selectIndex(page, 3); value = await snapshot(page); assert.deepEqual(value.mesh.samePosition.partners, [7]); assert.equal(value.mesh.samePosition.builds, built, 'a selection builds nothing');
+    await page.locator('#viewer-mesh-modify-undo').click(); value = await snapshot(page);
+    assert.deepEqual(value.mesh.selectedVertices, [2]); assert.deepEqual(value.mesh.samePosition.partners, [6]); assert.equal(value.mesh.samePosition.builds, built, 'selection-only Undo: no rebuild');
+    await page.locator('#viewer-mesh-modify-redo').click(); value = await snapshot(page);
+    assert.deepEqual(value.mesh.selectedVertices, [3]); assert.deepEqual(value.mesh.samePosition.partners, [7]); assert.equal(value.mesh.samePosition.builds, built, 'selection-only Redo: no rebuild');
+    await page.locator('#viewer-mesh-modify-undo').click();
+    // Face 0 deleted in the deleter panel (same mesh), then its Undo.
+    await page.locator('#viewer-mesh-deleter').evaluate(details => details.open = true); await page.locator('#viewer-mesh-deleter-select').selectOption(JSON.stringify(data.mesh));
+    await page.locator('#viewer-mesh-deleter input[type=number]').first().fill('2');
+    const deleterCanvas = page.locator('#viewer-mesh-deleter-canvas'); await deleterCanvas.scrollIntoViewIfNeeded(); const deleterBox = await deleterCanvas.boundingBox(), faceUv = [0, 1].map(axis => data.triangles[0].reduce((sum, vertex) => sum + data.uv[vertex][axis], 0) / 3);
+    await page.mouse.click(deleterBox.x + faceUv[0] * deleterBox.width, deleterBox.y + (1 - faceUv[1]) * deleterBox.height); await page.locator('#viewer-mesh-deleter-delete').click();
+    assert.deepEqual((await snapshot(page)).mesh.edits.meshes[0].deleteFaces, [0]); assert.equal(await builds(), built, 'deleting a face moves no vertex: no rebuild');
+    // Two Undo steps: the deletion, then the brush stroke that selected the face.
+    await page.locator('#viewer-mesh-deleter-undo').click(); assert.deepEqual((await snapshot(page)).mesh.edits, flat.mesh.edits); assert.equal(await builds(), built, 'nor its Undo');
+    await page.locator('#viewer-mesh-deleter-undo').click(); value = await snapshot(page);
+    assert.equal(value.mesh.history, flat.mesh.history); assert.deepEqual(value.mesh.selectedFaces, []); assert.equal(value.mesh.samePosition.builds, built);
+    await page.locator('#viewer-mesh-deleter').evaluate(details => details.open = false);
+    await selectIndex(page, 2); value = await snapshot(page); assert.deepEqual(value.mesh.samePosition.partners, [6]); assert.equal(value.mesh.samePosition.builds, built);
+    // Position writes rebuild once each.
+    const nudge = async () => page.locator('#viewer-mesh-modify-nudge-plus').click(), button = name => page.locator('#viewer-mesh-modify-' + name).click();
+    async function rebuilt(why, partners, edited) {
+      const state = await snapshot(page); built++;
+      assert.equal(state.mesh.samePosition.builds, built, why + ': one rebuild'); assert.deepEqual(state.mesh.samePosition.partners, partners, why + ': partners');
+      assert.deepEqual(edits(state).map(row => row.vertex), edited, why + ': edited vertices');
+    }
+    await nudge(); await rebuilt('nudge', [6], [2, 6]);
+    await button('undo'); await rebuilt('Undo of the nudge', [6], []);
+    await button('redo'); await rebuilt('Redo of the nudge', [6], [2, 6]);
+    await button('undo'); await rebuilt('Undo again', [6], []);
+    await quick.uncheck(); await nudge(); assert.equal(await builds(), built, 'OFF builds nothing'); await quick.check(); await rebuilt('a tear with the option off', [], [2]);
+    await button('undo'); await rebuilt('Undo of the tear', [6], []);
+    await button('redo'); await rebuilt('Redo of the tear', [], [2]);
+    await button('undo'); await rebuilt('Undo of the tear again', [6], []);
+    await page.evaluate(state => window.__meshTool.restoreEdits(state), { version: 1, meshes: [{ mesh: data.mesh, positions: [{ vertex: 2, position: torn }] }] });
+    await selectIndex(page, 2); await rebuilt('recipe restore that tears 2', [], [2]);
+    await inspector(page, true); await button('reset'); await inspector(page, false); assert.deepEqual((await snapshot(page)).mesh.selectedVertices, [], 'Restore mesh changes clears the selection');
+    await selectIndex(page, 2); await rebuilt('Restore mesh changes', [6], []);
+    // Undo, step by step: the selection after Restore (no position change), Restore
+    // mesh changes, the selection after the recipe (none), the recipe.
+    await button('undo'); value = await snapshot(page); assert.deepEqual(value.mesh.selectedVertices, []); assert.equal(value.mesh.samePosition.builds, built, 'selection-only Undo after Restore: no rebuild');
+    await button('undo'); await rebuilt('Undo of Restore mesh changes', [], [2]);
+    await button('undo'); value = await snapshot(page); assert.deepEqual(value.mesh.selectedVertices, []); assert.equal(value.mesh.samePosition.builds, built, 'selection-only Undo after the recipe: no rebuild');
+    await button('undo'); await rebuilt('Undo of the recipe', [6], []);
+    value = await snapshot(page); assert.deepEqual(value.mesh.edits, flat.mesh.edits); assert.deepEqual(value.mesh.selectedVertices, [2]);
+    result.cases.push('Groups rebuild only on position writes: none for Apply weights, face deletion or selection-only Undo/Redo; one for nudge, tear, their Undo/Redo, recipe restore and Restore mesh changes, partners never stale');
     // Axis drag with partners; a return-to-start drag leaves no edit.
     await page.locator('#viewer-mesh-modify-move-axis').selectOption('x');
     let before = await snapshot(page); handle = await gizmo(page, 'x'); await mouseDrag(page, handle, along(handle, 28)); value = await snapshot(page);
@@ -276,12 +335,14 @@ async function desktop(url) {
     const during = await snapshot(page); await page.mouse.up(); await frames(page); value = await snapshot(page);
     assert.equal(during.mesh.samePosition.builds, buildsBeforeDrag, 'no group build while the pointer moves');
     assert.deepEqual(during.mesh.samePosition.partners, [6], 'the drag keeps its groups');
-    assert(value.mesh.samePosition.builds <= buildsBeforeDrag + 1, 'one rebuild after the drag for the new positions');
+    assert.equal(value.mesh.samePosition.builds, buildsBeforeDrag + 1, 'one rebuild after the drag for the new positions'); assert.deepEqual(value.mesh.samePosition.partners, [6]);
     assert.deepEqual(edits(value).map(row => row.vertex), [2, 6]); assert.deepEqual(position(value, 6, data), position(value, 2, data), 'free drag keeps the group bit-identical');
     assert(Math.hypot(...position(value, 2, data).map((x, axis) => x - data.positions[2][axis])) > .001); assert.equal(value.mesh.history, before.mesh.history + 1);
     const freeDrag = edits(value);
-    await page.locator('#viewer-mesh-modify-undo').click(); assert.deepEqual((await snapshot(page)).mesh.edits, before.mesh.edits);
-    await page.locator('#viewer-mesh-modify-redo').click(); assert.deepEqual(edits(await snapshot(page)), freeDrag);
+    await page.locator('#viewer-mesh-modify-undo').click(); value = await snapshot(page); assert.deepEqual(value.mesh.edits, before.mesh.edits);
+    assert.equal(value.mesh.samePosition.builds, buildsBeforeDrag + 2, 'Undo of the drag rebuilds once'); assert.deepEqual(value.mesh.samePosition.partners, [6]);
+    await page.locator('#viewer-mesh-modify-redo').click(); value = await snapshot(page); assert.deepEqual(edits(value), freeDrag);
+    assert.equal(value.mesh.samePosition.builds, buildsBeforeDrag + 3, 'and its Redo'); assert.deepEqual(value.mesh.samePosition.partners, [6]);
     result.cases.push('Free drag gives the seam copy (other weights) the seed delta: saved values identical, one Undo step, groups built once');
     // A group that already has edits: nudge it, then axis-drag and free-drag it
     // without undoing. Every member starts from its current value.
