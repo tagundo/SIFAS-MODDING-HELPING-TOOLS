@@ -20,11 +20,14 @@
    - nothing reaches the project, its history or the game camera;
    - Key current view after a view preset keys the shown view (the game camera then shows it);
    - every string has Korean and Japanese copy, and the bar follows a language switch;
-   - on a phone, a tablet, a phone in landscape and a laptop screen the bar never covers the
-     preview controls, stays one row, and every control is where a tap lands; where it goes
-     (below or beside the controls, or below with the preview held taller) follows from where
-     the host put the preview and its controls; a preview the open bar would mostly cover
-     shows it folded behind its Views toggle, and it folds again after a view button.
+   - on phones (upright and in landscape), a tablet and a laptop screen the bar never covers the
+     preview controls, stays one row, and every control is where a tap lands: the target list
+     and all four view buttons whole and without a sideways swipe, wherever the bar is; where it
+     goes (below the controls, beside them only when the toggle, the target list and every view
+     button fit there, or below with the preview held taller) follows from where the host put
+     the preview and its controls; a preview the open bar would mostly cover shows it folded
+     behind its Views toggle, and it folds again after a view button; holding the preview costs
+     the timeline only the height it adds.
 
    Real 12035 MV (skipped unless MV_FREECAM_SERVER_ROOT is an Elichika server root that imports
    GL Android 12035 with its member; no game data in Git): the four views around the member pass
@@ -218,9 +221,10 @@ const frames = (page) => page.evaluate(() => new Promise((resolve) => requestAni
 
 // Where the preview, the view, the preview controls and the bar are, and whether a tap at the
 // centre of each control reaches it. The target list and the view buttons are hit where they
-// are (or, with `swipe`, after a sideways scroll); the rest of the bar may need that scroll. A
-// folded bar has only its toggle to hit.
-function layoutProbe(swipe = false) {
+// are, never after a sideways scroll; the rest of the bar may need that scroll. A folded bar
+// has only its toggle to hit. `besideNeed` is the width the bar needs to show its toggle, target
+// list and every view button as compact as it gets (a folded bar: its toggle).
+function layoutProbe() {
   const box = (element) => {
     const rect = element.getBoundingClientRect();
     return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
@@ -241,12 +245,18 @@ function layoutProbe(swipe = false) {
     const rect = element.getBoundingClientRect();
     return rect.left < shownLeft - .5 || rect.right > shownRight + .5;
   }).map(([name]) => name);
+  const levels = ['mv-freecam-compact', 'mv-freecam-tight'].filter((name) => !bar.classList.contains(name));
+  bar.classList.add(...levels);
+  const last = folded ? toggle : bar.querySelector('.mv-freecam-views'), style = getComputedStyle(bar);
+  const besideNeed = last.getBoundingClientRect().right - bar.getBoundingClientRect().left + bar.scrollLeft +
+    parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth);
+  bar.classList.remove(...levels);
   const result = { preview: box(document.querySelector('.mv-preview')), scene: box(document.getElementById('mv-scene')),
     controls: box(document.getElementById('mv-preview-controls')), bar: box(bar), barScroll: bar.scrollWidth, classes: [...bar.classList],
-    folded, toggle: toggled ? toggle.getAttribute('aria-expanded') : null, clipped,
+    folded, toggle: toggled ? toggle.getAttribute('aria-expanded') : null, clipped, besideNeed,
     rows: [...bar.children].filter((child) => child.getClientRects().length).map(box),
     hits: Object.fromEntries([...controls, ...(toggled ? [['mv-freecam-toggle', toggle]] : []), ...views]
-      .map(([name, element]) => [name, hit(element, swipe && bar.contains(element))])) };
+      .map(([name, element]) => [name, hit(element)])) };
   result.scrolled = folded ? {} : Object.fromEntries(['mv-freecam-distance', 'mv-freecam-fov', 'mv-freecam-follow'].map((id) => [id, hit(document.getElementById(id), true)]));
   bar.scrollLeft = 0;
   return result;
@@ -283,28 +293,30 @@ const LAYOUTS = [
   { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, squeeze: true },
   { name: 'tablet', viewport: { width: 768, height: 1024 }, touch: true },
   { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true },
-  // Room beside the preview controls for the folded bar's toggle, not for the open bar.
+  // Room beside the preview controls for the folded bar's toggle, not for the open bar's
+  // target list and view buttons: opened, it goes below them and the preview is held taller.
+  { name: 'landscape-phone-844', viewport: { width: 844, height: 390 }, touch: true },
   { name: 'small-landscape-phone', viewport: { width: 740, height: 360 }, touch: true },
   { name: 'laptop', viewport: { width: 1280, height: 720 }, touch: false },
 ];
-// The bar's gap below the preview controls, its margin from the preview's edge, the narrowest
-// bar worth placing beside the controls (a folded bar goes there whenever it fits), and the share
+// The bar's gap below the preview controls, its margin from the preview's edge, and the share
 // of the preview the open bar below the controls leaves clear, under which the bar folds
 // (mv-studio-free-camera.js / .css).
-const GAP = 6, EDGE = 8, MIN_BESIDE = 160, MIN_CLEAR = .4;
+const GAP = 6, EDGE = 8, MIN_CLEAR = .4;
 
 // Where the bar belongs, from where the host put the preview and its controls (so it holds for
-// any host layout): below the controls when it fits there; otherwise beside them when there is
-// room; with room in neither place, the preview's least height (--mv-preview-min, `own` px as
-// the host sets it) becomes what the controls and the bar need. `least` is the preview's height
-// before the bar showed.
+// any host layout): below the controls when it fits there; otherwise beside them when its
+// toggle, target list and every view button fit there whole (besideNeed); with room in neither
+// place, the preview's least height (--mv-preview-min, `own` px as the host sets it) becomes
+// what the controls and the bar need. `least` is the preview's height before the bar showed.
 function checkPlacement(label, shown, held, own, least) {
   const below = shown.controls.bottom - shown.preview.top + GAP + shown.bar.height + EDGE;
-  const room = shown.preview.right - shown.controls.right - 2 * GAP;
-  const besideRoom = Math.min(MIN_BESIDE, shown.barScroll);
+  // Beside the controls the bar reaches to EDGE px from the preview's right edge.
+  const room = shown.preview.right - shown.controls.right - GAP - EDGE;
+  const besideRoom = shown.besideNeed;
   const beside = shown.classes.includes('mv-freecam-beside');
   const place = beside ? 'beside' : held ? 'bottom, preview held' : 'bottom';
-  const facts = `${place}: needs ${below} px below the controls, ${room} px beside them, preview ${least} -> ${shown.preview.height} px, least ${own} px, held ${JSON.stringify(held)}`;
+  const facts = `${place}: needs ${below} px below the controls, ${besideRoom} px beside them (${room} px there), preview ${least} -> ${shown.preview.height} px, least ${own} px, held ${JSON.stringify(held)}`;
   if (beside) {
     assert(below > least + .5, `${label}: beside the controls only when the bar does not fit below them (${facts})`);
     assert(room >= besideRoom - .5, `${label}: beside the controls only with room there (${facts})`);
@@ -337,9 +349,10 @@ function shortPreview(shown) {
 
 // The checks every placement of the bar meets: clear of the preview controls, inside the
 // preview, one row, the view keeps the whole preview, and every control is where a tap lands;
-// below the controls the target list and the view buttons show whole, without a swipe.
+// the target list and all four view buttons show whole, without a swipe.
 function checkShown(label, shown) {
-  if (!shown.classes.includes('mv-freecam-beside')) assert.deepEqual(shown.clipped, [], `${label}: the target list and the view buttons show whole`);
+  assert.deepEqual(shown.clipped, [], `${label}: the target list and the view buttons show whole (${JSON.stringify([shown.bar, shown.classes])})`);
+  if (!shown.folded) assert.equal(Object.keys(shown.hits).filter((name) => ['front', 'back', 'left', 'right'].includes(name)).length, 4, `${label}: four view buttons`);
   assert(apart(shown.bar, shown.controls), `${label}: the bar does not cover the preview controls (${JSON.stringify([shown.bar, shown.controls])})`);
   assert(inside(shown.bar, shown.preview), `${label}: the bar stays inside the preview`);
   assert.deepEqual(shown.scene, shown.preview, `${label}: the view keeps the whole preview`);
@@ -372,12 +385,19 @@ async function layouts(browser, url) {
     const least = await page.evaluate(() => document.querySelector('.mv-preview').getBoundingClientRect().height);
     const own = await page.evaluate(() => parseFloat(getComputedStyle(document.getElementById('mv-workspace')).getPropertyValue('--mv-preview-min')));
     if (layout.squeeze) assert(Math.abs(least - own) < 1, `${label}: the preview starts at its least height (${least}, ${own})`);
+    // How far the host's own layout already runs the timeline past the workspace (a short
+    // landscape phone), before the bar shows.
+    const timelineOverflowOf = () => page.evaluate(() => {
+      const [timeline, workspace] = [document.querySelector('#mv-workspace .mv-timeline'), document.getElementById('mv-workspace')];
+      return timeline.getBoundingClientRect().bottom - workspace.getBoundingClientRect().bottom;
+    });
+    const hostOverflow = await timelineOverflowOf();
     await setMode(page, 'orbit');
     await page.locator('#mv-free-camera').waitFor({ state: 'visible' });
     await frames(page);
     const tap = (locator) => layout.touch ? locator.tap() : locator.click();
     const toggle = page.locator('#mv-freecam-toggle');
-    let shown = await page.evaluate(layoutProbe, false);
+    let shown = await page.evaluate(layoutProbe);
     // A short preview folds the bar behind its toggle, which keeps the view visible: the folded
     // bar is one button, placed like the bar.
     const short = shortPreview(shown);
@@ -394,16 +414,22 @@ async function layouts(browser, url) {
       await page.screenshot({ path: path.join(evidence, `freecam-layout-${layout.name}-folded-ko.png`) });
       await tap(toggle);
       await frames(page);
-      shown = await page.evaluate(layoutProbe, false);
+      shown = await page.evaluate(layoutProbe);
       assert(!shown.folded && shown.toggle === 'true', `${label}: the toggle opens the bar`);
       held = await page.evaluate(() => document.getElementById('mv-workspace').style.getPropertyValue('--mv-preview-min'));
     } else {
       assert.equal(shown.toggle, null, `${label}: an open preview has no toggle`);
     }
     placement = checkPlacement(label, shown, held, own, least);
-    // Beside the controls the view buttons may need a sideways swipe.
-    if (placement.place === 'beside') shown = await page.evaluate(layoutProbe, true);
     checkShown(label, shown);
+    let timelineOverflow = null;
+    if (held) {
+      // The host sizes the timeline again for the held preview (a window resize): it runs past
+      // the workspace by at most what the host's own layout did plus what the hold added.
+      timelineOverflow = await timelineOverflowOf();
+      assert(timelineOverflow <= Math.max(0, hostOverflow) + (parseFloat(held) - least) + .5,
+        `${label}: the hold costs the timeline only what it adds (${hostOverflow} -> ${timelineOverflow} px past the workspace, preview ${least} -> ${held})`);
+    }
     await page.screenshot({ path: path.join(evidence, `freecam-layout-${layout.name}-ko.png`) });
     // A tap on a view button turns the view (and folds a short preview's bar again, so the view
     // shows); the preview controls still switch the camera.
@@ -427,7 +453,7 @@ async function layouts(browser, url) {
       const fit = await page.evaluate(compactProbe);
       assert((fit.fits || fit.level === 2) && (fit.level === 0 || !fit.looserFits), `${label} ${lang}: as compact as the row needs (${JSON.stringify(fit)})`);
     }
-    const again = await page.evaluate(layoutProbe, placement.place === 'beside');
+    const again = await page.evaluate(layoutProbe);
     const lost = Object.entries(again.hits).filter(([, reached]) => !reached).map(([name]) => name);
     assert.deepEqual(lost, [], `${label}: after the language switches, every view button is where a tap lands`);
     // Shown again, a short preview's bar starts folded.
@@ -443,7 +469,7 @@ async function layouts(browser, url) {
     assert.equal(await page.evaluate(() => document.elementFromPoint(...(({ left, top, width, height }) => [left + width / 2, top + height / 2])(
       document.getElementById('mv-camera-mode').getBoundingClientRect())) === document.getElementById('mv-camera-mode')), true, `${label}: back to the game camera`);
     assert.deepEqual(errors, []);
-    results[layout.name] = { ...placement, folded: folding, compact: shown.classes.filter((name) => /compact|tight/.test(name)),
+    results[layout.name] = { ...placement, folded: folding, hostOverflow, timelineOverflow, besideNeed: shown.besideNeed, compact: shown.classes.filter((name) => /compact|tight/.test(name)),
       preview: [shown.preview.width, shown.preview.height], previewBefore: least, own, held, bar: [shown.bar.left - shown.preview.left, shown.bar.top - shown.preview.top, shown.bar.width, shown.bar.height] };
     await page.context().close();
   }
