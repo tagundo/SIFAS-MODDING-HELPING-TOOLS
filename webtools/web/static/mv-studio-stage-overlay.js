@@ -105,6 +105,53 @@
     return { blend, zTest, zWrite: fields.depthWrite === true, stencil, full: true };
   }
 
+  // One native AS/General/Transparent (or MatCap) pass: its uniforms, blend, cull, depth and stencil state.
+  function createMaterial(T, fields, state, map, { skinned = false, matcap = false, depthWrite = false } = {}) {
+    const tint = new T.Vector4().fromArray(fields.tint), channels = { overlayTint: tint };
+    const uniforms = { uTexture: { value: map }, uTint: { value: tint } };
+    if (matcap) {
+      uniforms.uAddColor = { value: new T.Vector3().fromArray(fields.addColor) };
+    } else {
+      channels.overlayUV = new T.Vector4().fromArray(fields.uv);
+      uniforms.uTextureST = { value: channels.overlayUV };
+      uniforms.uVertexColor = { value: fields.vertexColor };
+    }
+    // Unity's CullMode values specify the side to discard. Three's side
+    // specifies the faces to retain. Old previews are double-sided.
+    const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull] ?? T.DoubleSide;
+    const [blendSrc, blendDst] = state.blend.map(value => blendFactor(T, value));
+    const [comparison, reference, pass, zFail] = state.stencil;
+    // Comp Disabled/Always with Keep on pass and depth fail leaves the stencil untouched.
+    const stencilTest = !(comparison === 0 || comparison === 8) || pass !== 0 || zFail !== 0;
+    // ZTest Disabled/Always passes every fragment; WebGL writes depth only with its test on.
+    const always = state.zTest === 0 || state.zTest === 8;
+    const defines = matcap ? { MATCAP: 1 } : fields.saturate === true ? { SATURATE: 1 } : {};
+    const material = new T.ShaderMaterial({
+      vertexShader, fragmentShader, defines, transparent: true, skinning: skinned,
+      depthTest: !always || depthWrite, depthFunc: always ? T.AlwaysDepth : depthFunction(T, state.zTest), depthWrite,
+      toneMapped: false, side, blending: T.CustomBlending,
+      blendSrc, blendDst, blendSrcAlpha: blendSrc, blendDstAlpha: blendDst,
+      stencilWrite: stencilTest, stencilFunc: stencilTest ? stencilFunction(T, comparison) : T.AlwaysStencilFunc,
+      stencilRef: stencilTest ? reference : 0, stencilFuncMask: 255, stencilWriteMask: 255,
+      stencilFail: T.KeepStencilOp, stencilZFail: stencilOperation(T, zFail), stencilZPass: stencilOperation(T, pass),
+      uniforms
+    });
+    return { material, channels };
+  }
+
+  // A full-state AS/General/Transparent pass for another stage module (a LiveCoreStageFlashLight
+  // whose material uses this shader), or null when the descriptor is not one.
+  function transparentMaterial(T, fields, map) {
+    const state = fields && typeof fields === "object" ? passState(fields) : null;
+    if (!state?.full || !Array.isArray(fields.tint) || fields.tint.length !== 4 || !fields.tint.every(Number.isFinite) ||
+        !Array.isArray(fields.uv) || fields.uv.length !== 4 || !fields.uv.every(Number.isFinite) ||
+        typeof fields.vertexColor !== "boolean" || ![0, 1, 2].includes(fields.cull)) return null;
+    const { material } = createMaterial(T, fields, state, map, { depthWrite: fields.depthWrite === true });
+    material.name = "Native stage transparent";
+    material.defaultAttributeValues._stage_color = [1, 1, 1, 1];
+    return material;
+  }
+
   function hasVisible({ node, material, state }) {
     // SrcAlpha with One or OneMinusSrcAlpha leaves the target unchanged at zero alpha.
     if (material.uniforms.uTint.value.w <= 0 && state.blend[0] === 5 && (state.blend[1] === 1 || state.blend[1] === 10)) {
@@ -229,35 +276,7 @@
           ? await sampler.sampledNativeTexture(fields.texture, fields.mainSampler) : await texture(fields.texture);
         if (!active()) break;
         if (!map) continue;
-        const tint = new T.Vector4().fromArray(fields.tint), channels = { overlayTint: tint };
-        const uniforms = { uTexture: { value: map }, uTint: { value: tint } };
-        if (matcap) {
-          uniforms.uAddColor = { value: new T.Vector3().fromArray(fields.addColor) };
-        } else {
-          channels.overlayUV = new T.Vector4().fromArray(fields.uv);
-          uniforms.uTextureST = { value: channels.overlayUV };
-          uniforms.uVertexColor = { value: fields.vertexColor };
-        }
-        // Unity's CullMode values specify the side to discard. Three's side
-        // specifies the faces to retain. Old previews are double-sided.
-        const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull] ?? T.DoubleSide;
-        const [blendSrc, blendDst] = state.blend.map(value => blendFactor(T, value));
-        const [comparison, reference, pass, zFail] = state.stencil;
-        // Comp Disabled/Always with Keep on pass and depth fail leaves the stencil untouched.
-        const stencilTest = !(comparison === 0 || comparison === 8) || pass !== 0 || zFail !== 0;
-        // ZTest Disabled/Always passes every fragment; WebGL writes depth only with its test on.
-        const always = state.zTest === 0 || state.zTest === 8;
-        const defines = matcap ? { MATCAP: 1 } : fields.saturate === true ? { SATURATE: 1 } : {};
-        const material = new T.ShaderMaterial({
-          vertexShader, fragmentShader, defines, transparent: true, skinning: skinned,
-          depthTest: !always || depthWrite, depthFunc: always ? T.AlwaysDepth : depthFunction(T, state.zTest), depthWrite,
-          toneMapped: false, side, blending: T.CustomBlending,
-          blendSrc, blendDst, blendSrcAlpha: blendSrc, blendDstAlpha: blendDst,
-          stencilWrite: stencilTest, stencilFunc: stencilTest ? stencilFunction(T, comparison) : T.AlwaysStencilFunc,
-          stencilRef: stencilTest ? reference : 0, stencilFuncMask: 255, stencilWriteMask: 255,
-          stencilFail: T.KeepStencilOp, stencilZFail: stencilOperation(T, zFail), stencilZPass: stencilOperation(T, pass),
-          uniforms
-        });
+        const { material, channels } = createMaterial(T, fields, state, map, { skinned, matcap, depthWrite });
         material.name = scope === "world" ? "Native stage transparent" : "Native stage overlay";
         // Unity's built-in Plane has no authored vertex color.
         material.defaultAttributeValues._stage_color = [1, 1, 1, 1];
@@ -320,7 +339,7 @@
     };
   }
   global.MVStudioStageOverlay = {
-    apply, create,
+    apply, create, transparentMaterial,
     materialChannel(owner, kind, rendererClass = 23, scope = "overlay") {
       if ((rendererClass === 23 || rendererClass === 137) && (scope === "overlay" || scope === "world")) {
         return materialOwners.get(owner)?.get(materialKey(scope, rendererClass))?.[kind];
