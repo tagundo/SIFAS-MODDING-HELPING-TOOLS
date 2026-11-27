@@ -115,8 +115,26 @@
 .mv-lane-mute.mv-muted .mv-mute-on { display: inline; }
 .mv-lane-label.mv-lane-muted .mv-lane-text { opacity: .55; }
 #tab-mv .mv-lane.mv-lane-muted .mv-clip { opacity: .45; }
+/* Quality badge: the lane plays only while its MV quality flag is on (red when it is off). */
+#tab-mv .mv-lane-quality {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin-inline-start: auto;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: help;
+}
+#tab-mv .mv-lane-quality.mv-quality-off { border-color: #e5484d; color: #e5484d; }
+.mv-quality-icon { width: 12px; height: 12px; fill: currentColor; }
 @media (pointer: coarse) {
   #tab-mv .mv-lane-mute { width: 28px; height: 28px; }
+  #tab-mv .mv-lane-quality { width: 26px; height: 26px; }
 }
 .mv-lane-extra-label { font-style: italic; }
 

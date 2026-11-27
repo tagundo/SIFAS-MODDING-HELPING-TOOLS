@@ -152,6 +152,13 @@
       ? STAGE_QUALITY[found.name] : null;
   }
 
+  // The flag a quality badge names on a lane: a StageEffect category group, or a direct child
+  // the flag mutes when off (an ActivationTrack keeps its own mute then), or null.
+  function qualityBadge(track) {
+    const option = qualityOption(track);
+    return option && track.nativeClass !== "ActivationTrack" ? option : null;
+  }
+
   // Whether the game sets this (leaf) track's mute from a quality flag when the MV starts.
   function qualityMuted(track) {
     if (!track || isGroup(track)) return false;
@@ -345,6 +352,6 @@
   global.MVStudioTimelineTabs = Object.freeze({
     TABS, TAB_IDS, CLASSES, KINDS, TIMING, tabOf, memberSlot, nativeGroup, valueEditable, eventValueEditable,
     census, visibleTabs, keyTarget, memberChoices, plan, fold, isGroup, renderTabs, renderChips, roving,
-    STAGE_QUALITY, QUALITY_LABELS, qualityOption, qualityMuted,
+    STAGE_QUALITY, QUALITY_LABELS, qualityOption, qualityMuted, qualityBadge,
   });
 })(typeof window !== "undefined" ? window : globalThis);

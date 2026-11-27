@@ -3203,6 +3203,17 @@ _MV_EDITOR_E2_TRANSLATIONS = {
     "Post-processing effects": ("후처리 효과", "ポストエフェクト"),
     "Stage emissive surfaces": ("무대 발광 표면", "ステージの発光面"),
     # "Audience" (관객/観客) comes from the editor lane B table.
+    "Plays only while {option} is on in the MV quality settings.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 켜져 있을 때만 재생됩니다.", "MVのグラフィック設定で「{option}」がオンのときだけ再生されます。"),
+    "Its tracks play only while {option} is on in the MV quality settings.": (
+        "이 그룹의 트랙은 MV 그래픽 설정에서 '{option}'이(가) 켜져 있을 때만 재생됩니다.",
+        "このグループのトラックは、MVのグラフィック設定で「{option}」がオンのときだけ再生されます。"),
+    "{option} is off in the MV quality settings, so the game mutes this track.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 꺼져 있어 게임은 이 트랙을 재생하지 않습니다.",
+        "MVのグラフィック設定で「{option}」がオフなので、ゲームはこのトラックを再生しません。"),
+    "{option} is off in the MV quality settings, so the game mutes its tracks.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 꺼져 있어 게임은 이 그룹의 트랙을 재생하지 않습니다.",
+        "MVのグラフィック設定で「{option}」がオフなので、ゲームはこのグループのトラックを再生しません。"),
 }
 for _source, (_korean, _japanese) in _MV_EDITOR_E2_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean

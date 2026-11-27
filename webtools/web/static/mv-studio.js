@@ -729,6 +729,8 @@
     renderEventHeader(header, track, event);
     box.append(header);
     if (track.muted) box.append(make("p", t("This track is muted. The preview skips it."), { class: "mv-field-note", "data-mv-note": "muted" }));
+    const option = Tabs.qualityBadge(track);
+    if (option) box.append(make("p", qualityText(track, option), { class: "mv-field-note", "data-mv-note": "quality" }));
     if (editable) {
       const name = make("input", null, { type: "text", maxlength: 240, "data-mv-field": "label" });
       name.value = text(event.label);
@@ -1309,6 +1311,62 @@
     }
   }
 
+  // ---- Quality badges ---------------------------------------------------------------------
+  // StageEffect/<difficulty>/<category> lanes play only while their quality flag is on (see
+  // MVStudioTimelineTabs.qualityMuted): the badge names the flag and shows when it is off.
+  function qualityOff(option) {
+    return !!(project && project.quality && project.quality.values && project.quality.values[option] === false);
+  }
+
+  function qualityText(track, option) {
+    const group = Tabs.isGroup(track), values = { option: qualityName(option) };
+    if (qualityOff(option)) return format(group ? "{option} is off in the MV quality settings, so the game mutes its tracks."
+      : "{option} is off in the MV quality settings, so the game mutes this track.", values);
+    return format(group ? "Its tracks play only while {option} is on in the MV quality settings."
+      : "Plays only while {option} is on in the MV quality settings.", values);
+  }
+
+  function gaugeIcon() {
+    const icon = document.createElementNS(SVG, "svg");
+    icon.setAttribute("viewBox", "0 0 16 16");
+    icon.setAttribute("aria-hidden", "true");
+    icon.setAttribute("class", "mv-quality-icon");
+    for (const [x, y] of [[2, 10], [7, 6], [12, 2]]) {
+      const bar = document.createElementNS(SVG, "rect");
+      for (const [key, value] of [["x", x], ["y", y], ["width", 3], ["height", 14 - y], ["rx", .5]]) bar.setAttribute(key, value);
+      icon.append(bar);
+    }
+    return icon;
+  }
+
+  function qualityBadge(track) {
+    const option = Tabs.qualityBadge(track);
+    if (!option) return null;
+    const badge = make("button", null, { type: "button", class: "mv-lane-quality", "data-quality": option, "data-track": text(track.id) });
+    badge.append(gaugeIcon());
+    badge.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const current = project && project.tracks.find((item) => item.id === track.id);
+      if (current) report(qualityText(current, option));
+    });
+    syncQualityBadge(badge, track);
+    return badge;
+  }
+
+  function syncQualityBadge(badge, track) {
+    const option = badge.dataset.quality, label = qualityText(track, option);
+    badge.classList.toggle("mv-quality-off", qualityOff(option));
+    badge.title = label;
+    badge.setAttribute("aria-label", label);
+  }
+
+  function syncQualityBadges() {
+    for (const badge of byId("mv-timeline-grid").querySelectorAll(".mv-lane-quality")) {
+      const track = project && project.tracks.find((item) => item.id === badge.dataset.track);
+      if (track) syncQualityBadge(badge, track);
+    }
+  }
+
   function laneLabel(track) {
     const full = text(track.label || kinds[track.kind] || track.kind);
     const label = make("p", null, { class: "mv-lane-label", title: text(track.binding || track.label), "data-track": text(track.id) });
@@ -1321,6 +1379,8 @@
       body.append(group, make("span", full.slice(cut + 1), { class: "mv-lane-name" }));
     } else body.append(make("span", full, { class: "mv-lane-name" }));
     label.append(body);
+    const badge = qualityBadge(track);
+    if (badge) label.append(badge);
     return label;
   }
 
@@ -1482,6 +1542,8 @@
       } else if (row.type === "group") {
         const label = make("p", null, { class: "mv-lane-label mv-lane-group", title: text(row.track.label), "data-track": text(row.track.id) });
         label.append(muteButton(row.track), make("span", text(row.track.label), { class: "mv-lane-text" }));
+        const badge = qualityBadge(row.track);
+        if (badge) label.append(badge);
         label.classList.toggle("mv-lane-muted", !!row.track.muted);
         grid.append(label, make("div", null, { class: "mv-lane-group-lane", "aria-hidden": "true" }));
       } else if (row.type === "extra") {
@@ -1670,6 +1732,9 @@
       const preset = quality.some((change) => change.path[0] !== "values" || change.path.length === 1);
       if (quiet !== "quality" || preset) renderQuality();
       if (preset || quality.some((change) => change.path[1] === "rendering_resolution")) scene?.resize();
+      syncQualityBadges();
+      const active = activeEvent();
+      if (active && Tabs.qualityBadge(active.track) && !selectedTouched) renderEvent();
     }
     updateHistoryButtons();
     callPlugins("projectChanged", { reason: "history", command, direction });

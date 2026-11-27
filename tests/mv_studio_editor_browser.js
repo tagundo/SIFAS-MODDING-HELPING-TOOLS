@@ -671,6 +671,19 @@ async function run() {
     assert.equal(await page.locator('#mv-status').textContent(), "이 트랙의 음소거는 MV가 시작될 때 게임이 '무대 색상 연출' 그래픽 설정에 따라 정합니다.");
     assert.equal(!!findTrack((await state(page)).project, led.id).muted, false);
     assert.equal((await state(page)).history.undo, muteBase.history.undo, 'no history step');
+    // Quality badges on the StageEffect category lanes: the flag that mutes them in the game.
+    const badges = await page.locator('#mv-timeline-grid .mv-lane-quality').evaluateAll((items) => items.map((item) =>
+      [item.closest('.mv-lane-label').title, item.dataset.quality]));
+    assert.deepEqual(badges.find(([label]) => label === 'StageEffect/Expert/Coloring'), ['StageEffect/Expert/Coloring', 'stage_coloring'], 'the category row');
+    assert(badges.some(([, option]) => option === 'stage_flash_light'));
+    assert(!badges.some(([label]) => label.endsWith('main_01_act')), 'not on an ActivationTrack');
+    assert(!badges.some(([label]) => label.startsWith('Member1')));
+    const ledBadge = page.locator(`.mv-lane-label:not(.mv-lane-group) .mv-lane-quality[data-track="${led.id}"]`);
+    assert.equal(await ledBadge.getAttribute('aria-label'), "MV 그래픽 설정에서 '무대 색상 연출'이(가) 켜져 있을 때만 재생됩니다.");
+    assert.deepEqual(await laneLabels(page).then((labels) => labels.filter((label) => label.endsWith('LED_panel_01'))),
+      ['StageEffect/Expert/Coloring/LED_panel_01'], 'the badge adds no text to the lane name');
+    await ledBadge.click();
+    assert.equal(await page.locator('#mv-status').textContent(), "MV 그래픽 설정에서 '무대 색상 연출'이(가) 켜져 있을 때만 재생됩니다.");
     // A group's mute never reaches the game.
     const groupMute = page.locator('.mv-lane-group .mv-lane-mute').first();
     assert.equal(await groupMute.getAttribute('aria-disabled'), 'true');
@@ -917,6 +930,9 @@ async function run() {
     const flash = legacy.tracks.find((track) => track.label === flashLabel).events[0];
     legacy.editor = { version: 1, originals: { [flash.id]: JSON.parse(JSON.stringify(flash)) } };
     flash.values.postExtrapolationMode = 1;
+    // This project's quality preset has the flash lights off.
+    legacy.quality = { ...legacy.quality, options: [...legacy.quality.options, { key: 'stage_flash_light', label: '무대 점멸 조명', type: 'boolean' }],
+      values: { ...legacy.quality.values, stage_flash_light: false } };
     await importGame(legacy);
     await page.locator('#mv-tab-lighting').click();
     await page.locator(`.mv-clip[data-event="${flash.id}"]`).click();
@@ -939,6 +955,23 @@ async function run() {
     await page.locator('#mv-timeline-label').click();
     await page.keyboard.press('Control+z');
     assert.equal(findEvent((await state(page)).project, flash.id).values.postExtrapolationMode, 1, 'undo brings the saved edit back');
+    // The quality badge shows the flag off, and follows the quality panel.
+    const flashTrack = legacy.tracks.find((track) => track.label === flashLabel);
+    const flashBadge = page.locator(`.mv-lane-quality[data-track="${flashTrack.id}"]`);
+    assert(await flashBadge.evaluate((badge) => badge.classList.contains('mv-quality-off')));
+    assert.equal(await flashBadge.getAttribute('aria-label'), "MV 그래픽 설정에서 '무대 점멸 조명'이(가) 꺼져 있어 게임은 이 트랙을 재생하지 않습니다.");
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=quality]').textContent(),
+      "MV 그래픽 설정에서 '무대 점멸 조명'이(가) 꺼져 있어 게임은 이 트랙을 재생하지 않습니다.");
+    await page.screenshot({ path: path.join(evidence, 'quality-badge-off-ko.png') });
+    await page.locator('#mv-quality summary').scrollIntoViewIfNeeded();
+    if (!(await page.locator('#mv-quality').evaluate((panel) => panel.open))) await page.locator('#mv-quality summary').click();
+    await page.locator('[data-mv-quality=stage_flash_light]').check();
+    assert.equal(await flashBadge.evaluate((badge) => badge.classList.contains('mv-quality-off')), false);
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=quality]').textContent(),
+      "MV 그래픽 설정에서 '무대 점멸 조명'이(가) 켜져 있을 때만 재생됩니다.");
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert(await flashBadge.evaluate((badge) => badge.classList.contains('mv-quality-off')), 'undo turns it off again');
 
     // The English UI names the same tabs.
     await page.locator('#lang-select').selectOption('en');

@@ -180,6 +180,15 @@ function qualityMutes() {
     'emissive', 'flashlight', 'overlayeffect', 'post']);
   assert(Object.values(Tabs.STAGE_QUALITY).every((key) => Tabs.QUALITY_LABELS[key]));
 
+  // Badges: the category group and its direct children, except an ActivationTrack (the flag
+  // never mutes one: ApplyMuteToTrack skips it when muting).
+  const badged = tracks.filter(Tabs.qualityBadge).map((track) => track.label);
+  assert(badged.includes('StageEffect/Expert/Coloring') && badged.includes('StageEffect/Expert/Coloring/LED_panel_01'));
+  assert(!badged.includes('StageEffect/Expert/Display/main_01_act'), 'an ActivationTrack keeps playing');
+  assert(badged.includes('StageEffect/Expert/Display/main_01'));
+  assert(!badged.some((label) => !label.startsWith('StageEffect/')), 'StageEffect only');
+  assert(!badged.includes('StageEffect/Expert'), 'not the difficulty group');
+
   // A mute edit lists its track first in the Edit tab, like an edited clip.
   const lips = leaf('Member1/LipSync');
   const plan = Tabs.plan(tracks, { tab: 'edit', editedTracks: new Set([lips.id]) });
