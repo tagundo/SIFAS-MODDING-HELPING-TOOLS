@@ -245,6 +245,22 @@ class ActualTimelineTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "does not reach the game"):
                         studio.export_timeline(raw, path.name, attempt)
 
+    def test_the_writer_refuses_a_track_change_the_rules_would_have_refused(self):
+        # _changes refuses these first; the writer's own guards hold if a track change ever gets past it.
+        from unittest import mock
+
+        path = sample_timelines()[0]
+        raw = path.read_bytes()
+        parsed = studio.parse_timeline(raw, path.name)
+        group = next(item for item in parsed["tracks"] if item["nativeClass"] == "GroupTrack")
+        leaf = next(item for item in parsed["tracks"] if studio.track_mute_refusal(item) is None)
+        for crafted, message in (([(group["id"], "muted", True)], studio.GROUP_MUTE),
+                                 ([(leaf["id"], "label", True)], "This native track has no mute to change.")):
+            with self.subTest(crafted=crafted), mock.patch.object(studio, "_track_changes", return_value=crafted):
+                with self.assertRaises(ValueError) as caught:
+                    studio._rewrite_timeline(raw, parsed, deepcopy(parsed))
+                self.assertEqual(str(caught.exception), message)
+
     @unittest.skipUnless((SAMPLES / "a-1203503-live_timeline.unity").is_file()
                          and (SAMPLES / "i-1203503-live_timeline.unity").is_file(), "Both platforms are optional")
     def test_registration_keeps_the_mute_on_both_platforms(self):
