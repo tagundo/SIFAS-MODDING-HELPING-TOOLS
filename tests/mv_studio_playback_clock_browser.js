@@ -8,7 +8,8 @@
    - playback advances evenly: once locked, every frame advances by its frame interval times a
      rate within 1 ± 3 %, no frame repeats a time, no frame goes back (no clock rewind), and the
      shown time stays within 50 ms of the soundtrack, plus whatever a slow frame takes beyond
-     1/60 s (the raw readings, as tick() used them, repeat a time on many frames: counted);
+     1/60 s (the raw readings, as tick() used them, repeat a time on many frames: counted, and
+     required to be above zero here only);
    - pause keeps the shown time at the soundtrack's; play again with no seek starts at the
      paused time and leaves the soundtrack where it is; a seek while paused and play from there,
      and a seek back while playing, start from the sought time and lock onto the soundtrack (a
@@ -40,8 +41,9 @@
 
    Real 12035 MV (skipped unless MV_PLAYBACK_SERVER_ROOT is an Elichika server root that imports
    GL Android 12035/1203503; no game data in Git): the same playback, pause, play again, seek and
-   resume checks, a fixed-step capture identical before and after playback, and the native timeline
-   export byte-identical before and after playback.
+   resume checks (the raw-reading repeat count only logged: with frames slower than the readings
+   it can be zero), a fixed-step capture identical before and after playback, and the native
+   timeline export byte-identical before and after playback.
 
    Run: node tests/mv_studio_playback_clock_browser.js (EVIDENCE_DIR keeps the server logs). */
 'use strict';
@@ -296,8 +298,11 @@ async function importGame(page, project) {
   await page.waitForFunction(() => !document.getElementById('mv-play').disabled);
 }
 
-// Play, pause, seek and resume checks shared by the synthetic and the real MV.
-async function transport(page, label, { from, later, earlier, ms = 1500 }) {
+// Play, pause, seek and resume checks shared by the synthetic and the real MV. `rawRepeats`:
+// the raw readings must repeat a time on some frames (a precondition that holds only while
+// frames come faster than the fake's 20-50 ms readings: the synthetic project at 60 Hz, not
+// the real MV, whose frames can take 50-700 ms under swiftshader; there the count is logged).
+async function transport(page, label, { from, later, earlier, ms = 1500, rawRepeats = true }) {
   const results = {};
   const offset = await offsetOf(page);
   await seek(page, from);
@@ -306,7 +311,7 @@ async function transport(page, label, { from, later, earlier, ms = 1500 }) {
   results.play = analyse(await take(page), { from });
   console.log(label, 'play', JSON.stringify(results.play));
   steady(`${label} play`, results.play);
-  assert(results.play.naiveRepeated > 0, `${label}: the raw readings repeat a time on some frames (${results.play.naiveRepeated})`);
+  if (rawRepeats) assert(results.play.naiveRepeated > 0, `${label}: the raw readings repeat a time on some frames (${results.play.naiveRepeated})`);
 
   // Pause: the shown time (the last frame's) is the soundtrack's where it stopped.
   await pause(page);
@@ -662,7 +667,7 @@ async function real(browser) {
     await page.evaluate(recordFrames);
     const before = await fixedCapture(page, 30, true);
     const project = await page.evaluate(() => JSON.stringify(MVStudio.getState().project));
-    const result = await transport(page, '12035', { from: 30, later: 45, earlier: 32, ms: 3000 });
+    const result = await transport(page, '12035', { from: 30, later: 45, earlier: 32, ms: 3000, rawRepeats: false });
     assert.deepEqual(await fixedCapture(page, 30), before, '12035: the fixed-step capture is the same PNG and scene state');
     assert.equal(await page.evaluate(() => JSON.stringify(MVStudio.getState().project)), project, '12035: the project is unchanged');
     const exportedAfter = await exportTimeline();
