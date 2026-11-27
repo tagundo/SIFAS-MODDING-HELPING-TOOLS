@@ -83,7 +83,7 @@
       },
       "LiveDepthOfFieldClip": {
         "focusDistance": {"control": "number", "min": 0, "max": 10000, "label": "Focus distance (m)"},
-        "aperture": {"control": "number", "min": 0, "max": 10000, "label": "Aperture"},
+        "aperture": {"control": "number", "min": -100, "max": 10000, "label": "Aperture"},
         "focalLength": {"control": "number", "min": 0, "max": 10000, "label": "Focal length (mm)"},
         "useCameraFov": {"control": "bool-int", "label": "Use the camera field of view"},
         "antiAura": {"control": "bool-int", "label": "Anti-aura"},
