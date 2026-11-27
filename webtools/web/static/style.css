@@ -873,6 +873,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-save-panel progress { width: 100%; max-width: 100%; }
 .viewer-save-output-list { margin: .6rem 0; padding-inline-start: 1.25rem; overflow-wrap: anywhere; }
 .viewer-save-output-list li { margin: .35rem 0; }
+.viewer-save-output-list .viewer-save-folder { font-size: .85em; opacity: .8; overflow-wrap: anywhere; }
 .viewer-save-advanced { margin-top: .65rem; }
 .viewer-save-advanced label { display: grid; gap: .3rem; margin: .6rem 0; }
 .viewer-save-advanced select { min-height: 44px; max-width: 100%; width: 100%; }

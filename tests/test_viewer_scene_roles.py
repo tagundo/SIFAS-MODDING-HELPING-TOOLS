@@ -103,7 +103,14 @@ class SceneRolesTests(unittest.TestCase):
                 token, nodes, _ = self.prepare(self.source(platforms))
                 result, decoded = self.package(token, self.state(nodes))
                 self.assertEqual(set(decoded["manifest"]["platforms"]), set(platforms))
-                with zipfile.ZipFile(result["mod_package"]["package_path"].replace("-scene.zip", ".zip")) as legacy:
+                # The scene ZIP is published to mods/saved; the installer ZIP it
+                # was built from stays in the edit folder's work files.
+                published = Path(result["mod_package"]["package_path"])
+                self.assertEqual(published.parent.name, "saved")
+                self.assertTrue(published.name.endswith("_scene.zip"), published.name)
+                built = sorted((Path(result["recipe_path"]).parent / "mod").glob("*.zip"))
+                self.assertEqual(len(built), 1, built)
+                with zipfile.ZipFile(built[0]) as legacy:
                     goldens = {legacy.read(name) for name in legacy.namelist() if name.endswith(".unity")}
                 for platform in platforms:
                     family = decoded["manifest"]["platforms"][platform]

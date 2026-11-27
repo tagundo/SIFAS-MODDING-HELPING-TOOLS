@@ -59,6 +59,83 @@ def _check(job):
         raise ValueError("Mod packaging was cancelled.")
 
 
+# Finished Mod ZIPs live in one place under the viewer output folder, sorted
+# by state: saved/ holds ZIPs not yet added to the game, added/ the ZIPs the
+# game installer received. The per-save edit folders keep their work files.
+MODS_FOLDER = "mods"
+SAVED_FOLDER = "saved"
+ADDED_FOLDER = "added"
+_PLATFORM_LABELS = {"android": "android", "ios": "ios", "android+ios": "android-ios"}
+
+
+def _name_part(text):
+    import unicodedata
+    value = re.sub(r"[^\w.-]+", "_", unicodedata.normalize("NFC", str(text))).strip("._-")
+    return value.encode("utf-8")[:120].decode("utf-8", errors="ignore").strip("._-")
+
+
+def mod_zip_stem(display_name, character_id=None, platform=None, *, scene=False, when=None):
+    """Readable, date-first name: 2026-11-27_1405_Emma_name_android."""
+    from datetime import datetime
+    when = when or datetime.now().astimezone()
+    parts = [when.strftime("%Y-%m-%d_%H%M")]
+    name = _name_part(display_name) or "costume"
+    from webtools.core.charinfo import NAMES
+    given = _name_part(NAMES.get(character_id, "").split(" ")[0]) if type(character_id) is int else ""
+    if given and given.casefold() not in name.casefold():
+        parts.append(given)
+    parts.append(name)
+    if platform in _PLATFORM_LABELS:
+        parts.append(_PLATFORM_LABELS[platform])
+    if scene:
+        parts.append("scene")
+    return "_".join(parts)
+
+
+def _safe_folder(directory):
+    directory = Path(directory)
+    if any(path.is_symlink() for path in (directory, *directory.parents)):
+        raise ValueError("The Mod ZIP folder cannot be a symbolic link.")
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _move_mod_zip(source, directory, stem, *, also=()):
+    """Move a finished ZIP to directory/<stem>[_N].zip without replacing any file.
+
+    The name is reserved with an exclusive create before the move, and it is
+    also kept free in ``also`` (folders an installer copies the file into).
+    """
+    source, directory = Path(source), _safe_folder(directory)
+    others = [Path(path) for path in also]
+    for number in range(1, 1000):
+        name = stem + ("" if number == 1 else "_" + str(number)) + ".zip"
+        target = directory / name
+        if any((folder / name).exists() for folder in others):
+            continue
+        try:
+            with target.open("xb"):
+                pass
+        except FileExistsError:
+            continue
+        try:
+            try:
+                os.replace(source, target)
+            except OSError as error:
+                import errno
+                if error.errno != errno.EXDEV:
+                    raise
+                with source.open("rb") as incoming, target.open("wb") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+                source.unlink()
+        except BaseException:
+            if source.exists():
+                target.unlink(missing_ok=True)
+            raise
+        return target
+    raise ValueError("The Mod ZIP folder has too many files with this name. Rename the mod and try again.")
+
+
 def cached_receipts(context, cache_root):
     """Read bounded, selected-SHA receipts in fixed current/legacy caches."""
     from .viewer_cache import legacy_cache_roots
@@ -447,7 +524,7 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         raise ValueError("Choose whether to include this costume's verified face companion.")
     if not _PACKAGE_SLOT.acquire(blocking=False):
         raise ValueError("Another Mod ZIP is being prepared. Try again shortly.")
-    exported_result = None
+    exported_result = published = None
     try:
         _check(job)
         context = model_edits.mod_source_context(token)
@@ -509,6 +586,21 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         digest, size = _hash_file(path)
         if packed.get("sha256") != digest or packed.get("bytes") != size:
             raise ValueError("The Mod ZIP failed its completed-output check.")
+        # Publish the finished ZIP beside every other saved Mod ZIP under a
+        # readable, date-first name. The edit folder keeps its work files.
+        mods = Path(output_root) / MODS_FOLDER
+        stem = mod_zip_stem(name, packed.get("chara_id", packed.get("owner")), packed.get("platform"),
+                            scene=bool(packed.get("scene_roles")))
+        built = Path(path)
+        published = _move_mod_zip(built, mods / SAVED_FOLDER, stem, also=[mods / ADDED_FOLDER])
+        if built.parent.name == "mod":
+            try:
+                built.parent.rmdir()
+            except OSError:
+                pass
+        path = str(published.resolve())
+        if _hash_file(path) != (digest, size):
+            raise ValueError("The Mod ZIP failed its completed-output check.")
         package_token = secrets.token_hex(16)
         public = {"token": package_token, "package_path": path, "sha256": digest, "bytes": size,
                   "character_id": packed.get("chara_id", packed.get("owner")),
@@ -522,7 +614,7 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         if paired.get("summary"):
             result["paired_edits"] = paired["summary"]
         receipt = {"public": copy.deepcopy(public), "source_token": token, "state": normalized, "mesh_state": mesh,
-                   "created": time.monotonic(), "status": "ready"}
+                   "created": time.monotonic(), "status": "ready", "added_dir": str(mods / ADDED_FOLDER)}
         with _LOCK:
             for old_token, old in list(_PACKAGES.items()):
                 if time.monotonic() - old["created"] > PACKAGE_SECONDS and old["status"] != "installing":
@@ -538,6 +630,8 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         return result
     except Exception:
         discard_failed_export(exported_result, output_root)
+        if published is not None:
+            published.unlink(missing_ok=True)
         raise
     finally:
         _PACKAGE_SLOT.release()
@@ -575,22 +669,39 @@ def install_package(token, *, repo_root, library_root, job):
         receipt = _receipt(token)
         receipt["status"] = "installing"
         public = copy.deepcopy(receipt["public"])
+    source = Path(public["package_path"])
+    target, handed_off = None, False
+
+    def publish(path):
+        public["package_path"] = str(path)
+        with _LOCK:
+            receipt["public"]["package_path"] = str(path)
+
+    def put_back():
+        # A failed hand-off leaves the ZIP with the saved (not added) ones.
+        if target is None or not target.is_file() or source.exists():
+            return
+        try:
+            os.replace(target, source)
+        except OSError:
+            return
+        publish(source)
+
     try:
         _check(job)
-        digest, size = _hash_file(public["package_path"])
+        digest, size = _hash_file(source)
         if digest != public["sha256"] or size != public["bytes"]:
             raise ValueError("The Mod ZIP changed after saving. Create it again before adding it.")
-        target_root = Path(library_root).resolve() / "suit"
-        target_root.mkdir(parents=True, exist_ok=True)
-        if target_root.is_symlink():
-            raise ValueError("The costume installation folder cannot be a symbolic link.")
-        source = Path(public["package_path"])
-        stem = source.stem.encode("utf-8")[:180].decode("utf-8", errors="ignore")
-        target = target_root / (stem + "-" + secrets.token_hex(4) + ".zip")
-        with source.open("rb") as incoming, target.open("xb") as outgoing:
-            shutil.copyfileobj(incoming, outgoing)
+        # The saved ZIP itself moves to mods/added, so each Mod ZIP sits in
+        # exactly one folder that says whether it was added to the game. Its
+        # name stays free in the installer's own drop folders, which receive
+        # copies under the same name.
+        library = Path(library_root).resolve()
+        added = Path(receipt.get("added_dir") or source.parent.parent / ADDED_FOLDER)
+        target = _move_mod_zip(source, added, source.stem,
+                               also=[library / "suit", root / "assets/package/suit"])
+        publish(target)
         if _hash_file(target) != (digest, size):
-            target.unlink(missing_ok=True)
             raise ValueError("The install copy does not match the saved Mod ZIP.")
         _check(job)
         controller = serverctl._controller
@@ -600,6 +711,7 @@ def install_package(token, *, repo_root, library_root, job):
         # protects an ordinary standalone webtools job manager.
         with guard(root):
             summary = run_costume_file(job, str(target), digest, restart_server=controller is not None)
+        handed_off = True
         if job.should_stop():
             raise ValueError("Costume installation was cancelled. Check the server console before restarting.")
         with _LOCK:
@@ -607,6 +719,8 @@ def install_package(token, *, repo_root, library_root, job):
         return {"installed": True, "mod_package": public, "installed_package_path": str(target),
                 "was_running": was_running, "summary": str(summary)}
     except BaseException:
+        if not handed_off:
+            put_back()
         with _LOCK:
             receipt["status"] = "failed"
         raise
