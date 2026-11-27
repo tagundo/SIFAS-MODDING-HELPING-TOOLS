@@ -793,6 +793,22 @@ class ServerGuardMessageTests(unittest.TestCase):
         # A message without a translation is sent as it is.
         self.assertEqual(self.post("ko", ValueError("Some other refusal.")), (400, {"error": "Some other refusal."}))
 
+    def test_every_range_refusal_has_korean_and_japanese(self):
+        from webtools import i18n
+        bounded = [(native, field, "int", bounds[1] + 1) for (native, field), bounds in studio._LIMITED_VALUES.items()]
+        bounded += [(native, field, "float", bounds[1] + 1.) for (native, field), bounds in studio._FLOAT_RANGES.items()]
+        for native, field, kind, value in bounded:
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError) as caught:  # The real guard and its exact message.
+                    studio._set_playable_value({field: 0 if kind == "int" else 0.}, native, field, value)
+                message = str(caught.exception)
+                self.assertEqual(message, f"'{field}' is outside the supported native range." if kind == "int"
+                                 else f"The timeline has an invalid {field}.")
+                for language in ("ko", "ja"):
+                    translated = i18n.tr(message, language)
+                    self.assertNotEqual(translated, message, language)
+                    self.assertIn(f"'{field}'", translated)
+
 
 def sample_timelines():
     """Every original timeline bundle in ELICHIKA_STUDIO_TIMELINE_DIR (choreography bundles excluded)."""

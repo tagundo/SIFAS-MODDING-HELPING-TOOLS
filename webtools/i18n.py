@@ -4362,9 +4362,20 @@ _MV_EXPORT_SLOT_TRANSLATIONS = {
     "Sway: front tilt (rad)": ("살랑 흔들기: 앞뒤 기울기 (rad)", "ゆらゆら揺らす: 前後の傾き (rad)"),
     "Keep the penlight colour list's length and fields.": (
         "펜라이트 색 목록의 길이와 항목은 그대로 두세요.", "ペンライトの色リストの長さと項目はそのままにしてください。"),
-    "'colorSpecifiedType' is outside the supported native range.": (
-        "'colorSpecifiedType' 값이 지원하는 원본 범위를 벗어났습니다.", "'colorSpecifiedType'の値が対応する元の範囲を外れています。"),
 }
+# Range refusals of the native export for each bounded field (mv_studio_timeline._LIMITED_VALUES and
+# _FLOAT_RANGES; tests/test_mv_studio_editable_values.py pins these lists to them). The UI bounds its
+# inputs, so only a hand-edited or API project meets them.
+for _field in ("index", "target", "cheekType", "colorSpecifiedType", "kernelSize", "useMemberDistance",
+               "cameraAutoDistanceMode", "ambientColorType", "rimlightColorType", "status", "swingMode"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"'{_field}' is outside the supported native range."] = (
+        f"'{_field}' 값이 지원하는 원본 범위를 벗어났습니다.", f"'{_field}'の値が対応する元の範囲を外れています。")
+for _field in ("focusTransitionTime", "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ",
+               "basicYZSwingPowerZ", "growthYZMoveY", "growthYZMoveZ", "growthYZRotateZ", "growthYZSwingBackZ",
+               "growthYZSwingPowerZ", "growthYZSwingBottomZ", "basicXRotateX", "basicXMoveX", "basicXMoveY",
+               "simpleXZRotateX", "simpleXZRotateZ"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"The timeline has an invalid {_field}."] = (
+        f"타임라인의 '{_field}' 값이 올바르지 않습니다.", f"タイムラインの'{_field}'の値が正しくありません。")
 for _source, (_korean, _japanese) in _MV_EXPORT_SLOT_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
