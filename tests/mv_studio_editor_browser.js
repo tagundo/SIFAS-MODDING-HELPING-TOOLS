@@ -541,8 +541,9 @@ async function narrowLanes(browser, url, project, name, viewport) {
     await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
     await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled);
     await page.locator('#mv-game-load').click();
-    await page.waitForFunction((name) => MVStudio.getState().project?.name === name, project.name);
+    await page.waitForFunction((name) => MVStudio.getState().project?.name === name && !document.querySelector('#mv-import-game').disabled, project.name);
     await page.locator('#mv-timeline-grid .mv-clip').first().waitFor();
+    assert.equal(await page.locator('#mv-timeline-scroll').evaluate((scroll) => scroll.inert), false, `${name}: the import is done`);
     const rows = await page.evaluate(() => [...document.querySelectorAll('#mv-timeline-grid .mv-lane-label[data-track]')].map((label) => {
       const body = label.querySelector('.mv-lane-text'), style = getComputedStyle(label);
       const room = label.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
@@ -589,6 +590,35 @@ async function narrowLanes(browser, url, project, name, viewport) {
         `${name} ${row.label}: ${row.height} px for ${row.lines} line(s) of ${row.lineHeight} px`);
       for (const mark of row.marks) assert(mark.height <= 16, `${name} ${row.label}: a small mark (${mark.height})`);
     }
+    // Each mark owns its drawn box (no touch target of a neighbour, in its row or the next, covers
+    // it); 4 px around the box, inside its row, a tap still lands on a mark (the target lies above
+    // the label's text); and no target reaches past the label column into the lane.
+    const stolen = await page.evaluate(() => {
+      const misses = [], marks = [...document.querySelectorAll('#mv-timeline-grid :is(.mv-lane-mute, .mv-lane-quality)')]
+        .filter((mark) => mark.getClientRects().length);
+      const describe = (hit) => {
+        const owner = hit && hit.closest('.mv-lane-mute, .mv-lane-quality');
+        return owner ? owner.closest('.mv-lane-label').title + ' ' + owner.classList[0] : hit && hit.className;
+      };
+      for (const mark of marks) {
+        mark.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const box = mark.getBoundingClientRect(), label = mark.closest('.mv-lane-label'), row = label.getBoundingClientRect();
+        for (const [fx, fy] of [[.5, .5], [.1, .1], [.9, .1], [.1, .9], [.9, .9]]) {
+          const hit = document.elementFromPoint(box.left + box.width * fx, box.top + box.height * fy);
+          if (hit?.closest('.mv-lane-mute, .mv-lane-quality') !== mark) misses.push(`${label.title} ${mark.classList[0]} at ${fx},${fy}: ${describe(hit)}`);
+        }
+        const middle = [box.left + box.width / 2, box.top + box.height / 2];
+        for (const [x, y] of [[box.left - 4, middle[1]], [box.right + 4, middle[1]], [middle[0], box.top - 4], [middle[0], box.bottom + 4]]) {
+          if (x < row.left + 1 || x > row.right - 2 || y < row.top + 1 || y > row.bottom - 1) continue;
+          const hit = document.elementFromPoint(x, y);
+          if (!hit?.closest('.mv-lane-mute, .mv-lane-quality')) misses.push(`${label.title} ${mark.classList[0]}: 4 px off its box lands on ${describe(hit)}`);
+        }
+        const beyond = document.elementFromPoint(row.right + 2, middle[1]);
+        if (beyond?.closest('.mv-lane-mute, .mv-lane-quality')) misses.push(`${label.title} ${mark.classList[0]}: its target reaches into the lane`);
+      }
+      return misses;
+    });
+    assert.deepEqual(stolen, [], `${name}: every mark owns its drawn box`);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, `${name}: no horizontal page scroll`);
     await page.locator('#mv-timeline-grid .mv-lane-group').filter({ hasText: 'Coloring' }).first().scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(evidence, `lanes-${name}-ko.png`) });
@@ -1195,6 +1225,14 @@ async function run() {
       const box = mark.getBoundingClientRect();
       return [mark.classList[0], box.width, box.height];
     })), [['mv-lane-mute', 16, 16], ['mv-lane-quality', 16, 16]]);
+    // Every mark lies inside its row (the next row would cover a part that does not).
+    assert.deepEqual(await page.locator('#mv-timeline-grid .mv-lane-label').evaluateAll((labels) => labels.flatMap((label) => {
+      const row = label.getBoundingClientRect();
+      return [...label.querySelectorAll('.mv-lane-mute, .mv-lane-quality')].filter((mark) => {
+        const box = mark.getBoundingClientRect();
+        return box.top < row.top - .5 || box.bottom > row.bottom + .5 || box.left < row.left - .5 || box.right > row.right + .5;
+      }).map((mark) => `${label.title} ${mark.classList[0]}`);
+    })), []);
     await groupMark.click({ force: true });
     assert.equal(await page.locator('#mv-status').textContent(),
       '그룹 음소거는 게임에 반영되지 않습니다. 게임은 그룹 안의 각 트랙을 그 트랙의 음소거 설정대로 재생합니다.');
