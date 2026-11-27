@@ -30,7 +30,7 @@
   const finite = Number.isFinite;
   const basename = (path) => text(path).split(/[\\/]/).pop();
   let settings, scene, project, selected, pending, gameImport, catalogRequest, catalogIndex = [], songs = [];
-  let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
+  let visible = false, playing = false, time = 0, frame = 0, pixelsPerSecond = 1;
   let previewLoading = false, playheadNode, playheadTransform = "", seekInput, timeOutput, lastReadout = -Infinity;
   let hidden = [], assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
   let lastGamePayload = null;
@@ -57,6 +57,8 @@
   const timelineLanes = new Map(), timelineLabels = new Map();
   const audio = document.createElement("audio");
   audio.preload = "metadata";
+  // The time shown while playing: the frame clock slewed toward the soundtrack's.
+  const playbackClock = global.MVStudioPlaybackClock.create();
 
   function t(label) { return settings.translate(label); }
 
@@ -250,6 +252,7 @@
     cancelScrub();
     time = clamp(finite(seconds) ? seconds : 0, 0, project ? project.duration : 0);
     if (changeAudio && audio.hasAttribute("src")) audio.currentTime = Math.max(0, time + audioOffset());
+    playbackClock.seek(time, changeAudio);
     if (scene && project) scene.seek(time, project, deferDraw);
     syncPosition();
     emitTime();
@@ -326,9 +329,10 @@
 
   function tick(now) {
     if (!visible || !playing || !project) return;
-    const position = audio.src && !audio.paused && !audio.ended ? audio.currentTime - audioOffset() : time + (now - lastFrame) / 1000;
-    lastFrame = now;
-    time = clamp(finite(position) ? position : time, 0, project.duration);
+    const media = audio.src && !audio.paused && !audio.ended ? audio.currentTime - audioOffset() : NaN;
+    const step = playbackClock.next(now, media, !audio.seeking && audio.readyState >= 3);
+    if (step.realign) audio.currentTime = Math.max(0, step.time + audioOffset());
+    time = clamp(finite(step.time) ? step.time : time, 0, project.duration);
     if (scene) scene.playbackFrame(time, now);
     syncPosition(now);
     emitTime(now);
@@ -342,7 +346,7 @@
     flushScrub();
     if (time >= project.duration) seek(0);
     playing = true;
-    lastFrame = performance.now();
+    playbackClock.start(time, performance.now());
     scene?.setPlaying?.(true);
     if (audio.src) audio.play().catch(() => {
       if (playing) report(t("Soundtrack playback is unavailable. The timeline is still playing."), true);
