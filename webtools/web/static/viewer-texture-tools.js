@@ -144,12 +144,15 @@
   // flattened image is unchanged (an empty layer added, hidden, moved, merged
   // or deleted) keeps what was there; a colour step adds its own and every other
   // step is painting. "Restore texture" (a recipe) brings its own (entry.nextApplied).
+  // A step only ever adds its own operation, so once that one is listed the
+  // step keeps the list as it is without comparing the layers' images.
   var STEP_OPERATION = { "OKLCH color": "costume", "Skin tone": "skin" };
   var REPLACING_STEPS = { "Restore original texture": [], "Import PNG": ["paint"], "Open texture project": ["paint"] };
   function stepOperations(before, label, change) {
     if (Object.prototype.hasOwnProperty.call(REPLACING_STEPS, label)) return REPLACING_STEPS[label].slice();
-    if (!change || change.state || (change.layers ? !change.flattenedChanged() : !change.pixels)) return before.slice();
-    return pixelOperations(before.concat([STEP_OPERATION[label] || "paint"]));
+    var kind = STEP_OPERATION[label] || "paint";
+    if (!change || change.state || before.indexOf(kind) >= 0 || (change.layers ? !change.flattenedChanged() : !change.pixels)) return before.slice();
+    return pixelOperations(before.concat([kind]));
   }
   // A saved texture row's pixel operations, in the name's order (recipe rows
   // carry them as "operations" since they were added; the server ignores them

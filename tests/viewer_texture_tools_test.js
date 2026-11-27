@@ -221,6 +221,19 @@ test("each undo step names what it does to a texture's operations for the Mod na
     assert.deepStrictEqual(after(["skin"], label, layers(false)), ["skin"], label + " unchanged");
     assert.deepStrictEqual(after(["skin"], label, layers(true)), ["skin", "paint"], label + " changed");
   }
+  // The layers are compared only while the step could still add painting: a
+  // texture already listed as painted keeps its list without the comparison.
+  let compared = 0;
+  const counted = changed => Object.assign(layers(changed), { flattenedChanged: () => { compared++; return changed; } });
+  for (const before of [["paint"], ["skin", "paint"], ["costume", "skin", "paint"]]) for (const changed of [false, true]) {
+    assert.deepStrictEqual(after(before, "Layer opacity", counted(changed)), before);
+  }
+  assert.equal(compared, 0, "no comparison once painting is listed");
+  assert.deepStrictEqual(after(["skin"], "Layer opacity", counted(true)), ["skin", "paint"]); assert.equal(compared, 1);
+  assert.deepStrictEqual(after([], "Add layer", counted(false)), []); assert.equal(compared, 2);
+  // A colour step that is listed already keeps the list as well.
+  assert.deepStrictEqual(after(["skin"], "Skin tone", pixels), ["skin"]);
+  assert.deepStrictEqual(after(["costume", "paint"], "OKLCH color", pixels), ["costume", "paint"]);
   // Host state only: the bake and a recipe step with the same pixels.
   for (const label of ["Bake blush", "Remove blush", "Restore texture"]) assert.deepStrictEqual(after(["costume", "skin"], label, state), ["costume", "skin"], label);
   // Steps that replace every layer start again.

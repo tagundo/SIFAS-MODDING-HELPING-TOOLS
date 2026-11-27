@@ -36,7 +36,8 @@
  * its change is made and kept; its result stays with that step. change says
  * what the step changed: pixels (a layer's pixels), selection, layers (the
  * layer stack: change.flattenedChanged() then compares the flattened image
- * before and after, valid during this call only) or state (recordState only).
+ * before and after a band of rows at a time, stopping at the first difference;
+ * it is valid during this call only) or state (recordState only).
  * A selection brush stroke, for one, is a pixels-false step whatever its label.
  * onHistoryTravel(value, redo) gets that result back when the step is undone
  * (redo false) or redone (redo true), before any of the step's changes or
@@ -233,7 +234,10 @@
       else { composite = result; compositeOwned = true; compositeDirty = null; }
       return result;
     }
-    function blendLayers(target, visible, sources, dirty) {
+    // Blends the dirty rectangle of visible layers into target, whose byte 0 is
+    // the texture's byte base (0 for a full-size target).
+    function blendLayers(target, visible, sources, dirty, base) {
+      base = base || 0;
       for (var y = dirty.y; y < dirty.y + dirty.height; y++) for (var x = dirty.x; x < dirty.x + dirty.width; x++) {
         var offset = (y * doc.width + x) * 4, red = 0, green = 0, blue = 0, alphaByte = 0;
         for (var layerIndex = 0; layerIndex < visible.length; layerIndex++) {
@@ -246,25 +250,35 @@
           blue = Math.round((source[offset + 2] * alpha + blue * old * (1 - alpha)) / combined);
           alphaByte = Math.round(combined * 255);
         }
-        target[offset] = red; target[offset + 1] = green; target[offset + 2] = blue; target[offset + 3] = alphaByte;
+        var at = offset - base; target[at] = red; target[at + 1] = green; target[at + 2] = blue; target[at + 3] = alphaByte;
       }
     }
-    // The flattened RGBA bytes of a layer list (getImage's rule), without
-    // touching the composite caches: a fresh array unless one opaque layer shows.
-    function flattenLayers(list) {
-      var visible = list.filter(function (layer) { return layer.visible && layer.opacity > 0; });
-      if (visible.length === 1 && visible[0].opacity === 1) return visible[0].image.data;
-      var data = new Uint8ClampedArray(doc.data.length);
-      blendLayers(data, visible, visible.map(function (layer) { return layer.image; }), dimensions());
-      return data;
-    }
+    // Whether two layer lists flatten to the same RGBA bytes (getImage's rule),
+    // without touching the composite caches or making full-size copies.
     function sameFlattened(before, after) {
-      var shown = function (list) { return list.filter(function (layer) { return layer.visible && layer.opacity > 0; }); }, left = shown(before), right = shown(after);
-      // The same visible images at the same opacities flatten alike (a rename, a hidden layer moved).
+      var clear = new Map();
+      function transparent(data) {
+        if (!clear.has(data)) { var empty = true; for (var i = 3; i < data.length; i += 4) if (data[i]) { empty = false; break; } clear.set(data, empty); }
+        return clear.get(data);
+      }
+      // A fully transparent layer above the bottom visible one adds nothing to the blend.
+      function blended(list) { return list.filter(function (layer) { return layer.visible && layer.opacity > 0; }).filter(function (layer, index) { return !index || !transparent(layer.image.data); }); }
+      var left = blended(before), right = blended(after);
+      // The same images at the same opacities flatten alike (a rename, a hidden or empty layer added, moved or removed).
       if (left.length === right.length && left.every(function (layer, index) { return layer.image.data === right[index].image.data && layer.opacity === right[index].opacity; })) return true;
-      var a = flattenLayers(before), b = flattenLayers(after);
-      if (a === b) return true;
-      for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      // Otherwise blend both a band of rows at a time and stop at the first
+      // difference; one opaque layer is its own flattened image.
+      var rows = Math.max(1, Math.min(doc.height, Math.floor(16384 / doc.width))), scratchA = new Uint8ClampedArray(rows * doc.width * 4), scratchB = new Uint8ClampedArray(scratchA.length);
+      var leftSources = left.map(function (layer) { return layer.image; }), rightSources = right.map(function (layer) { return layer.image; });
+      function bandOf(list, sources, scratch, band, base, length) {
+        if (list.length === 1 && list[0].opacity === 1) return sources[0].data.subarray(base, base + length);
+        blendLayers(scratch, list, sources, band, base); return scratch;
+      }
+      for (var y = 0; y < doc.height; y += rows) {
+        var band = { x: 0, y: y, width: doc.width, height: Math.min(rows, doc.height - y) }, base = y * doc.width * 4, length = band.height * doc.width * 4;
+        var a = bandOf(left, leftSources, scratchA, band, base, length), b = bandOf(right, rightSources, scratchB, band, base, length);
+        for (var i = 0; i < length; i++) if (a[i] !== b[i]) return false;
+      }
       return true;
     }
     function nextLayerId() { var id; do { id = "layer_" + (++layerSerial).toString(36); } while (layers.some(function (layer) { return layer.id === id; })); return id; }

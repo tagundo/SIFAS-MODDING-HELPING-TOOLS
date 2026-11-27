@@ -339,4 +339,69 @@ test("each new undo step says what it changed: pixels, the selection only, layer
   editor.destroy(); late.destroy();
 });
 
+test("a layer step's flattened comparison agrees with getImage before and after it over random layer stacks", () => {
+  // 300 px rows make the texture two bands of rows; differences in the last
+  // rows, the last pixel only and in transparent pixels' colour are all generated.
+  for (const [width, height] of [[300, 70], [5, 3]]) {
+    let seed = width * 7919 + height;
+    const random = () => { seed = (seed + 0x6D2B79F5) | 0; let value = Math.imul(seed ^ seed >>> 15, 1 | seed); value = value + Math.imul(value ^ value >>> 7, 61 | value) ^ value; return ((value ^ value >>> 14) >>> 0) / 4294967296; };
+    const pick = count => Math.floor(random() * count), size = width * height * 4;
+    const content = kind => {
+      const data = new Uint8ClampedArray(size);
+      if (kind === 1) for (let i = 0; i < size; i += 4) data.set([pick(256), pick(256), pick(256), 0], i);
+      if (kind === 2) for (let i = 0; i < size; i++) data[i] = pick(256);
+      if (kind === 3) data.set([pick(256), pick(256), pick(256), 1 + pick(255)], size - 4);
+      if (kind === 4) data.set([pick(256), pick(256), pick(256), 255], ((height - 1 - pick(Math.min(height, 12))) * width + pick(width)) * 4);
+      if (kind === 5) for (let i = 0; i < size; i += 4) data.set([pick(256), pick(256), pick(256), 255], i);
+      return { width, height, data };
+    };
+    let result = null;
+    const editor = create({ maxHistoryEntries: 2, onHistoryRecord: (label, change) => { if (change.layers) result = change.flattenedChanged(); } });
+    editor.setImage(content(5));
+    const counts = { changed: 0, same: 0 }, flattened = () => Buffer.from(new Uint8ClampedArray(editor.getImage().data).buffer);
+    for (let step = 0; step < 500; step++) {
+      const rows = editor.getLayers(), index = pick(rows.length), row = rows[index], before = flattened();
+      result = null;
+      switch (pick(8)) {
+        case 0: if (rows.length < 8) editor.addLayer({ name: "Random", image: content(pick(6)) }); break;
+        case 1: if (rows.length < 8) editor.duplicateLayer(row.id); break;
+        case 2: if (rows.length > 1) editor.removeLayer(row.id); break;
+        case 3: editor.moveLayer(row.id, pick(rows.length)); break;
+        case 4: editor.setLayerVisible(row.id, !row.visible); break;
+        case 5: editor.setLayerOpacity(row.id, [0, 1, .5, Math.round(random() * 100) / 100][pick(4)]); break;
+        case 6: if (index > 0) editor.mergeLayerDown(row.id); break;
+        default: editor.renameLayer(row.id, "Name " + step);
+      }
+      if (result === null) continue;
+      const truth = !before.equals(flattened());
+      assert.equal(result, truth, `${width}x${height} step ${step}`);
+      counts[truth ? "changed" : "same"]++;
+    }
+    assert.ok(counts.changed > 40 && counts.same > 40, JSON.stringify(counts));
+    editor.destroy();
+  }
+});
+
+test("the comparison never copies the whole texture, and copies nothing when only empty layers differ", () => {
+  const width = 256, height = 512, full = width * height * 4, Original = Uint8ClampedArray, steps = [];
+  const counting = new Proxy(Original, { construct(target, args) { steps[steps.length - 1].sizes.push(typeof args[0] === "number" ? args[0] : args[0].length); return new target(...args); } });
+  const editor = create({ onHistoryRecord: (label, change) => {
+    if (!change.layers) return;
+    steps.push({ label, sizes: [] }); globalThis.Uint8ClampedArray = counting;
+    try { steps[steps.length - 1].changed = change.flattenedChanged(); } finally { globalThis.Uint8ClampedArray = Original; }
+  } });
+  const base = new Original(full), paint = new Original(full);
+  for (let i = 0; i < full; i += 4) { base.set([i & 255, 40, 90, 255], i); paint.set([200, 10, 10, i % 8 ? 0 : 128], i); }
+  editor.setImage({ width, height, data: base });
+  const painted = add(editor, "Painted", { width, height, data: paint }), empty = add(editor, "Empty");
+  editor.setLayerOpacity(empty, .3); editor.moveLayer(empty, 1); editor.setLayerVisible(empty, false); editor.removeLayer(empty);
+  editor.setLayerOpacity(painted, .5); editor.setLayerVisible(painted, false);
+  assert.deepEqual(steps.map(step => [step.label, step.changed]), [["Add layer", true], ["Add layer", false], ["Layer opacity", false], ["Reorder layer", false], ["Layer visibility", false], ["Remove layer", false], ["Layer opacity", true], ["Layer visibility", true]]);
+  // An empty layer adds nothing to the blend, so those steps compare no pixels at all.
+  for (const step of steps.slice(1, 6)) assert.deepEqual(step.sizes, [], step.label);
+  // The others blend a band of rows at a time into small buffers.
+  for (const step of [steps[0], steps[6], steps[7]]) { assert.ok(step.sizes.length > 0, step.label); assert.ok(step.sizes.every(bytes => bytes < full / 4), `${step.label} ${step.sizes}`); }
+  editor.destroy();
+});
+
 process.stdout.write(JSON.stringify({ status: "PASS", cases: cases.length, names: cases }) + "\n");
