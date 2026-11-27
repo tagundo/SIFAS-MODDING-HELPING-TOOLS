@@ -257,6 +257,10 @@ def export_pack(repo_root, request, *, language="en"):
         raise ValueError(apply.NO_TARGET)
     if loaded["kind"] != "stock":
         raise ValueError(apply.CROSS_SONG)
+    # A slot that plays another slot's timeline: the pack would name this asset as its source while
+    # its timeline is the other asset's (the same refusal as plan and apply).
+    if apply._foreign_source(loaded) is not None:
+        raise ValueError(apply.SLOT_FROM_OTHER_JOB)
     apply._ours(project, apply._snapshot(project))  # structure check
     wanted, skipped = [], []
     blob = register._project_blob(project, loaded["base"], loaded["facts"])
@@ -271,7 +275,8 @@ def export_pack(repo_root, request, *, language="en"):
     target = request["target"] or {"assetId": loaded["assetId"], "stage": False}
     stage = None
     if target.get("stage", True) and target["assetId"] != loaded["assetId"]:
-        stage = apply.stage_fields(repo_root, loaded["region"], loaded["assetId"])
+        # The source's STOCK stage (what "Change the stage too" carries in apply), not its current row.
+        stage = apply._source_stage(live, repo_root, loaded["region"], loaded["assetId"])
     # The legacy layout (for the old "Replace Live Camera Timeline" tool) needs a complete stage: the
     # target slot's own when this pack does not carry the source's, and the source's stock key.
     target_stage = apply.stage_fields(repo_root, loaded["region"], target["assetId"])

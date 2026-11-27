@@ -380,8 +380,10 @@ def plan(repo_root, project, *, unbaked=(), language="en", target=None):
         return result
     if loaded["kind"] == "stock":
         result["slots"] = _slots(repo_root, loaded, (project.get("source") or {}).get("platform"), language)
+        # ``foreignSource``: the asset whose timeline this slot plays when it was put here from
+        # another slot (the panel cannot export a pack from it), else None.
         result["loaded"] = {"assetId": loaded["assetId"], "liveId": loaded["liveId"], "region": loaded["region"],
-                            "title": loaded["title"], "stage": loaded["stage"]}
+                            "title": loaded["title"], "stage": loaded["stage"], "foreignSource": _foreign_source(loaded)}
     if cross is not None:
         return _cross_plan(repo_root, project, live, loaded, cross, result, unbaked, language)
     target = loaded

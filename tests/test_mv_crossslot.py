@@ -64,7 +64,9 @@ class FakeStore:
                               for p in ("android", "ios")},
                 "revision": 1 if record else 0, "updatedAt": None, "fingerprints": {},
                 "lives": [21] if asset_id == 2101 else [22], "song": False,
-                "source": {"assetId": source, "stockKey": f"A{source}"} if source else None}
+                "source": {"assetId": source, "stockKey": f"A{source}"} if source else None,
+                **({"stage": {"current": record.get("stage"), "stock": record["stockStage"], "changed": True}}
+                   if record and record.get("stockStage") else {})}
 
     def validate_mv_timelines(self, repo_root, *, region, asset_id, timelines, originals=None):
         self.calls.append(("validate", region, asset_id, sorted(timelines)))
@@ -445,6 +447,31 @@ class ForeignSourceSlotTests(reg_tests.Case):
         cross = apply.plan(self.root, project, target={"assetId": 2201})
         self.assertIn(blocked, cross["blocked"])
         self.assertFalse([call for call in self.store.calls if call[0] == "apply"])
+        # The panel reads the loaded slot's foreign source to disable the pack export.
+        self.assertEqual((plan["loaded"]["foreignSource"], cross["loaded"]["foreignSource"]), (2201, 2201))
+
+    def test_a_pack_cannot_be_exported_from_it(self):
+        """The pack would name 3D 2101 as its source while its timeline is 2201's: Elichika would then
+        refuse it at install against 2101's true stock."""
+        written = []
+        with mock.patch.dict(sys.modules, {"mv_timeline_pack": fake_pack_module(written)}):
+            project = self.project(source={"kind": "game", "region": "gl", "platform": "android", "liveId": 21,
+                                           "assetId": 2101, "mvOnly": False, "registered": False,
+                                           "timelineKey": "X7"})
+            for target in (None, {"assetId": 2201, "stage": True}, {"assetId": 2101}):
+                request = mv_studio_pack.validate_export({"project": project, "name": "p", "target": target})
+                with self.subTest(target=target), self.assertRaisesRegex(
+                        ValueError, "^" + __import__("re").escape(apply.SLOT_FROM_OTHER_JOB) + "$"):
+                    mv_studio_pack.export_pack(self.root, request)
+            self.assertEqual(written, [])
+            self.assertEqual(list(self.library.glob("modded/**/*.sifasmv")), [])
+            # Its own slot again (restored): the export works.
+            del self.store.overrides[("gl", 2101)]
+            project["source"]["timelineKey"] = "A2101"
+            self.assertIsNone(apply.plan(self.root, project)["loaded"]["foreignSource"])
+            mv_studio_pack.export_pack(self.root, mv_studio_pack.validate_export(
+                {"project": project, "name": "p", "target": {"assetId": 2201}}))
+            self.assertEqual(written[-1]["source"], {"region": "gl", "assetId": 2101})
 
 
 # ---------------------------------------------------------------- MV timeline packs
@@ -519,6 +546,24 @@ class PackTests(reg_tests.Case):
             mv_studio_pack.staged(opened["pack"], "android")
         with self.assertRaisesRegex(ValueError, mv_studio_pack.PACK_STALE):
             mv_studio_pack.staged("../" + "0" * 61, "ios")
+
+    def test_the_pack_carries_the_source_stock_stage(self):
+        """A source slot whose stage MV Studio changed (its own timeline, another stage) exports its STOCK
+        stage, as "Change the stage too" does in apply, not the masterdata row it has now."""
+        stock = {**STAGE_2101, "live_stage_master_id": 109, "stage_effect_asset_path": "E-stock"}
+        register.store.return_value.overrides[("gl", 2101)] = {"key": "A2101", "stage": STAGE_2101, "source": None,
+                                                               "timelines": {}, "stockStage": stock}
+        project = self.project(source={"kind": "game", "region": "gl", "platform": "android", "liveId": 21,
+                                       "assetId": 2101, "mvOnly": False, "registered": False, "timelineKey": "A2101"})
+        self.assertEqual(apply.stage_fields(self.root, "gl", 2101), STAGE_2101)  # the row now
+        mv_studio_pack.export_pack(self.root, mv_studio_pack.validate_export(
+            {"project": project, "name": "p", "target": {"assetId": 2201, "stage": True}}))
+        self.assertEqual(self.written[-1]["stage"], stock)
+        # Without the stage, or for the loaded slot itself, no stage is carried.
+        for target in ({"assetId": 2201, "stage": False}, None):
+            mv_studio_pack.export_pack(self.root, mv_studio_pack.validate_export(
+                {"project": project, "name": "p", "target": target}))
+            self.assertIsNone(self.written[-1]["stage"])
 
     def test_a_pack_without_its_other_original_and_a_legacy_zip(self):
         self.remote["tl2101i"] = self.local.pop("tl2101i")
