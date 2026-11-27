@@ -82,6 +82,43 @@ def matches(material, tree, expected):
     return name(material, tree) == expected
 
 
+# The destination blend factor of each shared AS shader's pass: the material float it is bound
+# to, or its fixed UnityEngine.Rendering.BlendMode value.
+_BLEND_DESTINATIONS = {
+    "AS/General/Transparent": "_BlendDst", "AS/Coloring/Transparent": "_BlendDst", "AS/FlashLight": "_BlendDst",
+    "AS/SoftParticleBillboard": 10, "AS/Smoke": 10, "AS/MatCap/Transparent": 10,
+}
+_ONE_MINUS_SRC_ALPHA = 10
+
+
+def _loaded_destination(shader):
+    form = shader.read_typetree().get("m_ParsedForm") or {}
+    factors = set()
+    for subshader in form.get("m_SubShaders") or ():
+        for shader_pass in (subshader or {}).get("m_Passes") or ():
+            factor = (((shader_pass or {}).get("m_State") or {}).get("rtBlend0") or {}).get("destBlend") or {}
+            name = factor.get("name")
+            factors.add(factor.get("val") if name in (None, "<noninit>") else name)
+    return factors.pop() if len(factors) == 1 else None
+
+
+def alpha_blended(material, tree):
+    """Whether an AS/* material's pass blends with OneMinusSrcAlpha (Unity draws it transparent).
+
+    The factor comes from the loaded shader's pass state, else from the shared shader of that name;
+    a property-bound factor reads the material's saved float (the shader default is One)."""
+    pointer = (tree or {}).get("m_Shader") or {}
+    shader = viewer._ref(material, pointer) if isinstance(pointer, dict) and pointer.get("m_PathID") else None
+    shader_name = name(material, tree)
+    if not isinstance(shader_name, str) or not shader_name.startswith("AS/"):
+        return False
+    destination = (_loaded_destination(shader) if shader is not None and shader.type.name == "Shader"
+                   else _BLEND_DESTINATIONS.get(shader_name))
+    if isinstance(destination, str):
+        destination = viewer._properties(tree, "m_Floats").get(destination, 1)
+    return destination == _ONE_MINUS_SRC_ALPHA
+
+
 def _loaded_space(shader):
     form = shader.read_typetree().get("m_ParsedForm") or {}
     subshaders = form.get("m_SubShaders") if isinstance(form, dict) else None

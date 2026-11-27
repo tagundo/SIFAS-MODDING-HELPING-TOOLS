@@ -677,6 +677,16 @@ def _as_blend_material(obj, tree):
         return False
 
 
+def _as_alpha_blend(obj, tree):
+    """An AS/* material whose pass blends with OneMinusSrcAlpha is never drawn opaque."""
+    from .mv_studio_shader_identity import alpha_blended
+
+    try:
+        return obj is not None and alpha_blended(obj, tree)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+
+
 def _as_tint_default(scene, obj, tree):
     """ShaderLab default _TintColor of a verified AS/* shader whose tint is _TintColor; None otherwise."""
     if obj is None:
@@ -1152,7 +1162,8 @@ class _Materials:
         mode, keywords = floats.get("_Mode", 0), str(tree.get("m_ShaderKeywords", ""))
         if mode == 1 or "_ALPHATEST_ON" in keywords:
             material.update(alphaMode="MASK", alphaCutoff=min(1., max(0., float(floats.get("_Cutoff", .5)))))
-        elif mode in (2, 3) or "_ALPHABLEND_ON" in keywords or "_ALPHAPREMULTIPLY_ON" in keywords:
+        elif (mode in (2, 3) or "_ALPHABLEND_ON" in keywords or "_ALPHAPREMULTIPLY_ON" in keywords
+              or _as_alpha_blend(obj, tree)):
             material["alphaMode"] = "BLEND"
         envs = _properties(tree, "m_TexEnvs")
         main = envs.get("_MainTex") or envs.get("_BaseMap")
