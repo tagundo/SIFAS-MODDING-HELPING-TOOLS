@@ -121,7 +121,12 @@
      mute. QUALITY_CATEGORIES holds those names per root, as the export refuses them
      (mv_studio_timeline._QUALITY_CATEGORIES and MVStudioEventFields.TABLE.trackMute.qualityRoots
      carry the same lists). A sub-group's children are compiled by their own mute (GroupTrack
-     is never compiled), so only direct children count. */
+     is never compiled), so only direct children count.
+     The game also sets the mute of every eye and mouth track itself: director setup always runs
+     LiveDirector.InitializeMemberHead (0x2924d04), whose SetupFacialTrackMute (0x29250d4) sets
+     muted = IsRinaFacial XOR useRina on each MemberEyeTrack and MemberLipSyncTrack
+     (FACIAL_MUTE_CLASSES; the export lane's _FACIAL_MUTE_CLASSES and
+     MVStudioEventFields.TABLE.trackMute.facialClasses). */
   const STAGE_QUALITY = Object.freeze({
     ambient: "stage_ambient", animation: "stage_animation", coloring: "stage_coloring", control: "stage_control",
     overlayeffect: "stage_overlay_effect", flashlight: "stage_flash_light", display: "stage_display", post: "posteffect",
@@ -135,6 +140,7 @@
     GlobalEffect: Object.freeze(["baselight"]),
     MotionMisc: Object.freeze(["splitscreen"]),
   });
+  const FACIAL_MUTE_CLASSES = Object.freeze(["MemberEyeTrack", "MemberLipSyncTrack"]);
   // English names of the stage flags (mv_studio_quality._FIELDS) for a project without quality options.
   const QUALITY_LABELS = Object.freeze({
     stage_ambient: "Stage ambient lighting", stage_animation: "Stage animation", stage_coloring: "Stage coloring",
@@ -175,6 +181,15 @@
     const found = category(track);
     return !!found && Object.prototype.hasOwnProperty.call(QUALITY_CATEGORIES, found.root) &&
       QUALITY_CATEGORIES[found.root].includes(found.name);
+  }
+
+  // Why the game never plays this track's own mute, the export's order: "group" (a GroupTrack),
+  // "facial" (an eye or mouth track), "quality" (qualityMuted), or null when it does.
+  function muteRefusal(track) {
+    if (!track) return null;
+    if (isGroup(track)) return "group";
+    if (FACIAL_MUTE_CLASSES.includes(track.nativeClass)) return "facial";
+    return qualityMuted(track) ? "quality" : null;
   }
 
   function census(tracks) {
@@ -362,6 +377,6 @@
   global.MVStudioTimelineTabs = Object.freeze({
     TABS, TAB_IDS, CLASSES, KINDS, TIMING, tabOf, memberSlot, nativeGroup, valueEditable, eventValueEditable,
     census, visibleTabs, keyTarget, memberChoices, plan, fold, isGroup, renderTabs, renderChips, roving,
-    STAGE_QUALITY, QUALITY_CATEGORIES, QUALITY_LABELS, qualityOption, qualityMuted, qualityBadge,
+    STAGE_QUALITY, QUALITY_CATEGORIES, FACIAL_MUTE_CLASSES, QUALITY_LABELS, qualityOption, qualityMuted, muteRefusal, qualityBadge,
   });
 })(typeof window !== "undefined" ? window : globalThis);

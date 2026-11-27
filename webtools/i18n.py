@@ -3206,6 +3206,9 @@ _MV_EDITOR_E2_TRANSLATIONS = {
     "The game sets this track's mute from the MV quality settings when the MV starts.": (
         "이 트랙의 음소거는 MV가 시작될 때 게임이 MV 그래픽 설정에 따라 정합니다.",
         "このトラックのミュートは、MVの開始時にゲームがMVのグラフィック設定に合わせて決めます。"),
+    "The game sets the mute of eye and mouth tracks itself when the MV starts.": (
+        "눈과 입 트랙의 음소거는 MV가 시작될 때 게임이 직접 정합니다.",
+        "目と口のトラックのミュートは、MVの開始時にゲームが自分で決めます。"),
     # English names of the stage quality flags (core/mv_studio_quality._FIELDS) for a project without options.
     "Stage ambient lighting": ("무대 환경광", "ステージ環境光"),
     "Stage animation": ("무대 애니메이션", "ステージアニメーション"),

@@ -187,6 +187,15 @@ function qualityMutes() {
     'StageEffect/Expert/Splitscreen/x', 'MotionMisc/Expert/Post/x']) assert.equal(muted(label), false, label);
   assert.equal(muted('MemberEffect/Expert/MemberAmbient/Sub/x'), false, 'one group deeper');
   assert.equal(muted('CameraOffset/Expert/X/x'), false, 'another root');
+  // Every reason the game ignores a track's own mute, in the export's order.
+  assert.equal(Tabs.muteRefusal(leaf('StageEffect/Expert/Coloring')), 'group');
+  assert.equal(Tabs.muteRefusal(leaf('Member1/LipSync')), 'facial', 'the game sets eye and mouth mutes itself');
+  assert.equal(Tabs.muteRefusal(leaf('Member1/Eye')), 'facial');
+  assert.equal(Tabs.muteRefusal(leaf('Member1/Gaze')), null);
+  assert.equal(Tabs.muteRefusal(leaf('StageEffect/Expert/Coloring/LED_panel_01')), 'quality');
+  assert.equal(Tabs.muteRefusal(leaf('CameraMotion/Camera1')), null);
+  assert.equal(Tabs.qualityMuted(leaf('Member1/LipSync')), false, 'not a quality track');
+  assert.deepEqual([...Tabs.FACIAL_MUTE_CLASSES].sort(), ['MemberEyeTrack', 'MemberLipSyncTrack']);
   assert.deepEqual(Object.keys(Tabs.QUALITY_CATEGORIES).sort(), ['GlobalEffect', 'MemberEffect', 'MotionMisc', 'PropEffect', 'StageEffect']);
   assert.deepEqual([...Tabs.QUALITY_CATEGORIES.StageEffect], Object.keys(Tabs.STAGE_QUALITY).sort());
   assert.deepEqual(Object.keys(Tabs.STAGE_QUALITY).sort(), ['ambient', 'animation', 'audience', 'coloring', 'control', 'display',
@@ -223,18 +232,21 @@ function qualityMutes() {
   assert.equal(plan.rows.filter((row) => row.type === 'hint').length, 0, 'no hint once a track is edited');
 }
 
-// The mute toggle locks exactly the tracks whose mute the export refuses: Tabs' rule (a group, or
-// a direct child of a quality category) against the export lane's
+// The mute toggle locks exactly the tracks whose mute the export refuses: Tabs.muteRefusal (a
+// group, an eye or mouth track, or a direct child of a quality category) against the export lane's
 // MVStudioEventFields.trackMuteNote, in a tree that has it (after the export lane's merge). Labels:
-// the 12035 fixture, edge cases, and every stock track when MV_STUDIO_TRACKS_JSON is given.
+// the 12035 fixture, edge cases, and every stock track when MV_STUDIO_TRACKS_JSON is given. An
+// export lane from before its eye and mouth rule (no facialClasses) is compared without it.
 function exportMuteRule() {
   require('../webtools/web/static/mv-studio-event-fields.js');
   const rule = globalThis.MVStudioEventFields && globalThis.MVStudioEventFields.trackMuteNote;
   if (typeof rule !== 'function') return 'export mute rule: skipped (no trackMuteNote in this tree)';
   // The same category names as the export lane's table (no spaces, lower case).
-  const roots = globalThis.MVStudioEventFields.TABLE.trackMute.qualityRoots;
+  const table = globalThis.MVStudioEventFields.TABLE.trackMute, roots = table.qualityRoots;
   assert.deepEqual(Object.keys(roots).sort(), Object.keys(Tabs.QUALITY_CATEGORIES).sort());
   for (const [root, names] of Object.entries(roots)) assert.deepEqual([...names].sort(), [...Tabs.QUALITY_CATEGORIES[root]].sort(), root);
+  const facial = Array.isArray(table.facialClasses);
+  if (facial) assert.deepEqual([...table.facialClasses].sort(), [...Tabs.FACIAL_MUTE_CLASSES].sort());
   const tracks = [...fixture().tracks];
   for (const label of ['StageEffect/Expert/Overlay Effect/x', 'StageEffect/Expert/Overlay/x', 'StageEffect/Normal/Audience/x',
     'StageEffect/Expert/Coloring/LightShaft/x', 'PropEffect/Expert/PropAnimation/x', 'PropEffect/Expert/Prop Rim Light/x',
@@ -243,12 +255,17 @@ function exportMuteRule() {
     'MemberEffect/Expert/MemberAmbient/Sub/x', 'CameraOffset/Expert/X/x', 'Member1/LipSync']) {
     tracks.push({ id: label, label, kind: 'effects', nativeClass: 'CustomControlTrack', events: [] });
   }
+  for (const [label, nativeClass] of [['Member2/Eye', 'MemberEyeTrack'], ['Member2/MouthRina', 'MemberLipSyncTrack'],
+    ['Member2/Gaze', 'MemberGazeTrack'], ['StageEffect/Expert/Coloring/Mouth', 'MemberLipSyncTrack']]) {
+    tracks.push({ id: label, label, kind: 'mouth', nativeClass, events: [] });
+  }
   const file = process.env.MV_STUDIO_TRACKS_JSON;
   if (file && fs.existsSync(file)) for (const list of Object.values(JSON.parse(fs.readFileSync(file, 'utf8')))) tracks.push(...list);
   for (const track of tracks) {
-    assert.equal(rule(track) !== null, Tabs.isGroup(track) || Tabs.qualityMuted(track), track.label);
+    const refusal = Tabs.muteRefusal(track);
+    assert.equal(rule(track) !== null, refusal !== null && (facial || refusal !== 'facial' || Tabs.qualityMuted(track)), track.label);
   }
-  return `export mute rule: ${tracks.length} tracks agree`;
+  return `export mute rule: ${tracks.length} tracks agree${facial ? '' : ' (export lane without the eye and mouth rule)'}`;
 }
 
 // Every stock MV (MV_STUDIO_TRACKS_JSON): a badged group always has a badged direct child, and

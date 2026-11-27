@@ -820,37 +820,48 @@ async function run() {
 
     // ---- Track mute: the toggle on a leaf lane label (undoable, counted in the Edit tab) -------
     await page.locator('#mv-tab-all').click();
-    const muteLips = page.locator(`.mv-lane-label:not(.mv-lane-group) .mv-lane-mute[data-track="${lipTrack.id}"]`);
-    assert.equal(await muteLips.getAttribute('aria-pressed'), 'false');
-    assert.equal(await muteLips.getAttribute('aria-label'), '트랙 음소거');
+    const gazeTrack = original.tracks.find((track) => track.label === 'Member1/Gaze');
+    const gazeClip = page.locator(`.mv-clip[data-event="${gazeTrack.events[0].id}"]`);
+    await gazeClip.scrollIntoViewIfNeeded();
+    await gazeClip.click();
+    const muteGaze = page.locator(`.mv-lane-label:not(.mv-lane-group) .mv-lane-mute[data-track="${gazeTrack.id}"]`);
+    assert.equal(await muteGaze.getAttribute('aria-pressed'), 'false');
+    assert.equal(await muteGaze.getAttribute('aria-label'), '트랙 음소거');
     const muteBase = await state(page), editsBeforeMute = await editCount(page);
-    await muteLips.click();
+    await muteGaze.click();
     current = await state(page);
-    assert.equal(findTrack(current.project, lipTrack.id).muted, true);
-    assert.deepEqual(current.project.editor.tracks, { [lipTrack.id]: { muted: false } }, 'the original mute is kept for "edited"');
+    assert.equal(findTrack(current.project, gazeTrack.id).muted, true);
+    assert.deepEqual(current.project.editor.tracks, { [gazeTrack.id]: { muted: false } }, 'the original mute is kept for "edited"');
     assert.equal(current.history.undoLabel, 'Mute track');
     assert.equal(current.history.undo, muteBase.history.undo + 1);
-    assert.equal(await muteLips.getAttribute('aria-pressed'), 'true');
-    assert(await page.locator(`.mv-lane[data-track="${lipTrack.id}"]`).evaluate((lane) => lane.classList.contains('mv-lane-muted')));
+    assert.equal(await muteGaze.getAttribute('aria-pressed'), 'true');
+    assert(await page.locator(`.mv-lane[data-track="${gazeTrack.id}"]`).evaluate((lane) => lane.classList.contains('mv-lane-muted')));
     assert.equal(await editCount(page), editsBeforeMute + 1, 'a mute counts in the Edit tab');
     assert.equal(await page.locator('#mv-event-fields [data-mv-note=muted]').textContent(), '이 트랙은 음소거되어 미리보기에서 재생되지 않습니다.');
     await page.screenshot({ path: path.join(evidence, 'track-mute-ko.png') });
     // The Edit tab lists the muted track with the edited ones.
     await page.locator('#mv-tab-edit').click();
-    assert((await laneLabels(page)).slice(0, 2).includes('Member1/LipSync'));
+    assert((await laneLabels(page)).slice(0, 2).includes('Member1/Gaze'));
     await page.locator('#mv-tab-all').click();
     // Space on the focused toggle unmutes; the focus stays; the track is no longer edited.
-    await muteLips.focus();
+    await muteGaze.focus();
     await page.keyboard.press('Space');
-    assert.equal(findTrack((await state(page)).project, lipTrack.id).muted, false);
+    assert.equal(findTrack((await state(page)).project, gazeTrack.id).muted, false);
     assert.equal(await page.evaluate(() => document.activeElement.classList.contains('mv-lane-mute')), true);
     assert.equal(await editCount(page), editsBeforeMute);
     await page.keyboard.press('Control+z');
-    assert.equal(findTrack((await state(page)).project, lipTrack.id).muted, true);
+    assert.equal(findTrack((await state(page)).project, gazeTrack.id).muted, true);
     await page.keyboard.press('Control+z');
     current = await state(page);
-    assert.deepEqual(findTrack(current.project, lipTrack.id), findTrack(muteBase.project, lipTrack.id), 'undo takes the mute back');
+    assert.deepEqual(findTrack(current.project, gazeTrack.id), findTrack(muteBase.project, gazeTrack.id), 'undo takes the mute back');
     assert.equal(current.project.editor.tracks, undefined, 'and its record');
+    // The game sets the mute of eye and mouth tracks itself (the export lane says so in its own words).
+    const muteLips = page.locator(`.mv-lane-label:not(.mv-lane-group) .mv-lane-mute[data-track="${lipTrack.id}"]`);
+    assert.equal(await muteLips.getAttribute('aria-disabled'), 'true');
+    await muteLips.click({ force: true });
+    assert.equal(await page.locator('#mv-status').textContent(), '눈과 입 트랙의 음소거는 MV가 시작될 때 게임이 직접 정합니다.');
+    assert.equal(!!findTrack((await state(page)).project, lipTrack.id).muted, false);
+    assert.equal((await state(page)).history.undo, muteBase.history.undo, 'no history step');
     // The game sets the mute of a StageEffect category's tracks from its quality flag: the toggle explains why.
     const led = original.tracks.find((track) => track.label === 'StageEffect/Expert/Coloring/LED_panel_01');
     const ledMute = page.locator(`.mv-lane-label:not(.mv-lane-group) .mv-lane-mute[data-track="${led.id}"]`);
@@ -877,17 +888,17 @@ async function run() {
     assert(await page.locator('.mv-lane-group').count() > 0);
     assert.equal(await page.locator('.mv-lane-group .mv-lane-mute').count(), 0);
     // Where the export's own rule is loaded (MVStudioEventFields.trackMuteNote), it decides the lock,
-    // not the lanes' fallback: here a stand-in rule locks the lip-sync track and frees the LED panel.
+    // not the lanes' fallback: here a stand-in rule locks the gaze track and frees the LED panel.
     const lockNote = 'The export refuses this mute.';
     await page.evaluate((note) => {
       window.mvFieldsBefore = window.MVStudioEventFields;
       window.MVStudioEventFields = Object.freeze({ ...window.mvFieldsBefore,
-        trackMuteNote: (track) => track.nativeClass === 'GroupTrack' ? 'group' : track.label === 'Member1/LipSync' ? note : null });
+        trackMuteNote: (track) => track.nativeClass === 'GroupTrack' ? 'group' : track.label === 'Member1/Gaze' ? note : null });
     }, lockNote);
     await page.locator('#mv-tab-mouth').click();
     await page.locator('#mv-tab-all').click();
-    assert.equal(await muteLips.getAttribute('aria-disabled'), 'true', 'the loaded rule locks the lip-sync mute');
-    await muteLips.click({ force: true });
+    assert.equal(await muteGaze.getAttribute('aria-disabled'), 'true', 'the loaded rule locks the gaze mute');
+    await muteGaze.click({ force: true });
     assert.equal(await page.locator('#mv-status').textContent(), lockNote);
     assert.equal((await state(page)).history.undo, muteBase.history.undo, 'no history step');
     assert.equal(await ledMute.getAttribute('aria-disabled'), null, 'and frees the LED panel');
@@ -898,7 +909,7 @@ async function run() {
     await page.evaluate(() => { window.MVStudioEventFields = window.mvFieldsBefore; delete window.mvFieldsBefore; });
     await page.locator('#mv-tab-mouth').click();
     await page.locator('#mv-tab-all').click();
-    assert.equal(await muteLips.getAttribute('aria-disabled'), null);
+    assert.equal(await muteGaze.getAttribute('aria-disabled'), null);
     assert.equal(await ledMute.getAttribute('aria-disabled'), 'true');
 
     // ---- Drag a camera shot by one second ----------------------------------------------------
@@ -1032,8 +1043,8 @@ async function run() {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.waitForFunction(() => innerWidth === 1280);
     // A mute is carried over a costume re-import as well.
-    await page.locator('#mv-tab-mouth').click();
-    await page.locator(`.mv-lane-mute[data-track="${lipTrack.id}"]`).click();
+    await page.locator('#mv-tab-expression').click();
+    await page.locator(`.mv-lane-mute[data-track="${gazeTrack.id}"]`).click();
     await page.locator('#mv-tab-camera').click();
     const edited = (await state(page)).project;
 
@@ -1052,12 +1063,12 @@ async function run() {
     assert.equal(findEvent(current.project, lip.id).values.weight, .8, 'value edit carried over');
     assert.equal(findEvent(current.project, lip.id).label, '입 모양 A');
     assert.equal(findEvent(current.project, shot.id).start, moved.start, 'timing edit carried over');
-    assert.equal(findTrack(current.project, lipTrack.id).muted, true, 'mute carried over');
+    assert.equal(findTrack(current.project, gazeTrack.id).muted, true, 'mute carried over');
     assert.deepEqual(current.project.editor, edited.editor);
     assert.equal(current.history.undo, edited.history?.undo ?? current.history.undo);
     await page.locator('#mv-timeline-label').click();
     await page.keyboard.press('Control+z');
-    assert.equal(!!findTrack((await state(page)).project, lipTrack.id).muted, false, 'the mute is the last step');
+    assert.equal(!!findTrack((await state(page)).project, gazeTrack.id).muted, false, 'the mute is the last step');
     await page.keyboard.press('Control+z');
     assert.equal(findEvent((await state(page)).project, shot.id).start, shot.start, 'history survives the re-import');
     await page.locator('#mv-performers summary').click();

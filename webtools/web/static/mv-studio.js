@@ -1288,17 +1288,18 @@
   // Why the mute of this track cannot reach the game, or "" when it can. A track that holds a
   // mute edit can always be switched back. Where the export lane's rule is loaded
   // (MVStudioEventFields.trackMuteNote, the export's own refusals) it decides which leaf
-  // tracks are locked, so the toggle never offers a mute the export refuses; Tabs.qualityMuted
+  // tracks are locked, so the toggle never offers a mute the export refuses; Tabs.muteRefusal
   // is the same rule (tests/mv_studio_timeline_tabs_test.js compares them) and the fallback.
   function muteLock(track) {
     if (Tabs.isGroup(track)) return t("A group's mute does not reach the game: the game plays each track in it by its own mute.");
     if (editedTracks().has(track.id)) return "";
     const rule = global.MVStudioEventFields && global.MVStudioEventFields.trackMuteNote;
-    const note = typeof rule === "function" ? rule(track) : null;
-    if (typeof rule === "function" ? note === null : !Tabs.qualityMuted(track)) return "";
+    const note = typeof rule === "function" ? rule(track) : null, refusal = Tabs.muteRefusal(track);
+    if (typeof rule === "function" ? note === null : !refusal) return "";
     const option = Tabs.qualityOption(track);
     if (option) return format("The game sets this track's mute from the {option} quality setting when the MV starts.", { option: qualityName(option) });
-    return t(note && !Tabs.qualityMuted(track) ? note : "The game sets this track's mute from the MV quality settings when the MV starts.");
+    if (refusal === "facial") return t("The game sets the mute of eye and mouth tracks itself when the MV starts.");
+    return t(refusal === "quality" || !note ? "The game sets this track's mute from the MV quality settings when the MV starts." : note);
   }
 
   function toggleMute(trackId) {
