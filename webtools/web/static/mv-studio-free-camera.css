@@ -55,7 +55,9 @@
 .mv-freecam-compact .mv-freecam-range input[type=range] { display: none; }
 .mv-freecam-tight .mv-freecam-field > span:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 #mv-free-camera.mv-freecam-tight { column-gap: 6px; }
-#mv-free-camera.mv-freecam-tight select { max-width: 7em; }
+/* 7em keeps a 390 px phone's bar in one row with every view button; the stage centre label
+   (무대 중앙) needs the inline padding (the arrow keeps its own room) to show whole in it. */
+#mv-free-camera.mv-freecam-tight select { max-width: 7em; padding-inline: 4px 2px; }
 #mv-free-camera.mv-freecam-tight .mv-freecam-toggle { padding-inline: 6px; }
 @media (pointer: fine) {
   #tab-mv #mv-free-camera :is(button, select, input[type=number]) { min-height: 30px; padding-block: 3px; font-size: .76rem; }

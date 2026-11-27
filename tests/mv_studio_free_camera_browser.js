@@ -26,8 +26,9 @@
      goes (below the controls, beside them only when the toggle, the target list and every view
      button fit there, or below with the preview held taller) follows from where the host put
      the preview and its controls; a preview the open bar would mostly cover shows it folded
-     behind its Views toggle, and it folds again after a view button; holding the preview costs
-     the timeline only the height it adds.
+     behind its Views toggle, and it folds again after a view button; the compact target list
+     shows its stage centre label whole; holding the preview costs the timeline only the height
+     it adds.
 
    Real 12035 MV (skipped unless MV_FREECAM_SERVER_ROOT is an Elichika server root that imports
    GL Android 12035 with its member; no game data in Git): the four views around the member pass
@@ -223,7 +224,8 @@ const frames = (page) => page.evaluate(() => new Promise((resolve) => requestAni
 // centre of each control reaches it. The target list and the view buttons are hit where they
 // are, never after a sideways scroll; the rest of the bar may need that scroll. A folded bar
 // has only its toggle to hit. `besideNeed` is the width the bar needs to show its toggle, target
-// list and every view button as compact as it gets (a folded bar: its toggle).
+// list and every view button as compact as it gets (a folded bar: its toggle), and `stageLabel`
+// whether the target list is wide enough for its stage centre label.
 function layoutProbe() {
   const box = (element) => {
     const rect = element.getBoundingClientRect();
@@ -251,9 +253,20 @@ function layoutProbe() {
   const besideNeed = last.getBoundingClientRect().right - bar.getBoundingClientRect().left + bar.scrollLeft +
     parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth);
   bar.classList.remove(...levels);
+  let stageLabel = null;
+  if (!folded) {
+    // The list's own width for its stage centre option alone, with no cap: what shows it whole.
+    const select = document.getElementById('mv-freecam-target'), alone = select.cloneNode(false);
+    alone.removeAttribute('id');
+    alone.append(new Option(select.querySelector('option[value="stage"]').textContent, 'stage'));
+    alone.style.maxWidth = 'none';
+    select.after(alone);
+    stageLabel = { needs: alone.getBoundingClientRect().width, width: select.getBoundingClientRect().width, label: alone.options[0].text };
+    alone.remove();
+  }
   const result = { preview: box(document.querySelector('.mv-preview')), scene: box(document.getElementById('mv-scene')),
     controls: box(document.getElementById('mv-preview-controls')), bar: box(bar), barScroll: bar.scrollWidth, classes: [...bar.classList],
-    folded, toggle: toggled ? toggle.getAttribute('aria-expanded') : null, clipped, besideNeed,
+    folded, toggle: toggled ? toggle.getAttribute('aria-expanded') : null, clipped, besideNeed, stageLabel,
     rows: [...bar.children].filter((child) => child.getClientRects().length).map(box),
     hits: Object.fromEntries([...controls, ...(toggled ? [['mv-freecam-toggle', toggle]] : []), ...views]
       .map(([name, element]) => [name, hit(element)])) };
@@ -292,6 +305,7 @@ const inside = (a, b) => a.left >= b.left - .5 && a.right <= b.right + .5 && a.t
 const LAYOUTS = [
   { name: 'phone', viewport: { width: 390, height: 844 }, touch: true, squeeze: true },
   { name: 'tablet', viewport: { width: 768, height: 1024 }, touch: true },
+  { name: 'phone-412', viewport: { width: 412, height: 915 }, touch: true, squeeze: true },
   { name: 'landscape-phone', viewport: { width: 932, height: 430 }, touch: true },
   // Room beside the preview controls for the folded bar's toggle, not for the open bar's
   // target list and view buttons: opened, it goes below them and the preview is held taller.
@@ -349,10 +363,14 @@ function shortPreview(shown) {
 
 // The checks every placement of the bar meets: clear of the preview controls, inside the
 // preview, one row, the view keeps the whole preview, and every control is where a tap lands;
-// the target list and all four view buttons show whole, without a swipe.
+// the target list and all four view buttons show whole, without a swipe, and the target list
+// shows its stage centre label whole.
 function checkShown(label, shown) {
   assert.deepEqual(shown.clipped, [], `${label}: the target list and the view buttons show whole (${JSON.stringify([shown.bar, shown.classes])})`);
-  if (!shown.folded) assert.equal(Object.keys(shown.hits).filter((name) => ['front', 'back', 'left', 'right'].includes(name)).length, 4, `${label}: four view buttons`);
+  if (!shown.folded) {
+    assert.equal(Object.keys(shown.hits).filter((name) => ['front', 'back', 'left', 'right'].includes(name)).length, 4, `${label}: four view buttons`);
+    assert(shown.stageLabel.needs <= shown.stageLabel.width + .5, `${label}: the target list shows ${shown.stageLabel.label} whole (${JSON.stringify(shown.stageLabel)})`);
+  }
   assert(apart(shown.bar, shown.controls), `${label}: the bar does not cover the preview controls (${JSON.stringify([shown.bar, shown.controls])})`);
   assert(inside(shown.bar, shown.preview), `${label}: the bar stays inside the preview`);
   assert.deepEqual(shown.scene, shown.preview, `${label}: the view keeps the whole preview`);
@@ -469,7 +487,7 @@ async function layouts(browser, url) {
     assert.equal(await page.evaluate(() => document.elementFromPoint(...(({ left, top, width, height }) => [left + width / 2, top + height / 2])(
       document.getElementById('mv-camera-mode').getBoundingClientRect())) === document.getElementById('mv-camera-mode')), true, `${label}: back to the game camera`);
     assert.deepEqual(errors, []);
-    results[layout.name] = { ...placement, folded: folding, hostOverflow, timelineOverflow, besideNeed: shown.besideNeed, compact: shown.classes.filter((name) => /compact|tight/.test(name)),
+    results[layout.name] = { ...placement, folded: folding, hostOverflow, timelineOverflow, besideNeed: shown.besideNeed, stageLabel: shown.stageLabel, compact: shown.classes.filter((name) => /compact|tight/.test(name)),
       preview: [shown.preview.width, shown.preview.height], previewBefore: least, own, held, bar: [shown.bar.left - shown.preview.left, shown.bar.top - shown.preview.top, shown.bar.width, shown.bar.height] };
     await page.context().close();
   }
