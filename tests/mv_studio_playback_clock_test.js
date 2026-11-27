@@ -37,7 +37,7 @@ function rng(seed) {
 
 // A soundtrack whose media clock is read in coarse steps. Times in ms (wall), positions in s.
 function soundtrack(random, { steps = [0.02, 0.05], jitter = 0, drift = 0, latency = 0.03, seekable = true } = {}) {
-  const s = { playing: false, stalled: false, paused: true, ended: false, base: 0, anchor: 0, reported: 0, next: Infinity, seeks: 0 };
+  const s = { playing: false, stalled: false, paused: true, ended: false, base: 0, anchor: 0, reported: 0, next: Infinity, seeks: 0, seekable };
   const step = () => (steps[0] + (steps[1] - steps[0]) * random()) * 1000;
   s.truth = (t) => s.playing && !s.stalled ? s.base + Math.max(0, t - s.anchor) / 1000 * (1 + drift) : s.base;
   s.play = (position, t) => {
@@ -47,7 +47,7 @@ function soundtrack(random, { steps = [0.02, 0.05], jitter = 0, drift = 0, laten
   s.pause = (t) => { s.base = s.reported = s.truth(t); s.playing = false; s.paused = true; };
   s.seek = (position, t) => {
     s.seeks++;
-    if (!seekable) return;
+    if (!s.seekable) return;
     Object.assign(s, { base: position, anchor: t + latency * 1000, reported: position });
     s.next = t + step();
   };
@@ -319,6 +319,26 @@ const report = {};
   assert(!long.rows.some((row) => row.holding), 'the far-behind soundtrack is moved, not waited for');
   assert.equal(long.audio.seeks, 1, 'the host moved the soundtrack');
   assert(maxAbs(offsets(long.rows.filter((row) => row.k >= 330))) <= 0.030, 'after the realignment: within 30 ms');
+
+  // Two long stalls in one playback: the soundtrack followed the first realignment, so the
+  // second long stall is realigned as well.
+  const stop = (audio, clock, t) => audio.stall(t), go = (audio, clock, t) => audio.resume(t);
+  const twice = run({ seconds: 14, events: { 120: stop, 300: go, 540: stop, 720: go } });
+  monotonic(twice.rows, 'two long stalls');
+  assert.equal(twice.state.realigns, 2, 'two long stalls: two realignments');
+  assert.equal(twice.audio.seeks, 2, 'two long stalls: the host moved the soundtrack twice');
+  assert.equal(twice.state.ignored, false, 'two long stalls: the soundtrack is still used');
+  assert(twice.rows.filter((row) => row.k >= 400 && row.k < 540).every((row) => row.mode === 'sync'), 'in sync between the stalls');
+  assert(maxAbs(offsets(twice.rows.filter((row) => row.k >= 400 && row.k < 540))) <= 0.030, 'between the stalls: within 30 ms');
+  assert(twice.rows.slice(-60).every((row) => row.mode === 'sync'), 'two long stalls: following the soundtrack at the end');
+  assert(maxAbs(offsets(twice.rows.filter((row) => row.k >= 760))) <= 0.030, 'after the second stall: within 30 ms');
+  // A soundtrack that followed the first realignment but not the second is ignored.
+  const second = run({ seconds: 14, events: { 120: stop, 300: go, 540: (audio, clock, t) => { audio.seekable = false; audio.stall(t); },
+    720: go } });
+  monotonic(second.rows, 'second realignment not followed');
+  assert.equal(second.state.realigns, 2);
+  assert.equal(second.state.ignored, true, 'the soundtrack that did not follow the second realignment is ignored');
+  assert(second.rows.slice(-60).every((row) => row.mode === 'free'), 'frames only after it');
 
   // A soundtrack that does not follow the realignment is ignored until the next start or seek.
   const stuck = run({ seconds: 7, audio: { seekable: false }, events: { 120: (audio, clock, t) => audio.stall(t), 300: (audio, clock, t) => audio.resume(t) } });

@@ -14,7 +14,8 @@
    - an error beyond `snap` that `confirm` fresh readings agree on is corrected at once:
      forward by moving to the soundtrack's time, backward by holding the picture until the
      soundtrack catches up, or, beyond `realign`, by asking the host to move the soundtrack
-     to the picture (once per start or seek; a soundtrack that still lags is then ignored).
+     to the picture (again only once the soundtrack has followed: one that still lags after
+     a realignment is ignored until the next start or seek).
      A reading that falls behind the soundtrack's course is taken for a late one and used
      only when `confirm` + 1 readings in a row agree (it still shows that the soundtrack's
      clock is running, so it does not count toward a stall);
@@ -105,6 +106,9 @@
       rate = 1;
       error = 0;
       outliers = outlierSign = 0;
+      // A soundtrack no further behind than `realign` followed the last realignment (or never
+      // needed one): a later lag, after another long stall, may be realigned again.
+      if (offset >= -o.realign) realigned = false;
       if (offset >= 0) {
         if (offset > o.deadZone) counts.snaps++;
         time = reading;
@@ -118,7 +122,8 @@
 
     function realignTo(now) {
       if (realigned) {
-        // The soundtrack did not follow the last realignment: frames only until the next seek.
+        // The soundtrack did not follow the last realignment: frames only until the next start
+        // or seek.
         ignored = true;
         mode = "free";
         return result();
