@@ -18,9 +18,12 @@ exec). This module only adapts it to MV Studio:
 """
 import hashlib
 import json
+import lzma
 from pathlib import Path
 import re
 import time
+import zipfile
+import zlib
 
 from . import game_models, mv_studio, mv_studio_register as register
 
@@ -88,11 +91,19 @@ def _normalized(result, legacy):
     return {"manifest": manifest, "platforms": files, "legacy": legacy}
 
 
+# What a damaged compressed entry raises from a reader that does not turn it into its own ValueError
+# (an Elichika reader before that fix): the pack-open route then answers "not a pack", not a server error.
+_DAMAGED = (zlib.error, lzma.LZMAError, EOFError, zipfile.BadZipFile, NotImplementedError, OSError)
+
+
 def _call(function, path, data):
     try:
-        return function(data)
-    except TypeError:
-        return function(path)
+        try:
+            return function(data)
+        except TypeError:
+            return function(path)
+    except _DAMAGED as error:
+        raise ValueError(NOT_PACK) from error
 
 
 def _limit(pack):

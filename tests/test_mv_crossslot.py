@@ -663,8 +663,8 @@ class PackTests(reg_tests.Case):
 
 
 @NEEDS_STORE
-class RealPackConversionTests(reg_tests.Case):
-    """The platform tool rewrites a pack with Elichika's own mv_timeline_pack (reader and writer)."""
+class RealPackModuleTests(reg_tests.Case):
+    """MV Studio's pack code and the platform tool with Elichika's own mv_timeline_pack (reader and writer)."""
 
     def setUp(self):
         super().setUp()
@@ -719,6 +719,38 @@ class RealPackConversionTests(reg_tests.Case):
             text = archive.read("livetimeline.txt").decode()
         self.assertIn("timeline = 'A2101'", text)
         self.assertIn("live_stage_master_id = 102", text)
+
+    def test_a_damaged_compressed_entry_is_not_a_pack(self):
+        """A corrupt deflate stream or LZMA entry is a refusal (ValueError, HTTP 400), whether the reader
+        names it itself or lets zlib.error / LZMAError out."""
+        import io
+        import struct
+        import zipfile
+        data = self.pack.write_pack(name="p", song={"liveId": 21, "title": "Base song"},
+                                    source={"region": "gl", "assetId": 2101}, target_asset_id=2201,
+                                    timelines={"android": self.local["tl2101"]})
+        for method in (zipfile.ZIP_DEFLATED, zipfile.ZIP_LZMA):
+            source, output = zipfile.ZipFile(io.BytesIO(data)), io.BytesIO()
+            with source, zipfile.ZipFile(output, "w") as archive:
+                for info in source.infolist():
+                    archive.writestr(info.filename, source.read(info),
+                                     compress_type=method if info.filename == "manifest.json" else zipfile.ZIP_DEFLATED)
+            raw = bytearray(output.getvalue())
+            info = zipfile.ZipFile(io.BytesIO(bytes(raw))).getinfo("manifest.json")
+            name, extra = struct.unpack("<HH", raw[info.header_offset + 26:info.header_offset + 30])
+            start = info.header_offset + 30 + name + extra
+            if method == zipfile.ZIP_DEFLATED:
+                raw[start] = 0x07  # a final block of the reserved type: "invalid block type"
+            else:
+                for index in range(start + info.compress_size // 2, start + info.compress_size // 2 + 8):
+                    raw[index] ^= 0xFF
+            path = self.library / "modded" / f"damaged-{method}.sifasmv"
+            path.write_bytes(bytes(raw))
+            with self.subTest(method=method), self.assertRaises(ValueError) as caught:
+                mv_studio_pack.read(path)
+            self.assertIn(str(caught.exception), (mv_studio_pack.NOT_PACK, self.pack.INVALID))
+            with self.subTest(method=method, route="open"), self.assertRaises(ValueError):
+                mv_studio_pack.open_pack(self.root, str(path))
 
 
 if __name__ == "__main__":
