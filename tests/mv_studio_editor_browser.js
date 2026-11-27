@@ -1133,7 +1133,9 @@ async function run() {
     assert.equal(await page.locator('#mv-event-fields [data-mv-readonly=preExtrapolationMode]').textContent(), '없음');
     assert.equal(await page.locator('#mv-event-fields [data-mv-readonly=postExtrapolationMode]').textContent(), '정지');
     assert.equal(await page.locator('#mv-event-fields [data-mv-field=easeIn]').count(), 1, 'blending fields stay editable');
-    assert.equal(await page.locator('#mv-event-fields [data-mv-note=caps]').textContent(), '이 클립 종류의 읽기 전용 시간 항목은 게임에서 쓰이지 않습니다.');
+    // The note names the fields the game does not use; the flash lights' blends are not among them.
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=caps]').textContent(),
+      '이 클립 종류에서 게임이 쓰지 않는 시간 항목: 클립 앞뒤 · 클립 오프셋 · 재생 속도.');
     assert.deepEqual(await page.locator('#mv-event-fields [data-mv-restore]').evaluateAll((buttons) => buttons.map((item) => item.dataset.mvRestore)),
       ['postExtrapolationMode'], 'only the edited read-only field can be put back');
     await page.screenshot({ path: path.join(evidence, 'timing-fields-ko.png') });

@@ -589,6 +589,9 @@
   }
 
   const EXTRAPOLATION_LABELS = ["None", "Hold", "Loop", "Ping-pong", "Continue"];
+  // ClipCaps groups (MVStudioTimelineInteract.TIMING_CAPS) as the caps note names them.
+  const CAP_FIELDS = [["extrapolation", "Before and after the clip"], ["clipIn", "Clip offset"], ["timeScale", "Playback speed"],
+    ["blending", "Ease and blend"]];
 
   // write(segments, next) records the edit; segments is the key path under event.values.
   // modes: the extrapolation modes the clip offers (all five when not given).
@@ -819,10 +822,13 @@
     }
     // Once, below the values: why some timing fields are read only.
     if (capsNoted) {
-      const note = !caps.camera ? "The game does not use the read-only timing fields of this clip type."
-        : caps.modes.length < EXTRAPOLATION_LABELS.length ? "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows."
-          : "Camera shots keep their offset and speed: the preview plays the samples read from the shot.";
-      box.append(make("p", t(note), { class: "mv-field-note", "data-mv-note": "caps" }));
+      // A game clip names the timing fields its type does not use (its blends may be read only
+      // for another reason: the overlap note above).
+      const unused = CAP_FIELDS.filter(([cap]) => caps[cap] === false).map(([, name]) => t(name)).join(" · ");
+      const note = !caps.camera ? format("The game does not use these timing fields of this clip type: {fields}.", { fields: unused })
+        : t(caps.modes.length < EXTRAPOLATION_LABELS.length ? "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows."
+          : "Camera shots keep their offset and speed: the preview plays the samples read from the shot.");
+      box.append(make("p", note, { class: "mv-field-note", "data-mv-note": "caps" }));
     }
     for (const element of callPlugins("eventFooter", { track, event })) if (element) box.append(element);
     restoreFocus(box, focus);

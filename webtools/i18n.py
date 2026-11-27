@@ -3170,8 +3170,12 @@ for _source, (_korean, _japanese) in _MV_EDITOR_A_TRANSLATIONS.items():
 _MV_EDITOR_E2_TRANSLATIONS = {
     "Set by the overlap with the next or previous clip": (
         "앞뒤 클립과 겹치는 길이로 정해집니다", "前後のクリップと重なる長さで決まります"),
-    "The game does not use the read-only timing fields of this clip type.": (
-        "이 클립 종류의 읽기 전용 시간 항목은 게임에서 쓰이지 않습니다.", "このクリップの種類の読み取り専用の時間項目は、ゲームでは使われません。"),
+    "The game does not use these timing fields of this clip type: {fields}.": (
+        "이 클립 종류에서 게임이 쓰지 않는 시간 항목: {fields}.", "このクリップの種類でゲームが使わない時間項目: {fields}。"),
+    "Before and after the clip": ("클립 앞뒤", "クリップの前後"),
+    "Clip offset": ("클립 오프셋", "クリップオフセット"),
+    "Playback speed": ("재생 속도", "再生速度"),
+    "Ease and blend": ("이즈와 블렌드", "イーズとブレンド"),
     "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows.": (
         "카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.",
         "カメラショットはオフセットと速度を変えられず、プレビューに出る「なし」と「保持」だけを選べます。"),
