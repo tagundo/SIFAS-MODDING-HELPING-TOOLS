@@ -545,6 +545,10 @@ class StageCubemapTests(unittest.TestCase):
                                      {"_StencilComp": 8, "_StencilPassOp": 2, "_StencilRef": 2, "_StencilZFailOp": 0})
         self.assertEqual(writer["stencil"], {"ref": 2, "comp": 8, "pass": 2, "zfail": 0})
         self.assertNotIn("blend", writer)
+        # CompareFunction 0 (Disabled) turns the stencil off whatever its operations say.
+        disabled = self.stage_material(off + "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA",
+                                       {"_StencilComp": 0, "_StencilPassOp": 2, "_StencilRef": 2, "_StencilZFailOp": 2})
+        self.assertNotIn("stencil", disabled)
         # Opaque defaults keep the descriptor free of pass-state fields.
         plain = self.stage_material(off + "_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA _EMISSION _ZWRITEPARAM_ON",
                                     {"_BlendMode": 0, "_SrcBlend": 1, "_DstBlend": 0, "_ZWrite": 1, "_StencilComp": 8})
@@ -731,6 +735,17 @@ class StagePassQueueTests(unittest.TestCase):
             descriptor = {"shader": kind, "queue": 2000}
             self.assertEqual(stage.pass_queue(descriptor), 2000, "the opaque sort still reads it")
             self.assertEqual(descriptor, {"shader": kind}, kind)
+
+
+class StageSkinnedMotionTests(unittest.TestCase):
+    def test_skinned_stage_motion_draws_general_and_cutout_materials(self):
+        # A TransparentCutout skinned renderer under a stage-motion binding is posed by its clip
+        # like an AS/General/Opaque one; the other kinds stay on their own paths.
+        floats = {"_CullMode": 0, "_Cutoff": .5, "_ZTestMode": 4, "_ZWriteParam": 1, "_StencilComp": 8,
+                  "_StencilPassOp": 0, "_VERTEX_COLOR": 0, "_SATURATE": 0}
+        _, _, cutout = StageCubemapTests.cutout_material("", floats)
+        self.assertEqual(cutout["shader"], "cutout")
+        self.assertEqual(stage.SKINNED_MOTION_KINDS, {"general", cutout["shader"]})
 
 
 class ActualStageFloorTests(unittest.TestCase):

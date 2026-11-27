@@ -49,6 +49,11 @@ _SHADER_QUEUES = {"stage": 2000, "solid": 2000, "general": 2000, "blend": 2000, 
 QUEUED_PASS_STATE = frozenset({"stage", "cutout", "coloring"})
 
 
+# The kinds a skinned stage-motion renderer (one material) draws natively: the motion
+# clip poses its skin like an AS/General/Opaque one, alpha-tested or not.
+SKINNED_MOTION_KINDS = frozenset({"general", "cutout"})
+
+
 def pass_queue(descriptor):
     """The descriptor's render queue (the opaque sort reads it for every kind);
     only the QUEUED_PASS_STATE kinds keep it in the exported descriptor."""

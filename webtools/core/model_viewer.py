@@ -1682,7 +1682,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             stage_metadata[identity] = mv_studio_stage_materials.read_material(
                                 scene, candidate, ambient_materials, single_ambient)
                         descriptor = stage_metadata[identity]
-                        if descriptor and descriptor["shader"] in ("general", "cutout"):
+                        if descriptor and descriptor["shader"] in mv_studio_stage_materials.SKINNED_MOTION_KINDS:
                             stage_opaque = descriptor
                 if stage_beam is not None or stage_opaque is not None or stage_transparent is not None:
                     stage_motion = binding

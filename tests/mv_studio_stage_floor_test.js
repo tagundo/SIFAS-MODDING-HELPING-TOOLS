@@ -35,6 +35,9 @@ async function passStateTest() {
   // 10022/3 bg0007_04_plantsA_tra_mt and 11009/3 bg0010_01_stageA_add_ref_mt: queue 3000.
   const plants = surface(root, stageMeta({blend: [5, 10], depthWrite: false, queue: 3000, alphaSource: "multiply"}));
   const additive = surface(root, stageMeta({blend: [5, 1], depthWrite: false, queue: 3000, alphaSource: "vertex"}));
+  // Unity's opaque queues end at 2500 (GeometryLast); 2501 is the first transparent queue.
+  const lastOpaque = surface(root, stageMeta({blend: [5, 10], depthWrite: false, queue: 2500}));
+  const firstTransparent = surface(root, stageMeta({blend: [5, 10], depthWrite: false, queue: 2501}));
   // 12021/3 bg0025_01_stageC_prj_mt: Comp Always, Pass Replace, Ref 2.
   const writer = surface(root, stageMeta({stencil: {ref: 2, comp: 8, pass: 2, zfail: 0}}));
   const tester = surface(root, stageMeta({stencil: {ref: 3, comp: 3, pass: 0, zfail: 7}}));
@@ -60,6 +63,8 @@ async function passStateTest() {
     "queue 2000 blends inside the opaque pass");
 
   assert.deepEqual([plants.material.transparent, plants.renderOrder, plants.material.defines.STAGE_ALPHA], [true, 3000, 2]);
+  assert.deepEqual([lastOpaque.material.transparent, lastOpaque.renderOrder], [false, 7], "queue 2500 stays in the opaque pass");
+  assert.deepEqual([firstTransparent.material.transparent, firstTransparent.renderOrder], [true, 2501]);
   assert.deepEqual([additive.material.blendSrc, additive.material.blendDst, additive.material.transparent,
     additive.renderOrder, additive.material.defines.STAGE_ALPHA], [T.SrcAlphaFactor, T.OneFactor, true, 3000, 0]);
 
