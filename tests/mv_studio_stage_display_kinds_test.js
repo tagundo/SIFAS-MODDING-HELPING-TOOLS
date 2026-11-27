@@ -59,6 +59,15 @@ async function kinds() {
   const project = { tracks: [track], quality: { values: { stage_display: true } } };
   const [logoMesh] = node.children;
 
+  // Every pass's program exists before the first update, on the screen whose geometry draws it,
+  // so the scene's warm-up links them before playback (one per role, kind and _SATURATE_ON).
+  const programs = controller.programs();
+  assert.ok(programs.every(({ node: owner }) => owner === node));
+  assert.deepEqual(programs.map(({ material }) => [material.name.split(" ").at(-1), Object.keys(material.defines).sort().join("+")]),
+    [["background", ""], ["background", "ADDITIVE"], ["logo", "TRANSPARENT"], ["background", "WAVE"],
+      ["background", "SATURATE+TRANSPARENT"], ["logo", ""]]);
+  assert.equal(node.material, original, "nothing is shown before the first update");
+
   controller.update(.5, project);
   let material = node.material;
   assert.equal(material.defines.ADDITIVE, 1);

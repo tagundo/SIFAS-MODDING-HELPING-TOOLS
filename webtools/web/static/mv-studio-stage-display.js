@@ -275,6 +275,15 @@
         screen.logo.name = "Native stage display logo";
         screen.logo.visible = false;
         screen.node.add(screen.logo);
+        // Every program a pass may switch to exists from the start, in that pass's render state,
+        // so a warm-up can link them before playback (programs()).
+        const passes = [screen.initial, ...screen.variants];
+        if (screen.fallback && !screen.fallback.unsupported) passes.push({ background: screen.fallback, logo: null });
+        for (const pass of passes) {
+          if (!pass || pass.unsupported || !pass.background) continue;
+          setPass({}, program(screen, pass.background, false), pass.background, null, 0);
+          if (pass.logo) setPass({}, program(screen, pass.logo, true), pass.logo, null, 0);
+        }
       }
     } catch (error) {
       dispose();
@@ -307,6 +316,10 @@
     let source, ordered = screens;
     return {
       invalidate() { source = null; },
+      // The screen programs with the mesh that draws them (their geometry decides the program).
+      programs() {
+        return screens.flatMap((screen) => [...screen.programs.values()].map((material) => ({ node: screen.node, material })));
+      },
       update(time, project, clock = null) {
         if (source !== project) {
           const tracks = project?.tracks || [];

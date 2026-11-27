@@ -799,6 +799,18 @@
     // load; whatever was not prepared is prepared at its first draw, as before.
     function warmScene() {
       if (disposed || typeof renderer.compile !== "function" || renderer.getContext?.().isContextLost?.()) return;
+      // A material a record swaps in later (a stage display's program of another variant) joins
+      // the scene for this warm-up only, on a hidden stand-in that shares its mesh's geometry.
+      const standIns = [];
+      for (const record of records) {
+        for (const { node, material } of record.stageDisplay?.programs?.() || []) {
+          if (node.material === material) continue;
+          const standIn = new T.Mesh(node.geometry, material);
+          standIn.visible = false;
+          node.add(standIn);
+          standIns.push(standIn);
+        }
+      }
       try {
         renderer.compile(scene, liveCamera);
         const textures = new Set();
@@ -819,6 +831,8 @@
       } catch (error) {
         global.console?.warn?.(error);
         options?.onWarning?.("The 3D preview could not prepare its materials before playback. They are prepared when first shown.");
+      } finally {
+        for (const standIn of standIns) standIn.parent?.remove(standIn);
       }
     }
 

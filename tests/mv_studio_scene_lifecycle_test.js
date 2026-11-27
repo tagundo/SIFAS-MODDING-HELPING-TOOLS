@@ -155,6 +155,7 @@ function fixture(visible = true, options = {}) {
       sample: () => null,
     };
   }
+  if (options.stageDisplay) window.MVStudioStageDisplay = options.stageDisplay;
   if (options.screenFade) {
     window.MVStudioScreenFade = { create: () => ({ draw(state) { fades.push(state); }, dispose() {} }),
       state: (time, end) => ({ time, end }) };
@@ -1089,6 +1090,29 @@ async function checkWarmScene() {
   assert.equal(failing.frames.length, drawn + 1, 'the loaded scene still draws');
   assert.deepEqual(failing.frames.at(-1), ['model-77', 'outline-77']);
   failing.app.dispose();
+
+  // A stage display creates every variant's program at load; the ones its screen does not show
+  // yet join this compile on hidden stand-ins of the screen (same geometry), removed afterwards.
+  const screens = [], seen = [];
+  const later = [new THREE.ShaderMaterial(), new THREE.ShaderMaterial()];
+  const stageDisplay = { async apply(T, root) {
+    const node = root.children.find((child) => child.isMesh);
+    const shown = node.material;
+    screens.push(node);
+    return { programs: () => [shown, ...later].map((material) => ({ node, material })),
+      update() {}, invalidate() {}, dispose() {} };
+  } };
+  const display = fixture(true, { stageDisplay });
+  display.renderer.compile = (scene) => scene.traverse((node) => {
+    if (node.material) seen.push([node.material, node.visible, node.geometry === screens[0].geometry]);
+  });
+  await display.app.load({ ...project(78), stage: { glb: address(79) } });
+  assert.equal(screens.length, 1);
+  assert.deepEqual(seen.filter(([material]) => later.includes(material)),
+    later.map((material) => [material, false, true]), 'each later program on a hidden stand-in of its screen');
+  assert.equal(seen.filter(([material]) => material === screens[0].material).length, 1, 'the shown one only on the screen');
+  assert.equal(screens[0].children.filter((child) => later.includes(child.material)).length, 0, 'stand-ins removed');
+  display.app.dispose();
 }
 
 (async () => {
