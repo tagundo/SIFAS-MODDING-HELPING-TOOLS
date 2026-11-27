@@ -175,7 +175,12 @@ function qualityMutes() {
   assert.equal(Tabs.qualityOption({ label: 'StageEffect/Expert/Coloring/LightShaft/Live Coloring Track', kind: 'display' }), null,
     'a track in a sub-group keeps its own mute (12023)');
   assert.equal(Tabs.qualityOption({ label: 'StageEffect/Expert/Overlay/x', kind: 'effects' }), null, 'an unknown category');
-  assert.equal(Tabs.qualityMuted({ label: 'PropEffect/Expert/PropAnimation/x', kind: 'props' }), false);
+  // Every category of the other quality roots (their names were not read from the client).
+  assert.equal(Tabs.qualityMuted({ label: 'PropEffect/Expert/PropAnimation/x', kind: 'props' }), true);
+  assert.equal(Tabs.qualityMuted({ label: 'MotionMisc/Expert/SplitScreen/x', kind: 'camera' }), true);
+  assert.equal(Tabs.qualityMuted({ label: 'GlobalEffect/Expert/BaseLight/BaseLight', kind: 'lighting' }), true);
+  assert.equal(Tabs.qualityMuted({ label: 'MemberEffect/Expert/MemberAmbient/Sub/x', kind: 'lighting' }), false, 'one group deeper');
+  assert.equal(Tabs.qualityMuted({ label: 'CameraOffset/Expert/X/x', kind: 'camera' }), false, 'another root');
   assert.deepEqual(Object.keys(Tabs.STAGE_QUALITY).sort(), ['ambient', 'animation', 'audience', 'coloring', 'control', 'display',
     'emissive', 'flashlight', 'overlayeffect', 'post']);
   assert(Object.values(Tabs.STAGE_QUALITY).every((key) => Tabs.QUALITY_LABELS[key]));

@@ -114,22 +114,18 @@
      ApplyMuteToTrack (0x20f30e8) calls set_muted(!flag) on every direct child (skipping
      only the mute of an ActivationTrack). A stored mute of such a track therefore never
      plays. Categories are compared after NormalizeTrackName (spaces removed, lower case);
-     the names and flags are mv_studio_stage_motion._STAGE_QUALITY. Two sibling methods
-     (0x20f3164, 0x20f331c) call the same MuteTracks with 4 and 3 categories of other
-     groups; their names were not read from the client. The stock MemberEffect groups have
-     exactly the 4 categories below; of the PropEffect ones, ambient and rim light are
-     taken as two of the 3 (the method reads two adjacent flags, as prop_ambient and
-     prop_rim_light are). A sub-group's children are compiled by their own mute
-     (GroupTrack is never compiled), so only direct children count. */
+     the names and flags are mv_studio_stage_motion._STAGE_QUALITY. The director setup runs
+     four more ApplyLiveQualityTo* methods on the same MuteTracks (MemberEffect 0x20f3164,
+     PropEffect 0x20f331c, and two of one key each); their category names were not read,
+     so every category under those roots counts, as the export refuses them
+     (mv_studio_timeline.quality_category). A sub-group's children are compiled by their
+     own mute (GroupTrack is never compiled), so only direct children count. */
   const STAGE_QUALITY = Object.freeze({
     ambient: "stage_ambient", animation: "stage_animation", coloring: "stage_coloring", control: "stage_control",
     overlayeffect: "stage_overlay_effect", flashlight: "stage_flash_light", display: "stage_display", post: "posteffect",
     emissive: "stage_emissive", audience: "stage_audience",
   });
-  const QUALITY_GROUPS = Object.freeze({
-    MemberEffect: Object.freeze(["memberambient", "memberrimlight", "memberspotlightshaft", "memberspotlightarea"]),
-    PropEffect: Object.freeze(["propambient", "proprimlight"]),
-  });
+  const QUALITY_ROOTS = Object.freeze(["MemberEffect", "PropEffect", "GlobalEffect", "MotionMisc"]);
   // English names of the stage flags (mv_studio_quality._FIELDS) for a project without quality options.
   const QUALITY_LABELS = Object.freeze({
     stage_ambient: "Stage ambient lighting", stage_animation: "Stage animation", stage_coloring: "Stage coloring",
@@ -164,7 +160,7 @@
     if (!track || isGroup(track)) return false;
     if (qualityOption(track)) return true;
     const found = category(track);
-    return !!found && Object.prototype.hasOwnProperty.call(QUALITY_GROUPS, found.root) && QUALITY_GROUPS[found.root].includes(found.name);
+    return !!found && QUALITY_ROOTS.includes(found.root);
   }
 
   function census(tracks) {
