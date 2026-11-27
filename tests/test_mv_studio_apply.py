@@ -396,6 +396,20 @@ class ApplyEditsTests(ApplyCase):
         for platform in ("android", "ios"):
             self.assertEqual(tracks_of(self.served(platform)), expected)
 
+    def test_a_mute_applied_to_one_platform_still_waits_for_the_other(self):
+        """A mute-only project applied to Android alone: iOS still needs the mute, so the plan has an
+        edit to apply ("shown" counts track mutes, not only clips)."""
+        ios = self.local.pop("tl2101i")
+        project = self.imported()
+        project["tracks"][0]["muted"] = True
+        job, _ = self.run_apply(project, "edits", platforms=("android",))
+        project["source"]["applied"] = self.result(job)["applied"]
+        self.local["tl2101i"] = ios
+        plan = self.plan(project)
+        self.assertEqual(plan["edits"]["pending"], {"android": 0, "ios": 1})
+        self.assertFalse(plan["edits"]["unchanged"])
+        self.assertNotIn({"message": apply.NO_EDITS}, plan["edits"]["blocked"])
+
     def test_an_unmanaged_server_asks_for_a_restart(self):
         project = self.edited(self.imported())
         job, _ = self.run_apply(project, "edits", managed=False)
