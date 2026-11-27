@@ -17,6 +17,10 @@
   "use strict";
 
   // The table is JSON (tests/test_mv_studio_editable_values.py reads it):
+  //   trackMute: which track mutes reach the game (trackMuteNote; the export's own rule is
+  //            mv_studio_timeline.track_mute_refusal): the notes, and per quality root the
+  //            category names whose direct child tracks the game's quality settings switch
+  //            (null: every category);
   //   sets:    named option lists [[value, English label]];
   //   labels:  English label per value key (a descriptor's "label" overrides it);
   //   classes: playable class → value key → { control, ... }.
@@ -28,6 +32,17 @@
   //   (colour, colour source, member per entry). badge "not-previewed": the
   //   value is exported but the 3D preview does not show it.
   const TABLE = /* descriptors:begin */ {
+    "trackMute": {
+      "notes": {
+        "group": "A group track's mute does not reach the game. Mute the tracks inside it.",
+        "quality": "The game's quality settings turn this track on and off, so its mute does not reach the game."
+      },
+      "qualityRoots": {
+        "StageEffect": ["ambient", "animation", "audience", "coloring", "control", "display", "emissive", "flashlight",
+                        "overlayeffect", "post"],
+        "MemberEffect": null, "PropEffect": null, "GlobalEffect": null, "MotionMisc": null
+      }
+    },
     "sets": {
       "colorSource": [[0, "Custom colour"], [1, "Member colour"], [2, "Original member colour"]],
       "kernelSize": [[0, "Small"], [1, "Medium"], [2, "Large"], [3, "Very large"]],
@@ -402,6 +417,20 @@
     return options;
   }
 
+  // The English note (for ctx.t) on why a track's mute does not reach the game, or null when it does:
+  // a GroupTrack, or a track directly inside a quality category group
+  // (<root>/<difficulty>/<category>/<track>), whose mute the game's quality settings decide.
+  function trackMuteNote(track) {
+    const rule = TABLE.trackMute;
+    if (!isObject(track) || track.nativeClass === "GroupTrack") return rule.notes.group;
+    const parts = typeof track.label === "string" ? track.label.split("/") : [];
+    if (parts.length === 4 && own(rule.qualityRoots, parts[0])) {
+      const names = rule.qualityRoots[parts[0]], category = parts[2].replace(/ /g, "").toLowerCase();
+      if (names === null || names.includes(category)) return rule.notes.quality;
+    }
+    return null;
+  }
+
   // ---- DOM ---------------------------------------------------------------------------
 
   function labelOf(key, spec) {
@@ -701,6 +730,6 @@
 
   const plugin = { id: "event-fields", order: 10, valueControl, eventFooter };
   (global.MVStudioPlugins ||= []).push(plugin);
-  global.MVStudioEventFields = Object.freeze({ TABLE, plugin, descriptorFor, identityKey, colorParts, pickColor, scaleColor,
+  global.MVStudioEventFields = Object.freeze({ TABLE, plugin, descriptorFor, identityKey, trackMuteNote, colorParts, pickColor, scaleColor,
     observedValues, enumOptions, isColor, vectorAxes });
 })(typeof window !== "undefined" ? window : globalThis);

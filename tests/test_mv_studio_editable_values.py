@@ -186,6 +186,12 @@ class WhitelistTests(unittest.TestCase):
         # An unchanged entry keeps its stock value (slot 0 here) as it is.
         self.assertEqual(palette["memberColors"][2]["memberPosition"], 0)
 
+    def test_the_track_mute_note_data_is_the_export_rule(self):
+        rule = descriptors()["trackMute"]
+        self.assertEqual(rule["notes"], {"group": studio.GROUP_MUTE, "quality": studio.QUALITY_MUTE})
+        self.assertEqual({root: None if names is None else set(names) for root, names in rule["qualityRoots"].items()},
+                         {root: None if names is None else set(names) for root, names in studio._QUALITY_CATEGORIES.items()})
+
     def test_colour_source_classes_are_the_ones_with_a_member_colour_preview(self):
         self.assertEqual(studio._COLOR_SOURCE_CLASSES, {
             "LiveMemberAmbientClip", "LiveStageAmbientClip", "LiveStageSingleAmbientClip", "LiveStageEmissiveClip",

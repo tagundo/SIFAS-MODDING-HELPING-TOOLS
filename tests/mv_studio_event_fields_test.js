@@ -311,6 +311,11 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
       out.paletteValue = JSON.parse(JSON.stringify(find('crowd:0').event.values.memberColors));
       out.paletteSteps = history.size().undo - paletteBefore;
       out.swing = [...control('crowd:0', 'swingMode').querySelectorAll('option')].map((option) => option.textContent);
+      // Which track mutes reach the game (the export's rule, for the timeline's mute toggle).
+      out.mute = [{ nativeClass: 'GroupTrack', label: 'StageEffect' }, { nativeClass: 'LiveColoringTrack', label: 'StageEffect/Expert/Coloring/LED' },
+        { nativeClass: 'CustomControlTrack', label: 'StageEffect/Expert/Flash Light/F' }, { nativeClass: 'CustomControlTrack', label: 'StageEffect/Expert/Overlay/F' },
+        { nativeClass: 'LiveColoringTrack', label: 'StageEffect/Expert/Coloring/LightShaft/L' }, { nativeClass: 'LiveRimlightTrack', label: 'MemberEffect/Expert/Member Rim Light/R' },
+        { nativeClass: 'MemberLipSyncTrack', label: 'Member1/LipSync' }, null].map((track) => F.trackMuteNote(track));
       const powerY = control('crowd:0', 'growthYZSwingPowerY');
       out.powerY = { fields: fields(powerY), text: powerY.querySelector('output').textContent };
       return out;
@@ -439,6 +444,10 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
     assert.equal(result.paletteSteps, 3, 'one undo step per change');
     assert.deepEqual(result.swing, ['Still', 'Front-back swing', 'Rising swing', 'Side swing', 'Sway']);
     assert.deepEqual(result.powerY, { fields: [], text: '0.7' }, 'the lift curve stays read only');
+    const group = "A group track's mute does not reach the game. Mute the tracks inside it.";
+    const quality = "The game's quality settings turn this track on and off, so its mute does not reach the game.";
+    assert.deepEqual(result.mute, [group, quality, quality, null, null, quality, null, group],
+      'groups and direct children of quality categories are noted; nested, uncategorised and member tracks reach the game');
     console.log('MV Studio event fields: descriptors, HDR colour, 0/1 ints, observed options, data-mv-field, native data, gestures passed');
   } finally {
     await browser.close();
