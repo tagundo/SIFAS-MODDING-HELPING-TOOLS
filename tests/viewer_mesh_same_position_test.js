@@ -32,6 +32,13 @@ assert.deepStrictEqual(groupsOf([[0, 0.25, 0], [1e-300, 0.25, 0]], 0), [], 'the 
 assert.deepStrictEqual(groupsOf([[1, 2, 3]], 0), [], 'a single vertex is never a group');
 assert.deepStrictEqual(groupsOf([], T), [], 'an empty mesh has no groups');
 assert.deepStrictEqual(groupsOf(exact), [[0, 2, 6], [1, 4]], 'the default rule keeps exact groups');
+// Exact copies collapse to one point before the hash: -0 and +0 are one
+// value there too, and a non-finite value equals nothing, not even itself.
+assert.equal(build(exact.length, v => exact[v], 0).distinct, 4, 'seven vertices, four distinct points');
+assert.equal(build(2, v => [[0, 0.25, 0], [-0, 0.25, -0]][v], 0).distinct, 1, '-0 and +0 copies share a point');
+assert.equal(build(2, v => [[0.5, 0.25, 0.125], [0.5, 0.25, 0.12500000000000003]][v], 0).distinct, 2, 'one double step apart is another point');
+assert.deepStrictEqual(groupsOf([[NaN, 0.5, 0.5], [NaN, 0.5, 0.5], [0.5, NaN, 0.5], [0.5, NaN, 0.5]]), [], 'NaN copies are never one position');
+assert.equal(build(2, v => [NaN, 0.5, 0.5]).distinct, 2);
 
 // 2. Absolute tolerance: within 5e-7 on every axis join, beyond it stay apart,
 // at any magnitude (float32 steps shrink towards zero, model units do not).
@@ -162,7 +169,8 @@ function bounded(positions, compares, visits, why, tolerance) {
 }
 const onePoint = Array.from({ length: 4000 }, () => [0.25, 1.5, -0.125]);
 bounded(onePoint, 1, 1, '4000 copies at one point: one comparison and one bucket visit each'); bounded(onePoint, 1, 1, 'also with the exact rule', 0);
-assert.deepStrictEqual(cost(onePoint), { compares: 3999, visits: 3999 }, 'every copy after the first visits the one bucket and matches its newest member');
+assert.deepStrictEqual(cost(onePoint), { compares: 0, visits: 0 }, 'exact copies collapse to one point before the hash: no bucket visit at all');
+assert.equal(build(onePoint.length, v => onePoint[v]).distinct, 1);
 assert.deepStrictEqual(groupsOf(onePoint).map(group => group.length), [4000]);
 const line = Array.from({ length: 4000 }, (_, i) => [i * 1e-9, 0, 0]);
 bounded(line, 1, 3, 'distinct vertices 1e-9 apart in vertex order');
@@ -187,6 +195,27 @@ const grid = (n, side, spacing, origin) => Array.from({ length: n }, (_, i) => [
   assert.deepStrictEqual(groupsOf(copies.concat(separate)).map(group => group.length), [3000], 'the separate vertices stay apart');
   const big = Array.from({ length: 20000 }, () => [1e-7, 1e-7, 1e-7]).concat(grid(8000, 20, 1.2e-6, [0, 0, 0]));
   bounded(big, 1, 16, '20,000 copies beside 8,000 separate vertices');
+}
+// Shell first, then copies at its centre: a hollow part shrunk around its
+// centre (3,000 vertices on a sphere of radius 1e-6, so its bucket's box holds
+// the centre, yet every shell vertex is more than the tolerance away from it
+// on some axis: 1e-6 / sqrt(3) > 5e-7) and 10,000 exact copies collapsed onto
+// that centre after it. At a52a677 every copy walked the whole shell: 20 M
+// compares, 2.9 s. Exact copies now collapse to one point first, which walks
+// the shell once. The groups are the shell's own plus the copies.
+{
+  const centre = [0.1234, 1.4567, 0.0321].map(Math.fround), shell = [];
+  while (shell.length < 3000) {
+    const d = [random() * 2 - 1, random() * 2 - 1, random() * 2 - 1], length = Math.hypot(...d);
+    if (length <= 1 && length >= 0.1) shell.push(d.map((x, axis) => Math.fround(centre[axis] + x / length * 1e-6)));
+  }
+  assert(shell.every(p => p.some((x, axis) => Math.abs(x - centre[axis]) > T)), 'no shell vertex is a partner of the centre');
+  const copies = Array.from({ length: 10000 }, () => centre.slice()), positions = shell.concat(copies);
+  const expected = groupsOf(shell).concat([Array.from({ length: 10000 }, (_, i) => 3000 + i)]).sort((a, b) => a[0] - b[0]);
+  bounded(positions, 8, 16, 'shell first, then copies at its centre'); assert(cost(positions).compares < 100000, 'shell first: ' + cost(positions).compares + ' compares');
+  assert.deepStrictEqual(groupsOf(positions), expected, 'shell first: the shell groups plus one group of the copies');
+  bounded(copies.concat(shell), 8, 16, 'copies first, then the shell around them');
+  assert.deepStrictEqual(groupsOf(copies.concat(shell)), groupsOf(shell).map(group => group.map(v => v + 10000)).concat([copies.map((_, i) => i)]).sort((a, b) => a[0] - b[0]));
 }
 // Separate components packed as tightly as the tolerance allows: seam pairs on
 // a 6e-7 lattice, the lattice alone, and a 20^3 grid 5.2e-7 apart (up to 4^3

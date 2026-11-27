@@ -193,9 +193,35 @@
     // them (plus hash collisions), however many separate components crowd a
     // small region. `visits` counts bucket visits in scans, `compares` member
     // tests.
+    // Exact copies are collapsed first: vertices whose three values are equal
+    // (-0 equals +0, as in the comparison) share one point, the hash runs on
+    // the `distinct` points, and every copy takes its point's group. A copy is
+    // within the tolerance of exactly the vertices its point is, so the groups
+    // are the same; only the work shrinks: copies inside a hollow part's box
+    // (a shell shrunk around them) no longer each walk the whole part.
+    // Points are numbered in order of first use, so their order follows the
+    // lowest vertex of each point. A position with a non-finite value equals
+    // nothing, not even itself, and keeps a point of its own.
     var cell = SAME_POSITION_CELL; while (cell <= tolerance) cell *= 2;
-    var parent = new Int32Array(count), coords = new Float64Array(count * 3), next = new Int32Array(count), heads = new Map(), joined = false, compares = 0, visits = 0;
-    var bucketCount = 0, bucketRep = new Int32Array(count), bucketHead = new Int32Array(count), bucketTail = new Int32Array(count), bucketNext = new Int32Array(count), box = new Float64Array(count * 6);
+    var coords = new Float64Array(count * 3), pointOf = new Int32Array(count), distinct = 0, exact = new Map(), sameKey = new Int32Array(count);
+    var bits = new Float64Array(1), words = new Int32Array(bits.buffer), joined = false;
+    // Hashes a value's bits; adding 0 turns -0 into +0 first.
+    function mix(h, value) { bits[0] = value + 0; return Math.imul(h ^ words[0], 0x5bd1e995) ^ Math.imul(words[1], 0x27d4eb2d); }
+    for (var v = 0; v < count; v++) {
+      var p = positionAt(v), px = +p[0], py = +p[1], pz = +p[2], finite = isFinite(px) && isFinite(py) && isFinite(pz), point = -1, key = 0, first = -1;
+      if (finite) {
+        key = mix(mix(mix(0x9747b28c, px), py), pz); first = exact.get(key); if (first === undefined) first = -1;
+        for (var same = first; same >= 0; same = sameKey[same]) if (coords[same * 3] === px && coords[same * 3 + 1] === py && coords[same * 3 + 2] === pz) { point = same; break; }
+      }
+      if (point >= 0) joined = true;
+      else {
+        point = distinct++; coords[point * 3] = px; coords[point * 3 + 1] = py; coords[point * 3 + 2] = pz;
+        sameKey[point] = first; if (finite) exact.set(key, point);
+      }
+      pointOf[v] = point;
+    }
+    var parent = new Int32Array(distinct), next = new Int32Array(distinct), heads = new Map(), compares = 0, visits = 0;
+    var bucketCount = 0, bucketRep = new Int32Array(distinct), bucketHead = new Int32Array(distinct), bucketTail = new Int32Array(distinct), bucketNext = new Int32Array(distinct), box = new Float64Array(distinct * 6);
     function root(v) { while (parent[v] !== v) { parent[v] = parent[parent[v]]; v = parent[v]; } return v; }
     function join(a, b) { a = root(a); b = root(b); if (a !== b) { if (b < a) { var swap = a; a = b; b = swap; } parent[b] = a; joined = true; } }
     function hash(x, y, z) { return Math.imul(x | 0, 73856093) ^ Math.imul(y | 0, 19349663) ^ Math.imul(z | 0, 83492791); }
@@ -234,26 +260,26 @@
       for (var axis = 0; axis < 3; axis++) box[target * 6 + axis] = box[target * 6 + 3 + axis] = coords[v * 3 + axis];
       bucketNext[target] = first === undefined ? -1 : first; heads.set(key, target);
     }
-    for (var v = 0; v < count; v++) {
-      parent[v] = v; var p = positionAt(v), px = +p[0], py = +p[1], pz = +p[2];
-      coords[v * 3] = px; coords[v * 3 + 1] = py; coords[v * 3 + 2] = pz;
+    for (var d = 0; d < distinct; d++) {
+      parent[d] = d; px = coords[d * 3]; py = coords[d * 3 + 1]; pz = coords[d * 3 + 2];
       var cx = Math.floor(px / cell), cy = Math.floor(py / cell), cz = Math.floor(pz / cell), x0 = cx, x1 = cx, y0 = cy, y1 = cy, z0 = cz, z1 = cz;
       if (tolerance > 0) {
         if (px - cx * cell <= tolerance) x0--; if ((cx + 1) * cell - px <= tolerance) x1++;
         if (py - cy * cell <= tolerance) y0--; if ((cy + 1) * cell - py <= tolerance) y1++;
         if (pz - cz * cell <= tolerance) z0--; if ((cz + 1) * cell - pz <= tolerance) z1++;
       }
-      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) for (var z = z0; z <= z1; z++) scan(v, x, y, z);
-      insert(v, hash(cx, cy, cz));
+      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) for (var z = z0; z <= z1; z++) scan(d, x, y, z);
+      insert(d, hash(cx, cy, cz));
     }
-    // Roots are the lowest member, so groups and members come out ascending.
+    // A point's root is its component's lowest point, which holds the lowest
+    // vertex, so groups and members come out ascending.
     var groupOf = new Int32Array(count).fill(-1), groups = [];
     if (joined) {
       var byRoot = new Map();
-      for (var vertex = 0; vertex < count; vertex++) { var r = root(vertex), members = byRoot.get(r); if (members) members.push(vertex); else byRoot.set(r, [vertex]); }
+      for (var vertex = 0; vertex < count; vertex++) { var r = root(pointOf[vertex]), members = byRoot.get(r); if (members) members.push(vertex); else byRoot.set(r, [vertex]); }
       byRoot.forEach(function (list) { if (list.length > 1) { list.forEach(function (member) { groupOf[member] = groups.length; }); groups.push(list); } });
     }
-    return { count: count, tolerance: tolerance, groupOf: groupOf, groups: groups, compares: compares, visits: visits };
+    return { count: count, tolerance: tolerance, groupOf: groupOf, groups: groups, compares: compares, visits: visits, distinct: distinct };
   }
   // The vertices that move with `vertices` (the chosen ones): every other
   // member of their groups. `groups` lists each touched group with its chosen
