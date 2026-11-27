@@ -17,12 +17,17 @@ _MATERIAL_PROPERTIES = {
     crc32(b"_MainTex_ST") & 0x0FFFFFFF: "overlayUV",
 }
 _SOFT_BILLBOARD_COLOR = crc32(b"_Color") & 0x0FFFFFFF
-# World MeshRenderer scalars: the AS/SoftParticleBillboard and AS/Smoke inputs,
-# and AS/Blend/Opaque _BlendRate (the only shipped shader that declares it).
+# World MeshRenderer scalars: every float uniform of the AS/SoftParticleBillboard and AS/Smoke
+# passes (MVStudioSoftBillboards holds them all), and AS/Blend/Opaque _BlendRate (the only
+# shipped shader that declares it).
 _WORLD_SCALARS = {
     crc32(name.encode("ascii")) & 0x0FFFFFFF: name
-    for name in ("_Density", "_MoveIntensity", "_AlphaAnimPower", "_AlphaAnimScale",
-                 "_SizeStartX", "_SizeStartY", "_SizeEndX", "_SizeEndY", "_SizeRandom", "_BlendRate")
+    for name in ("_Density", "_MoveIntensity", "_MoveSpeed", "_AlphaAnimPower", "_AlphaAnimScale",
+                 "_SizeStartX", "_SizeStartY", "_SizeEndX", "_SizeEndY", "_SizeSpeed", "_SizeRandom", "_SizeAspect",
+                 "_DensitySaturate", "_TextureRate", "_FadeOutPower", "_FadeOutScale", "_DistortionAmplitude",
+                 "_DistortionSpeed", "_DistortionFreq", "_WaveAmplitude", "_WaveSpeed", "_WaveFreq",
+                 "_FlowAmplitude", "_FlowSpeed", "_FlowFreq", "_CurveIntensity", "_CurvePower",
+                 "_LightFlatness", "_LightSmoothness", "_BlendRate")
 }
 # AS/Blend/Opaque _AmbientColor (its .x-.w or .r-.a lanes, like _TintColor).
 _AMBIENT_COLOR = crc32(b"_AmbientColor") & 0x0FFFFFFF
