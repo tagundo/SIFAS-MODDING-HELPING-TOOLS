@@ -1073,6 +1073,53 @@ class RealPackModuleTests(reg_tests.Case):
         written, _ = self.convert(path)
         self.assertEqual(self.pack.read_pack(written)["editor"]["timelineFormat"], conversion.EXPORT_FORMAT + 3)
 
+    def test_the_install_asks_only_about_values_this_mv_studio_does_not_write(self):
+        """Elichika's install with adminui's check (modtools' check_editor_bytes against the source's stock): a
+        pack this MV Studio exported, at its own format, installs with no question; one that holds data this MV
+        Studio does not write and says a newer MV Studio made it gets the consent question saying so, and
+        installs once the caller consents."""
+        import database_maintenance
+        import mv_studio_stock
+        try:
+            from adminui.tools import mv_timeline as admin
+        except ImportError:
+            self.skipTest("Elichika's Server content tools are not importable")
+        if not hasattr(self.pack, "UncheckedValues") or not getattr(self.pack, "EDITOR", None):
+            self.skipTest("This Elichika's pack install has no consent question")
+        with mock.patch.object(admin, "repo_root", return_value=self.root):
+            check = admin._modtools()[4]
+        self.assertIsNotNone(check)
+        tracks = copy.deepcopy(reg_tests.base_tracks())
+        tracks[1]["events"][0]["values"]["intensity"] = 2.5
+        edited = conversion.convert_parsed(timeline_bytes("android", tracks, tag="edited"), self.local["tl2101"])
+        song, source = {"liveId": 21, "title": "Base song"}, {"region": "gl", "assetId": 2101}
+        convert = lambda raw, src, dst, region, asset_id: timeline_bytes(dst, tag="converted")  # noqa: E731
+
+        def install(data, **arguments):
+            result = self.pack.install_pack(self.root, data, regions=("gl",), log=None, check=check, convert=convert,
+                                            **arguments)
+            described = mv_studio_stock.describe_mv_timeline(self.root, region="gl", asset_id=2201)
+            with database_maintenance.guard(self.root):
+                mv_studio_stock.restore_mv_timeline(self.root, region="gl", asset_id=2201,
+                                                    expected_key=described["timelineKey"], log=None)
+            return [warning for warning in result["warnings"] if warning["code"] == "unchecked-values"]
+
+        own = self.pack.write_pack(name="own", song=song, source=source, target_asset_id=2201,
+                                   timelines={"android": edited}, **mv_studio_pack.editor_keywords(self.pack))
+        self.assertEqual(self.pack.read_pack(own)["editor"]["timelineFormat"], conversion.EXPORT_FORMAT)
+        self.assertEqual(install(own), [])  # no question, no warning
+        document = json.loads(edited[8:].rstrip(b" "))
+        newer = b"UnityFS\0" + json.dumps({**document, "muted": ["a newer field"]}, sort_keys=True).encode()
+        pack = self.pack.write_pack(name="newer", song=song, source=source, target_asset_id=2201,
+                                    timelines={"android": newer},
+                                    editor={"timelineFormat": conversion.EXPORT_FORMAT + 1, "modtools": "9"})
+        with self.assertRaises(self.pack.UncheckedValues) as caught:
+            self.pack.install_pack(self.root, pack, regions=("gl",), log=None, check=check, convert=convert)
+        self.assertEqual(caught.exception.items, [{"platform": "android", "text": conversion.VALUES_NEWER}])
+        self.assertFalse(mv_studio_stock.describe_mv_timeline(self.root, region="gl", asset_id=2201)["override"])
+        self.assertEqual([warning["reason"] for warning in install(pack, accept_unchecked=True)],
+                         [conversion.VALUES_NEWER])
+
     def test_a_damaged_compressed_entry_is_not_a_pack(self):
         """A corrupt deflate stream or LZMA entry is a refusal (ValueError, HTTP 400), whether the reader
         names it itself or lets zlib.error / LZMAError out."""
