@@ -159,23 +159,64 @@ class ConversionCase(reg_tests.Case):
                                             template_bytes=self.remote["tl2101i"])
         self.assertEqual((again, self.loads), (output, []))
 
+    def assertUnchecked(self, reason, raw, template, **kwargs):
+        message = {"values": conversion.VALUES_UNKNOWN, "newer": conversion.VALUES_NEWER,
+                   "unchecked": conversion.VALUES_UNCHECKED}[reason]
+        with self.assertRaisesRegex(conversion.UncheckedValues, "^" + __import__("re").escape(message) + "$") as caught:
+            conversion.check_editor_bytes(raw, template, **kwargs)
+        self.assertEqual(caught.exception.reason, reason)
+
     def test_only_what_mv_studio_writes_passes_the_editor_bytes_check(self):
         stock, stock_ios = self.local["tl2101"], self.local["tl2101i"]
         edited = conversion.convert_parsed(self.edited_android(), stock)  # an edit exported onto the stock
         self.assertNotEqual(edited, stock)
         conversion.check_editor_bytes(stock, stock)  # the original itself
         conversion.check_editor_bytes(edited, stock)  # MV Studio's export onto the source's stock
+        conversion.check_editor_bytes(edited, stock, pack_format=conversion.EXPORT_FORMAT)  # a same-format pack
+        conversion.check_editor_bytes(edited, stock, pack_format=conversion.EXPORT_FORMAT + 1)  # nothing newer in it
         converted = conversion.convert_timeline(edited, "android", "ios", "gl", 2101, root=self.root)
         conversion.check_editor_bytes(converted, stock_ios)  # and its conversion
         document = json.loads(edited[8:].rstrip(b" "))
-        tampered = [b"UnityFS\0" + json.dumps({**document, "hidden": [float("nan")]}, sort_keys=True).encode(),
-                    edited + b"\0", b"UnityFS\0garbage", b"not a timeline", edited.replace(b'"edited"', b'"hand"')]
-        for raw in tampered:
-            with self.subTest(raw=raw[:24]), self.assertRaisesRegex(
-                    ValueError, "^" + __import__("re").escape(conversion.NOT_EDITOR) + "$"):
-                conversion.check_editor_bytes(raw, stock)
-        with self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(conversion.NOT_EDITOR) + "$"):
-            conversion.check_editor_bytes(edited, stock_ios)  # checked against the other platform's stock
+        changed = [b"UnityFS\0" + json.dumps({**document, "hidden": [float("nan")]}, sort_keys=True).encode(),
+                   edited + b"\0", b"UnityFS\0garbage", b"not a timeline", edited.replace(b'"edited"', b'"hand"')]
+        for raw in changed:
+            with self.subTest(raw=raw[:24]):
+                self.assertUnchecked("values", raw, stock)
+                self.assertUnchecked("values", raw, stock, pack_format=conversion.EXPORT_FORMAT)
+                # A pack that says a newer MV Studio made it gets that wording (never "changed elsewhere" alone).
+                self.assertUnchecked("newer", raw, stock, pack_format=conversion.EXPORT_FORMAT + 1)
+        self.assertUnchecked("values", edited, stock_ios)  # checked against the other platform's stock (structure)
+        for bad in (True, "2", 2.0):  # only an int format counts
+            self.assertUnchecked("values", changed[0], stock, pack_format=bad)
+
+    def test_a_check_that_cannot_run_says_so(self):
+        """No template, a time limit (the parse limits note a transient failure), memory, an unreadable
+        template or an export error: "could not be checked", never the "holds data" wording."""
+        from webtools.core import transient_failures
+        stock = self.local["tl2101"]
+        edited = conversion.convert_parsed(self.edited_android(), stock)
+        self.assertUnchecked("unchecked", edited, None)
+        self.assertUnchecked("unchecked", edited, None, pack_format=conversion.EXPORT_FORMAT + 1)
+        self.assertUnchecked("unchecked", edited, b"UnityFS\0not a template")
+        real_parse = register._parse
+
+        def timed_out(raw, name="base"):
+            transient_failures.note()
+            raise ValueError("Model preview took too long. Try opening fewer model files.")
+
+        def memory(raw, name="base"):
+            raise MemoryError()
+
+        def template_times_out(raw, name="base"):
+            return timed_out(raw) if name == "template" else real_parse(raw, name)
+
+        for parse in (timed_out, memory, template_times_out):
+            with self.subTest(parse=parse.__name__), mock.patch.object(register, "_parse", side_effect=parse):
+                self.assertUnchecked("unchecked", edited, stock)
+        with mock.patch.object(register, "_export", side_effect=ValueError("The edited value is out of range.")):
+            self.assertUnchecked("unchecked", edited, stock)
+        with mock.patch.object(register, "_export", side_effect=RecursionError()):
+            self.assertUnchecked("unchecked", edited, stock)
 
     def test_stage_bound_tracks(self):
         tracks = reg_tests.base_tracks() + [
@@ -223,8 +264,195 @@ class RealSampleConversionTests(unittest.TestCase):
         conversion.check_editor_bytes(converted, ios)
         flipped = bytearray(edited)
         flipped[len(flipped) // 2] ^= 0xFF
-        with self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(conversion.NOT_EDITOR) + "$"):
+        with self.assertRaises(conversion.UncheckedValues) as caught:
             conversion.check_editor_bytes(bytes(flipped), android)
+        self.assertEqual((str(caught.exception), caught.exception.reason), (conversion.VALUES_UNKNOWN, "values"))
+
+
+# Every field MV Studio's native export writes, changed at once on a real timeline (one clip per
+# playable class and value, clip timing, a camera clip's start, a clip label and each exportable track
+# field), must re-export byte for byte: otherwise check_editor_bytes would question MV Studio's own
+# packs. The rules below change a value within what the export accepts; fields a newer export adds
+# (EXPORTABLE_TRACK_FIELDS, _FLOAT_RANGES, member slots) are found through the same module.
+_DELTA = 0.03125
+
+
+def _value_pools(tracks):
+    pools = {}
+    observed = getattr(mv_studio_timeline, "_OBSERVED_VALUES", {})
+    for track in tracks:
+        for event in track["events"]:
+            native = event["values"].get("playableClass")
+            for key, value in event["values"].items():
+                scope = observed.get((native, key))
+                pools.setdefault((native, key, track["id"] if scope == "track" else None), set()).add(
+                    json.dumps(value, sort_keys=True))
+    return pools
+
+
+def _changed_value(track, event, key, pools, slots):
+    """A value of ``key`` the export accepts for this clip, other than its own; None when there is none."""
+    timeline = mv_studio_timeline
+    values = event["values"]
+    value, native = values.get(key), values.get("playableClass")
+    if value is None:
+        return None
+    scope = getattr(timeline, "_OBSERVED_VALUES", {}).get((native, key))
+    if scope:  # an index the game resolves: only values this MV already uses
+        pool = pools.get((native, key, track["id"] if scope == "track" else None), set())
+        others = sorted(pool - {json.dumps(value, sort_keys=True)})
+        return json.loads(others[0]) if others else None
+    if type(value) is int and (native, key) in getattr(timeline, "_MEMBER_POSITIONS", ()):
+        return next((slot for slot in slots if slot != value), None)
+    if type(value) is bool:
+        return not value
+    if type(value) is int:
+        if key.endswith("ExtrapolationMode"):
+            return (value + 1) % 5
+        low, high = getattr(timeline, "_LIMITED_VALUES", {}).get((native, key), (-(1 << 31), (1 << 31) - 1))
+        rule = getattr(timeline, "_MEMBER_SLOT_VALUES", {}).get((native, key))
+        slot = type(values.get("memberPosition")) is int and 1 <= values["memberPosition"] <= 12
+        used = sorted((json.loads(item) for item in pools.get((native, key, None), ())),
+                      key=lambda item: (abs(item - value), item))
+        for candidate in [item for item in used if item != value] + [value + 1, value - 1]:
+            if low <= candidate <= high and not (rule and candidate in rule[0] and not slot):
+                return candidate
+        return None
+    if type(value) is float:
+        if key == "timeScale":
+            return value * (1 + _DELTA)
+        if key in ("blendIn", "blendOut") and value < 0:
+            return _DELTA
+        bounds = getattr(timeline, "_FLOAT_RANGES", {}).get((native, key))
+        if key in ("weight", "weightForDirection") or native in ("MemberCheekClip", "LiveMemberScalingClip") \
+                and key == "intensity":
+            bounds = (0, 1)
+        if bounds:
+            return value + _DELTA if value <= (bounds[0] + bounds[1]) / 2 else value - _DELTA
+        return value + _DELTA
+    if isinstance(value, str):
+        others = sorted(item for item in (json.loads(raw) for raw in pools.get((native, key, None), ())) if item != value)
+        return others[0] if others else None
+    floats = lambda item: isinstance(item, dict) and item and all(type(v) is float for v in item.values())  # noqa: E731
+    if floats(value):  # a colour or a vector
+        return {name: number + _DELTA for name, number in value.items()}
+    if key == "keyframes" and isinstance(value, list) and value:
+        changed = copy.deepcopy(value)
+        changed[0]["position"] = [number + 0.5 for number in changed[0]["position"]]
+        return changed
+    if isinstance(value, list) and value and all(floats(item) for item in value):
+        return [{name: number + _DELTA for name, number in item.items()} for item in value]
+    if isinstance(value, list) and value and isinstance(value[0], dict) and floats(value[0].get("color")):
+        changed = copy.deepcopy(value)  # a palette (penlight member colours): the first entry's colour
+        changed[0]["color"] = {name: number + _DELTA for name, number in changed[0]["color"].items()}
+        return changed
+    return None
+
+
+def every_field_changed(tracks):
+    """(tracks with one clip of every (playable class, value) changed, clip timing and the exportable
+    track fields too; the (class, value) pairs that had no other value to take)."""
+    timeline = mv_studio_timeline
+    changed, pools = copy.deepcopy(tracks), _value_pools(tracks)
+    slots = sorted(timeline.performer_slots(tracks)) if hasattr(timeline, "performer_slots") else []
+    events = [(t, e) for t, track in enumerate(tracks) for e, _ in enumerate(track["events"])]
+    keys = list(dict.fromkeys((tracks[t]["events"][e]["values"].get("playableClass"), key)
+                              for t, e in events for key in tracks[t]["events"][e]["editableValues"]))
+    used, missing = set(), []
+    for native, key in keys:
+        choices = [(t, e) for t, e in events if tracks[t]["events"][e]["values"].get("playableClass") == native
+                   and key in tracks[t]["events"][e]["editableValues"]]
+        for t, e in sorted(choices, key=lambda place: place in used):  # a clip of its own first
+            value = _changed_value(tracks[t], tracks[t]["events"][e], key, pools, slots)
+            if value is not None:
+                changed[t]["events"][e]["values"][key] = value
+                used.add((t, e))
+                break
+        else:
+            missing.append((native, key))
+    camera = next((t, e) for t, e in events if "keyframes" in tracks[t]["events"][e]["editableValues"])
+    changed[camera[0]]["events"][camera[1]]["start"] = round(tracks[camera[0]]["events"][camera[1]]["start"] + 0.05, 4)
+    changed[1]["events"][0]["label"] = tracks[1]["events"][0]["label"] + " edited"
+    per_track = getattr(timeline, "exportable_track_fields", None)
+    for field in getattr(timeline, "EXPORTABLE_TRACK_FIELDS", ()):
+        index = next(t for t, track in enumerate(tracks) if isinstance(track.get(field), bool)
+                     and (per_track is None or field in per_track(track)))
+        changed[index][field] = not tracks[index][field]
+    return changed, missing
+
+
+def _exported_changes(stock_tracks, tracks):
+    """{(track, clip, field): value} of what differs from the stock (camera keys only as changed or not;
+    floats rounded to float32 precision)."""
+    import struct
+    rounded = lambda value: (struct.unpack("<f", struct.pack("<f", value))[0] if type(value) is float  # noqa: E731
+                             else {k: rounded(v) for k, v in value.items()} if isinstance(value, dict)
+                             else [rounded(v) for v in value] if isinstance(value, list) else value)
+    changes = {}
+    for t, (before, after) in enumerate(zip(stock_tracks, tracks)):
+        for field in set(before) | set(after):
+            if field != "events" and before.get(field) != after.get(field):
+                changes[(t, None, field)] = after.get(field)
+        for e, (old, new) in enumerate(zip(before["events"], after["events"])):
+            for field in ("start", "duration", "label"):
+                if rounded(old[field]) != rounded(new[field]):
+                    changes[(t, e, field)] = rounded(new[field])
+            for field in set(old["values"]) | set(new["values"]):
+                a, b = old["values"].get(field), new["values"].get(field)
+                if rounded(a) != rounded(b):
+                    changes[(t, e, field)] = True if field == "keyframes" else rounded(b)
+    return changes
+
+
+@unittest.skipUnless(SAMPLES, "Real 12035 timelines (MV_TIMELINE_SAMPLES) are not available")
+class RealSampleEveryFieldTests(unittest.TestCase):
+    def test_every_field_mv_studio_exports_re_exports_byte_for_byte(self):
+        for name in ("a", "i"):
+            stock = (SAMPLES / f"{name}-1203503-live_timeline.unity").read_bytes()
+            with self.subTest(platform=name):
+                tracks = register._parse(stock)["tracks"]
+                changed, missing = every_field_changed(tracks)
+                normalized, _ = register.normalize(tracks, changed)
+                edited = mv_studio_timeline.export_timeline(stock, "every-field", normalized)
+                # Every change reached the export (none fell back to the stock value; a clip's camera keys
+                # may change with its timing too) ...
+                wanted = _exported_changes(tracks, normalized)
+                exported = _exported_changes(tracks, register._parse(edited)["tracks"])
+                self.assertEqual({key: exported.get(key) for key in wanted}, wanted)
+                self.assertGreater(len(wanted), 250)
+                self.assertNotEqual(edited, stock)
+                # ... few values had nothing else to take (an index only one clip uses, one member) ...
+                self.assertLessEqual(len(missing), 3, missing)
+                # ... and the check confirms it, at this MV Studio's own format.
+                conversion.check_editor_bytes(edited, stock)
+                conversion.check_editor_bytes(edited, stock, pack_format=conversion.EXPORT_FORMAT)
+
+
+class ConversionMessageTests(unittest.TestCase):
+    def test_every_conversion_and_check_message_has_korean_and_japanese(self):
+        from webtools import i18n
+        for message in conversion.MESSAGES:
+            for lang in ("ko", "ja"):
+                with self.subTest(message=message[:40], lang=lang):
+                    self.assertNotEqual(i18n.tr(message, lang), message)
+
+
+class ExportFormatTests(unittest.TestCase):
+    # What the native export writes, as of EXPORT_FORMAT. A change here means MV Studio writes something
+    # an older one does not: raise mv_timeline_platform.EXPORT_FORMAT and record the new digest, so a
+    # server whose MV Studio tools are older says "made by a newer MV Studio".
+    SURFACE = {1: "c77e54a2182a617365242889880227a87a0f9a31759b8c5491203d39b3032308"}
+
+    def test_the_export_format_pins_what_the_export_writes(self):
+        import hashlib
+        timeline = mv_studio_timeline
+        surface = {"values": {native: sorted(fields) for native, fields in sorted(timeline._EDITABLE_VALUES.items())},
+                   "track": list(getattr(timeline, "EXPORTABLE_TRACK_FIELDS", ())), "timing": sorted(timeline._CLIP_TIMING)}
+        digest = hashlib.sha256(json.dumps(surface, sort_keys=True).encode()).hexdigest()
+        self.assertEqual(self.SURFACE.get(conversion.EXPORT_FORMAT), digest,
+                         "The native export writes something new: raise mv_timeline_platform.EXPORT_FORMAT and add "
+                         "its digest to SURFACE.")
+        self.assertEqual(max(self.SURFACE), conversion.EXPORT_FORMAT)
 
 
 # ---------------------------------------------------------------- another MV slot
