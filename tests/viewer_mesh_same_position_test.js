@@ -122,6 +122,18 @@ for (const sign of [1, -1]) {
   assert.deepStrictEqual(groupsOf([corner.map(x => x - 2e-7), corner.map(x => x + 2e-7)]), [[0, 1]], 'across a cell corner on all three axes');
 }
 assert.deepStrictEqual(groupsOf([[1e6, -1e6, 999999.99], [1e6, -1e6, 999999.99]]), [[0, 1]], 'very large coordinates still hash to one cell');
+// Beyond 2^53 cells (|value| > 1.7e10) cell numbers stop counting (x + 1 === x)
+// and the build used to loop for ever; infinite values did too. They finish
+// now: a huge axis can only match exactly, the other axes within the tolerance.
+{
+  const huge = [[1e12, 0.5, 0], [1e12, 0.5 + 4e-7, 0], [0.5, 0.5, 0], [-1e12, -1e300, 3e10], [-1e12, -1e300, 3e10], [Number.MAX_VALUE, 0, -Number.MAX_VALUE], [Number.MAX_VALUE, 0, -Number.MAX_VALUE + 0],
+    [Infinity, 0.5, 0], [Infinity, 0.5, 0], [0.5, -Infinity, 0], [NaN, 0.5, 0], [1e12 + 1.2207031250000001e-4, 0.5, 0]];
+  const started = Date.now(), groups = groupsOf(huge);
+  assert.deepStrictEqual(groups, [[0, 1], [3, 4], [5, 6]], 'huge values group by the same rule; infinite and NaN ones never');
+  assert.deepStrictEqual(groupsOf(huge, 0), [[3, 4], [5, 6]], 'and with the exact rule');
+  assert.deepStrictEqual(groups, brute(huge.slice(0, 7), T), 'brute force on the finite ones before the first infinite one');
+  assert(Date.now() - started < 1000);
+}
 // Exact edge cases with a power-of-two tolerance: a neighbour exactly one
 // tolerance away sits on the next cell's first value.
 for (const k of [9830, -9830, 1]) {

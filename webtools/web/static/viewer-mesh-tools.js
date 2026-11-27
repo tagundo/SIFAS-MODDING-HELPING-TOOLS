@@ -262,13 +262,17 @@
     }
     for (var d = 0; d < distinct; d++) {
       parent[d] = d; px = coords[d * 3]; py = coords[d * 3 + 1]; pz = coords[d * 3 + 2];
-      var cx = Math.floor(px / cell), cy = Math.floor(py / cell), cz = Math.floor(pz / cell), x0 = cx, x1 = cx, y0 = cy, y1 = cy, z0 = cz, z1 = cz;
+      // A non-finite value matches nothing: its point is never scanned or stored.
+      if (!(isFinite(px) && isFinite(py) && isFinite(pz))) continue;
+      // The loops count neighbour offsets, not cell numbers: beyond 2^53
+      // cells (|value| > 1.7e10) cx + 1 === cx, and a cell-number loop never ended.
+      var cx = Math.floor(px / cell), cy = Math.floor(py / cell), cz = Math.floor(pz / cell), x0 = 0, x1 = 0, y0 = 0, y1 = 0, z0 = 0, z1 = 0;
       if (tolerance > 0) {
-        if (px - cx * cell <= tolerance) x0--; if ((cx + 1) * cell - px <= tolerance) x1++;
-        if (py - cy * cell <= tolerance) y0--; if ((cy + 1) * cell - py <= tolerance) y1++;
-        if (pz - cz * cell <= tolerance) z0--; if ((cz + 1) * cell - pz <= tolerance) z1++;
+        if (px - cx * cell <= tolerance) x0 = -1; if ((cx + 1) * cell - px <= tolerance) x1 = 1;
+        if (py - cy * cell <= tolerance) y0 = -1; if ((cy + 1) * cell - py <= tolerance) y1 = 1;
+        if (pz - cz * cell <= tolerance) z0 = -1; if ((cz + 1) * cell - pz <= tolerance) z1 = 1;
       }
-      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) for (var z = z0; z <= z1; z++) scan(d, x, y, z);
+      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) for (var z = z0; z <= z1; z++) scan(d, cx + x, cy + y, cz + z);
       insert(d, hash(cx, cy, cz));
     }
     // A point's root is its component's lowest point, which holds the lowest
