@@ -175,12 +175,20 @@ function qualityMutes() {
   assert.equal(Tabs.qualityOption({ label: 'StageEffect/Expert/Coloring/LightShaft/Live Coloring Track', kind: 'display' }), null,
     'a track in a sub-group keeps its own mute (12023)');
   assert.equal(Tabs.qualityOption({ label: 'StageEffect/Expert/Overlay/x', kind: 'effects' }), null, 'an unknown category');
-  // Every category of the other quality roots (their names were not read from the client).
-  assert.equal(Tabs.qualityMuted({ label: 'PropEffect/Expert/PropAnimation/x', kind: 'props' }), true);
-  assert.equal(Tabs.qualityMuted({ label: 'MotionMisc/Expert/SplitScreen/x', kind: 'camera' }), true);
-  assert.equal(Tabs.qualityMuted({ label: 'GlobalEffect/Expert/BaseLight/BaseLight', kind: 'lighting' }), true);
-  assert.equal(Tabs.qualityMuted({ label: 'MemberEffect/Expert/MemberAmbient/Sub/x', kind: 'lighting' }), false, 'one group deeper');
-  assert.equal(Tabs.qualityMuted({ label: 'CameraOffset/Expert/X/x', kind: 'camera' }), false, 'another root');
+  // The other quality roots count only the categories their client tables name (spaces removed,
+  // lower case); a category with another name keeps its tracks' own mute (12029 PropAnimation).
+  const muted = (label) => Tabs.qualityMuted({ label, kind: 'effects', nativeClass: 'CustomControlTrack' });
+  for (const label of ['MemberEffect/Expert/MemberAmbient/x', 'MemberEffect/Expert/MemberRimlight/x',
+    'MemberEffect/Expert/Member Spot Light Area/x', 'MemberEffect/Expert/MemberSpotLightShaft/x', 'PropEffect/Expert/PropAmbient/x',
+    'PropEffect/Normal/Prop Rim Light/x', 'PropEffect/Expert/PropColoring/x', 'GlobalEffect/Expert/BaseLight/BaseLight',
+    'MotionMisc/Expert/SplitScreen/x']) assert.equal(muted(label), true, label);
+  for (const label of ['PropEffect/Expert/PropAnimation/Animation Track', 'PropEffect/Expert/PropActivity/Activation Track',
+    'MemberEffect/Expert/MemberShadow/x', 'GlobalEffect/Expert/Fog/x', 'MotionMisc/Expert/Camera/x',
+    'StageEffect/Expert/Splitscreen/x', 'MotionMisc/Expert/Post/x']) assert.equal(muted(label), false, label);
+  assert.equal(muted('MemberEffect/Expert/MemberAmbient/Sub/x'), false, 'one group deeper');
+  assert.equal(muted('CameraOffset/Expert/X/x'), false, 'another root');
+  assert.deepEqual(Object.keys(Tabs.QUALITY_CATEGORIES).sort(), ['GlobalEffect', 'MemberEffect', 'MotionMisc', 'PropEffect', 'StageEffect']);
+  assert.deepEqual([...Tabs.QUALITY_CATEGORIES.StageEffect], Object.keys(Tabs.STAGE_QUALITY).sort());
   assert.deepEqual(Object.keys(Tabs.STAGE_QUALITY).sort(), ['ambient', 'animation', 'audience', 'coloring', 'control', 'display',
     'emissive', 'flashlight', 'overlayeffect', 'post']);
   assert(Object.values(Tabs.STAGE_QUALITY).every((key) => Tabs.QUALITY_LABELS[key]));
@@ -209,10 +217,16 @@ function exportMuteRule() {
   require('../webtools/web/static/mv-studio-event-fields.js');
   const rule = globalThis.MVStudioEventFields && globalThis.MVStudioEventFields.trackMuteNote;
   if (typeof rule !== 'function') return 'export mute rule: skipped (no trackMuteNote in this tree)';
+  // The same category names as the export lane's table (no spaces, lower case).
+  const roots = globalThis.MVStudioEventFields.TABLE.trackMute.qualityRoots;
+  assert.deepEqual(Object.keys(roots).sort(), Object.keys(Tabs.QUALITY_CATEGORIES).sort());
+  for (const [root, names] of Object.entries(roots)) assert.deepEqual([...names].sort(), [...Tabs.QUALITY_CATEGORIES[root]].sort(), root);
   const tracks = [...fixture().tracks];
   for (const label of ['StageEffect/Expert/Overlay Effect/x', 'StageEffect/Expert/Overlay/x', 'StageEffect/Normal/Audience/x',
-    'StageEffect/Expert/Coloring/LightShaft/x', 'PropEffect/Expert/PropAnimation/x', 'MotionMisc/Expert/SplitScreen/x',
-    'GlobalEffect/Expert/BaseLight/BaseLight', 'MemberEffect/Expert/MemberAmbient/Sub/x', 'CameraOffset/Expert/X/x', 'Member1/LipSync']) {
+    'StageEffect/Expert/Coloring/LightShaft/x', 'PropEffect/Expert/PropAnimation/x', 'PropEffect/Expert/Prop Rim Light/x',
+    'MotionMisc/Expert/SplitScreen/x', 'MotionMisc/Expert/Camera/x', 'GlobalEffect/Expert/BaseLight/BaseLight',
+    'GlobalEffect/Expert/Fog/x', 'MemberEffect/Expert/Member Spot Light Shaft/x', 'MemberEffect/Expert/MemberShadow/x',
+    'MemberEffect/Expert/MemberAmbient/Sub/x', 'CameraOffset/Expert/X/x', 'Member1/LipSync']) {
     tracks.push({ id: label, label, kind: 'effects', nativeClass: 'CustomControlTrack', events: [] });
   }
   const file = process.env.MV_STUDIO_TRACKS_JSON;
