@@ -318,9 +318,10 @@
     return null;
   }
 
-  // The sample nearest `time` (absolute seconds).
+  // The sample nearest `time` (absolute seconds); before or after the shot, the one its
+  // extrapolation shows (cameraLocalTime).
   function frameAt(shot, time) {
-    const local = clamp(time - shot.event.start, 0, Math.max(0, shot.event.duration));
+    const local = clamp(cameraLocalTime(shot.event, time), 0, Math.max(0, shot.event.duration));
     const frames = shot.source;
     let lower = 0, upper = frames.length - 1;
     while (upper - lower > 1) {
@@ -332,7 +333,9 @@
 
   const frameTime = (shot, frame) => shot.event.start + shot.source[clamp(frame, 0, shot.count - 1)].time;
 
-  // activeCameraEvent of the scene: latest-start active clip, else the Hold neighbours.
+  // activeCameraEvent of the scene: latest-start active clip, else the neighbours whose Hold, Loop,
+  // PingPong or Continue extrapolation covers `time`.
+  const extrapolates = (mode) => mode === 1 || mode === 2 || mode === 3 || mode === 4;
   function activeCameraEvent(track, time) {
     let active = null;
     for (const event of track.events) {
@@ -342,10 +345,24 @@
     let previous = null, next = null;
     for (const event of track.events) {
       const values = event.values || {}, end = event.start + event.duration;
-      if (time > end && values.postExtrapolationMode === 1 && time <= end + values.postExtrapolationTime && (!previous || event.start > previous.start)) previous = event;
-      if (time < event.start && values.preExtrapolationMode === 1 && time >= event.start - values.preExtrapolationTime && (!next || event.start < next.start)) next = event;
+      if (time > end && extrapolates(values.postExtrapolationMode) && time <= end + values.postExtrapolationTime && (!previous || event.start > previous.start)) previous = event;
+      if (time < event.start && extrapolates(values.preExtrapolationMode) && time >= event.start - values.preExtrapolationTime && (!next || event.start < next.start)) next = event;
     }
     return previous || next;
+  }
+
+  // cameraLocalTime of the scene: seconds into the shot's samples at `time` (TimelineClip
+  // GetExtrapolatedTime: Loop wraps, PingPong bounces, Hold and Continue keep the end pose).
+  function cameraLocalTime(event, time) {
+    const duration = event.duration, local = time - event.start;
+    if (local >= 0 && local <= duration) return local;
+    const values = event.values || {}, mode = local < 0 ? values.preExtrapolationMode : values.postExtrapolationMode;
+    if (duration > 0 && mode === 2) return local < 0 ? duration - (-local % duration) : local % duration;
+    if (duration > 0 && mode === 3) {
+      const wrapped = local < 0 ? duration * 2 - (-local % (duration * 2)) : local % (duration * 2);
+      return duration - Math.abs(wrapped - duration);
+    }
+    return Math.min(duration, Math.max(0, local));
   }
 
   // endedCameraEvent of the scene: the clip that ends last on the track, once `time` is past

@@ -15,7 +15,8 @@ require('../webtools/web/static/mv-studio-camera-math.js');
 require('../webtools/web/static/mv-studio-edit-history.js');
 require('../webtools/web/static/mv-studio-timeline-interact.js');
 require('../webtools/web/static/mv-studio-camera-keys.js');
-const M = globalThis.MVStudioCameraMath, K = globalThis.MVStudioCameraKeys, H = globalThis.MVStudioEditHistory;
+require('../webtools/web/static/mv-studio-scene.js');
+const M = globalThis.MVStudioCameraMath, K = globalThis.MVStudioCameraKeys, H = globalThis.MVStudioEditHistory, S = globalThis.MVStudioScene;
 const plugin = K.plugin;
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const near = (actual, expected, tolerance, message) => assert(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} != ${expected}`);
@@ -537,6 +538,60 @@ function subCameras() {
   // Reopening a project goes back to the main camera.
   plugin.projectChanged(ctx, { reason: 'load' });
   assert.equal(K.camera(ctx), 'main');
+}
+
+// Camera shot extrapolation (the preview and the editor): Unity's TimelineClip.GetExtrapolatedTime
+// for None 0, Hold 1, Loop 2, PingPong 3 and Continue 4, inside the stored pre/post window.
+function extrapolation() {
+  const shot = (pre, post, preTime = 1, postTime = 3) => ({ id: 'e', start: 2, duration: 1.5,
+    values: { preExtrapolationMode: pre, postExtrapolationMode: post, preExtrapolationTime: preTime, postExtrapolationTime: postTime } });
+  // Unity: Loop time % d (before: d - (-t % d)); PingPong d - |t mod 2d - d|; Hold and Continue the end pose here.
+  const cases = [
+    [1, 1, [[2.5, .5], [1.5, 0], [4.25, 1.5], [6.5, 1.5]]],
+    [2, 2, [[4.25, .75], [5, 0], [5.75, .75], [3.5, 1.5], [1.25, .75], [1, .5], [.5, 1.5]]],
+    [3, 3, [[4.25, .75], [5, 0], [5.75, .75], [6.5, 1.5], [1.25, .75], [1, 1], [-1, 0]]],
+    [4, 4, [[4.25, 1.5], [1.25, 0]]],
+    [0, 0, [[4.25, 1.5], [1.25, 0], [2.75, .75]]],
+  ];
+  for (const [pre, post, times] of cases) {
+    for (const [time, local] of times) {
+      near(S.cameraLocalTime(shot(pre, post), time), local, 1e-12, `mode ${pre}/${post} at ${time}`);
+    }
+  }
+  // Inside the shot the time itself; Hold and None exactly the clamp the preview always used.
+  for (let index = 0; index <= 400; index++) {
+    const time = -1 + index * .02, event = shot(1, 1);
+    assert.equal(S.cameraLocalTime(event, time), Math.min(event.duration, Math.max(0, time - event.start)), `clamp at ${time}`);
+    assert.equal(S.cameraLocalTime(shot(0, 0), time), Math.min(1.5, Math.max(0, time - 2)));
+  }
+  // Which shot plays in a gap: the windows of every extrapolating mode, none for None.
+  const track = (pre, post) => ({ events: [shot(pre, post), { id: 'next', start: 7, duration: 1, values: {} }] });
+  for (const mode of [1, 2, 3, 4]) {
+    assert.equal(S.activeCameraEvent(track(mode, mode), 4.25)?.id, 'e', `post window, mode ${mode}`);
+    assert.equal(S.activeCameraEvent(track(mode, mode), 1.25)?.id, 'e', `pre window, mode ${mode}`);
+    assert.equal(S.activeCameraEvent(track(mode, mode), 6.75), null, 'past the post window');
+    assert.equal(S.activeCameraEvent(track(mode, mode), .75), null, 'before the pre window');
+  }
+  assert.equal(S.activeCameraEvent(track(0, 0), 4.25), null, 'None: no shot in the gap');
+  assert.equal(S.activeCameraEvent(track(5, 5), 4.25), null, 'an unknown mode is no shot');
+  // The camera editor follows the same shot and frame at the playhead.
+  const project = nativeProject();
+  const first = project.tracks[0].events[0];
+  project.tracks[0].events = [first, { ...project.tracks[0].events[1], start: 4 }];
+  Object.assign(first.values, { postExtrapolationMode: 2, postExtrapolationTime: 2 });
+  const { ctx, at } = harness(project);
+  for (const [mode, time, frame] of [[2, 2.5, 30], [2, 3.75, 105], [3, 2.5, 90], [3, 3.75, 15], [4, 3.5, 120], [1, 3.5, 120]]) {
+    first.values.postExtrapolationMode = mode;
+    at(time);
+    const playing = K.playheadShot(ctx);
+    assert.equal(playing && playing.event.id, 'cam:0', `mode ${mode} at ${time}`);
+    assert.equal(playing.frame, frame, `mode ${mode} at ${time}: frame`);
+    assert.equal(S.activeCameraEvent(project.tracks[0], time), first);
+    near(S.cameraLocalTime(first, time) * 60, frame, 1e-9, 'the scene shows that frame');
+  }
+  first.values.postExtrapolationMode = 0;
+  at(2.5);
+  assert.equal(K.playheadShot(ctx), null, 'None: no shot in the gap');
 }
 
 function hemisphere() {
@@ -1177,6 +1232,7 @@ function multiKeys() {
   await asyncLayers();
   keyView();
   subCameras();
+  extrapolation();
   hemisphere();
   absoluteEdit();
   simplifyShot();

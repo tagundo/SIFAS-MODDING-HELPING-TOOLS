@@ -23,6 +23,9 @@
    diamonds show on its lane, Ctrl+Z / Ctrl+Shift+Z restore and redo it, it resizes with its keys
    on their frames, and the main camera's shots stay untouched.
 
+   Camera extrapolation (synthetic): in a gap after a shot, Loop, Ping-pong and Continue show the
+   pose Unity's TimelineClip gives (the shot's own pose at the wrapped time), and None no shot.
+
    Real 12035 timeline (skipped unless ELICHIKA_STUDIO_TIMELINE_DIR holds
    a-1203503-live_timeline.unity; no game data in Git): an unedited project exports the
    original bytes, and the export of an edited shot re-parses to the baked samples, also
@@ -773,6 +776,39 @@ async function subCameras(browser, url) {
   await page.close();
 }
 
+async function extrapolation(browser, url) {
+  const errors = [];
+  const page = await newPage(browser, errors);
+  await page.goto(url + '/#mv');
+  await page.waitForFunction(() => MVStudio.getState().visible);
+  const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
+  const project = gameProject(local);
+  project.name = 'Camera extrapolation MV';
+  // cam:0 plays 0-4 s, then a 2 s gap its post-extrapolation covers, then cam:1 from 6 s.
+  const [first, second] = project.tracks[0].events;
+  second.start = 6;
+  Object.assign(first.values, { postExtrapolationMode: 2, postExtrapolationTime: 2 });
+  await importGame(page, project);
+  await page.locator('#mv-camera-mode').waitFor();
+  const pose = async (time) => { await seek(page, time); return { camera: await camera(page), shot: await page.evaluate(() => window.probeCtx.scene().inspect().cameraEvent) }; };
+  const setMode = (mode) => page.evaluate((value) => window.probeCtx.history.apply({ label: 'Edit value',
+    changes: [{ target: { kind: 'event', track: 'cam', event: 'cam:0' }, path: ['values', 'postExtrapolationMode'], after: value }] }), mode);
+  // [mode, time in the gap, the time inside the shot that shows the same pose]
+  for (const [mode, time, same] of [[2, 4.5, .5], [2, 5.25, 1.25], [3, 4.5, 3.5], [3, 5.25, 2.75], [4, 5, 4], [1, 5, 4]]) {
+    await setMode(mode);
+    const gap = await pose(time), inside = await pose(same);
+    assert.equal(gap.shot && gap.shot.event, 'cam:0', `mode ${mode} at ${time}: the shot extrapolates`);
+    assert.deepEqual(gap.camera.position, inside.camera.position, `mode ${mode} at ${time}: the pose at ${same}`);
+    assert.deepEqual(gap.camera.quaternion, inside.camera.quaternion);
+    assert.equal(gap.camera.fov, inside.camera.fov);
+  }
+  await setMode(0);
+  const none = await pose(4.5);
+  assert.notEqual(none.shot && none.shot.event, 'cam:0', 'None: the shot does not extrapolate');
+  assert.deepEqual(errors, []);
+  await page.close();
+}
+
 // Several camera keys at once, in the Korean UI: Shift/Ctrl+click, Shift+Space, a Shift+drag box on
 // the camera lane and a box in the curve view, Ctrl+A (not in a text field), Escape; a group drag
 // (stopped by the next key), arrow keys, a curve-view drag of a selected key's value, Alt+drag and
@@ -1267,6 +1303,7 @@ async function run() {
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     await synthetic(browser, server.url);
     await subCameras(browser, server.url);
+    await extrapolation(browser, server.url);
     await multiKeys(browser, server.url);
     await multiKeysTouch(browser, server.url);
     const roundTrip = await exportRoundTrip(browser, server.url);
