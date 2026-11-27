@@ -153,6 +153,66 @@
     });
     return queue;
   }
+  // Game meshes split a vertex wherever its UV, normal or material differs, so
+  // a seam keeps two or more vertices at one point. Positions are compared as
+  // the float32 values the mesh stores: equal, or within SAME_POSITION_ULPS
+  // float32 steps on every axis. In 499 real costume meshes 113,025 seams are
+  // bit-identical, and 584 more seam copies sit 1-4 steps apart (exporter
+  // rounding). The closest distinct vertices found (two corners of one
+  // triangle) were 81 steps (1.2e-6) apart; 4 steps stay below 4.8e-7 for
+  // every coordinate under 2, so the tolerance never merges distinct vertices.
+  var SAME_POSITION_ULPS = 4, floatScratch = new Float32Array(1), intScratch = new Int32Array(floatScratch.buffer);
+  function orderedFloat(value) { floatScratch[0] = value; var bits = intScratch[0]; return bits < 0 ? -(bits & 0x7fffffff) : bits; }
+  function buildPositionGroups(count, positionAt, tolerance) {
+    tolerance = tolerance === undefined ? SAME_POSITION_ULPS : Math.max(0, Math.floor(tolerance));
+    // Spatial hash over float32 steps: cells 256 steps wide (one value when
+    // exact), hashed to an integer, with a chain of vertices per hash. Wide
+    // cells keep neighbour lookups rare; collisions and wide cells only add
+    // candidates, and every candidate is compared on all three axes.
+    var parent = new Int32Array(count), ordered = new Float64Array(count * 3), next = new Int32Array(count), heads = new Map(), width = tolerance ? Math.max(256, tolerance + 1) : 1, joined = false;
+    function root(v) { while (parent[v] !== v) { parent[v] = parent[parent[v]]; v = parent[v]; } return v; }
+    function join(a, b) { a = root(a); b = root(b); if (a !== b) { if (b < a) { var swap = a; a = b; b = swap; } parent[b] = a; joined = true; } }
+    function hash(x, y, z) { return Math.imul(x | 0, 73856093) ^ Math.imul(y | 0, 19349663) ^ Math.imul(z | 0, 83492791); }
+    function scan(v, x, y, z) {
+      for (var other = heads.get(hash(x, y, z)); other !== undefined && other >= 0; other = next[other])
+        if (Math.abs(ordered[other * 3] - ordered[v * 3]) <= tolerance && Math.abs(ordered[other * 3 + 1] - ordered[v * 3 + 1]) <= tolerance && Math.abs(ordered[other * 3 + 2] - ordered[v * 3 + 2]) <= tolerance) join(other, v);
+    }
+    for (var v = 0; v < count; v++) {
+      parent[v] = v; var p = positionAt(v), ox = orderedFloat(p[0]), oy = orderedFloat(p[1]), oz = orderedFloat(p[2]);
+      ordered[v * 3] = ox; ordered[v * 3 + 1] = oy; ordered[v * 3 + 2] = oz;
+      var cx = Math.floor(ox / width), cy = Math.floor(oy / width), cz = Math.floor(oz / width), x0 = cx, x1 = cx, y0 = cy, y1 = cy, z0 = cz, z1 = cz;
+      // A value within the tolerance lies in this cell or, near its edge, the next one.
+      if (tolerance) {
+        if (ox - cx * width < tolerance) x0--; if ((cx + 1) * width - 1 - ox < tolerance) x1++;
+        if (oy - cy * width < tolerance) y0--; if ((cy + 1) * width - 1 - oy < tolerance) y1++;
+        if (oz - cz * width < tolerance) z0--; if ((cz + 1) * width - 1 - oz < tolerance) z1++;
+      }
+      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) for (var z = z0; z <= z1; z++) scan(v, x, y, z);
+      var key = hash(cx, cy, cz), head = heads.get(key); next[v] = head === undefined ? -1 : head; heads.set(key, v);
+    }
+    // Roots are the lowest member, so groups and members come out ascending.
+    var groupOf = new Int32Array(count).fill(-1), groups = [];
+    if (joined) {
+      var byRoot = new Map();
+      for (var vertex = 0; vertex < count; vertex++) { var r = root(vertex), members = byRoot.get(r); if (members) members.push(vertex); else byRoot.set(r, [vertex]); }
+      byRoot.forEach(function (list) { if (list.length > 1) { list.forEach(function (member) { groupOf[member] = groups.length; }); groups.push(list); } });
+    }
+    return { count: count, tolerance: tolerance, groupOf: groupOf, groups: groups };
+  }
+  // The vertices that move with `vertices` (the chosen ones): every other
+  // member of their groups. `groups` lists each touched group with its chosen
+  // members; a partner copies the movement of its group's first chosen vertex.
+  function samePositionPartners(index, vertices) {
+    var chosen = new Set(), partners = [], seeds = new Map(), groups = [], seen = new Set();
+    Array.from(vertices || []).forEach(function (v) { v = +v; if (Number.isInteger(v) && v >= 0 && v < index.count) chosen.add(v); });
+    Array.from(chosen).sort(function (a, b) { return a - b; }).forEach(function (v) {
+      var group = index.groupOf[v]; if (group < 0 || seen.has(group)) return; seen.add(group);
+      var members = index.groups[group], picked = members.filter(function (member) { return chosen.has(member); });
+      members.forEach(function (member) { if (!chosen.has(member)) { partners.push(member); seeds.set(member, picked[0]); } });
+      groups.push({ members: members.slice(), chosen: picked });
+    });
+    return { partners: partners, seeds: seeds, groups: groups };
+  }
   function clampView(view) {
     var zoom = Math.max(1, Math.min(16, +view.zoom || 1));
     return { zoom: zoom, x: Math.max(1 - zoom, Math.min(0, +view.x || 0)), y: Math.max(1 - zoom, Math.min(0, +view.y || 0)) };
@@ -835,5 +895,6 @@
       dispose: function () { disposed = true; request++; runtimeGesture = null; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.dispose(); p.root.remove(); }); style.remove(); cache = {}; } };
   }
   window.ViewerMeshTools = { create: create, normalizeInfluences: normalize, redistributeInfluence: redistributeInfluence, circleIntersectsTriangle: intersects,
-    buildFaceConnectivity: buildFaceConnectivity, connectedFaces: connectedFaces, uvToView: uvToView, viewToUv: viewToUv, zoomView: zoomView };
+    buildFaceConnectivity: buildFaceConnectivity, connectedFaces: connectedFaces, uvToView: uvToView, viewToUv: viewToUv, zoomView: zoomView,
+    buildPositionGroups: buildPositionGroups, samePositionPartners: samePositionPartners, samePositionUlps: SAME_POSITION_ULPS };
 })();

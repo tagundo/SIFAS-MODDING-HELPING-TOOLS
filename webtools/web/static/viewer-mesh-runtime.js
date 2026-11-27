@@ -72,6 +72,43 @@
     }
     return result;
   }
+  // Free camera-plane drag with "move vertices at the same position together".
+  // Each vertex's own inverse skin map turns the world-space pointer motion
+  // into a source-local delta. Seam copies can carry different skin weights,
+  // so their own maps would give them different deltas and open the seam in
+  // the saved mesh. A group therefore shares one delta: the picked vertex's
+  // when it is in the group (that vertex follows the pointer exactly, as
+  // before), else the delta of the group's lowest-index selected vertex with
+  // an invertible map. Equal start values plus one delta keep the group's
+  // saved local positions identical. Ungrouped selected vertices keep their
+  // own map; a vertex whose map is singular does not move (as before).
+  function planeDragPlan(selected, together, picked, positionOf, linearOf) {
+    var positions = {}, inverse = {}, follow = {}, grouped = new Set();
+    function invertible(vertex) {
+      if (Object.prototype.hasOwnProperty.call(inverse, vertex)) return true;
+      var linear = linearOf(vertex); if (Math.abs(linear.determinant()) < 1e-12) return false;
+      inverse[vertex] = linear.clone().invert(); return true;
+    }
+    together.groups.forEach(function (group) {
+      group.members.forEach(function (vertex) { grouped.add(vertex); });
+      var order = group.chosen.indexOf(picked) >= 0 ? [picked].concat(group.chosen) : group.chosen, seed = null;
+      for (var i = 0; i < order.length && seed === null; i++) if (invertible(order[i])) seed = order[i];
+      if (seed === null) return;
+      group.members.forEach(function (vertex) { positions[vertex] = positionOf(vertex); follow[vertex] = seed; });
+    });
+    selected.forEach(function (vertex) {
+      if (grouped.has(vertex)) return;
+      positions[vertex] = positionOf(vertex);
+      if (invertible(vertex)) follow[vertex] = vertex;
+    });
+    return { positions: positions, inverse: inverse, follow: follow };
+  }
+  function planeDragValues(plan, deltaWorld) {
+    var locals = {}, values = {};
+    Object.keys(plan.inverse).forEach(function (vertex) { locals[vertex] = deltaWorld.clone().applyMatrix3(plan.inverse[vertex]); });
+    Object.keys(plan.follow).forEach(function (vertex) { var local = locals[plan.follow[vertex]]; values[vertex] = plan.positions[vertex].map(function (value, axis) { return value + local.getComponent(axis); }); });
+    return values;
+  }
   function identityKey(value) { return JSON.stringify(value); }
   function mapping(mesh) { return mesh && (mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.viewerMesh || mesh.userData && mesh.userData.viewerMesh); }
   function validMapping(mesh) {
@@ -593,5 +630,6 @@
     return { sync: sync, beforeRender: beforeRender, reset: reset, getState: inspect, projectVertex: screenVertex,
       dispose: function () { disposed = true; reset(); } };
   }
-  global.ViewerMeshRuntime = { create: create, vertexLocal: vertexLocal, vertexWorld: vertexWorld, worldSnapshot: worldSnapshot, skinMatrix: skinMatrix, raycastMesh: raycastMesh };
+  global.ViewerMeshRuntime = { create: create, vertexLocal: vertexLocal, vertexWorld: vertexWorld, worldSnapshot: worldSnapshot, skinMatrix: skinMatrix, raycastMesh: raycastMesh,
+    planeDragPlan: planeDragPlan, planeDragValues: planeDragValues };
 })(window);
