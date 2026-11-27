@@ -3183,7 +3183,6 @@ _MV_EDITOR_E2_TRANSLATIONS = {
     "Unmute track": ("트랙 음소거 해제", "トラックのミュートを解除"),
     "Muted": ("음소거됨", "ミュート中"),
     "Muted group": ("음소거된 그룹", "ミュート中のグループ"),
-    "Group mute": ("그룹 음소거", "グループのミュート"),
     "This track is muted. The preview skips it.": (
         "이 트랙은 음소거되어 미리보기에서 재생되지 않습니다.", "このトラックはミュート中で、プレビューでは再生されません。"),
     "A group's mute does not reach the game: the game plays each track in it by its own mute.": (

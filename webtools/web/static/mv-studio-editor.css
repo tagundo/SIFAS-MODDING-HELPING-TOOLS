@@ -90,21 +90,21 @@
 .mv-lane-label.mv-lane-edited { box-shadow: inset 3px 0 0 #f2b84b; }
 .mv-lane-extra { background-color: color-mix(in srgb, var(--accent) 7%, transparent); }
 
-/* Track mute: a speaker toggle before the lane name. A group row, or a track whose mute the
-   game sets from a quality option, shows its state only (aria-disabled; a press tells why). */
-#tab-mv .mv-lane-mute {
-  flex: none;
+/* Track mute: a speaker toggle before the lane name. A track whose mute the game sets from a
+   quality option, or a muted group's mark, shows its state only (aria-disabled; a press tells
+   why). Toggle and quality badge sit in the label's text flow (mv-studio.js laneLabel). */
+#tab-mv :is(.mv-lane-mute, .mv-lane-quality) {
+  position: relative;
   display: inline-grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  vertical-align: middle;
   min-height: 0;
-  margin-inline-end: 4px;
   padding: 0;
   border-color: transparent;
   background: transparent;
   color: var(--muted);
 }
+#tab-mv .mv-lane-mute { width: 20px; height: 20px; margin-inline-end: 4px; }
 #tab-mv .mv-lane-mute:hover { border-color: var(--line); color: var(--text); }
 #tab-mv .mv-lane-mute[aria-pressed=true] { border-color: #f2b84b; background: #f2b84b33; color: var(--text); }
 #tab-mv .mv-lane-mute[aria-disabled=true] { cursor: help; opacity: .45; }
@@ -113,28 +113,28 @@
 .mv-mute-icon > path:first-child { fill: currentColor; }
 .mv-lane-mute .mv-mute-on, .mv-lane-mute.mv-muted .mv-mute-off { display: none; }
 .mv-lane-mute.mv-muted .mv-mute-on { display: inline; }
-.mv-lane-label.mv-lane-muted .mv-lane-text { opacity: .55; }
+.mv-lane-label.mv-lane-muted :is(.mv-lane-path, .mv-lane-name, .mv-lane-group-name) { opacity: .55; }
 #tab-mv .mv-lane.mv-lane-muted .mv-clip { opacity: .45; }
 /* Quality badge: the lane plays only while its MV quality flag is on (red when it is off). */
-#tab-mv .mv-lane-quality {
-  flex: none;
-  display: inline-grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  min-height: 0;
-  margin-inline-start: auto;
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
-  color: var(--muted);
-  cursor: help;
-}
+#tab-mv .mv-lane-quality { width: 18px; height: 18px; margin-inline-start: 4px; cursor: help; }
 #tab-mv .mv-lane-quality.mv-quality-off { border-color: #e5484d; color: #e5484d; }
 .mv-quality-icon { width: 12px; height: 12px; fill: currentColor; }
+/* A group heading keeps its line height: 16 px marks that do not raise the line. */
+#tab-mv .mv-lane-group :is(.mv-lane-mute, .mv-lane-quality) { width: 16px; height: 16px; margin-block: -2px; }
+#tab-mv .mv-lane-group .mv-mute-icon { width: 12px; height: 12px; }
+#tab-mv .mv-lane-group .mv-quality-icon { width: 10px; height: 10px; }
 @media (pointer: coarse) {
-  #tab-mv .mv-lane-mute { width: 28px; height: 28px; }
-  #tab-mv .mv-lane-quality { width: 26px; height: 26px; }
+  #tab-mv .mv-lane-label:not(.mv-lane-group) .mv-lane-mute { width: 28px; height: 28px; }
+  #tab-mv .mv-lane-label:not(.mv-lane-group) .mv-lane-quality { width: 26px; height: 26px; }
+  /* Every mark takes a 32 px touch target, centred on it, whatever it draws. */
+  #tab-mv :is(.mv-lane-mute, .mv-lane-quality)::before { content: ""; position: absolute; inset: calc(50% - 16px); }
+}
+/* Narrow screens (the label column is about 6rem): small marks, so a name keeps the width. A
+   group heading leaves its quality badge to its tracks' rows (it would take a line of its own). */
+@media (max-width: 480px) {
+  #tab-mv .mv-lane-label:not(.mv-lane-group) .mv-lane-mute { width: 20px; height: 20px; }
+  #tab-mv .mv-lane-label:not(.mv-lane-group) .mv-lane-quality { width: 16px; height: 16px; }
+  #tab-mv .mv-lane-group .mv-lane-quality { display: none; }
 }
 .mv-lane-extra-label { font-style: italic; }
 

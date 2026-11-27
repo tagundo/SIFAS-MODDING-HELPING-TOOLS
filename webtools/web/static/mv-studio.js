@@ -1283,7 +1283,7 @@
     return icon;
   }
 
-  // The mute toggle of a lane label (a group row shows its state and why it does not count).
+  // The mute toggle of a lane label (a muted group's mark shows its state and why it does not count).
   function muteButton(track) {
     const control = make("button", null, { type: "button", class: "mv-lane-mute", "data-track": text(track.id) });
     control.append(speakerIcon());
@@ -1302,7 +1302,7 @@
   function syncMuteButton(control, track) {
     const muted = !!track.muted, reason = muteLock(track), group = Tabs.isGroup(track);
     control.classList.toggle("mv-muted", muted);
-    control.setAttribute("aria-label", t(group ? (muted ? "Muted group" : "Group mute") : "Mute track"));
+    control.setAttribute("aria-label", t(group ? "Muted group" : "Mute track"));
     if (reason) {
       control.setAttribute("aria-disabled", "true");
       control.removeAttribute("aria-pressed");
@@ -1370,20 +1370,42 @@
     }
   }
 
+  /* The mute toggle and the quality badge sit in the label's text flow, so the name wraps
+     after them and after each "/" of a path (<wbr> adds no text) and keeps the label's width. */
   function laneLabel(track) {
     const full = text(track.label || kinds[track.kind] || track.kind);
     const label = make("p", null, { class: "mv-lane-label", title: text(track.binding || track.label), "data-track": text(track.id) });
-    label.append(muteButton(track));
     const cut = full.lastIndexOf("/"), body = make("span", null, { class: "mv-lane-text" });
+    body.append(muteButton(track), document.createElement("wbr"));
     if (cut > 0) {
-      // The group path is muted and may wrap after each "/" (<wbr> adds no text).
+      // The group path is muted and may wrap after each "/".
       const group = make("span", null, { class: "mv-lane-path" });
       for (const part of full.slice(0, cut).split("/")) group.append(part + "/", document.createElement("wbr"));
       body.append(group, make("span", full.slice(cut + 1), { class: "mv-lane-name" }));
     } else body.append(make("span", full, { class: "mv-lane-name" }));
-    label.append(body);
     const badge = qualityBadge(track);
-    if (badge) label.append(badge);
+    if (badge) body.append(document.createElement("wbr"), badge);
+    label.append(body);
+    return label;
+  }
+
+  /* A group heading row: its path wraps only after a "/", its quality badge follows the text,
+     and a group shows a mute mark only when it is muted (its mute never reaches the game, so
+     it has no toggle). */
+  function groupLabel(track) {
+    const full = text(track.label);
+    const label = make("p", null, { class: "mv-lane-label mv-lane-group", title: full, "data-track": text(track.id) });
+    const body = make("span", null, { class: "mv-lane-text" }), name = make("span", null, { class: "mv-lane-group-name" });
+    full.split("/").forEach((part, index, parts) => {
+      name.append(index < parts.length - 1 ? part + "/" : part);
+      if (index < parts.length - 1) name.append(document.createElement("wbr"));
+    });
+    if (track.muted) body.append(muteButton(track), document.createElement("wbr"));
+    body.append(name);
+    const badge = qualityBadge(track);
+    if (badge) body.append(document.createElement("wbr"), badge);
+    label.append(body);
+    label.classList.toggle("mv-lane-muted", !!track.muted);
     return label;
   }
 
@@ -1543,12 +1565,7 @@
         syncLaneLabel(row.track);
         decorate.push([row.track, lane]);
       } else if (row.type === "group") {
-        const label = make("p", null, { class: "mv-lane-label mv-lane-group", title: text(row.track.label), "data-track": text(row.track.id) });
-        label.append(muteButton(row.track), make("span", text(row.track.label), { class: "mv-lane-text" }));
-        const badge = qualityBadge(row.track);
-        if (badge) label.append(badge);
-        label.classList.toggle("mv-lane-muted", !!row.track.muted);
-        grid.append(label, make("div", null, { class: "mv-lane-group-lane", "aria-hidden": "true" }));
+        grid.append(groupLabel(row.track), make("div", null, { class: "mv-lane-group-lane", "aria-hidden": "true" }));
       } else if (row.type === "extra") {
         const label = make("p", text(row.lane.label), { class: "mv-lane-label mv-lane-extra-label", title: text(row.lane.title || row.lane.label) });
         const lane = make("div", null, { class: "mv-lane mv-lane-extra", "data-extra": text(row.lane.id) });

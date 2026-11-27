@@ -442,6 +442,76 @@ async function pluginContract(browser, url) {
   await page.close();
 }
 
+/* Lane labels on a phone (390 x 844, touch). Group rows stay headings: bold, as high as their
+   text lines (their 16 px marks do not raise a line), wrapping only after a "/" or a space. No
+   label breaks a word that fits its width (the mute toggle and the badge sit in the text flow),
+   and every toggle and badge keeps a 32 px touch target. */
+async function phoneLanes(browser, url, project) {
+  const page = await browser.newPage({ locale: 'ko', viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  try {
+    await page.route('**/api/mv-studio/catalog?*', (route) => route.fulfill({ json: { region: 'gl', platform: 'android',
+      regions: [{ id: 'gl', label: 'Global (GL)' }], platforms: [{ id: 'android', label: 'Android' }],
+      songs: [{ id: 12035, title: project.name, variants: [{ id: 1, label: 'MV' }] }] } }));
+    await page.route('**/api/mv-studio/game-stream?*', (route) => route.fulfill({ status: 404 }));
+    await page.route('**/api/mv-studio/game?*', (route) => route.fulfill({ json: project }));
+    await page.goto(url + '/#mv');
+    await page.waitForFunction(() => MVStudio.getState().visible);
+    await page.locator('#mv-import-game').click();
+    await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
+    await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled);
+    await page.locator('#mv-game-load').click();
+    await page.waitForFunction((name) => MVStudio.getState().project?.name === name, project.name);
+    await page.locator('#mv-timeline-grid .mv-clip').first().waitFor();
+    const rows = await page.evaluate(() => [...document.querySelectorAll('#mv-timeline-grid .mv-lane-label[data-track]')].map((label) => {
+      const body = label.querySelector('.mv-lane-text'), style = getComputedStyle(label);
+      const room = label.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const tops = new Set(), broken = [];
+      const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.parentElement.getClientRects().length) continue;   // the path, hidden on phones
+        for (const match of node.data.matchAll(/[^/\s]+\/?/g)) {
+          const range = document.createRange();
+          range.setStart(node, match.index);
+          range.setEnd(node, match.index + match[0].length);
+          const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
+          for (const rect of rects) tops.add(Math.round(rect.top));
+          const lines = new Set(rects.map((rect) => Math.round(rect.top)));
+          if (lines.size > 1 && rects.reduce((sum, rect) => sum + rect.width, 0) <= room) broken.push(match[0]);
+        }
+      }
+      const marks = [...label.querySelectorAll('.mv-lane-mute, .mv-lane-quality')].filter((mark) => mark.getClientRects().length).map((mark) => {
+        const box = mark.getBoundingClientRect(), target = getComputedStyle(mark, '::before');
+        return { quality: mark.classList.contains('mv-lane-quality'), height: box.height,
+          target: Math.min(parseFloat(target.width) || box.width, parseFloat(target.height) || box.height) };
+      });
+      return { label: label.title, group: label.classList.contains('mv-lane-group'), height: label.getBoundingClientRect().height,
+        lines: tops.size, lineHeight: parseFloat(getComputedStyle(body).lineHeight), minHeight: parseFloat(style.minHeight) || 0,
+        weight: Number(getComputedStyle(body).fontWeight), broken, marks };
+    }));
+    const groups = rows.filter((row) => row.group);
+    assert(groups.length >= 5, 'group rows');
+    // A category's quality badge shows on its tracks' rows; the group heading leaves it out here.
+    assert(rows.some((row) => !row.group && row.marks.some((mark) => mark.quality)), 'track rows keep their quality badges');
+    assert(!groups.some((row) => row.marks.some((mark) => mark.quality)), 'no badge line on a group heading');
+    assert(rows.filter((row) => !row.group).every((row) => row.marks.some((mark) => !mark.quality)), 'every track row has its mute toggle');
+    for (const row of rows) {
+      assert.deepEqual(row.broken, [], `${row.label}: no word that fits is broken`);
+      for (const mark of row.marks) assert(mark.target >= 32, `${row.label}: a 32 px touch target (${mark.target})`);
+    }
+    for (const row of groups) {
+      assert(row.weight >= 600, `${row.label}: a group row keeps its heading weight`);
+      assert(row.height <= Math.max(row.minHeight, row.lines * row.lineHeight + 1) + 1.5,
+        `${row.label}: ${row.height} px for ${row.lines} line(s) of ${row.lineHeight} px`);
+      for (const mark of row.marks) assert(mark.height <= 16, `${row.label}: a small mark (${mark.height})`);
+    }
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, 'no horizontal page scroll');
+    await page.locator('#mv-timeline-grid .mv-lane-group').filter({ hasText: 'Coloring' }).first().scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(evidence, 'lanes-phone-ko.png') });
+  } finally {
+    await page.close();
+  }
+}
+
 async function run() {
   const server = await startServer();
   let browser;
@@ -684,12 +754,9 @@ async function run() {
       ['StageEffect/Expert/Coloring/LED_panel_01'], 'the badge adds no text to the lane name');
     await ledBadge.click();
     assert.equal(await page.locator('#mv-status').textContent(), "MV 그래픽 설정에서 '무대 색상 연출'이(가) 켜져 있을 때만 재생됩니다.");
-    // A group's mute never reaches the game.
-    const groupMute = page.locator('.mv-lane-group .mv-lane-mute').first();
-    assert.equal(await groupMute.getAttribute('aria-disabled'), 'true');
-    await groupMute.click({ force: true });
-    assert.equal(await page.locator('#mv-status').textContent(),
-      '그룹 음소거는 게임에 반영되지 않습니다. 게임은 그룹 안의 각 트랙을 그 트랙의 음소거 설정대로 재생합니다.');
+    // A group's mute never reaches the game: a group row has no toggle (a muted one shows a mark, below).
+    assert(await page.locator('.mv-lane-group').count() > 0);
+    assert.equal(await page.locator('.mv-lane-group .mv-lane-mute').count(), 0);
 
     // ---- Drag a camera shot by one second ----------------------------------------------------
     await page.locator('#mv-tab-camera').click();
@@ -952,6 +1019,9 @@ async function run() {
     const flash = legacy.tracks.find((track) => track.label === flashLabel).events[0];
     legacy.editor = { version: 1, originals: { [flash.id]: JSON.parse(JSON.stringify(flash)) } };
     flash.values.postExtrapolationMode = 1;
+    // A muted group (as stock 11054 and 10120 have) shows its state and why it does not count.
+    const mutedGroup = legacy.tracks.find((track) => track.label === 'StageEffect/Expert/Post');
+    mutedGroup.muted = true;
     // This project's quality preset has the flash lights off.
     legacy.quality = { ...legacy.quality, options: [...legacy.quality.options, { key: 'stage_flash_light', label: '무대 점멸 조명', type: 'boolean' }],
       values: { ...legacy.quality.values, stage_flash_light: false } };
@@ -977,6 +1047,16 @@ async function run() {
     await page.locator('#mv-timeline-label').click();
     await page.keyboard.press('Control+z');
     assert.equal(findEvent((await state(page)).project, flash.id).values.postExtrapolationMode, 1, 'undo brings the saved edit back');
+    await page.locator('#mv-tab-all').click();
+    const groupMark = page.locator(`.mv-lane-group .mv-lane-mute[data-track="${mutedGroup.id}"]`);
+    assert.equal(await page.locator('.mv-lane-group .mv-lane-mute').count(), 1, 'only the muted group has a mark');
+    assert.equal(await groupMark.getAttribute('aria-disabled'), 'true');
+    assert.equal(await groupMark.getAttribute('aria-label'), '음소거된 그룹');
+    await groupMark.click({ force: true });
+    assert.equal(await page.locator('#mv-status').textContent(),
+      '그룹 음소거는 게임에 반영되지 않습니다. 게임은 그룹 안의 각 트랙을 그 트랙의 음소거 설정대로 재생합니다.');
+    assert.equal((await state(page)).project.tracks.find((track) => track.id === mutedGroup.id).muted, true, 'and stays muted');
+    await page.locator('#mv-tab-lighting').click();
     // The quality badge shows the flag off, and follows the quality panel.
     const flashTrack = legacy.tracks.find((track) => track.label === flashLabel);
     const flashBadge = page.locator(`.mv-lane-quality[data-track="${flashTrack.id}"]`);
@@ -1004,6 +1084,7 @@ async function run() {
     await page.waitForFunction(() => document.querySelector('#mv-tab-all')?.firstChild.textContent.trim() === '전체');
 
     assert.deepEqual(errors, []);
+    await phoneLanes(browser, server.url, original);
     await pluginContract(browser, server.url);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {
