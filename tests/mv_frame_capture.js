@@ -3,6 +3,7 @@
    node tests/mv_frame_capture.js --manifest frames.json --out DIR [--url http://127.0.0.1:PORT]
      [--server-root ../] [--library SUKUSTA_DIR] [--video game.mp4] [--chromium PATH] [--software true]
      [--game-dump mv-runtime-dump.json.gz [--particle-clock game|director]] [--frame-history game|none]
+     [--random-seed N]
 
    The manifest names the original MV (region, platform, liveId, assetId), the game
    quality mode and the timeline times to render. Each frame is produced with the
@@ -34,6 +35,13 @@
    by its Time.deltaTime (mv_runtime_capture.deviceFrames). A manifest frame
    {time, frameCount} shows that game frame where several share the director time (the
    song-end hold). capture.json physics.particleClock records it.
+
+   --random-seed N (a uint32 above 0) makes two captures of the same frames comparable: the
+   page draws Math.random and crypto.getRandomValues from two fixed-seed streams. The cues
+   the client seeds per activation (crypto, MVStudioStageParticles.autoSeed) then take the
+   same seeds in every run, and as their own stream they stay the same between two trees
+   that create different numbers of three.js objects (each draws Math.random for its UUID).
+   Without it every run realizes those cues differently. capture.json randomSeed records it.
 
    Members follow the client's MV deck chain; source.deck "original" picks the
    Original tab instead of Customize, source.player picks a local Elichika player of
@@ -251,6 +259,37 @@ async function bootEditor(serverRoot, library, logFile) {
   }
   child.kill();
   throw new Error(`The MV editor did not start; see ${logFile}`);
+}
+
+// Page init script (--random-seed): Math.random and crypto.getRandomValues from two separate
+// fixed-seed streams (mulberry32), so particle auto seeds do not depend on three.js UUID draws.
+function seedRandom(seed) {
+  const stream = (start) => {
+    let state = start >>> 0;
+    return () => {
+      state = (state + 0x6D2B79F5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return (t ^ (t >>> 14)) >>> 0;
+    };
+  };
+  const random = stream(seed), bytes = stream(seed ^ 0x9E3779B9);
+  Math.random = () => random() / 4294967296;
+  if (globalThis.crypto && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues = (array) => {
+      const view = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+      for (let index = 0; index < view.length; index++) view[index] = bytes() & 255;
+      return array;
+    };
+  }
+}
+
+function randomSeed(value) {
+  if (value === undefined) return null;
+  const seed = Number(value);
+  assert(Number.isInteger(seed) && seed > 0 && seed <= 0xffffffff, '--random-seed is an integer from 1 to 4294967295');
+  return seed;
 }
 
 // Keeps the scene the editor creates so frames can be stepped and inspected.
@@ -537,6 +576,7 @@ async function run() {
   assert(particleClockMode === 'director' || gameDump, '--particle-clock game needs --game-dump');
   assert(!grid || manifest.game?.exporter !== 'fovmod', 'A game frame grid is for a real-time game run, not a FOVMOD export');
   const history = frameHistory(grid, options['frame-history'] ?? 'game');
+  const seed = randomSeed(options['random-seed']);
   let server = null, browser = null;
   try {
     const url = options.url || (server = await bootEditor(serverRoot, options.library, path.join(out, 'editor-server.log'))).url;
@@ -545,6 +585,7 @@ async function run() {
     const page = await browser.newPage({ viewport: { width: 2600, height: 1600 }, deviceScaleFactor: 1 });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
+    if (seed !== null) await page.addInitScript(seedRandom, seed);
     await page.addInitScript(attachSceneProbe);
     await page.goto(url + '/#mv');
     if (manifest.costumes) {
@@ -627,7 +668,7 @@ async function run() {
         server: { root: serverRoot, commit: options.url ? null : gitHead(serverRoot) },
         url: options.url || null, browser: browser.version(), webgl: await rendererInfo(page), platform: process.platform,
       },
-      pageErrors: errors, frames,
+      randomSeed: seed, pageErrors: errors, frames,
     };
     fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify(capture, null, 2) + '\n');
     console.log(JSON.stringify({ out, frames: frames.length, webgl: capture.environment.webgl, warnings: project.warnings.length, pageErrors: errors.length,
@@ -640,7 +681,7 @@ async function run() {
 
 module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, deckRequest, importOriginal, projectRecord, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty,
   videoFps, physicsReference, applyPhysicsReference, nativeRenderHeight, applyAntiAliasing, prerollPlan, readGameDump, gameFrameGrid, captureQuality,
-  frameHistory, screenFadeFor,
+  frameHistory, screenFadeFor, seedRandom, randomSeed,
   MAX_DELTA_TIME };
 // Exported before run() starts: run() requires mv_runtime_capture.js (--game-dump), which requires this
 // module back and would otherwise keep its unfinished exports.
