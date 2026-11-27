@@ -5,14 +5,17 @@ comes from the selected Unity assets, never from the app's character picker.
 Only the viewer decides which Face/Eyes renderers from a donor can be exported.
 """
 import ast
+from contextlib import closing
 import hashlib
 import json
 from itertools import islice
 import math
+import ntpath
 import os
 from pathlib import Path
 import re
 import sqlite3
+import struct
 import tempfile
 import threading
 import time
@@ -61,6 +64,35 @@ def _check(deadline):
         from .transient_failures import note
         note()
         raise FaceUnavailable("Finding the original face took too long.")
+
+
+def _serialized_names(path):
+    """Casefolded serialized-file names a candidate bundle declares.
+
+    Only the bounded UnityFS directory is read; no object is parsed. Unity
+    resolves a PPtr's m_FileID through these names, so this tells whether a
+    candidate is the exact face a body's BodyPartManager points to.
+    """
+    from .model_viewer import _preflight_bundle
+    with open(path, "rb") as handle:
+        data = handle.read(MAX_PACK_BYTES + 1)
+    if len(data) > MAX_PACK_BYTES:
+        return set()
+    if not data.startswith(b"UnityFS\0"):
+        return {ntpath.basename(path).casefold()}
+    _, layout = _preflight_bundle(data, _with_layout=True)
+    info = layout["info"]
+    blocks, = struct.unpack_from(">i", info, 16)
+    cursor = 20 + blocks * 10
+    nodes, = struct.unpack_from(">i", info, cursor)
+    cursor += 4
+    names = set()
+    for _ in range(nodes):
+        cursor += 20
+        end = info.index(b"\0", cursor)
+        names.add(ntpath.basename(info[cursor:end].decode("utf-8", "replace")).casefold())
+        cursor = end + 1
+    return names
 
 
 def _inside(path, roots):
@@ -699,6 +731,9 @@ class FacePlan:
         self.database_paths = set()
         self._hint_sources = {}
         self._body_platforms = set()
+        # The body's own BodyPartManager.face CAB names, its verified game
+        # selections, and same-owner candidates kept until no exact face exists.
+        self.face_references, self._game_records, self._deferred = set(), [], []
         self.initial_roles = roles(scene) if self.enabled else set()
         if not self.enabled:
             return
@@ -742,6 +777,58 @@ class FacePlan:
         self.required_roles = set(self.needed)
         self.status = "already_present" if not self.needed else "unavailable"
         self.target_anchor, self.head_material = self._anchor(scene)
+        if self.needed:
+            self.face_references = self._face_references(scene, body_sources)
+            self._game_records = self._selected_records(scene, body_sources)
+
+    def _face_references(self, scene, sources):
+        """CAB names that the bodies' BodyPartManager.face pointers resolve through.
+
+        The game instantiates exactly that MemberFace prefab. A same-owner face
+        with another CAB (the stock face of a costume whose installed face was
+        isolated, or another costume's edited face) is a different prefab.
+        """
+        from .model_viewer import _source_path
+        names = set()
+        for obj in scene.env.objects:
+            if obj.type.name != "MonoBehaviour" or _source_path(obj) not in sources:
+                continue
+            try:
+                tree = scene.tree(obj)
+                pointer = tree.get("face")
+                if not isinstance(pointer, dict) or "headMaterial" not in tree:
+                    continue
+                file_id, path_id = pointer.get("m_FileID"), pointer.get("m_PathID")
+                externals = obj.assets_file.externals
+                if type(file_id) is not int or type(path_id) is not int or not path_id or not 0 < file_id <= len(externals):
+                    continue
+                if not _declares(scene, obj, tree, "BodyPartManager", "LLAS.Components.Members"):
+                    continue
+                names.add(ntpath.basename(externals[file_id - 1].path).casefold())
+            except Exception:
+                continue
+        return names
+
+    def _selected_records(self, scene, sources):
+        """Game-assets selections registered for these exact body bytes."""
+        from .model_viewer import _source_hash, _source_path
+        from .viewer_mod_sources import imported_record
+        hashes = {}
+        for obj in scene.env.objects:
+            source = _source_path(obj)
+            if source in sources and source not in hashes:
+                hashes[source] = _source_hash(obj)
+        origins = self.context.get("origins", {})
+        records = []
+        for source in sorted(hashes):
+            # Archive members and motion copies have another origin; only the
+            # imported model file itself carries the server's receipt.
+            if origins.get(source, source) != source:
+                continue
+            record = imported_record(source, hashes[source])
+            if record is not None and record not in records:
+                records.append(record)
+        return records
 
     def warn(self, code, message):
         warning = {"code": code, "message": message}
@@ -1020,6 +1107,58 @@ class FacePlan:
                     found.append((rank_name(name), path))
         return [path for _, path in sorted(found)[:MAX_CANDIDATES]]
 
+    def _selected_iter(self):
+        """The selected game costume's own dependencies, as the client loads them.
+
+        A Game-assets selection names its suit and model. The client loads
+        that model's member_model_dependency rows with the body, so this is
+        the face its BodyPartManager was built against, including the private
+        face an installed edited costume depends on instead of the stock one.
+        """
+        root = self.context.get("repo_root")
+        if not root:
+            return
+        seen = set()
+        for record in self._game_records:
+            region, model, suit = record.get("region"), record.get("model"), record.get("suit_id")
+            platform = record.get("platform", "android")
+            if (record.get("scene_source") is not None or region not in ("gl", "jp") or platform not in ("android", "ios")
+                    or not isinstance(model, str) or not model or type(suit) is not int):
+                continue
+            prefix = "asset_i_" if platform == "ios" else "asset_a_"
+            language = record.get("selection_language", "en")
+            directory = Path(root) / "assets" / "db" / region
+            catalogs = sorted(directory.glob(prefix + "*.db"),
+                              key=lambda path: (path.name != f"{prefix}{language}.db", path.name != prefix + "en.db", path.name))
+            for catalog in catalogs[:16]:
+                _check(self.deadline)
+                try:
+                    with closing(sqlite3.connect(catalog.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+                        dependencies = [row[0] for row in db.execute(
+                            "SELECT dependency FROM member_model_dependency WHERE asset_path=? LIMIT 64", (model,))]
+                        keys = [key for key in dict.fromkeys(dependencies) if key != model]
+                        records = {}
+                        if keys:
+                            parameters = ",".join("?" for _ in keys)
+                            for row in db.execute(f"SELECT asset_path,pack_name,head,size,key1,key2 FROM member_model WHERE asset_path IN ({parameters})", keys):
+                                records.setdefault(row[0], row)
+                        sizes = _pack_sizes(db, list(dict.fromkeys(row[1] for row in records.values())), suit)
+                except (OSError, sqlite3.Error, TypeError, ValueError):
+                    continue
+                resources = [dict(zip(("asset_path", "pack_name", "head", "size", "key1", "key2"), row), pack_size=sizes.get(row[1]))
+                             for row in records.values()]
+                if not resources:
+                    continue
+                # One catalog is this selection's authority; other language
+                # catalogs of the same region repeat the same packs.
+                resources.sort(key=lambda resource: -resource["size"] if isinstance(resource["size"], int) else 0)
+                for resource in resources[:MAX_AUTO_FILES]:
+                    identity = tuple(resource[key] for key in ("pack_name", "head", "size", "key1", "key2", "pack_size"))
+                    if identity not in seen:
+                        seen.add(identity)
+                        yield resource
+                break
+
     def _descriptors(self):
         """Keep original view/region/platform alternatives before trying HTTP."""
         return list(self._descriptor_iter())
@@ -1201,7 +1340,7 @@ class FacePlan:
         if not self.enabled or self.owner is None:
             return []
         try:
-            pending = []
+            pending, selected_pending = [], []
             try:
                 for path in self._verified_companions():
                     self._accept(path)
@@ -1209,12 +1348,27 @@ class FacePlan:
                 raise
             except Exception:
                 pass
+            # A Game-assets body names its own suit. The client loads that
+            # suit's dependencies with it, so they come before owner-wide
+            # caches and the member's default suit: an installed edited
+            # costume depends on its private face, not on the stock one.
+            try:
+                if self.needed:
+                    for descriptor in self._selected_iter():
+                        _check(self.deadline)
+                        try:
+                            if self._accept(self._resource(descriptor, download=False), exact=True):
+                                break
+                        except Exception:
+                            selected_pending.append(descriptor)
+            except Exception:
+                pass
             # A downloaded same-owner original must not wait behind catalog
             # scans. Names only select candidates; _accept validates contents.
             try:
                 if self.needed:
                     for path in self._known_local():
-                        if self._accept(path):
+                        if self._accept(path, exact=True):
                             break
             except Exception:
                 pass
@@ -1226,12 +1380,34 @@ class FacePlan:
                     for descriptor in self._descriptor_iter():
                         _check(self.deadline)
                         try:
-                            if self._accept(self._resource(descriptor, download=False)):
+                            if self._accept(self._resource(descriptor, download=False), exact=True):
                                 break
                         except Exception:
                             pending.append(descriptor)
             except Exception:
                 # Standalone/local-only viewers do not need an asset catalog.
+                pass
+            # The client downloads its own suit's missing face pack; do the
+            # same before settling for another prefab of this member.
+            try:
+                if self.needed and selected_pending and self.context.get("allow_download", True):
+                    for descriptor in selected_pending:
+                        _check(self.deadline)
+                        try:
+                            if self._accept(self._resource(descriptor), exact=True):
+                                break
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+            # None of those is the face the body references, e.g. a mod
+            # renamed its face but left it out. Keep the earlier choice: the
+            # first same-owner candidate, in the same order as before.
+            try:
+                for path in list(self._deferred):
+                    if not self.needed or self._accept(path):
+                        break
+            except Exception:
                 pass
             if self.needed:
                 original_deadline = self.deadline
@@ -1272,9 +1448,20 @@ class FacePlan:
             pass
         return list(self.auto_paths)
 
-    def _accept(self, path):
+    def _accept(self, path, exact=False):
         if path in self.paths or path in self.auto_paths or len(self.auto_paths) >= MAX_AUTO_FILES:
             return False
+        if exact and self.face_references:
+            # Another face prefab of the same member is only a fallback while
+            # the face this body references may still be found.
+            try:
+                referenced = bool(_serialized_names(path) & self.face_references)
+            except Exception:
+                referenced = False
+            if not referenced:
+                if path not in self._deferred:
+                    self._deferred.append(path)
+                return False
         try:
             inspected = self._inspect(path)
             if inspected is None:

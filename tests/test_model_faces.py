@@ -570,6 +570,185 @@ class FaceTests(unittest.TestCase):
         directory.symlink_to(self.library, target_is_directory=True)
         self.assertEqual(list(self.plan()._known_local()), [])
 
+    def test_body_part_manager_reference_names_only_its_own_external_face_cab(self):
+        # Neutral component stand-ins: only the serialized reference fields
+        # FacePlan reads are declared, with no game assets bundled.
+        def scene(face, *, script="BodyPartManager", namespace="LLAS.Components.Members",
+                  head_material=True, source="costume", externals=2):
+            paths = ["archive:/CAB-00ff/CAB-00ff", "archive:/cab-a1b2/CAB-A1B2"][:externals]
+            assets = SimpleNamespace(objects={}, externals=[SimpleNamespace(path=path) for path in paths],
+                                     preview_source_path=source, parent=None)
+            definition = SimpleNamespace(type=SimpleNamespace(name="MonoScript"), path_id=7, assets_file=assets,
+                                         tree={"m_ClassName": script, "m_Namespace": namespace,
+                                               "m_AssemblyName": "Assembly-CSharp.dll"})
+            tree = {"m_Script": {"m_FileID": 0, "m_PathID": 7}, "face": face}
+            if head_material:
+                tree["headMaterial"] = {"m_FileID": 0, "m_PathID": 9}
+            manager = SimpleNamespace(type=SimpleNamespace(name="MonoBehaviour"), path_id=5, assets_file=assets, tree=tree)
+            assets.objects.update({5: manager, 7: definition})
+            return SimpleNamespace(env=SimpleNamespace(objects=[manager, definition]), tree=lambda obj: obj.tree)
+        plan = faces.FacePlan.__new__(faces.FacePlan)
+        external = {"m_FileID": 2, "m_PathID": 11}
+        self.assertEqual(plan._face_references(scene(external), {"costume"}), {"cab-a1b2"})
+        self.assertEqual(plan._face_references(scene({"m_FileID": 1, "m_PathID": 11}), {"costume"}), {"cab-00ff"})
+        for label, value, sources in (
+                ("internal face", scene({"m_FileID": 0, "m_PathID": 11}), {"costume"}),
+                ("missing external", scene(external, externals=1), {"costume"}),
+                ("null face", scene({"m_FileID": 2, "m_PathID": 0}), {"costume"}),
+                ("boolean file id", scene({"m_FileID": True, "m_PathID": 11}), {"costume"}),
+                ("other component", scene(external, script="MemberFace"), {"costume"}),
+                ("other namespace", scene(external, namespace="Other"), {"costume"}),
+                ("no head material", scene(external, head_material=False), {"costume"}),
+                ("unselected source", scene(external, source="face"), {"costume"})):
+            with self.subTest(label):
+                self.assertEqual(plan._face_references(value, sources), set())
+
+    def referenced_donor(self, cab):
+        """One same-owner face/eyes donor whose serialized files carry ``cab``."""
+        return bundle([(cab, self.scene("Face")), (cab + "-eyes", self.scene("Eyes"))])
+
+    def test_cached_face_the_body_references_precedes_another_cached_member_face(self):
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        # The first name in cache order is another prefab of the same member,
+        # e.g. an installed costume's private face cached by an earlier open.
+        other = directory / ("ch0207_" + "a" * 24 + ".unity")
+        referenced = directory / ("ch0207_" + "b" * 24 + ".unity")
+        faces._save(other, self.referenced_donor("CAB-" + "1" * 32), 207)
+        faces._save(referenced, self.referenced_donor("CAB-" + "2" * 32), 207)
+        with patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                patch.object(faces.FacePlan, "_local", return_value=[]) as broad, \
+                patch.object(faces, "_download") as fetch:
+            plan = self.plan()
+            self.assertEqual(plan.resolve(), [str(referenced)])
+        self.assertEqual(plan.status, "added")
+        self.assertEqual(plan.source_roles[str(referenced)], {"face", "eyes"})
+        broad.assert_not_called()
+        fetch.assert_not_called()
+
+    def test_member_faces_without_the_referenced_one_keep_their_earlier_order(self):
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        first = directory / ("ch0207_" + "a" * 24 + ".unity")
+        second = directory / ("ch0207_" + "b" * 24 + ".unity")
+        faces._save(first, self.referenced_donor("CAB-" + "1" * 32), 207)
+        faces._save(second, self.referenced_donor("CAB-" + "2" * 32), 207)
+        # A mod renamed its face but left it out: neither cached face is it.
+        with patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "3" * 32}), \
+                patch.object(faces.FacePlan, "_local", return_value=[]) as broad, \
+                patch.object(faces, "_download") as fetch:
+            plan = self.plan()
+            self.assertEqual(plan.resolve(), [str(first)])
+        self.assertEqual(plan.status, "added")
+        broad.assert_not_called()
+        fetch.assert_not_called()
+        # Without any body reference the same order applies, as before.
+        with patch.object(faces.FacePlan, "_face_references", return_value=set()):
+            self.assertEqual(self.plan().resolve(), [str(first)])
+
+    def game_catalog(self, model, dependencies, rows):
+        root = Path(self.context["repo_root"]) / "assets" / "db" / "gl"
+        root.mkdir(parents=True)
+        with sqlite3.connect(root / "asset_a_en.db") as db:
+            db.executescript("CREATE TABLE member_model(asset_path TEXT,pack_name TEXT,head INTEGER,size INTEGER,key1 INTEGER,key2 INTEGER);"
+                             "CREATE TABLE member_model_dependency(asset_path TEXT,dependency TEXT);"
+                             "CREATE TABLE m_asset_package_mapping(package_key TEXT,pack_name TEXT,file_size INTEGER);")
+            db.executemany("INSERT INTO member_model_dependency VALUES(?,?)", [(model, value) for value in dependencies])
+            db.executemany("INSERT INTO member_model VALUES(?,?,?,?,?,?)", rows)
+            db.executemany("INSERT INTO m_asset_package_mapping VALUES(?,?,?)",
+                           [("suit:900000001", row[1], row[3]) for row in rows])
+
+    def test_game_import_uses_its_own_suit_face_before_a_cached_member_face(self):
+        from collections import OrderedDict
+        from webtools.core import viewer_mod_sources
+        stock = self.donor()
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        cached = directory / ("ch0207_" + "a" * 24 + ".unity")
+        faces._save(cached, stock, 207)
+        private = self.library / "installed_private_face.unity"
+        private.write_bytes(bundle([(name + ".assets", self.scene(name)) for name in ("Face", "Eyes", "Private")]))
+        self.game_catalog("installedbody", ["privateface", "§shader", "installedbody"],
+                          [("privateface", "privatepack", 0, private.stat().st_size, 0, 0),
+                           ("installedbody", "bodypack", 0, self.body.stat().st_size, 0, 0)])
+        record = {"region": "gl", "suit_id": 900000001, "variant": "primary", "download": False,
+                  "model": "installedbody", "purpose": "viewer", "platform": "android", "selection_language": "en"}
+        requested = []
+
+        def resource(plan, descriptor, download=True):
+            # The decrypted installed pack; the catalog row selects it.
+            requested.append(descriptor["asset_path"])
+            if descriptor["asset_path"] != "privateface":
+                raise faces.FaceUnavailable("Only the private face pack is local")
+            return str(private)
+
+        with patch.object(viewer_mod_sources, "_REGISTRY", OrderedDict()), \
+                patch.object(faces.FacePlan, "_resource", resource), \
+                patch.object(faces.FacePlan, "_local", return_value=[]):
+            viewer_mod_sources.register_game_import(str(self.body), record)
+            plan = self.plan()
+            # Its own catalog dependencies, never the selected body again.
+            self.assertEqual([row["asset_path"] for row in plan._selected_iter()], ["privateface"])
+            self.assertEqual(plan.resolve(), [str(private)])
+            self.assertEqual(requested[0], "privateface")
+            self.assertNotIn("installedbody", requested)
+            # The receipt binds the bytes: an edited body is no longer that
+            # game costume, and falls back to the member's cached face.
+            original = self.body.read_bytes()
+            self.body.write_bytes(self.scene("Body2"))
+            self.assertEqual(self.plan().resolve(), [str(cached)])
+            self.body.write_bytes(original)
+            self.assertEqual(self.plan().resolve(), [str(private)])
+            digest = hashlib.sha256(original).hexdigest()
+            found = viewer_mod_sources.imported_record(str(self.body), digest)
+            self.assertEqual(found, record)
+            found["model"] = "changed"
+            self.assertEqual(viewer_mod_sources.imported_record(str(self.body), digest)["model"], "installedbody")
+            for path, value in ((str(self.body), "0" * 64), (str(self.body), digest.upper()), (str(self.body), None),
+                                (str(self.selected / "other.unity"), digest)):
+                self.assertIsNone(viewer_mod_sources.imported_record(path, value))
+            # Another imported path does not lend its suit to this body.
+            viewer_mod_sources._REGISTRY.clear()
+            other = self.selected / "other.unity"
+            other.write_bytes(original)
+            viewer_mod_sources.register_game_import(str(other), record)
+            self.assertEqual(self.plan().resolve(), [str(cached)])
+
+    def test_selected_suit_face_download_precedes_another_cached_member_face(self):
+        from collections import OrderedDict
+        from webtools.core import viewer_mod_sources
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        other = directory / ("ch0207_" + "a" * 24 + ".unity")
+        faces._save(other, self.referenced_donor("CAB-" + "1" * 32), 207)
+        private = self.library / "downloaded_private_face.unity"
+        private.write_bytes(self.referenced_donor("CAB-" + "2" * 32))
+        self.game_catalog("installedbody", ["privateface"], [("privateface", "privatepack", 0, private.stat().st_size, 0, 0)])
+        record = {"region": "gl", "suit_id": 900000001, "variant": "primary", "download": True,
+                  "model": "installedbody", "purpose": "viewer", "platform": "android", "selection_language": "en"}
+        calls = []
+
+        def resource(plan, descriptor, download=True):
+            calls.append((descriptor["asset_path"], download))
+            if not download:
+                raise faces.FaceUnavailable("The suit's face pack is not local yet")
+            return str(private)
+
+        self.context["allow_download"] = True
+        with patch.object(viewer_mod_sources, "_REGISTRY", OrderedDict()), \
+                patch.object(faces.FacePlan, "_resource", resource), \
+                patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                patch.object(faces.FacePlan, "_local", return_value=[]) as broad:
+            viewer_mod_sources.register_game_import(str(self.body), record)
+            self.assertEqual(self.plan().resolve(), [str(private)])
+            self.assertEqual(calls, [("privateface", False), ("privateface", True)])
+            broad.assert_not_called()
+            # Offline, the earlier same-owner choice remains the fallback.
+            calls.clear()
+            self.context["allow_download"] = False
+            self.assertEqual(self.plan().resolve(), [str(other)])
+            self.assertEqual(calls, [("privateface", False)])
+
     def test_known_candidate_and_cache_entry_bounds_are_applied_before_sorting(self):
         roots = []
         for number in range(faces.MAX_CANDIDATES):
