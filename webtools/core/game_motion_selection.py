@@ -4,23 +4,53 @@ This module never identifies a dancer by a camera/clip filename or by the order
 of database dependencies. Only the timeline's Animator binding, serialized CAB
 identity and AnimationPlayableAsset object pointer select an animation.
 """
+from contextlib import contextmanager
 import hashlib
 import math
+import os
 from pathlib import Path
 import re
+import threading
 
 MAX_OBJECTS = 50000
 MAX_SEGMENTS = 1024
 _MEMBER_MODEL = re.compile(r"^/EntryPoint/Live/Members/Member([1-9][0-9]*)/Model$")
+_SHARED = threading.local()
 
 
 def _cab(value):
     return str(value or "").replace("\\", "/").rsplit("/", 1)[-1].casefold()
 
 
+@contextmanager
+def shared_reads():
+    """Within this block, on this thread, each bundle file is read and parsed once.
+
+    An MV import selects every member's dance from the same timeline and
+    choreography bundles; without this each member decompressed and parsed all
+    of them again (nine members: 99 reads of 10 files). A file is known by its
+    resolved path, size, mtime and inode, so a rewritten file is read again.
+    Readers only read the shared result; write_selected restores what it prunes.
+    """
+    previous = getattr(_SHARED, "reads", None)
+    if previous is None:
+        _SHARED.reads = {}
+    try:
+        yield
+    finally:
+        if previous is None:
+            _SHARED.reads = None
+
+
 def _read(path, deadline):
     from .model_viewer import _environment, _remaining
     _remaining(deadline)
+    held, key = getattr(_SHARED, "reads", None), None
+    if held is not None:
+        info = os.stat(path)
+        key = (str(Path(path).resolve()), info.st_size, info.st_mtime_ns, info.st_ino)
+        if key in held:
+            return held[key]
     env = _environment([str(path)], deadline)
     objects = list(env.objects)
     if len(objects) > MAX_OBJECTS:
@@ -30,7 +60,10 @@ def _read(path, deadline):
         if obj.type.name == "MonoScript":
             tree = obj.read_typetree()
             scripts[(_cab(obj.assets_file.name), obj.path_id)] = tree.get("m_ClassName", "")
-    return {"path": Path(path), "env": env, "objects": objects, "scripts": scripts}
+    result = {"path": Path(path), "env": env, "objects": objects, "scripts": scripts}
+    if key is not None:
+        held[key] = result
+    return result
 
 
 def _object_key(obj):
@@ -369,13 +402,23 @@ def write_selected(selection, directory):
     files, identities = [], {}
     for index, group in enumerate(groups.values()):
         source, keep = group["source"], group["keys"]
-        for obj in source["objects"]:
-            if _object_key(obj) not in keep:
-                del obj.assets_file.objects[obj.path_id]
-        containers = list(source["env"].files.values())
-        if len(containers) != 1:
-            raise ValueError("An imported motion has an ambiguous source container.")
-        raw = containers[0].save(packer="lz4")
+        # The source may be shared (shared_reads): every pruned object table is put
+        # back exactly, in its order, once the clips are saved.
+        pruned = {}
+        try:
+            for obj in source["objects"]:
+                if _object_key(obj) not in keep:
+                    table = obj.assets_file.objects
+                    pruned.setdefault(id(table), (table, list(table.items())))
+                    del table[obj.path_id]
+            containers = list(source["env"].files.values())
+            if len(containers) != 1:
+                raise ValueError("An imported motion has an ambiguous source container.")
+            raw = containers[0].save(packer="lz4")
+        finally:
+            for table, items in pruned.values():
+                table.clear()
+                table.update(items)
         path = Path(directory) / f"animation-{index + 1}.unity"
         path.write_bytes(raw)
         digest = hashlib.sha256(raw).hexdigest()

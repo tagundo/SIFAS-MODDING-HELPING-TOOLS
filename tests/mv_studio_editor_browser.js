@@ -14,6 +14,8 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { chromium } = require('playwright');
 const { fixture } = require('./viewer_rig_browser');
+require('../webtools/web/static/mv-studio-timeline-interact.js');
+const Interact = globalThis.MVStudioTimelineInteract;
 
 const library = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-editor-library-'));
 const modded = path.join(library, 'modded');
@@ -38,6 +40,17 @@ function timeline({ duet = false } = {}) {
       }
     }
     delete track.editableValues;
+  }
+  // Member1/LipSync keeps the Unity editor's overlap blends, as every stock lip-sync track does.
+  const lips = data.tracks.find((track) => track.label === 'Member1/LipSync');
+  const blends = Interact.blendTimes(lips.events);
+  for (const event of lips.events) Object.assign(event.values, blends.get(event.id));
+  // Playable classes for the timing-field rules: the camera shots and the flash lights.
+  for (const [label, playableClass] of [['CameraMotion/Camera1', 'AnimationPlayableAsset'],
+    ['StageEffect/Expert/Flash Light/Live Flash Light Track', 'LiveFlashLightClip']]) {
+    for (const event of data.tracks.find((track) => track.label === label).events) {
+      Object.assign(event.values, { playableClass, clipIn: 0, timeScale: 1 });
+    }
   }
   if (duet) {
     // A second member: copies of the Member1 lip-sync and eye tracks bound to Member2.
@@ -87,6 +100,8 @@ const laneTabs = (page) => page.evaluate(() => [...document.querySelectorAll('#m
 const laneLabels = (page) => page.evaluate(() => [...document.querySelectorAll('#mv-timeline-grid .mv-lane-label[data-track]:not(.mv-lane-group)')]
   .map((label) => label.textContent));
 const findEvent = (project, id) => project.tracks.flatMap((track) => track.events).find((event) => event.id === id);
+const findTrack = (project, id) => project.tracks.find((track) => track.id === id);
+const editCount = async (page) => Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent());
 
 /* The plugin host contract lanes B, C and D build on (spec §2): a probe plugin
    registered before the page scripts records every hook it receives, and its value
@@ -427,6 +442,191 @@ async function pluginContract(browser, url) {
   await page.close();
 }
 
+/* A non-native project, whose clips can be duplicated and deleted: on a lip-sync track that
+   keeps the overlap blends, both write the recomputed blends in the same step. And a camera
+   shot that holds Ping-pong keeps it listed while the preview offers only None and Hold. */
+async function nonNativeBlends(browser, url) {
+  const page = await browser.newPage({ locale: 'ko', viewport: { width: 1280, height: 900 } });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const lip = (id, start, duration) => ({ id, label: id, start, duration, values: { weight: .5 } });
+  const lips = [lip('l1', 0, 2), lip('l2', 1.5, 2), lip('l3', 4, 2)];
+  const blends = Interact.blendTimes(lips);
+  for (const event of lips) Object.assign(event.values, blends.get(event.id));
+  const shot = (id, start, post) => ({ id, label: id, start, duration: 4, values: { playableClass: 'AnimationPlayableAsset',
+    preExtrapolationMode: 1, postExtrapolationMode: post, preExtrapolationTime: 0, postExtrapolationTime: 0, clipIn: 0, timeScale: 1 } });
+  const project = { version: 1, name: 'Blend MV', duration: 20, nativeTimeline: false, assets: [], warnings: [], quality: {},
+    performers: [{ id: 'member-1', label: 'Member 1', position: 1, transform: { position: [0, 0, 0] } }],
+    source: { kind: 'game', region: 'gl', platform: 'android', liveId: 98, assetId: 1 },
+    tracks: [
+      { id: 'camera', kind: 'camera', binding: 'MainCamera', label: 'Camera', events: [shot('cam-1', 0, 3), shot('cam-2', 8, 1)] },
+      { id: 'mouth', kind: 'mouth', binding: '/EntryPoint/Live/Members/Member1', label: 'Member1/LipSync', events: lips }] };
+  try {
+    await page.route('**/api/mv-studio/catalog?*', (route) => route.fulfill({ json: { region: 'gl', platform: 'android',
+      regions: [{ id: 'gl', label: 'GL' }], platforms: [{ id: 'android', label: 'Android' }],
+      songs: [{ id: 98, title: 'Blend MV', variants: [{ id: 1, label: 'MV' }] }] } }));
+    await page.route('**/api/mv-studio/game-stream?*', (route) => route.fulfill({ status: 404 }));
+    await page.route('**/api/mv-studio/game?*', (route) => route.fulfill({ json: project }));
+    await page.goto(url + '/#mv');
+    await page.waitForFunction(() => MVStudio.getState().visible);
+    await page.locator('#mv-import-game').click();
+    await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
+    await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled);
+    await page.locator('#mv-game-load').click();
+    await page.locator('.mv-clip[data-event=l2]').waitFor();
+    const mouth = () => page.evaluate(() => MVStudio.getState().project.tracks.find((track) => track.id === 'mouth'));
+    const stored = (track) => Object.fromEntries(track.events.map((event) => [event.id, [event.values.blendIn, event.values.blendOut]]));
+    const expected = (track) => Object.fromEntries([...Interact.blendTimes(track.events)].map(([id, value]) => [id, [value.blendIn, value.blendOut]]));
+    const steps = () => page.evaluate(() => MVStudio.getState().history.undo);
+    // Duplicate l2: the copy lands on l2's end and overlaps l3, so both get the 1.5 s blend.
+    await page.locator('.mv-clip[data-event=l2]').click();
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=blendIn]').count(), 0, 'gated: blends read only');
+    const before = await steps();
+    await page.locator('#mv-duplicate-clip').click();
+    await page.locator('.mv-clip[data-event="mouth:u1"]').waitFor();
+    let track = await mouth();
+    assert.equal(await steps(), before + 1, 'one step');
+    assert.deepEqual(stored(track), expected(track), 'duplicate: every blend follows the overlaps');
+    assert.deepEqual(stored(track)['mouth:u1'], [-1, 1.5]);
+    assert.deepEqual(stored(track).l3, [1.5, -1]);
+    // Delete l2: l1 no longer overlaps anything.
+    await page.locator('.mv-clip[data-event=l2]').click();
+    await page.locator('#mv-delete-clip').click();
+    await page.waitForFunction(() => !document.querySelector('.mv-clip[data-event=l2]'));
+    track = await mouth();
+    assert.equal(await steps(), before + 2);
+    assert.deepEqual(stored(track), expected(track), 'delete: every blend follows the overlaps');
+    assert.deepEqual(stored(track).l1, [-1, -1]);
+    await page.locator('#mv-undo').click();
+    await page.locator('#mv-undo').click();
+    assert.deepEqual((await mouth()).events, lips, 'undo restores the clips and their blends');
+    // A shot that holds Ping-pong while the preview plays only None and Hold keeps it listed.
+    const scenePlays = await page.evaluate(() => {
+      window.mvSceneLocalTime = MVStudioScene.cameraLocalTime;
+      delete MVStudioScene.cameraLocalTime;
+      return typeof window.mvSceneLocalTime === 'function';
+    });
+    await page.locator('.mv-clip[data-event=cam-1]').click();
+    const modes = (key) => page.locator(`#mv-event-fields [data-mv-field=${key}] option`).evaluateAll((options) => options.map((option) => option.value));
+    assert.deepEqual(await modes('postExtrapolationMode'), ['0', '1', '3'], 'the held mode stays listed');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=postExtrapolationMode]').inputValue(), '3', 'and selected');
+    assert.deepEqual(await modes('preExtrapolationMode'), ['0', '1']);
+    await page.locator('.mv-clip[data-event=cam-2]').click();
+    assert.deepEqual(await modes('postExtrapolationMode'), ['0', '1']);
+    await page.evaluate((plays) => { if (plays) MVStudioScene.cameraLocalTime = window.mvSceneLocalTime; delete window.mvSceneLocalTime; }, scenePlays);
+    assert.equal(await steps(), before, 'opening the shots changes nothing');
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+}
+
+/* Lane labels on narrow touch screens, where the label column is at most 7.5rem: a phone in
+   either orientation (390 x 844, 844 x 390) and a tablet (768 x 1024). Group rows stay headings: bold, as high as their
+   text lines (their 16 px marks do not raise a line), wrapping only after a "/" or a space. No
+   label breaks a word that fits its width (the mute toggle and the badge sit in the text flow),
+   track rows draw small marks (a 20 px toggle, a 16 px badge), and every toggle and badge keeps
+   a 32 px touch target. */
+async function narrowLanes(browser, url, project, name, viewport) {
+  const page = await browser.newPage({ locale: 'ko', viewport, isMobile: true, hasTouch: true });
+  try {
+    await page.route('**/api/mv-studio/catalog?*', (route) => route.fulfill({ json: { region: 'gl', platform: 'android',
+      regions: [{ id: 'gl', label: 'Global (GL)' }], platforms: [{ id: 'android', label: 'Android' }],
+      songs: [{ id: 12035, title: project.name, variants: [{ id: 1, label: 'MV' }] }] } }));
+    await page.route('**/api/mv-studio/game-stream?*', (route) => route.fulfill({ status: 404 }));
+    await page.route('**/api/mv-studio/game?*', (route) => route.fulfill({ json: project }));
+    await page.goto(url + '/#mv');
+    await page.waitForFunction(() => MVStudio.getState().visible);
+    await page.locator('#mv-import-game').click();
+    await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
+    await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled);
+    await page.locator('#mv-game-load').click();
+    await page.waitForFunction((name) => MVStudio.getState().project?.name === name && !document.querySelector('#mv-import-game').disabled, project.name);
+    await page.locator('#mv-timeline-grid .mv-clip').first().waitFor();
+    assert.equal(await page.locator('#mv-timeline-scroll').evaluate((scroll) => scroll.inert), false, `${name}: the import is done`);
+    const rows = await page.evaluate(() => [...document.querySelectorAll('#mv-timeline-grid .mv-lane-label[data-track]')].map((label) => {
+      const body = label.querySelector('.mv-lane-text'), style = getComputedStyle(label);
+      const room = label.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const tops = new Set(), broken = [];
+      const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.parentElement.getClientRects().length) continue;   // the path, hidden on phones
+        for (const match of node.data.matchAll(/[^/\s]+\/?/g)) {
+          const range = document.createRange();
+          range.setStart(node, match.index);
+          range.setEnd(node, match.index + match[0].length);
+          const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
+          for (const rect of rects) tops.add(Math.round(rect.top));
+          const lines = new Set(rects.map((rect) => Math.round(rect.top)));
+          if (lines.size > 1 && rects.reduce((sum, rect) => sum + rect.width, 0) <= room) broken.push(match[0]);
+        }
+      }
+      const marks = [...label.querySelectorAll('.mv-lane-mute, .mv-lane-quality')].filter((mark) => mark.getClientRects().length).map((mark) => {
+        const box = mark.getBoundingClientRect(), target = getComputedStyle(mark, '::before');
+        return { quality: mark.classList.contains('mv-lane-quality'), height: box.height,
+          target: Math.min(parseFloat(target.width) || box.width, parseFloat(target.height) || box.height) };
+      });
+      return { label: label.title, group: label.classList.contains('mv-lane-group'), height: label.getBoundingClientRect().height,
+        lines: tops.size, lineHeight: parseFloat(getComputedStyle(body).lineHeight), minHeight: parseFloat(style.minHeight) || 0,
+        weight: Number(getComputedStyle(body).fontWeight), broken, marks };
+    }));
+    const groups = rows.filter((row) => row.group);
+    assert(groups.length >= 5, `${name}: group rows`);
+    // A category's quality badge shows on its tracks' rows; the group heading leaves it out here.
+    assert(rows.some((row) => !row.group && row.marks.some((mark) => mark.quality)), `${name}: track rows keep their quality badges`);
+    assert(!groups.some((row) => row.marks.some((mark) => mark.quality)), `${name}: no badge line on a group heading`);
+    assert(rows.filter((row) => !row.group).every((row) => row.marks.some((mark) => !mark.quality)), `${name}: every track row has its mute toggle`);
+    assert.equal(groups.filter((row) => row.marks.length).length, 1, `${name}: only the muted group shows a mark`);
+    for (const row of rows) {
+      assert.deepEqual(row.broken, [], `${name} ${row.label}: no word that fits is broken`);
+      for (const mark of row.marks) assert(mark.target >= 32, `${name} ${row.label}: a 32 px touch target (${mark.target})`);
+    }
+    for (const row of rows.filter((item) => !item.group)) {
+      for (const mark of row.marks) assert(mark.height <= (mark.quality ? 16 : 20), `${name} ${row.label}: a small mark (${mark.height})`);
+    }
+    for (const row of groups) {
+      assert(row.weight >= 600, `${name} ${row.label}: a group row keeps its heading weight`);
+      assert(row.height <= Math.max(row.minHeight, row.lines * row.lineHeight + 1) + 1.5,
+        `${name} ${row.label}: ${row.height} px for ${row.lines} line(s) of ${row.lineHeight} px`);
+      for (const mark of row.marks) assert(mark.height <= 16, `${name} ${row.label}: a small mark (${mark.height})`);
+    }
+    // Each mark owns its drawn box (no touch target of a neighbour, in its row or the next, covers
+    // it); 4 px around the box, inside its row, a tap still lands on a mark (the target lies above
+    // the label's text); and no target reaches past the label column into the lane.
+    const stolen = await page.evaluate(() => {
+      const misses = [], marks = [...document.querySelectorAll('#mv-timeline-grid :is(.mv-lane-mute, .mv-lane-quality)')]
+        .filter((mark) => mark.getClientRects().length);
+      const describe = (hit) => {
+        const owner = hit && hit.closest('.mv-lane-mute, .mv-lane-quality');
+        return owner ? owner.closest('.mv-lane-label').title + ' ' + owner.classList[0] : hit && hit.className;
+      };
+      for (const mark of marks) {
+        mark.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const box = mark.getBoundingClientRect(), label = mark.closest('.mv-lane-label'), row = label.getBoundingClientRect();
+        for (const [fx, fy] of [[.5, .5], [.1, .1], [.9, .1], [.1, .9], [.9, .9]]) {
+          const hit = document.elementFromPoint(box.left + box.width * fx, box.top + box.height * fy);
+          if (hit?.closest('.mv-lane-mute, .mv-lane-quality') !== mark) misses.push(`${label.title} ${mark.classList[0]} at ${fx},${fy}: ${describe(hit)}`);
+        }
+        const middle = [box.left + box.width / 2, box.top + box.height / 2];
+        for (const [x, y] of [[box.left - 4, middle[1]], [box.right + 4, middle[1]], [middle[0], box.top - 4], [middle[0], box.bottom + 4]]) {
+          if (x < row.left + 1 || x > row.right - 2 || y < row.top + 1 || y > row.bottom - 1) continue;
+          const hit = document.elementFromPoint(x, y);
+          if (!hit?.closest('.mv-lane-mute, .mv-lane-quality')) misses.push(`${label.title} ${mark.classList[0]}: 4 px off its box lands on ${describe(hit)}`);
+        }
+        const beyond = document.elementFromPoint(row.right + 2, middle[1]);
+        if (beyond?.closest('.mv-lane-mute, .mv-lane-quality')) misses.push(`${label.title} ${mark.classList[0]}: its target reaches into the lane`);
+      }
+      return misses;
+    });
+    assert.deepEqual(stolen, [], `${name}: every mark owns its drawn box`);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, `${name}: no horizontal page scroll`);
+    await page.locator('#mv-timeline-grid .mv-lane-group').filter({ hasText: 'Coloring' }).first().scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(evidence, `lanes-${name}-ko.png`) });
+  } finally {
+    await page.close();
+  }
+}
+
 async function run() {
   const server = await startServer();
   let browser;
@@ -583,6 +783,135 @@ async function run() {
     await page.keyboard.press('Control+z');
     assert.equal(findEvent((await state(page)).project, lip.id).duration, lip.duration);
 
+    // ---- Overlap blends follow a move: Member1/LipSync stores the editor's overlap blends -------
+    await page.locator('#mv-tab-mouth').click();
+    await page.locator('#mv-zoom').selectOption('48');
+    const blendClip = lipTrack.events.find((event) => event.id === lipTrack.id + ':4');
+    const blendTarget = page.locator(`.mv-clip[data-event="${blendClip.id}"]`);
+    await blendTarget.scrollIntoViewIfNeeded();
+    await blendTarget.click();
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=blendIn]').count(), 0, 'derived blends are read-only');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=blendOut]').count(), 0);
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=blend]').textContent(), '앞뒤 클립과 겹치는 길이로 정해집니다');
+    const blendBase = await state(page);
+    const editsBefore = Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent());
+    await blendTarget.focus();
+    await page.keyboard.press('Alt+ArrowRight');
+    current = await state(page);
+    const lipsNow = current.project.tracks.find((track) => track.id === lipTrack.id);
+    assert.equal(current.history.undo, blendBase.history.undo + 1, 'the move and its blends are one step');
+    assert(Interact.blendGate(lipsNow), 'the stored blends follow the new overlaps');
+    const blendsBefore = Object.fromEntries(blendBase.project.tracks.find((track) => track.id === lipTrack.id).events
+      .map((event) => [event.id, [event.values.blendIn, event.values.blendOut]]));
+    const changedBlends = lipsNow.events.filter((event) => blendsBefore[event.id][0] !== event.values.blendIn ||
+      blendsBefore[event.id][1] !== event.values.blendOut).map((event) => event.id);
+    assert(changedBlends.includes(blendClip.id) && changedBlends.length >= 2, `the moved clip and a neighbour: ${changedBlends}`);
+    assert.equal(Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent()), editsBefore + 1,
+      'only the moved clip counts as edited; derived blends do not');
+    // The Tracks summary lists the neighbours whose blends follow (the register and apply plans count them).
+    assert.match(await page.locator('#mv-track-summary').textContent(),
+      new RegExp(` · 블렌드나 시간만 다시 계산된 클립 ${changedBlends.length - 1}개$`));
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert.deepEqual((await state(page)).project.tracks.find((track) => track.id === lipTrack.id),
+      blendBase.project.tracks.find((track) => track.id === lipTrack.id), 'undo restores the clip and every blend');
+    assert.doesNotMatch(await page.locator('#mv-track-summary').textContent(), /다시 계산된/);
+    await page.locator('#mv-zoom').selectOption('fit');
+
+    // ---- Track mute: the toggle on a leaf lane label (undoable, counted in the Edit tab) -------
+    await page.locator('#mv-tab-all').click();
+    const gazeTrack = original.tracks.find((track) => track.label === 'Member1/Gaze');
+    const gazeClip = page.locator(`.mv-clip[data-event="${gazeTrack.events[0].id}"]`);
+    await gazeClip.scrollIntoViewIfNeeded();
+    await gazeClip.click();
+    const muteGaze = page.locator(`.mv-lane-label:not(.mv-lane-group) .mv-lane-mute[data-track="${gazeTrack.id}"]`);
+    assert.equal(await muteGaze.getAttribute('aria-pressed'), 'false');
+    assert.equal(await muteGaze.getAttribute('aria-label'), '트랙 음소거');
+    const muteBase = await state(page), editsBeforeMute = await editCount(page);
+    await muteGaze.click();
+    current = await state(page);
+    assert.equal(findTrack(current.project, gazeTrack.id).muted, true);
+    assert.deepEqual(current.project.editor.tracks, { [gazeTrack.id]: { muted: false } }, 'the original mute is kept for "edited"');
+    assert.equal(current.history.undoLabel, 'Mute track');
+    assert.equal(current.history.undo, muteBase.history.undo + 1);
+    assert.equal(await muteGaze.getAttribute('aria-pressed'), 'true');
+    assert(await page.locator(`.mv-lane[data-track="${gazeTrack.id}"]`).evaluate((lane) => lane.classList.contains('mv-lane-muted')));
+    assert.equal(await editCount(page), editsBeforeMute + 1, 'a mute counts in the Edit tab');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=muted]').textContent(), '이 트랙은 음소거되어 미리보기에서 재생되지 않습니다.');
+    await page.screenshot({ path: path.join(evidence, 'track-mute-ko.png') });
+    // The Edit tab lists the muted track with the edited ones.
+    await page.locator('#mv-tab-edit').click();
+    assert((await laneLabels(page)).slice(0, 2).includes('Member1/Gaze'));
+    await page.locator('#mv-tab-all').click();
+    // Space on the focused toggle unmutes; the focus stays; the track is no longer edited.
+    await muteGaze.focus();
+    await page.keyboard.press('Space');
+    assert.equal(findTrack((await state(page)).project, gazeTrack.id).muted, false);
+    assert.equal(await page.evaluate(() => document.activeElement.classList.contains('mv-lane-mute')), true);
+    assert.equal(await editCount(page), editsBeforeMute);
+    await page.keyboard.press('Control+z');
+    assert.equal(findTrack((await state(page)).project, gazeTrack.id).muted, true);
+    await page.keyboard.press('Control+z');
+    current = await state(page);
+    assert.deepEqual(findTrack(current.project, gazeTrack.id), findTrack(muteBase.project, gazeTrack.id), 'undo takes the mute back');
+    assert.equal(current.project.editor.tracks, undefined, 'and its record');
+    // The game sets the mute of eye and mouth tracks itself (the export lane says so in its own words).
+    const muteLips = page.locator(`.mv-lane-label:not(.mv-lane-group) .mv-lane-mute[data-track="${lipTrack.id}"]`);
+    assert.equal(await muteLips.getAttribute('aria-disabled'), 'true');
+    await muteLips.click({ force: true });
+    assert.equal(await page.locator('#mv-status').textContent(), '눈과 입 트랙의 음소거는 MV가 시작될 때 게임이 직접 정합니다.');
+    assert.equal(!!findTrack((await state(page)).project, lipTrack.id).muted, false);
+    assert.equal((await state(page)).history.undo, muteBase.history.undo, 'no history step');
+    // The game sets the mute of a StageEffect category's tracks from its quality flag: the toggle explains why.
+    const led = original.tracks.find((track) => track.label === 'StageEffect/Expert/Coloring/LED_panel_01');
+    const ledMute = page.locator(`.mv-lane-label:not(.mv-lane-group) .mv-lane-mute[data-track="${led.id}"]`);
+    assert.equal(await ledMute.getAttribute('aria-disabled'), 'true');
+    assert.equal(await ledMute.getAttribute('aria-pressed'), null);
+    await ledMute.click({ force: true });   // aria-disabled: Playwright would wait for it to be enabled
+    assert.equal(await page.locator('#mv-status').textContent(), "이 트랙의 음소거는 MV가 시작될 때 게임이 '무대 색상 연출' 그래픽 설정에 따라 정합니다.");
+    assert.equal(!!findTrack((await state(page)).project, led.id).muted, false);
+    assert.equal((await state(page)).history.undo, muteBase.history.undo, 'no history step');
+    // Quality badges on the StageEffect category lanes: the flag that mutes them in the game.
+    const badges = await page.locator('#mv-timeline-grid .mv-lane-quality').evaluateAll((items) => items.map((item) =>
+      [item.closest('.mv-lane-label').title, item.dataset.quality]));
+    assert.deepEqual(badges.find(([label]) => label === 'StageEffect/Expert/Coloring'), ['StageEffect/Expert/Coloring', 'stage_coloring'], 'the category row');
+    assert(badges.some(([, option]) => option === 'stage_flash_light'));
+    assert(!badges.some(([label]) => label.endsWith('main_01_act')), 'not on an ActivationTrack');
+    assert(!badges.some(([label]) => label.startsWith('Member1')));
+    const ledBadge = page.locator(`.mv-lane-label:not(.mv-lane-group) .mv-lane-quality[data-track="${led.id}"]`);
+    assert.equal(await ledBadge.getAttribute('aria-label'), "MV 그래픽 설정에서 '무대 색상 연출'이(가) 켜져 있을 때만 재생됩니다.");
+    assert.deepEqual(await laneLabels(page).then((labels) => labels.filter((label) => label.endsWith('LED_panel_01'))),
+      ['StageEffect/Expert/Coloring/LED_panel_01'], 'the badge adds no text to the lane name');
+    await ledBadge.click();
+    assert.equal(await page.locator('#mv-status').textContent(), "MV 그래픽 설정에서 '무대 색상 연출'이(가) 켜져 있을 때만 재생됩니다.");
+    // A group's mute never reaches the game: a group row has no toggle (a muted one shows a mark, below).
+    assert(await page.locator('.mv-lane-group').count() > 0);
+    assert.equal(await page.locator('.mv-lane-group .mv-lane-mute').count(), 0);
+    // Where the export's own rule is loaded (MVStudioEventFields.trackMuteNote), it decides the lock,
+    // not the lanes' fallback: here a stand-in rule locks the gaze track and frees the LED panel.
+    const lockNote = 'The export refuses this mute.';
+    await page.evaluate((note) => {
+      window.mvFieldsBefore = window.MVStudioEventFields;
+      window.MVStudioEventFields = Object.freeze({ ...window.mvFieldsBefore,
+        trackMuteNote: (track) => track.nativeClass === 'GroupTrack' ? 'group' : track.label === 'Member1/Gaze' ? note : null });
+    }, lockNote);
+    await page.locator('#mv-tab-mouth').click();
+    await page.locator('#mv-tab-all').click();
+    assert.equal(await muteGaze.getAttribute('aria-disabled'), 'true', 'the loaded rule locks the gaze mute');
+    await muteGaze.click({ force: true });
+    assert.equal(await page.locator('#mv-status').textContent(), lockNote);
+    assert.equal((await state(page)).history.undo, muteBase.history.undo, 'no history step');
+    assert.equal(await ledMute.getAttribute('aria-disabled'), null, 'and frees the LED panel');
+    await ledMute.click();
+    assert.equal(findTrack((await state(page)).project, led.id).muted, true);
+    await page.keyboard.press('Control+z');
+    assert.equal(!!findTrack((await state(page)).project, led.id).muted, false);
+    await page.evaluate(() => { window.MVStudioEventFields = window.mvFieldsBefore; delete window.mvFieldsBefore; });
+    await page.locator('#mv-tab-mouth').click();
+    await page.locator('#mv-tab-all').click();
+    assert.equal(await muteGaze.getAttribute('aria-disabled'), null);
+    assert.equal(await ledMute.getAttribute('aria-disabled'), 'true');
+
     // ---- Drag a camera shot by one second ----------------------------------------------------
     await page.locator('#mv-tab-camera').click();
     await page.locator('#mv-zoom').selectOption('48');
@@ -614,6 +943,37 @@ async function run() {
       'recomputed extrapolation times are read-only');
     assert.equal(await page.locator('#mv-event-fields [data-mv-field=postExtrapolationTime]').count(), 0);
     assert.equal(await page.locator('#mv-event-fields .mv-field-note').filter({ hasText: '게임이 다시 계산하는 값입니다' }).count(), 1);
+    // A camera shot keeps its offset and speed. It offers the modes the preview plays: every mode
+    // once the scene has cameraLocalTime (Loop, Ping-pong and Continue), else None and Hold.
+    const shotModes = () => page.locator('#mv-event-fields [data-mv-field=postExtrapolationMode] option').evaluateAll(
+      (options) => options.map((option) => option.value));
+    const capsNote = () => page.locator('#mv-event-fields [data-mv-note=caps]').textContent();
+    const reselectShot = async () => {
+      await page.locator(`.mv-clip[data-event="${original.tracks.find((track) => track.label === 'CameraMotion/Camera1').events[0].id}"]`).click();
+      await clip.click();
+    };
+    // Both previews: without cameraLocalTime (the scene before it plays Loop, Ping-pong and
+    // Continue), and with it. The scene keeps its own copy, so only the host's choice changes.
+    const playsEveryMode = await page.evaluate(() => {
+      window.mvSceneLocalTime = MVStudioScene.cameraLocalTime;
+      delete MVStudioScene.cameraLocalTime;
+      return typeof window.mvSceneLocalTime === 'function';
+    });
+    await reselectShot();
+    assert.deepEqual(await shotModes(), ['0', '1'], 'a hold-only preview: None and Hold');
+    assert.equal(await capsNote(), '카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.');
+    await page.evaluate(() => { MVStudioScene.cameraLocalTime = window.mvSceneLocalTime || (() => 0); });
+    await reselectShot();
+    assert.deepEqual(await shotModes(), ['0', '1', '2', '3', '4'], 'every mode the preview plays');
+    assert.deepEqual(await page.locator('#mv-event-fields [data-mv-field=postExtrapolationMode] option').evaluateAll(
+      (options) => options.map((option) => option.textContent)), ['없음', '정지', '반복', '왕복', '계속'], 'every mode name in Korean');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=clipIn]').count(), 0, 'the offset stays read only');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=timeScale]').count(), 0);
+    assert.equal(await capsNote(), '카메라 샷은 오프셋과 속도를 바꿀 수 없습니다. 미리보기는 샷에서 읽은 샘플을 그대로 재생합니다.');
+    // This tree's own preview.
+    await page.evaluate((plays) => { if (!plays) delete MVStudioScene.cameraLocalTime; delete window.mvSceneLocalTime; }, playsEveryMode);
+    await reselectShot();
+    assert.deepEqual(await shotModes(), playsEveryMode ? ['0', '1', '2', '3', '4'] : ['0', '1']);
     // Alt+→ nudges one frame as one more step.
     await clip.focus();
     await page.keyboard.press('Alt+ArrowRight');
@@ -682,6 +1042,9 @@ async function run() {
     assert(Math.abs(await page.evaluate(() => document.getElementById('mv-timeline-scroll').scrollLeft) - far) < 2, 'and leaves the view where it was');
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.waitForFunction(() => innerWidth === 1280);
+    // A mute is carried over a costume re-import as well.
+    await page.locator('#mv-tab-expression').click();
+    await page.locator(`.mv-lane-mute[data-track="${gazeTrack.id}"]`).click();
     await page.locator('#mv-tab-camera').click();
     const edited = (await state(page)).project;
 
@@ -700,9 +1063,12 @@ async function run() {
     assert.equal(findEvent(current.project, lip.id).values.weight, .8, 'value edit carried over');
     assert.equal(findEvent(current.project, lip.id).label, '입 모양 A');
     assert.equal(findEvent(current.project, shot.id).start, moved.start, 'timing edit carried over');
+    assert.equal(findTrack(current.project, gazeTrack.id).muted, true, 'mute carried over');
     assert.deepEqual(current.project.editor, edited.editor);
     assert.equal(current.history.undo, edited.history?.undo ?? current.history.undo);
     await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert.equal(!!findTrack((await state(page)).project, gazeTrack.id).muted, false, 'the mute is the last step');
     await page.keyboard.press('Control+z');
     assert.equal(findEvent((await state(page)).project, shot.id).start, shot.start, 'history survives the re-import');
     await page.locator('#mv-performers summary').click();
@@ -802,6 +1168,132 @@ async function run() {
     }
     await page.setViewportSize({ width: 1280, height: 900 });
 
+    // ---- Timing fields the game does not use for a clip type are read only --------------------
+    // A saved edit of one (made before it became read only) still loads and can be put back.
+    const flashLabel = 'StageEffect/Expert/Flash Light/Live Flash Light Track';
+    const legacy = gameProject({ name: 'Timeline 12035 legacy' });
+    const flash = legacy.tracks.find((track) => track.label === flashLabel).events[0];
+    legacy.editor = { version: 1, originals: { [flash.id]: JSON.parse(JSON.stringify(flash)) } };
+    flash.values.postExtrapolationMode = 1;
+    // A lip-sync clip moved 5 frames before blends were recomputed: every blend of the track is
+    // as it was before the move, so the saved track does not follow the overlap rule.
+    const savedLips = legacy.tracks.find((track) => track.label === 'Member1/LipSync');
+    const movedLip = savedLips.events.find((event) => event.id === savedLips.id + ':4');
+    legacy.editor.originals[movedLip.id] = JSON.parse(JSON.stringify(movedLip));
+    movedLip.start = Math.round(movedLip.start * 60 + 5) / 60;
+    assert.equal(Interact.blendGate(savedLips), false, 'the saved blends are stale');
+    // Two camera shots overlap in this save (the second one is longer): the game crossfades them.
+    const legacyCamera = legacy.tracks.find((track) => track.label === 'CameraMotion/Camera1');
+    const longShot = legacyCamera.events[1];
+    legacy.editor.originals[longShot.id] = JSON.parse(JSON.stringify(longShot));
+    longShot.duration += .5;
+    const cameraBlends = Interact.blendTimes(legacyCamera.events);
+    for (const event of legacyCamera.events) Object.assign(event.values, cameraBlends.get(event.id));
+    assert(longShot.values.blendOut > 0 && legacyCamera.events[2].values.blendIn > 0);
+    // A muted group (as stock 11054 and 10120 have) shows its state and why it does not count.
+    const mutedGroup = legacy.tracks.find((track) => track.label === 'StageEffect/Expert/Post');
+    mutedGroup.muted = true;
+    // This project's quality preset has the flash lights off.
+    legacy.quality = { ...legacy.quality, options: [...legacy.quality.options, { key: 'stage_flash_light', label: '무대 점멸 조명', type: 'boolean' }],
+      values: { ...legacy.quality.values, stage_flash_light: false } };
+    await importGame(legacy);
+    await page.locator('#mv-tab-lighting').click();
+    await page.locator(`.mv-clip[data-event="${flash.id}"]`).click();
+    assert.equal(await page.locator(`.mv-clip[data-event="${flash.id}"]`).getAttribute('data-edited'), 'true', 'the saved edit loads');
+    for (const key of ['preExtrapolationMode', 'postExtrapolationMode', 'clipIn', 'timeScale']) {
+      assert.equal(await page.locator(`#mv-event-fields [data-mv-field=${key}]`).count(), 0, key + ' is read only');
+    }
+    assert.equal(await page.locator('#mv-event-fields [data-mv-readonly=preExtrapolationMode]').textContent(), '없음');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-readonly=postExtrapolationMode]').textContent(), '정지');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=easeIn]').count(), 1, 'blending fields stay editable');
+    // The note names the fields the game does not use; the flash lights' blends are not among them.
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=caps]').textContent(),
+      '이 클립 종류에서 게임이 쓰지 않는 시간 항목: 클립 앞뒤 · 클립 오프셋 · 재생 속도.');
+    assert.deepEqual(await page.locator('#mv-event-fields [data-mv-restore]').evaluateAll((buttons) => buttons.map((item) => item.dataset.mvRestore)),
+      ['postExtrapolationMode'], 'only the edited read-only field can be put back');
+    await page.screenshot({ path: path.join(evidence, 'timing-fields-ko.png') });
+    await page.locator('#mv-event-fields [data-mv-restore=postExtrapolationMode]').click();
+    await page.waitForFunction((id) => !document.querySelector(`.mv-clip[data-event="${id}"]`)?.dataset.edited, flash.id);
+    assert.equal(findEvent((await state(page)).project, flash.id).values.postExtrapolationMode, 0);
+    assert.equal((await state(page)).history.undoLabel, 'Edit value');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-restore]').count(), 0);
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert.equal(findEvent((await state(page)).project, flash.id).values.postExtrapolationMode, 1, 'undo brings the saved edit back');
+    await page.locator('#mv-tab-all').click();
+    const groupMark = page.locator(`.mv-lane-group .mv-lane-mute[data-track="${mutedGroup.id}"]`);
+    assert.equal(await page.locator('.mv-lane-group .mv-lane-mute').count(), 1, 'only the muted group has a mark');
+    assert.equal(await groupMark.getAttribute('aria-disabled'), 'true');
+    assert.equal(await groupMark.getAttribute('aria-label'), '음소거된 그룹');
+    // Its heading is dimmed (another is not), and its marks stay 16 px, so they do not raise the heading's line.
+    const groupRow = (id) => page.locator(`.mv-lane-group[data-track="${id}"]`);
+    const nameOpacity = (id) => groupRow(id).locator('.mv-lane-group-name').evaluate((name) => getComputedStyle(name).opacity);
+    assert(await groupRow(mutedGroup.id).evaluate((label) => label.classList.contains('mv-lane-muted')));
+    assert.equal(await nameOpacity(mutedGroup.id), '0.55');
+    const coloringGroup = legacy.tracks.find((track) => track.label === 'StageEffect/Expert/Coloring');
+    assert.equal(await nameOpacity(coloringGroup.id), '1');
+    assert.deepEqual(await groupRow(mutedGroup.id).locator('.mv-lane-mute, .mv-lane-quality').evaluateAll((marks) => marks.map((mark) => {
+      const box = mark.getBoundingClientRect();
+      return [mark.classList[0], box.width, box.height];
+    })), [['mv-lane-mute', 16, 16], ['mv-lane-quality', 16, 16]]);
+    // Every mark lies inside its row (the next row would cover a part that does not).
+    assert.deepEqual(await page.locator('#mv-timeline-grid .mv-lane-label').evaluateAll((labels) => labels.flatMap((label) => {
+      const row = label.getBoundingClientRect();
+      return [...label.querySelectorAll('.mv-lane-mute, .mv-lane-quality')].filter((mark) => {
+        const box = mark.getBoundingClientRect();
+        return box.top < row.top - .5 || box.bottom > row.bottom + .5 || box.left < row.left - .5 || box.right > row.right + .5;
+      }).map((mark) => `${label.title} ${mark.classList[0]}`);
+    })), []);
+    await groupMark.click({ force: true });
+    assert.equal(await page.locator('#mv-status').textContent(),
+      '그룹 음소거는 게임에 반영되지 않습니다. 게임은 그룹 안의 각 트랙을 그 트랙의 음소거 설정대로 재생합니다.');
+    assert.equal((await state(page)).project.tracks.find((track) => track.id === mutedGroup.id).muted, true, 'and stays muted');
+    await page.locator('#mv-tab-lighting').click();
+    // The quality badge shows the flag off, and follows the quality panel.
+    const flashTrack = legacy.tracks.find((track) => track.label === flashLabel);
+    const flashBadge = page.locator(`.mv-lane-quality[data-track="${flashTrack.id}"]`);
+    assert(await flashBadge.evaluate((badge) => badge.classList.contains('mv-quality-off')));
+    assert.equal(await flashBadge.getAttribute('aria-label'), "MV 그래픽 설정에서 '무대 점멸 조명'이(가) 꺼져 있어 게임은 이 트랙을 재생하지 않습니다.");
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=quality]').textContent(),
+      "MV 그래픽 설정에서 '무대 점멸 조명'이(가) 꺼져 있어 게임은 이 트랙을 재생하지 않습니다.");
+    await page.screenshot({ path: path.join(evidence, 'quality-badge-off-ko.png') });
+    await page.locator('#mv-quality summary').scrollIntoViewIfNeeded();
+    if (!(await page.locator('#mv-quality').evaluate((panel) => panel.open))) await page.locator('#mv-quality summary').click();
+    await page.locator('[data-mv-quality=stage_flash_light]').check();
+    assert.equal(await flashBadge.evaluate((badge) => badge.classList.contains('mv-quality-off')), false);
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=quality]').textContent(),
+      "MV 그래픽 설정에서 '무대 점멸 조명'이(가) 켜져 있을 때만 재생됩니다.");
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert(await flashBadge.evaluate((badge) => badge.classList.contains('mv-quality-off')), 'undo turns it off again');
+    // The stale lip-sync track keeps the gate its original clips pass: nothing is written on load,
+    // its blends are read only, and the next move on the track rewrites every blend.
+    const savedLipsNow = () => state(page).then((value) => findTrack(value.project, savedLips.id));
+    assert.deepEqual((await savedLipsNow()).events, savedLips.events, 'nothing written on load');
+    await page.locator('#mv-tab-mouth').click();
+    await page.locator(`.mv-clip[data-event="${movedLip.id}"]`).click();
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=blendIn]').count(), 0, 'gated: blends read only');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=blend]').count(), 1);
+    const nextLip = page.locator(`.mv-clip[data-event="${savedLips.id}:7"]`);
+    await nextLip.scrollIntoViewIfNeeded();
+    await nextLip.focus();
+    const lipUndo = (await state(page)).history.undo;
+    await page.keyboard.press('Alt+ArrowRight');
+    assert.equal((await state(page)).history.undo, lipUndo + 1);
+    assert(Interact.blendGate(await savedLipsNow()), 'every blend follows the overlaps after the next move');
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert.deepEqual((await savedLipsNow()).events, savedLips.events, 'undo puts the saved blends back');
+    // An overlapping camera shot says the preview cuts where the game crossfades; one that does not, nothing.
+    await page.locator('#mv-tab-camera').click();
+    for (const [event, expected] of [[longShot, 1], [legacyCamera.events[2], 1], [legacyCamera.events[3], 0]]) {
+      await page.locator(`.mv-clip[data-event="${event.id}"]`).click();
+      assert.equal(await page.locator('#mv-event-fields [data-mv-note=camera-blend]').count(), expected, event.id);
+    }
+    await page.locator(`.mv-clip[data-event="${longShot.id}"]`).click();
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=camera-blend]').textContent(),
+      '이 샷은 다른 샷과 겹칩니다. 게임은 두 샷을 겹쳐 전환하지만, 미리보기는 뒤의 샷으로 바로 바뀝니다.');
+
     // The English UI names the same tabs.
     await page.locator('#lang-select').selectOption('en');
     await page.waitForFunction(() => document.querySelector('#mv-tab-all')?.firstChild.textContent.trim() === 'All');
@@ -811,6 +1303,14 @@ async function run() {
     await page.waitForFunction(() => document.querySelector('#mv-tab-all')?.firstChild.textContent.trim() === '전체');
 
     assert.deepEqual(errors, []);
+    // With a muted group, whose heading shows a mark (stock 11054 mutes its Member1 and Member2 groups).
+    const narrow = JSON.parse(JSON.stringify(original));
+    narrow.tracks.find((track) => track.label === 'Member1' && track.nativeClass === 'GroupTrack').muted = true;
+    for (const [name, viewport] of [['phone', { width: 390, height: 844 }], ['landscape', { width: 844, height: 390 }],
+      ['tablet', { width: 768, height: 1024 }]]) {
+      await narrowLanes(browser, server.url, narrow, name, viewport);
+    }
+    await nonNativeBlends(browser, server.url);
     await pluginContract(browser, server.url);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {

@@ -88,6 +88,16 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
             // An HDR colour whose k has more than 4 decimals: the box shows 1.498.
             { id: 'grey:1', start: 2, duration: 2, label: 'G1', editableValues: ['tintColor'],
               values: { asset: 'cab:13', playableClass: 'LiveColoringClip', tintColor: { r: 1.4980392456054688, g: .5, b: .25, a: 1 } } }] },
+          // A member target: slot 2 is not among the project's members (1 and 3).
+          { id: 'dof', kind: 'dof', events: [
+            { id: 'dof:0', start: 0, duration: 2, label: 'D', editableValues: ['memberPosition', 'cameraAutoDistanceMode', 'focusTransitionTime'],
+              values: { asset: 'cab:14', playableClass: 'LiveDepthOfFieldClip', memberPosition: 2, cameraAutoDistanceMode: 0,
+                focusTransitionTime: 1, bodyPart: 0 } }] },
+          { id: 'crowd', kind: 'crowd', events: [
+            { id: 'crowd:0', start: 0, duration: 2, label: 'Crowd', editableValues: ['memberColors', 'swingMode'],
+              values: { asset: 'cab:15', playableClass: 'LivePenlightClip', swingMode: 1, growthYZSwingPowerY: .7, memberColors: [
+                { color: { r: 1, g: 1, b: 1, a: 1 }, colorSpecifiedType: 1, memberPosition: 1 },
+                { color: { r: 1, g: .5, b: 0, a: 1 }, colorSpecifiedType: 0, memberPosition: 3 }] } }] },
         ] };
       const history = MVStudioEditHistory.create({ getProject: () => project });
       const ctx = {
@@ -271,6 +281,48 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
         badgeTitle: offset.querySelector('.mv-field-badge')?.title };
       out.weightBadge = !!control('fx:0', 'weight').querySelector('.mv-field-badge');
       out.tintBadge = !!tint.querySelector('.mv-field-badge');
+
+      // Member slot: the project's members, then the clip's own value; the focus target and its time.
+      const focus = control('dof:0', 'memberPosition');
+      out.focus = { options: [...focus.querySelectorAll('option')].map((option) => [Number(option.value), option.textContent]),
+        fields: fields(focus), label: focus.querySelector('.mv-value-label').textContent };
+      focus.querySelector('select').value = '3';
+      focus.querySelector('select').dispatchEvent(new Event('change', { bubbles: true }));
+      out.focusValue = find('dof:0').event.values.memberPosition;
+      const mode = control('dof:0', 'cameraAutoDistanceMode');
+      out.mode = [...mode.querySelectorAll('option')].map((option) => [Number(option.value), option.textContent]);
+      const transition = control('dof:0', 'focusTransitionTime').querySelector('[data-mv-field=focusTransitionTime]');
+      out.transition = [transition.min, transition.max];
+
+      // Penlight palette: one group per entry; each control writes the list with one entry changed.
+      const palette = control('crowd:0', 'memberColors');
+      out.palette = { fields: fields(palette), legends: [...palette.querySelectorAll('legend')].map((item) => item.textContent),
+        members: [...palette.querySelectorAll('[data-mv-field="memberColors.1.memberPosition"] option')].map((option) => option.value) };
+      const paletteBefore = history.size().undo;
+      const slot = palette.querySelector('[data-mv-field="memberColors.1.memberPosition"]');
+      slot.value = '1';
+      slot.dispatchEvent(new Event('change', { bubbles: true }));
+      const kind = palette.querySelector('[data-mv-field="memberColors.0.colorSpecifiedType"]');
+      kind.value = '2';
+      kind.dispatchEvent(new Event('change', { bubbles: true }));
+      const green = palette.querySelector('[data-mv-field="memberColors.1.color.g"]');
+      green.value = '0.25';
+      green.dispatchEvent(new Event('change', { bubbles: true }));
+      out.paletteValue = JSON.parse(JSON.stringify(find('crowd:0').event.values.memberColors));
+      out.paletteSteps = history.size().undo - paletteBefore;
+      out.swing = [...control('crowd:0', 'swingMode').querySelectorAll('option')].map((option) => option.textContent);
+      // Which track mutes reach the game (the export's rule, for the timeline's mute toggle).
+      out.mute = [{ nativeClass: 'GroupTrack', label: 'StageEffect' }, { nativeClass: 'LiveColoringTrack', label: 'StageEffect/Expert/Coloring/LED' },
+        { nativeClass: 'CustomControlTrack', label: 'StageEffect/Expert/Flash Light/F' }, { nativeClass: 'CustomControlTrack', label: 'StageEffect/Expert/Overlay/F' },
+        { nativeClass: 'LiveColoringTrack', label: 'StageEffect/Expert/Coloring/LightShaft/L' }, { nativeClass: 'LiveRimlightTrack', label: 'MemberEffect/Expert/Member Rim Light/R' },
+        { nativeClass: 'MemberLipSyncTrack', label: 'Member1/LipSync' }, null,
+        { nativeClass: 'MemberEyeTrack', label: 'Member1/Eye' }, { nativeClass: 'MemberLipSyncTrack', label: 'Member1/MouthRina' },
+        { nativeClass: 'MemberGazeTrack', label: 'Member1/Gaze' },
+        { nativeClass: 'AnimationTrack', label: 'PropEffect/Expert/PropAnimation/A' }, { nativeClass: 'LivePropAmbientTrack', label: 'PropEffect/Expert/Prop Ambient/A' },
+        { nativeClass: 'LiveBaseLightTrack', label: 'GlobalEffect/Expert/BaseLight/B' }, { nativeClass: 'CustomControlTrack', label: 'MotionMisc/Expert/SplitScreen/S' },
+        { nativeClass: 'CustomControlTrack', label: 'MotionMisc/Expert/Other/S' }].map((track) => F.trackMuteNote(track));
+      const powerY = control('crowd:0', 'growthYZSwingPowerY');
+      out.powerY = { fields: fields(powerY), text: powerY.querySelector('output').textContent };
       return out;
     });
 
@@ -382,6 +434,26 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
     assert.match(result.offset.badgeTitle, /exported to the game/);
     assert(result.weightBadge);
     assert(!result.tintBadge);
+    assert.deepEqual(result.focus, { options: [[1, '멤버 1 · 아유무'], [3, '멤버 3'], [2, 'Value 2']], fields: ['memberPosition'],
+      label: 'Focus member' }, 'member slots of the project, then the clip\'s own value');
+    assert.equal(result.focusValue, 3);
+    assert.deepEqual(result.mode, [[0, 'The chosen member'], [1, 'The nearest member'], [2, 'The member nearest the centre']]);
+    assert.deepEqual(result.transition, ['0', '60']);
+    const entryFields = (index) => ['color', 'color.intensity', 'color.r', 'color.g', 'color.b', 'color.a', 'colorSpecifiedType',
+      'memberPosition'].map((key) => `memberColors.${index}.${key}`);
+    assert.deepEqual(result.palette, { fields: [...entryFields(0), ...entryFields(1)], legends: ['Colour 1', 'Colour 2'],
+      members: ['1', '3'] });
+    assert.deepEqual(result.paletteValue, [
+      { color: { r: 1, g: 1, b: 1, a: 1 }, colorSpecifiedType: 2, memberPosition: 1 },
+      { color: { r: 1, g: .25, b: 0, a: 1 }, colorSpecifiedType: 0, memberPosition: 1 }], 'each control changes its own entry');
+    assert.equal(result.paletteSteps, 3, 'one undo step per change');
+    assert.deepEqual(result.swing, ['Still', 'Front-back swing', 'Rising swing', 'Side swing', 'Sway']);
+    assert.deepEqual(result.powerY, { fields: [], text: '0.7' }, 'the lift curve stays read only');
+    const group = "A group track's mute does not reach the game. Mute the tracks inside it.";
+    const quality = "The game's quality settings turn this track on and off, so its mute does not reach the game.";
+    const facial = 'The game turns eye and mouth tracks on and off itself, so this mute does not reach the game.';
+    assert.deepEqual(result.mute, [group, quality, quality, null, null, quality, facial, group, facial, facial, null, null, quality, quality, quality, null],
+      'groups, eye and mouth tracks and direct children of quality categories are noted; nested, uncategorised and other member tracks reach the game');
     console.log('MV Studio event fields: descriptors, HDR colour, 0/1 ints, observed options, data-mv-field, native data, gestures passed');
   } finally {
     await browser.close();

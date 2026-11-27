@@ -248,15 +248,51 @@ def _camera_binding(binding):
     return None
 
 
-def _camera_frames(obj, clip, duration, deadline, remaining_frames, euler_order=None):
-    """Sample a camera shot. `euler_order` overrides an Euler binding's own order (legacy project checks only)."""
+_CAMERA_SOURCE = "Camera point edits need an untrimmed native shot: clip offset 0, speed 1 and its own camera bindings."
+_CAMERA_FRAMES = "A camera shot with camera edits needs a length of whole frames (1/60 s)."
+_CAMERA_POINTS = "Keep one camera point per frame of the shot, at its frame times."
+
+
+def _camera_count(duration, rate):
+    """The samples of a camera shot on its grid: one every 1/rate s, the last one at the clip's end."""
+    return math.ceil(duration * rate - 1e-9) + 1
+
+
+def _camera_rewrite_refusal(tree, clip, duration):
+    """Why _write_camera cannot give this clip dense samples for a shot of `duration`, or None.
+
+    One rule for the parse (which marks keyframes editable) and the writer: an untrimmed source
+    (clip-in 0, speed 1, source start 0), a 1-60 Hz sample rate, a length of whole samples (two at
+    least), and the native position, rotation and FOV bindings. The source's stop time may differ
+    from the clip's length (split-screen sub cameras: 1.7833 s of motion in a 1.8 s clip, or 1.8 s in
+    a 0.8667 s one); the writer sets it to the length it writes."""
+    muscle = tree.get("m_MuscleClip") if isinstance(tree.get("m_MuscleClip"), dict) else {}
+    rate, start = tree.get("m_SampleRate"), muscle.get("m_StartTime", 0)
+    if (clip.get("m_ClipIn", 0) != 0 or clip.get("m_TimeScale", 1) != 1 or type(start) not in (int, float)
+            or abs(start) > 1e-6 or type(rate) not in (int, float) or not 1 <= rate <= 60):
+        return _CAMERA_SOURCE
+    if (type(duration) not in (int, float) or not 0 < duration <= _MAX_SECONDS
+            or abs(duration * rate - (_camera_count(duration, rate) - 1)) > 1e-3):
+        return _CAMERA_FRAMES
+    try:
+        _camera_sample_order(tree)
+    except (ValueError, KeyError, TypeError):
+        return _CAMERA_SOURCE
+    return None
+
+
+def _camera_frames(obj, clip, duration, deadline, remaining_frames, euler_order=None, tree=None):
+    """Sample a camera shot. `euler_order` overrides an Euler binding's own order (legacy project checks only).
+
+    `tree` is the AnimationClip's type tree when the caller has read it already."""
     if duration <= 0:
         return []
-    tree = obj.read_typetree()
+    if tree is None:
+        tree = obj.read_typetree()
     rate = _time(tree.get("m_SampleRate", 60), "camera sample rate", minimum=1, maximum=1000)
     speed = _time(clip.get("m_TimeScale", 1), "camera clip speed", minimum=.000001, maximum=100)
     rate = min(60, max(1, rate * speed))
-    count = math.ceil(duration * rate - 1e-9) + 1
+    count = _camera_count(duration, rate)
     if count > remaining_frames:
         raise ValueError("The project camera sample limit was reached.")
     channels = _camera_channels(tree, deadline)
@@ -320,9 +356,12 @@ def _event(track_obj, clip, key, index, kind, objects, mono, references, animati
                 values["animationName"] = _label(animation_obj.peek_name())
                 if kind == "camera":
                     try:
-                        values["keyframes"] = _camera_frames(animation_obj, clip, duration, deadline, remaining_frames)
+                        camera_tree = animation_obj.read_typetree()
+                        values["keyframes"] = _camera_frames(animation_obj, clip, duration, deadline, remaining_frames,
+                                                             tree=camera_tree)
+                        # Editable exactly when the writer can rewrite them (one shared rule).
                         if (values["keyframes"] and references[asset] == 1 and animations[animation_key] == 1
-                                and values.get("clipIn", 0) == 0 and values.get("timeScale", 1) == 1):
+                                and _camera_rewrite_refusal(camera_tree, clip, duration) is None):
                             editable.append("keyframes")
                     except (ValueError, KeyError, TypeError) as error:
                         warnings.add(f"Camera clip '{label}' could not be sampled: {error}")
@@ -681,28 +720,35 @@ _EDITABLE_VALUES = {
     "MemberCheekClip": {"cheekType", "intensity"},
     "LiveBloomClip": {"intensity", "threshold", "softKnee", "radius", "antiFlicker"},
     "LiveDepthOfFieldClip": {"focusDistance", "aperture", "focalLength", "useCameraFov", "antiAura",
-                             "kernelSize", "useMemberDistance", "bodyPart"},
+                             "kernelSize", "useMemberDistance", "bodyPart", "memberPosition", "cameraAutoDistanceMode",
+                             "focusTransitionTime"},
     "LiveBaseLightClip": {"ambientColor", "ambientTintColor", "rimlightColor", "rimlightIntensity",
-                         "rimlightSharpness", "rimlightDirection"},
-    "LiveMemberAmbientClip": {"color", "tintColor", "colorSpecifiedType"},
-    "LiveStageAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType"},
-    "LiveStageSingleAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType"},
-    "LiveStageEmissiveClip": {"color", "intensity", "colorSpecifiedType"},
-    "LiveMemberSpotLightAreaClip": {"color", "colorSpecifiedType"},
+                         "rimlightSharpness", "rimlightDirection", "ambientColorType", "rimlightColorType",
+                         "ambientMemberPosition", "rimlightMemberPosition"},
+    "LiveMemberAmbientClip": {"color", "tintColor", "colorSpecifiedType", "memberPosition"},
+    "LiveStageAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType", "memberPosition"},
+    "LiveStageSingleAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType", "memberPosition"},
+    "LiveStageEmissiveClip": {"color", "intensity", "colorSpecifiedType", "memberPosition"},
+    "LiveMemberSpotLightAreaClip": {"color", "colorSpecifiedType", "memberPosition"},
     "LiveMemberSpotLightShaftClip": {"color", "scale", "offsetHeight", "smoothTime", "colorSpecifiedType",
-                                     "drawObjectIndex"},
-    "LiveRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType"},
-    "LiveFlareClip": {"color", "center", "intensity", "smoothness", "roundness", "rounded", "colorSpecifiedType"},
-    "LiveFlashLightClip": {"tintColor", "speed", "colorSpecifiedType", "status"},
+                                     "drawObjectIndex", "memberPosition"},
+    "LiveRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType", "memberPosition"},
+    "LiveFlareClip": {"color", "center", "intensity", "smoothness", "roundness", "rounded", "colorSpecifiedType",
+                      "memberPosition"},
+    "LiveFlashLightClip": {"tintColor", "speed", "colorSpecifiedType", "status", "memberPosition"},
     "LiveDisplayClip": {"scrollSpeed", "ambientColor", "materialIndex"},
     "LiveColoringClip": {"shift", "tintColor", "speed", "textureIndex"},
-    "LiveCameraOffsetClip": {"intensity"},
+    "LiveCameraOffsetClip": {"intensity", "memberPosition"},
     "LivePenlightClip": {"tintColor", "fogIntensity", "randomBrightness", "beatLength", "beatOffset",
-                         "randomDelay", "randomUp", "randomSwingIntensity"},
+                         "randomDelay", "randomUp", "randomSwingIntensity", "swingMode", "position", "memberColors",
+                         "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ", "basicYZSwingPowerZ",
+                         "growthYZMoveY", "growthYZMoveZ", "growthYZRotateZ", "growthYZSwingBackZ", "growthYZSwingPowerZ",
+                         "growthYZSwingBottomZ", "basicXRotateX", "basicXMoveX", "basicXMoveY", "simpleXZRotateX",
+                         "simpleXZRotateZ"},
     "CustomControlClip": {"weight", "offset"},
     "LiveMemberScalingClip": {"intensity"},
-    "LivePropAmbientClip": {"color", "tintColor", "colorSpecifiedType"},
-    "LivePropRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType"},
+    "LivePropAmbientClip": {"color", "tintColor", "colorSpecifiedType", "memberPosition"},
+    "LivePropRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType", "memberPosition"},
 }
 # Every class above whose clips pick their colour source with colorSpecifiedType
 # (0 custom, 1 member, 2 original member) is resolved by the preview's
@@ -716,8 +762,44 @@ _LIMITED_VALUES = {
     **{(native, "colorSpecifiedType"): (0, 2) for native in _COLOR_SOURCE_CLASSES},
     ("LiveDepthOfFieldClip", "kernelSize"): (0, 3),
     ("LiveDepthOfFieldClip", "useMemberDistance"): (0, 1),
+    # LiveDepthOfFieldMixer.CalcFocusDistance (0x29237fc): 1 the nearest member, 2 the member nearest
+    # the view axis, anything else memberPosition (mv-studio-dof-focus.js memberFocus).
+    ("LiveDepthOfFieldClip", "cameraAutoDistanceMode"): (0, 2),
+    ("LiveBaseLightClip", "ambientColorType"): (0, 2),
+    ("LiveBaseLightClip", "rimlightColorType"): (0, 2),
     ("LiveFlashLightClip", "status"): (0, 2),
+    # AS/Penlight ships one variant per swing keyword (_SWING_MODE_STOP, _BASIC_YZ, _GROWTH_YZ,
+    # _BASIC_X, _SIMPLE_XZ); stock clips use 0 to 3 (mv-studio-penlight.js uMode).
+    ("LivePenlightClip", "swingMode"): (0, 4),
 }
+# Values that name a member slot: a changed one must be a slot this timeline binds a performer
+# model to (_PERFORMER_MODEL). The client reads Members[slot - 1] behind a bounds check and throws
+# for a missing member (LiveDepthOfFieldMixer.CalcFocusDistance 0x2924148), and the member colour
+# and camera height lookups read the same members.
+_MEMBER_POSITIONS = frozenset(
+    {(native, "memberPosition") for native in _COLOR_SOURCE_CLASSES | {"LiveDepthOfFieldClip", "LiveCameraOffsetClip"}}
+    | {("LiveBaseLightClip", "ambientMemberPosition"), ("LiveBaseLightClip", "rimlightMemberPosition")})
+MEMBER_SLOT = "Choose a member this MV has."
+# Float fields with a native range (other floats take any value within +-1e6).
+_FLOAT_RANGES = {
+    ("LiveDepthOfFieldClip", "focusTransitionTime"): (0, 60),
+    # AS/Penlight swing shapes (mv-studio-penlight.js): moves in metres, tilts in radians, the
+    # rest offsets, and two exponents of a 0..1 wave (negative would divide by zero at 0).
+    # growthYZSwingBottomZ splits the growth cycle (cycle / z and (cycle - z) / (1 - z)), so it stays
+    # inside 0..1. growthYZSwingPowerY stays read-only: the preview reads LivePenlightMixer as passing
+    # it on multiplied by its reset output (mv-studio-penlight.js uGrowthShape.x = 0), so an edit would
+    # change nothing in the game (not re-read for this change).
+    **{("LivePenlightClip", field): (-10, 10) for field in (
+        "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ", "growthYZMoveY", "growthYZMoveZ",
+        "growthYZRotateZ", "growthYZSwingBackZ", "basicXRotateX", "basicXMoveX", "basicXMoveY", "simpleXZRotateX",
+        "simpleXZRotateZ")},
+    ("LivePenlightClip", "basicYZSwingPowerZ"): (0, 100),
+    ("LivePenlightClip", "growthYZSwingPowerZ"): (0, 100),
+    ("LivePenlightClip", "growthYZSwingBottomZ"): (.01, .99),
+}
+# LivePenlightClip.memberColors: one entry per palette slot; the length stays (the client sizes the
+# palette from it), each entry keeps its fields.
+_MEMBER_COLOR_KEYS = frozenset({"color", "colorSpecifiedType", "memberPosition"})
 # Indices into game-side lists the bundle does not describe (coloring textures,
 # display materials, shaft draw objects, BodyPartManager parts): a revision may
 # only pick a value the original MV already uses for that field, on the same
@@ -728,13 +810,81 @@ _OBSERVED_VALUES = {
     ("LiveMemberSpotLightShaftClip", "drawObjectIndex"): "track",
     ("LiveDepthOfFieldClip", "bodyPart"): "timeline",
 }
-# Changed values that only work for a clip whose own (read-only) memberPosition is a member slot.
+# Changed values that only work for a clip whose member position (as revised) is a member slot:
+# (values, message, the field holding that position).
+_COLOUR_MEMBER = "This colour source needs the clip's member position to be 1 to 12."
 _MEMBER_SLOT_VALUES = {
-    **{(native, "colorSpecifiedType"): ({1, 2}, "This colour source needs the clip's member position to be 1 to 12.")
-       for native in _COLOR_SOURCE_CLASSES},
-    ("LiveDepthOfFieldClip", "useMemberDistance"): ({1}, "Member focus needs the clip's member position to be 1 to 12."),
+    **{(native, "colorSpecifiedType"): ({1, 2}, _COLOUR_MEMBER, "memberPosition") for native in _COLOR_SOURCE_CLASSES},
+    ("LiveBaseLightClip", "ambientColorType"): ({1, 2}, _COLOUR_MEMBER, "ambientMemberPosition"),
+    ("LiveBaseLightClip", "rimlightColorType"): ({1, 2}, _COLOUR_MEMBER, "rimlightMemberPosition"),
+    ("LiveDepthOfFieldClip", "useMemberDistance"): ({1}, "Member focus needs the clip's member position to be 1 to 12.",
+                                                    "memberPosition"),
 }
 _TIMING_NATIVE = {label: field for field, label in _CLIP_TIMING.items()}
+# Track fields an export writes into the track's own MonoBehaviour, for a track whose
+# exportable_track_fields lists them (mv_studio_register.normalize sends every other
+# track field back to the original).
+EXPORTABLE_TRACK_FIELDS = ("muted",)
+# The client compiles each output track by its own m_Muted (TrackAsset.compilable 0x35b8c00 reads
+# +0x19; a GroupTrack is never compiled), so a GroupTrack's mute changes nothing in the game.
+GROUP_MUTE = "A group track's mute does not reach the game. Mute the tracks inside it."
+# LiveQualityOperator decides the mute of every direct child track of these category groups (GL
+# 3.12.0 libil2cpp): director setup (0x2924cdc) calls 0x20f3a00, which runs ApplyLiveQualityTo*
+# (0x20f2788 motionMiscTracks, 0x20f2a98 globalEffectTracks, 0x20f2b70 stageEffectTracks, 0x20f3164
+# memberEffectTracks, 0x20f331c propEffectTracks: the operator's fields +0x18..+0x38). Each fills
+# {category name: !option} and 0x20f28a0 calls ApplyMuteToChildTracks (0x20f348c) on each category group
+# of its root with one of those names; that calls ApplyMuteToTrack (0x20f30e8) on each direct child, and
+# with muted false it calls TrackAsset.set_muted(false) (0x35d10e8). So an option that is on unmutes these
+# tracks and one that is off mutes them: their own m_Muted never reaches the game. Tracks one group
+# deeper, and tracks in a category with another name, keep theirs. The names are the string literals of
+# those five functions, matched without spaces and lower-cased (StageEffect's are
+# mv_studio_stage_motion._STAGE_QUALITY).
+_QUALITY_CATEGORIES = {
+    "StageEffect": frozenset({"post", "ambient", "animation", "coloring", "control", "flashlight", "display",
+                              "audience", "emissive", "overlayeffect"}),
+    "MemberEffect": frozenset({"memberambient", "memberrimlight", "memberspotlightarea", "memberspotlightshaft"}),
+    "PropEffect": frozenset({"propambient", "proprimlight", "propcoloring"}),
+    "GlobalEffect": frozenset({"baselight"}),
+    "MotionMisc": frozenset({"splitscreen"}),
+}
+QUALITY_MUTE = "The game's quality settings turn this track on and off, so its mute does not reach the game."
+# The client also sets the mute of every eye and mouth track itself: after BindTimeline, director
+# setup always runs LiveDirector.InitializeMemberHead (0x2924d04), which per member collects
+# GetTracks<MemberEyeTrack> and GetTracks<MemberLipSyncTrack> (no muted test) and calls
+# SetupFacialTrackMute (0x29250d4); that sets muted = IsRinaFacial XOR useRina on each of them
+# (eor at 0x29251ac and 0x2925298, TrackAsset.set_muted 0x35d10e8), replacing the authored m_Muted
+# (game_motion_timeline.parse_timeline models the same rule).
+_FACIAL_MUTE_CLASSES = frozenset({"MemberEyeTrack", "MemberLipSyncTrack"})
+FACIAL_MUTE = "The game turns eye and mouth tracks on and off itself, so this mute does not reach the game."
+
+
+def quality_category(label):
+    """The normalized name of the quality category group a track sits directly in, or None.
+
+    ``label`` is the parsed track path <root>/<difficulty>/<category>/<track>; the client matches the
+    category name without spaces and lower-cased (NormalizeTrackName). No stock group or track name
+    contains "/"."""
+    parts = label.split("/") if isinstance(label, str) else []
+    if len(parts) != 4 or parts[0] not in _QUALITY_CATEGORIES:
+        return None
+    category = parts[2].replace(" ", "").lower()
+    return category if category in _QUALITY_CATEGORIES[parts[0]] else None
+
+
+def track_mute_refusal(track):
+    """Why a mute of this parsed track does not reach the game, or None when it does."""
+    if not isinstance(track, dict) or track.get("nativeClass") == "GroupTrack":
+        return GROUP_MUTE
+    if track.get("nativeClass") in _FACIAL_MUTE_CLASSES:
+        return FACIAL_MUTE
+    if quality_category(track.get("label")) is not None:
+        return QUALITY_MUTE
+    return None
+
+
+def exportable_track_fields(track):
+    """The EXPORTABLE_TRACK_FIELDS an export writes for this parsed (original) track."""
+    return () if track_mute_refusal(track) else EXPORTABLE_TRACK_FIELDS
 
 
 def _index_rows(items, name):
@@ -762,8 +912,10 @@ def _changes(original, revised):
     last_event_end = 0.
     for identity, before in old_tracks.items():
         after = new_tracks[identity]
-        if {k: v for k, v in before.items() if k != "events"} != {k: v for k, v in after.items() if k != "events"}:
+        fixed = lambda track: {k: v for k, v in track.items() if k != "events" and k not in EXPORTABLE_TRACK_FIELDS}  # noqa: E731
+        if before.keys() != after.keys() or fixed(before) != fixed(after):
             raise ValueError("Track identity, binding, and original metadata are read-only in native exports.")
+        _track_fields(before, after)
         old_events = _index_rows(before["events"], "event")
         new_events = _index_rows(after["events"], "event")
         if list(old_events) != list(new_events):
@@ -783,6 +935,30 @@ def _changes(original, revised):
     if revised["duration"] != original["duration"] and (not changes or revised["duration"] != last_event_end):
         raise ValueError("Change the original clip timings to set the native timeline duration.")
     return changes
+
+
+def _track_fields(before, after):
+    """[(field, value)] of the EXPORTABLE_TRACK_FIELDS ``after`` changes on one track, or ValueError
+    when the change cannot reach the game (a GroupTrack, an eye or mouth track, a quality category's
+    track) or is not a bool."""
+    result = []
+    for field in EXPORTABLE_TRACK_FIELDS:
+        if field not in before or after.get(field) == before[field]:
+            continue
+        if type(after.get(field)) is not bool:
+            raise ValueError("A track mute must be on or off.")
+        refusal = track_mute_refusal(before)
+        if refusal:
+            raise ValueError(refusal)
+        result.append((field, after[field]))
+    return result
+
+
+def _track_changes(original, revised):
+    """[(track id, field, value)] for a revision _changes accepted."""
+    revised_tracks = _index_rows(revised["tracks"], "track")
+    return [(track["id"], field, value) for track in original["tracks"]
+            for field, value in _track_fields(track, revised_tracks[track["id"]])]
 
 
 def _replace_value(native, value, field):
@@ -814,13 +990,42 @@ def _set_timing(clip, field, value):
     clip[_TIMING_NATIVE[field]] = value
 
 
+def _member_colors(native, value):
+    """A revised LivePenlightClip.memberColors: the same length and fields; an entry takes a colour, a
+    changed colour source 0..2 and a changed member slot 1..12 (_check_values checks the slot against
+    the MV). An unchanged source or slot stays as stock has it (custom-colour entries may hold 0)."""
+    if (not isinstance(native, list) or not isinstance(value, list) or len(value) != len(native)
+            or any(not isinstance(entry, dict) or entry.keys() != _MEMBER_COLOR_KEYS for entry in (*native, *value))):
+        raise ValueError("Keep the penlight colour list's length and fields.")
+    result = []
+    for old, new in zip(native, value):
+        if new == old:
+            result.append(old)
+            continue
+        kind, slot = new["colorSpecifiedType"], new["memberPosition"]
+        if type(kind) is not int or kind != old["colorSpecifiedType"] and not 0 <= kind <= 2:
+            raise ValueError("'colorSpecifiedType' is outside the supported native range.")
+        if type(slot) is not int or slot != old["memberPosition"] and not 1 <= slot <= 12:
+            raise ValueError(MEMBER_SLOT)
+        result.append({key: _replace_value(old[key], new[key], "memberColors") for key in old})
+    return result
+
+
 def _set_playable_value(tree, native, field, value):
+    if native == "LivePenlightClip" and field == "memberColors":
+        tree[field] = _member_colors(tree[field], value)
+        return
     bounds = _LIMITED_VALUES.get((native, field))
     if bounds and (type(value) is not int or not bounds[0] <= value <= bounds[1]):
         raise ValueError(f"'{field}' is outside the supported native range.")
+    if (native, field) in _MEMBER_POSITIONS and (type(value) is not int or not 1 <= value <= 12):
+        raise ValueError(MEMBER_SLOT)
     if (field in ("weight", "weightForDirection")
             or native in ("MemberCheekClip", "LiveMemberScalingClip") and field == "intensity"):
         value = _time(value, field, minimum=0, maximum=1)
+    floats = _FLOAT_RANGES.get((native, field))
+    if floats:
+        value = _time(value, field, minimum=floats[0], maximum=floats[1])
     tree[field] = _replace_value(tree[field], value, field)
 
 
@@ -830,12 +1035,42 @@ def _value_key(value):
     return json.dumps(value, sort_keys=True)
 
 
+def performer_slots(tracks):
+    """The member slots a parsed timeline binds a performer model to (Members/Member<n>/Model)."""
+    slots = set()
+    for track in tracks:
+        bindings = [track.get("binding"), *(track.get("bindings") or ())] if isinstance(track, dict) else ()
+        for binding in bindings:
+            match = _PERFORMER_MODEL.fullmatch(binding) if isinstance(binding, str) else None
+            if match:
+                slots.add(int(match[1]))
+    return frozenset(slots)
+
+
+def _check_member_colors(before, after, slots):
+    """A changed penlight palette entry names a performer slot, and a member colour source needs a
+    member slot; malformed lists are left to _member_colors."""
+    if not isinstance(before, list) or not isinstance(after, list) or len(before) != len(after):
+        return
+    for old, new in zip(before, after):
+        if not isinstance(old, dict) or not isinstance(new, dict) or new == old:
+            continue
+        slot = new.get("memberPosition")
+        if slot != old.get("memberPosition") and not (type(slot) is int and slot in slots):
+            raise ValueError(MEMBER_SLOT)
+        kind = new.get("colorSpecifiedType")
+        if (kind != old.get("colorSpecifiedType") and type(kind) is int and kind in (1, 2)
+                and not (type(slot) is int and 1 <= slot <= 12)):
+            raise ValueError(_COLOUR_MEMBER)
+
+
 def _check_values(original, revised):
     """Rules on changed values that one field alone cannot check.
 
     A field of _OBSERVED_VALUES must take a value the original timeline already
-    uses for it (on the same track, or anywhere), and a member colour or member
-    focus needs the clip's own read-only memberPosition to be a member slot.
+    uses for it (on the same track, or anywhere); a changed member position must
+    be one of the timeline's performer slots; and a member colour or member focus
+    needs the clip's member position (as revised) to be a member slot.
     Malformed revisions are left to _changes."""
     if not isinstance(revised, dict) or not isinstance(revised.get("tracks"), list):
         return
@@ -852,6 +1087,7 @@ def _check_values(original, revised):
                 if values.get("playableClass") == native and field in values:
                     key = (native, field, track["id"] if scope == "track" else None)
                     observed.setdefault(key, set()).add(_value_key(values[field]))
+    slots = performer_slots(original["tracks"])
     for track in original["tracks"]:
         for event in track["events"]:
             before, after = event["values"], revised_events.get(event["id"])
@@ -866,8 +1102,12 @@ def _check_values(original, revised):
                 if scope and _value_key(value) not in observed.get(
                         (native, field, track["id"] if scope == "track" else None), ()):
                     raise ValueError(f"Choose a value this MV already uses for '{field}'.")
+                if (native, field) in _MEMBER_POSITIONS and not (type(value) is int and value in slots):
+                    raise ValueError(MEMBER_SLOT)
+                if native == "LivePenlightClip" and field == "memberColors":
+                    _check_member_colors(before[field], value, slots)
                 rule = _MEMBER_SLOT_VALUES.get((native, field))
-                slot = before.get("memberPosition")
+                slot = after.get(rule[2], before.get(rule[2])) if rule else None
                 if rule and type(value) is int and value in rule[0] and not (type(slot) is int and 1 <= slot <= 12):
                     raise ValueError(rule[1])
 
@@ -886,19 +1126,26 @@ def _camera_vector(value, length, label):
 
 
 def _write_camera(tree, clip, old_event, new_event):
+    """Write a shot's points as the clip's dense 60 Hz samples, its stop time at the shot's end.
+
+    `clip` is the TimelineClip as it will be saved (its new timing). A resized shot (new_event's
+    duration) brings the points of its new grid, ceil(duration·60) + 1 of them at min(i/60,
+    duration): the clip is written for that length."""
     unity_euler_near = animation.unity_euler_near
 
-    before, after = old_event["values"]["keyframes"], new_event["values"]["keyframes"]
-    span = old_event["duration"]
+    after = new_event["values"]["keyframes"]
+    span = new_event["duration"]
+    if old_event["values"].get("clipIn", 0) != 0 or old_event["values"].get("timeScale", 1) != 1:
+        raise ValueError(_CAMERA_SOURCE)
+    refusal = _camera_rewrite_refusal(tree, clip, span)
+    if refusal:
+        raise ValueError(refusal)
     rate = float(tree["m_SampleRate"])
     muscle = tree["m_MuscleClip"]
-    first, last = float(muscle["m_StartTime"]), float(muscle["m_StopTime"])
-    if (not isinstance(after, list) or len(after) != len(before) or not 2 <= len(after) <= _MAX_CAMERA_FRAMES
-            or new_event["duration"] != span or old_event["values"].get("clipIn", 0) != 0
-            or old_event["values"].get("timeScale", 1) != 1 or clip.get("m_ClipIn", 0) != 0
-            or clip.get("m_TimeScale", 1) != 1 or abs(first) > 1e-6 or abs(last - span) > 1e-3
-            or not 1 <= rate <= 60 or abs(span * rate - (len(after) - 1)) > 1e-3):
-        raise ValueError("Camera point edits require an untrimmed, full native shot with unchanged sample times.")
+    first = float(muscle["m_StartTime"])
+    count = _camera_count(span, rate)
+    if not isinstance(after, list) or len(after) != count or not 2 <= count <= _MAX_CAMERA_FRAMES:
+        raise ValueError(_CAMERA_POINTS)
     order = _camera_sample_order(tree)
     sample_array, previous_euler = [], None
     if "euler" in order:
@@ -906,10 +1153,11 @@ def _write_camera(tree, clip, old_event, new_event):
         euler_order = channels["eulerOrder"]
         # Start from the original first sample's angles; later samples follow their predecessor.
         previous_euler = [animation._evaluate(curve, first) for curve in channels["euler"]]
-    for index, (old_point, point) in enumerate(zip(before, after)):
+    for index, point in enumerate(after):
+        # The times the parse gives this shot: index / rate, the last one at the shot's end.
         if (not isinstance(point, dict) or set(point) != {"time", "position", "rotation", "fov"}
-                or point["time"] != old_point["time"] or abs(point["time"] - index / rate) > 1e-5):
-            raise ValueError("Keep the original camera point count and times.")
+                or point["time"] != min(span, index / rate)):
+            raise ValueError(_CAMERA_POINTS)
         position = _camera_vector(point["position"], 3, "position")
         rotation = _camera_vector(point["rotation"], 4, "rotation")
         length = math.sqrt(sum(axis * axis for axis in rotation))
@@ -927,8 +1175,12 @@ def _write_camera(tree, clip, old_event, new_event):
     packed = muscle["m_Clip"]["data"]
     packed["m_StreamedClip"].update(data=[], curveCount=0)
     packed["m_ConstantClip"]["data"] = []
-    packed["m_DenseClip"].update(m_FrameCount=len(after), m_CurveCount=len(sample_array) // len(after),
+    packed["m_DenseClip"].update(m_FrameCount=count, m_CurveCount=len(sample_array) // count,
                                  m_SampleRate=rate, m_BeginTime=0., m_SampleArray=sample_array)
+    # The clip now ends where the shot does. A source that stopped a frame early (or ran past the
+    # shot, as some split-screen sub cameras do) would clamp or extend the written samples.
+    if _float32(float(muscle["m_StopTime"])) != _float32(span):
+        muscle["m_StopTime"] = span
 
 
 def _bundle_facts(env):
@@ -1289,9 +1541,11 @@ def merge_changes(base, ours, theirs, synced=None):
 
     Values compare as stored (``field_digest``). A conflict names its ``basis``: "load" (the
     agreed value is the loaded one, shown as ``loaded``) or "applied" (the value this project
-    last applied, shown as ``loaded`` from the synced label). Returns ``(merged tracks,
-    conflicts, taken, theirs_only)``: merged is theirs with the taken fields; ``theirs_only``
-    counts the fields the game changed that the project does not hold. Raises
+    last applied, shown as ``loaded`` from the synced label). Track fields of
+    EXPORTABLE_TRACK_FIELDS merge the same way, keyed by the track id in ``synced``; their
+    conflicts have ``scope`` "track" (the track id as ``eventId``, no clip). Returns ``(merged
+    tracks, conflicts, taken, theirs_only)``: merged is theirs with the taken fields;
+    ``theirs_only`` counts the fields the game changed that the project does not hold. Raises
     ValueError(MERGE_LAYOUT) when theirs has other tracks, clips or value keys."""
     import copy
 
@@ -1301,45 +1555,63 @@ def merge_changes(base, ours, theirs, synced=None):
         raise ValueError(MERGE_LAYOUT)
     synced = synced if isinstance(synced, dict) else {}
     merged = copy.deepcopy(theirs)
-    conflicts, taken, theirs_only = [], 0, 0
+    conflicts, counts = [], {"taken": 0, "theirs_only": 0}
+
+    def merge(identity, field, old, new, now, put, where):
+        """Merge one field: put(new) when ours is taken, a conflict row (``where`` + values) otherwise."""
+        agreed = synced.get(identity) if isinstance(synced.get(identity), dict) else {}
+        old_digest, applied_label = synced_digest(agreed.get(field))
+        basis = "applied" if old_digest is not None else "load"
+        if old_digest is None:
+            old_digest = field_digest(old)
+        new_digest, now_digest = field_digest(new), field_digest(now)
+        if new_digest == old_digest:
+            if now_digest != old_digest:
+                counts["theirs_only"] += 1
+            return
+        if now_digest == new_digest:
+            return
+        if now_digest == old_digest:
+            put(new)
+            counts["taken"] += 1
+            return
+        conflicts.append({**where, "field": field, "basis": basis,
+                          "loaded": _merge_label(old) if basis == "load" else (applied_label or "?"),
+                          "project": _merge_label(new), "game": _merge_label(now)})
+
     for base_track, our_track, merged_track in zip(base, ours, merged):
+        track_label = str(base_track.get("label") or base_track["id"])
+        for field in EXPORTABLE_TRACK_FIELDS:
+            if field in base_track and field in our_track:
+                if field not in merged_track:
+                    raise ValueError(MERGE_LAYOUT)
+                merge(base_track["id"], field, base_track[field], our_track[field], merged_track[field],
+                      lambda value, track=merged_track, key=field: track.__setitem__(key, value),
+                      {"track": track_label, "trackId": base_track["id"], "clip": "", "eventId": base_track["id"],
+                       "start": 0.0, "scope": "track"})
         for before, mine, game in zip(base_track["events"], our_track["events"], merged_track["events"]):
             if not isinstance(game.get("values"), dict) or before["values"].keys() - game["values"].keys():
                 raise ValueError(MERGE_LAYOUT)
-            agreed = synced.get(before["id"]) if isinstance(synced.get(before["id"]), dict) else {}
             for field in _merge_fields(before, mine):
-                old, new, now = _merge_value(before, field), _merge_value(mine, field), _merge_value(game, field)
-                old_digest, applied_label = synced_digest(agreed.get(field))
-                basis = "applied" if old_digest is not None else "load"
-                if old_digest is None:
-                    old_digest = field_digest(old)
-                new_digest, now_digest = field_digest(new), field_digest(now)
-                if new_digest == old_digest:
-                    if now_digest != old_digest:
-                        theirs_only += 1
-                    continue
-                if now_digest == new_digest:
-                    continue
-                if now_digest == old_digest:
-                    if field in _CLIP_FIELDS:
-                        game[field] = new
-                    else:
-                        game["values"][field] = new
-                    taken += 1
-                    continue
-                conflicts.append({"track": str(base_track.get("label") or base_track["id"]), "trackId": base_track["id"],
-                                  "clip": str(before.get("label") or before["id"]), "eventId": before["id"],
-                                  "start": before["start"], "field": field, "basis": basis,
-                                  "loaded": _merge_label(old) if basis == "load" else (applied_label or "?"),
-                                  "project": _merge_label(new), "game": _merge_label(now)})
-    return merged, conflicts, taken, theirs_only
+                target = game if field in _CLIP_FIELDS else game["values"]
+                merge(before["id"], field, _merge_value(before, field), _merge_value(mine, field),
+                      _merge_value(game, field), lambda value, target=target, key=field: target.__setitem__(key, value),
+                      {"track": track_label, "trackId": base_track["id"], "clip": str(before.get("label") or before["id"]),
+                       "eventId": before["id"], "start": before["start"]})
+    return merged, conflicts, counts["taken"], counts["theirs_only"]
 
 
 def synced_fields(base, ours):
     """What a project and the game agree on after a successful apply: {event id: {field: [digest,
-    label]}} of every field where ours is not the base (the base holds for every other field)."""
+    label]}} of every field where ours is not the base (the base holds for every other field); a
+    changed EXPORTABLE_TRACK_FIELDS field is listed under its track id."""
     result = {}
     for base_track, our_track in zip(base, ours):
+        for field in EXPORTABLE_TRACK_FIELDS:
+            if field in base_track and field in our_track:
+                digest = field_digest(our_track[field])
+                if digest != field_digest(base_track[field]):
+                    result.setdefault(base_track["id"], {})[field] = [digest, _shown(our_track[field])]
         for before, mine in zip(base_track["events"], our_track["events"]):
             for field in _merge_fields(before, mine):
                 value = _merge_value(mine, field)
@@ -1352,7 +1624,8 @@ def synced_fields(base, ours):
 def _rewrite_timeline(raw, original, revised):
     _check_values(original, revised)
     changes = _changes(original, revised)
-    if not changes:
+    track_changes = _track_changes(original, revised)
+    if not changes and not track_changes:
         return raw
     deadline = time.monotonic() + 45
     env, objects, source = _read(raw, "original", deadline)
@@ -1413,6 +1686,18 @@ def _rewrite_timeline(raw, original, revised):
             for field in payload_fields:
                 _set_playable_value(asset_tree, asset_type, field, new["values"][field])
             dirty[asset] = asset_tree
+    for identity, field, value in track_changes:
+        # The track MonoBehaviour's own TrackAsset.m_Muted (the only EXPORTABLE_TRACK_FIELDS entry).
+        track = by_id[identity]
+        tree, native = mono[track]
+        if native == "GroupTrack":
+            raise ValueError(GROUP_MUTE)
+        if native in _FACIAL_MUTE_CLASSES:
+            raise ValueError(FACIAL_MUTE)
+        if field != "muted" or type(tree.get("m_Muted")) not in (bool, int):
+            raise ValueError("This native track has no mute to change.")
+        tree["m_Muted"] = value if type(tree["m_Muted"]) is bool else int(value)
+        dirty[track] = tree
 
     import hashlib
     untouched = {key: hashlib.sha256(obj.get_raw_data()).digest() for key, obj in objects.items() if key not in dirty}

@@ -850,6 +850,7 @@
       else {
         if (edits.cameraShots) item("ok", format(edits.follow ? "Camera: {count} shots edited (follow camera included)" : "Camera: {count} shots edited", { count: edits.cameraShots }));
         if (edits.values || edits.timing) item("ok", format("Values: {values} · clip timing: {timing}", { values: edits.values || 0, timing: edits.timing || 0 }));
+        if (edits.tracks) item("ok", format("Tracks muted or unmuted: {count}", { count: edits.tracks }));
       }
     } else {
       item("ok", t("No native timeline: the base MV's timeline plays unchanged."));
@@ -1220,6 +1221,7 @@
     "Choose ACB", "Choose AWB", "What reaches the game", "Timeline unchanged: the original MV plays.",
     "No native timeline: the base MV's timeline plays unchanged.", "Camera: {count} shots edited",
     "Camera: {count} shots edited (follow camera included)", "Values: {values} · clip timing: {timing}",
+    "Tracks muted or unmuted: {count}",
     "Applied on Android and iOS", "Applied on {platform}", "Download (about {size} MB)", "No {platform} original",
     "{platform}: the registered timeline stays", "Register for Android only", "Register for iOS only",
     "{platform}: left out of this registration, it plays the original MV",

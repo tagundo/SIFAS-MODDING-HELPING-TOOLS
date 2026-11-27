@@ -15,9 +15,11 @@
                 handle: "auto-clamped" | "auto" | "flat" | "free",
                 handles?: { [channel]: { in: [dFrames, dValue], out: [dFrames, dValue] } } }] }
 
-   The bake keeps the original sample count and time floats (the native exporter's
-   rule), keeps the quaternions continuous, and gives back the original samples bit
-   for bit when nothing is edited. History stores only these records; the bake
+   The bake keeps the shot's sample grid and time floats (the native exporter's rule:
+   the original grid, or for a resized shot the 60 Hz grid of its new length with the
+   original motion held past its old end), keeps the quaternions continuous, and gives
+   back the original samples bit for bit when nothing is edited. History stores only
+   these records; the bake
    runs again after every apply/undo/redo (projectChanged). Registered layers (the
    follow camera, MVStudioCameraKeys.registerLayer) are applied after the keys.
 
@@ -48,7 +50,8 @@
       // selected: { event, frames (sorted), frame (the active key) } — see "key selection".
       state = { selected: null, channels: ["x"], autoKey: false, space: "view", pending: null, controller: null, events: undefined,
         scene: null, unsubscribe: null, panel: null, curves: null, differs: new WeakMap(), lastShot: null, helper: false,
-        toggle: null, echo: null, refreshed: null, dense: null, clipboard: null, memory: new Map(), multi: false };
+        toggle: null, echo: null, refreshed: null, dense: null, clipboard: null, memory: new Map(), multi: false,
+        camera: "main" };
       states.set(ctx, state);
     }
     return state;
@@ -78,7 +81,9 @@
     const index = layers.findIndex((item) => item.id === id);
     if (index >= 0) layers.splice(index, 1);
   }
+  // Layers (the follow camera) move the main camera only: a split-screen sub camera shot has none.
   function affecting(ctx, shot) {
+    if (shot && shot.sub) return [];
     return layers.filter((layer) => {
       try { return typeof layer.affects !== "function" || layer.affects(ctx, shot) === true; } catch (error) { console.error(error); return false; }
     });
@@ -86,21 +91,61 @@
 
   // ---- shots ----------------------------------------------------------------------------------
   // The camera tracks the scene renders as the main camera (renderTracks): binding absent or
-  // matching MainCamera, not LiveCameraOffsetTrack. Split SubCamera tracks are out of scope.
+  // matching MainCamera, not LiveCameraOffsetTrack.
   function mainTrack(track) {
     return !!track && track.kind === "camera" && track.nativeClass !== "LiveCameraOffsetTrack" && !track.muted &&
       (!track.binding || /MainCamera/i.test(track.binding)) && Array.isArray(track.events);
   }
 
+  // The split-screen sub cameras (mv-studio-split.js samples them): AnimationTracks bound to
+  // SplitScreenEffect/Cameras/SubCamera1-4. Their shots take keys like the main camera's, relative
+  // to their own rig; layers (the follow camera) stay on the main camera.
+  const SUB_CAMERA = /^\/EntryPoint\/Live\/Cameras\/SplitScreenEffect\/Cameras\/SubCamera([1-4])$/;
+  function subTrack(track) {
+    return !!track && track.kind === "camera" && track.nativeClass === "AnimationTrack" && !track.muted &&
+      SUB_CAMERA.test(track.binding || "") && Array.isArray(track.events);
+  }
+  const subSlot = (track) => subTrack(track) ? Number(SUB_CAMERA.exec(track.binding)[1]) : 0;
+  const cameraTrack = (track) => mainTrack(track) || subTrack(track);
+  // The camera a track drives: "main", or the sub camera's binding.
+  const cameraOf = (track) => subTrack(track) ? track.binding : "main";
+
   function mainTracks(project) {
     return project && Array.isArray(project.tracks) ? project.tracks.filter(mainTrack) : [];
   }
 
-  // [{ track, event }] of every main-camera shot, by start.
-  function mainCameraShots(ctx) {
+  // The tracks of one camera ("main" or a sub camera binding), or of every editable camera.
+  function cameraTracks(project, camera) {
+    if (!project || !Array.isArray(project.tracks)) return [];
+    return project.tracks.filter((track) => camera === undefined ? cameraTrack(track) : camera === "main" ? mainTrack(track)
+      : subTrack(track) && track.binding === camera);
+  }
+
+  function shotsOf(tracks) {
     const list = [];
-    for (const track of mainTracks(ctx.project())) for (const event of track.events) if (event) list.push({ track, event });
+    for (const track of tracks) for (const event of track.events) if (event) list.push({ track, event });
     return list.sort((a, b) => a.event.start - b.event.start);
+  }
+
+  // [{ track, event }] of every main-camera shot, by start.
+  const mainCameraShots = (ctx) => shotsOf(mainTracks(ctx.project()));
+  // [{ track, event }] of the shots of one camera, or of every camera, by start.
+  const cameraShots = (ctx, camera) => shotsOf(cameraTracks(ctx.project(), camera));
+
+  // The sub cameras of the project: [{ camera: binding, slot }] by slot.
+  function subCameras(project) {
+    const seen = new Map();
+    for (const track of project && Array.isArray(project.tracks) ? project.tracks : []) {
+      if (subTrack(track) && !seen.has(track.binding)) seen.set(track.binding, subSlot(track));
+    }
+    return [...seen].map(([camera, slot]) => ({ camera, slot })).sort((a, b) => a.slot - b.slot);
+  }
+
+  // The camera the editor works on: the one chosen, while the project still has it.
+  function editedCamera(ctx) {
+    const state = stateOf(ctx);
+    if (state.camera !== "main" && !cameraTracks(ctx.project(), state.camera).length) state.camera = "main";
+    return state.camera;
   }
 
   function validFrames(frames) {
@@ -139,6 +184,30 @@
     });
   }
 
+  // The original samples of a resized shot on the 60 Hz grid of its new length. The grids agree up
+  // to the shorter length, so each point keeps its original sample (the same arrays, bit for bit);
+  // past the original end the last pose is held, as the game plays a longer clip of the same
+  // source; a point between two samples (a length off the grid) is interpolated as the scene does.
+  function resizedGrid(frames, duration) {
+    const count = gridCount(duration);
+    if (frames.length === count && frames.every((frame, index) => frame.time === gridTime(index, duration))) return frames;
+    const last = frames[frames.length - 1];
+    return Array.from({ length: count }, (_, index) => {
+      const time = gridTime(index, duration), own = frames[index];
+      const sample = own && Math.abs(own.time - time) <= 1e-9 ? own : time >= last.time ? last : null;
+      if (sample) return { time, position: sample.position, rotation: sample.rotation, fov: finite(sample.fov) ? sample.fov : null };
+      const pose = M.sampleFrames(frames, time);
+      return { time, position: pose.position, rotation: pose.rotation, fov: finite(pose.fov) ? pose.fov : null };
+    });
+  }
+
+  // Whether the native writer can write `duration` (mv_studio_timeline._camera_rewrite_refusal):
+  // whole frames, the parse's own sample count.
+  function wholeFrames(duration) {
+    const count = Math.ceil(duration * FRAME_RATE - 1e-9) + 1;
+    return finite(duration) && duration > 0 && count === gridCount(duration) && Math.abs(duration * FRAME_RATE - (count - 1)) <= 1e-3;
+  }
+
   const sameNumberArray = (a, b) => a === b || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => value === b[index]));
 
   function sameFrames(a, b) {
@@ -159,15 +228,19 @@
     return shots && Object.prototype.hasOwnProperty.call(shots, eventId) ? shots[eventId] : undefined;
   }
 
-  // A stored record, checked and cleaned against the shot's sample count.
+  // A stored record, checked and cleaned against the shot's sample count: { mode, space, keys,
+  // beyond }. `keys` are the keys on the shot's frames; `beyond` the keys past its last frame (a
+  // shot shortened past them). Those stay on their own frames: hidden, but still shaping the curve
+  // over the frames that remain (curveKeys), and back in `keys` when the shot is long enough again.
   function normalizeRecord(raw, count) {
     if (!raw || typeof raw !== "object" || !["offset", "keys"].includes(raw.mode)) return null;
     const byFrame = new Map();
-    for (const key of Array.isArray(raw.keys) ? raw.keys : []) {
+    const last = Math.max(0, count - 1);
+    for (const key of [...(Array.isArray(raw.keys) ? raw.keys : []), ...(Array.isArray(raw.beyond) ? raw.beyond : [])]) {
       if (!key || !Number.isInteger(key.frame) || !key.values || typeof key.values !== "object") continue;
       const values = {};
       for (const channel of CHANNELS) values[channel] = finite(key.values[channel]) ? key.values[channel] : (raw.mode === "keys" && channel === "fov" ? 30 : 0);
-      const clean = { frame: clamp(key.frame, 0, Math.max(0, count - 1)), values,
+      const clean = { frame: Math.max(0, key.frame), values,
         interp: M.INTERPOLATIONS.includes(key.interp) ? key.interp : "bezier",
         handle: M.HANDLES.includes(key.handle) ? key.handle : "auto-clamped" };
       if (clean.handle === "free" && key.handles && typeof key.handles === "object") {
@@ -180,12 +253,19 @@
       }
       byFrame.set(clean.frame, clean);
     }
-    return { mode: raw.mode, space: raw.space === "world" ? "world" : "view", keys: [...byFrame.values()].sort((a, b) => a.frame - b.frame) };
+    const sorted = [...byFrame.values()].sort((a, b) => a.frame - b.frame);
+    return { mode: raw.mode, space: raw.space === "world" ? "world" : "view",
+      keys: sorted.filter((key) => key.frame <= last), beyond: sorted.filter((key) => key.frame > last) };
   }
+
+  // Every key of a record in frame order, the hidden ones past the shot's end included: the
+  // curve the bake evaluates. A shortened shot keeps the motion of the frames it still has.
+  const curveKeys = (record) => record && Array.isArray(record.beyond) && record.beyond.length ? record.keys.concat(record.beyond) : record ? record.keys : [];
+  const hasKeys = (record) => !!record && (record.keys.length > 0 || (Array.isArray(record.beyond) && record.beyond.length > 0));
 
   // Everything the editor needs about one shot; null when it is not a main-camera shot.
   function shotInfo(ctx, track, event, time) {
-    if (!mainTrack(track) || !event) return null;
+    if (!cameraTrack(track) || !event) return null;
     const project = ctx.project();
     const history = ctx.history;
     const original = history && history.originals ? history.originals.get(event.id) : undefined;
@@ -208,9 +288,18 @@
     // shot (editStart).
     const raw = recordOf(ctx, event.id);
     const keyed = user && source ? normalizeRecord(raw, source.length) : null;
-    const owned = !!keyed && keyed.mode === "keys" && keyed.keys.length > 0;
+    const owned = !!keyed && keyed.mode === "keys" && hasKeys(keyed);
     if (owned) {
       const grid = userGrid(source, event.duration);
+      regrid = grid !== source;
+      source = grid;
+    }
+    // A resized shot bakes on the grid of its new length (the native writer writes that grid).
+    // `base` keeps the grid before that: the poses past a shortened shot's end, under its hidden keys.
+    const base = source;
+    const resized = !user && !staticSource && !!source && !!original && original.duration !== event.duration;
+    if (resized) {
+      const grid = resizedGrid(source, event.duration);
       regrid = grid !== source;
       source = grid;
     }
@@ -221,14 +310,12 @@
       editable = false;
       reason = "The camera samples of this shot cannot be exported.";
     }
-    const lengthChanged = !!(native && original && original.duration !== event.duration);
-    if (editable && lengthChanged) {
-      editable = false;
-      reason = "Restore this shot's original length to edit its camera.";
-    }
+    // A native shot resized off the 60 Hz grid previews its edits, but they cannot be exported.
+    const partialFrame = !!(native && resized && !wholeFrames(event.duration));
     const count = source ? source.length : 0;
-    const shots = mainCameraShots(ctx);
-    const info = { track, event, source, count, user, owned, native, staticSource, regrid, editable, reason, lengthChanged,
+    const shots = cameraShots(ctx, cameraOf(track));
+    const info = { track, event, source, base, count, user, owned, native, staticSource, regrid, editable, reason, resized, partialFrame,
+      sub: subSlot(track), camera: cameraOf(track),
       record: source && (!user || owned) ? normalizeRecord(raw, count) : null,
       lens: M.nativeLens(track), index: shots.findIndex((item) => item.event === event), total: shots.length,
       fallbackFov: finite(current.fov) ? current.fov : finite(values.fov) ? values.fov : 30 };
@@ -237,16 +324,17 @@
   }
 
   function findShot(ctx, eventId, time) {
-    for (const track of mainTracks(ctx.project())) {
+    for (const track of cameraTracks(ctx.project())) {
       const event = track.events.find((item) => item && item.id === eventId);
       if (event) return shotInfo(ctx, track, event, time);
     }
     return null;
   }
 
-  // The sample nearest `time` (absolute seconds).
+  // The sample nearest `time` (absolute seconds); before or after the shot, the one its
+  // extrapolation shows (cameraLocalTime).
   function frameAt(shot, time) {
-    const local = clamp(time - shot.event.start, 0, Math.max(0, shot.event.duration));
+    const local = clamp(cameraLocalTime(shot.event, time), 0, Math.max(0, shot.event.duration));
     const frames = shot.source;
     let lower = 0, upper = frames.length - 1;
     while (upper - lower > 1) {
@@ -258,7 +346,11 @@
 
   const frameTime = (shot, frame) => shot.event.start + shot.source[clamp(frame, 0, shot.count - 1)].time;
 
-  // activeCameraEvent of the scene: latest-start active clip, else the Hold neighbours.
+  // activeCameraEvent of the scene: latest-start active clip, else the neighbours whose Hold, Loop,
+  // PingPong or Continue extrapolation covers `time`.
+  const extrapolates = (mode) => mode === 1 || mode === 2 || mode === 3 || mode === 4;
+  // A null window (an infinite time in the bundle) reaches the end for Loop, PingPong and Continue.
+  const reach = (mode, seconds) => seconds === null && mode !== 1 ? Infinity : seconds;
   function activeCameraEvent(track, time) {
     let active = null;
     for (const event of track.events) {
@@ -268,10 +360,26 @@
     let previous = null, next = null;
     for (const event of track.events) {
       const values = event.values || {}, end = event.start + event.duration;
-      if (time > end && values.postExtrapolationMode === 1 && time <= end + values.postExtrapolationTime && (!previous || event.start > previous.start)) previous = event;
-      if (time < event.start && values.preExtrapolationMode === 1 && time >= event.start - values.preExtrapolationTime && (!next || event.start < next.start)) next = event;
+      if (time > end && extrapolates(values.postExtrapolationMode) && time <= end + reach(values.postExtrapolationMode, values.postExtrapolationTime) &&
+        (!previous || event.start > previous.start)) previous = event;
+      if (time < event.start && extrapolates(values.preExtrapolationMode) && time >= event.start - reach(values.preExtrapolationMode, values.preExtrapolationTime) &&
+        (!next || event.start < next.start)) next = event;
     }
     return previous || next;
+  }
+
+  // cameraLocalTime of the scene: seconds into the shot's samples at `time` (TimelineClip
+  // GetExtrapolatedTime: Loop wraps, PingPong bounces, Hold and Continue keep the end pose).
+  function cameraLocalTime(event, time) {
+    const duration = event.duration, local = time - event.start;
+    if (local >= 0 && local <= duration) return local;
+    const values = event.values || {}, mode = local < 0 ? values.preExtrapolationMode : values.postExtrapolationMode;
+    if (duration > 0 && mode === 2) return local < 0 ? duration - (-local % duration) : local % duration;
+    if (duration > 0 && mode === 3) {
+      const wrapped = local < 0 ? duration * 2 - (-local % (duration * 2)) : local % (duration * 2);
+      return duration - Math.abs(wrapped - duration);
+    }
+    return Math.min(duration, Math.max(0, local));
   }
 
   // endedCameraEvent of the scene: the clip that ends last on the track, once `time` is past
@@ -282,11 +390,20 @@
     return last && time > last.start + last.duration ? last : null;
   }
 
-  // The shot the game camera shows at `time`, as the scene's mainCameraAt picks it: the last
-  // main-camera track with an active shot wins; otherwise, for game sources, the shot that
-  // ends last among the tracks the playhead has run past.
-  function playheadShot(ctx, time = ctx.time()) {
+  // The shot a camera ("main" or a sub camera binding) shows at `time`. The main camera's as the
+  // scene's mainCameraAt picks it: the last main-camera track with an active shot wins; otherwise,
+  // for game sources, the shot that ends last among the tracks the playhead has run past. A sub
+  // camera's as mv-studio-split samples it (its track's active shot, no hold past its last shot).
+  function shotAt(ctx, time, camera) {
     const project = ctx.project();
+    if (camera !== "main") {
+      let sub = null;
+      for (const track of cameraTracks(project, camera)) {
+        const event = activeCameraEvent(track, time);
+        if (event) sub = { track, event };
+      }
+      return sub ? shotInfo(ctx, sub.track, sub.event, time) : null;
+    }
     let found = null, ended = null;
     const hold = !!(project && project.source && project.source.kind === "game");
     for (const track of mainTracks(project)) {
@@ -299,11 +416,17 @@
     return found ? shotInfo(ctx, found.track, found.event, time) : null;
   }
 
+  // The main camera's shot at `time` (or another camera's): what other modules (the follow
+  // camera) cover. The editor's own commands use editedShot.
+  const playheadShot = (ctx, time = ctx.time(), camera = "main") => shotAt(ctx, time, camera);
+  // The shot of the camera the editor works on (the main camera or a chosen sub camera).
+  const editedShot = (ctx, time = ctx.time()) => shotAt(ctx, time, ctx.project() ? editedCamera(ctx) : "main");
+
   // ---- poses and the bake ---------------------------------------------------------------------
   // Curve values at frame f: deltas (offset) or absolute values (keys). With no keys an offset
   // record is zero and a keys record follows the source.
   function channelValues(shot, record, frame) {
-    if (record && record.keys.length) return M.evaluate(record.keys, frame);
+    if (hasKeys(record)) return M.evaluate(curveKeys(record), frame);
     if (!record || record.mode === "offset") return zeros();
     return absoluteOf(sourcePose(shot, frame));
   }
@@ -311,6 +434,14 @@
   function sourcePose(shot, frame) {
     const sample = shot.source[frame];
     return { position: sample.position, rotation: sample.rotation, fov: finite(sample.fov) ? sample.fov : null };
+  }
+
+  // The source sample under frame f; past a shortened shot's end (a hidden key), the pose that frame
+  // had before (shot.base), the last one held further on.
+  function sampleAt(shot, frame) {
+    if (frame < shot.count) return shot.source[frame];
+    const base = shot.base || shot.source;
+    return base[Math.min(frame, base.length - 1)];
   }
 
   function absoluteOf(pose, near) {
@@ -322,10 +453,10 @@
   // The keyed pose at frame i, before layers. Untouched channels keep the source arrays
   // (by reference) so the output can copy them bit for bit.
   function basePose(shot, record, frame) {
-    const sample = shot.source[frame];
+    const sample = sampleAt(shot, frame);
     const pose = { position: sample.position, rotation: sample.rotation, fov: sample.fov === undefined ? null : sample.fov };
-    if (!record || !record.keys.length) return pose;
-    const value = M.evaluate(record.keys, frame);
+    if (!hasKeys(record)) return pose;
+    const value = M.evaluate(curveKeys(record), frame);
     if (record.mode === "keys") {
       return { position: [value.x, value.y, value.z], rotation: M.normalize(M.eulerZXYToQuaternion(value)), fov: clampFov(value.fov) };
     }
@@ -347,7 +478,7 @@
     const record = shot.record;
     const active = affecting(ctx, shot);
     // A shot whose keys own its pose always bakes (a resized one takes its new grid).
-    if ((!record || !record.keys.length) && !active.length) return { restore: true };
+    if (!hasKeys(record) && !active.length) return { restore: true };
     // Layers get copies (they may write into the arrays); a rotation still equal to its
     // untouched source sample is kept as stored, bit for bit.
     const untouched = [];
@@ -419,21 +550,13 @@
     return result;
   }
 
-  // A shot's length is locked while its samples differ from the originals: the native writer
-  // keeps the sample count. Shots made in the editor are never written natively and resize.
-  function durationLocked(ctx, track, event) {
-    if (!mainTrack(track) || !event) return false;
-    const original = ctx.history && ctx.history.originals ? ctx.history.originals.get(event.id) : undefined;
-    return original !== null && differs(ctx, event);
-  }
-
   // Shots a bake must visit: those with a record, a layer, or samples to restore.
   function candidates(ctx, events) {
     const list = [];
-    for (const { track, event } of mainCameraShots(ctx)) {
+    for (const { track, event } of cameraShots(ctx)) {
       if (events && !events.includes(event.id)) continue;
       const shot = shotInfo(ctx, track, event);
-      if (!shot || !shot.source || (shot.lengthChanged && !differs(ctx, event))) continue;
+      if (!shot || !shot.source) continue;
       if (shot.record || (shot.user && shot.regrid) || differs(ctx, event) || (layers.length && affecting(ctx, shot).length)) list.push(shot);
     }
     return list;
@@ -492,8 +615,9 @@
   }
 
   // ---- history commands -------------------------------------------------------------------------
+  // The record as stored: the hidden keys past the shot's end stay with the others.
   function cleanRecord(record) {
-    return { mode: record.mode, space: record.space, keys: record.keys.slice().sort((a, b) => a.frame - b.frame).map((key) => {
+    return { mode: record.mode, space: record.space, keys: curveKeys(record).slice().sort((a, b) => a.frame - b.frame).map((key) => {
       const item = { frame: key.frame, values: Object.fromEntries(CHANNELS.map((channel) => [channel, key.values[channel]])),
         interp: key.interp, handle: key.handle };
       if (key.handle === "free" && key.handles) item.handles = clone(key.handles);
@@ -585,6 +709,8 @@
   // undo step.
   const ONE_SHOT = "Keys can be selected in one camera shot at a time.";
 
+  // The selected keys always belong to the camera being edited: selecting keys of another
+  // camera's shot (its lane's diamonds, a box, an undo bringing them back) edits that camera.
   function setSelection(ctx, eventId, frames, active) {
     const state = stateOf(ctx), previous = state.selected;
     const list = [...new Set((frames || []).filter(Number.isInteger))].sort((a, b) => a - b);
@@ -592,8 +718,29 @@
     else {
       const kept = previous && previous.event === eventId && list.includes(previous.frame) ? previous.frame : list[list.length - 1];
       state.selected = { event: eventId, frames: list, frame: list.includes(active) ? active : kept };
+      const camera = cameraOfEvent(ctx, eventId);
+      if (camera) state.camera = camera;
     }
     return state.selected;
+  }
+
+  // The camera whose shot `eventId` is, or null.
+  function cameraOfEvent(ctx, eventId) {
+    const track = cameraTracks(ctx.project()).find((item) => item.events.some((event) => event && event.id === eventId));
+    return track ? cameraOf(track) : null;
+  }
+
+  // Edit another camera ("main" or a sub camera binding): keys selected in a shot of the
+  // camera left are no longer selected.
+  function useCamera(ctx, camera) {
+    const state = stateOf(ctx);
+    if (state.camera === camera) return false;
+    state.camera = camera;
+    if (state.selected && cameraOfEvent(ctx, state.selected.event) !== camera) {
+      state.selected = null;
+      paintSelection(ctx);
+    }
+    return true;
   }
 
   function select(ctx, shot, frame) {
@@ -646,7 +793,7 @@
     return stateOf(ctx).selected;
   }
 
-  function selectAllKeys(ctx, shot = playheadShot(ctx)) {
+  function selectAllKeys(ctx, shot = editedShot(ctx)) {
     if (!shot || !shot.record || !shot.record.keys.length) return false;
     const selected = stateOf(ctx).selected;
     setSelection(ctx, shot.event.id, shot.record.keys.map((key) => key.frame), selected && selected.event === shot.event.id ? selected.frame : undefined);
@@ -740,7 +887,7 @@
   // Deltas at frame f that give the absolute target pose (position, euler, fov) from the
   // source sample, for the channel groups in `groups`; the others keep `current`.
   function deltasFor(shot, record, frame, target, groups, current) {
-    const sample = shot.source[frame], q = M.normalize(sample.rotation);
+    const sample = sampleAt(shot, frame), q = M.normalize(sample.rotation);
     const values = { ...current };
     if (groups.has("position")) {
       const world = [target.x - sample.position[0], target.y - sample.position[1], target.z - sample.position[2]];
@@ -769,7 +916,7 @@
     if (finite(out.fov)) {
       if (record.mode === "keys") out.fov = clampFov(out.fov);
       else {
-        const sample = shot.source[frame], base = finite(sample.fov) ? sample.fov : shot.fallbackFov;
+        const sample = sampleAt(shot, frame), base = finite(sample.fov) ? sample.fov : shot.fallbackFov;
         out.fov = clamp(out.fov, 1 - base, 170 - base);
       }
     }
@@ -790,7 +937,7 @@
   // at the playhead frame, or inserts one holding the current curve values (auto-key).
   function setChannels(ctx, row, patch, { time } = {}) {
     const at = finite(time) ? time : ctx.time();
-    const found = requireShot(ctx, playheadShot(ctx, at));
+    const found = requireShot(ctx, editedShot(ctx, at));
     if (!found) return false;
     const { shot, record } = editStart(ctx, found, at);
     const frame = shot.frame;
@@ -831,7 +978,7 @@
 
   function keyView(ctx, { auto = false } = {}) {
     if (ctx.locked()) return false;
-    const found = playheadShot(ctx);
+    const found = editedShot(ctx);
     if (auto && (!found || !found.editable)) return false;
     if (!requireShot(ctx, found)) return false;
     const { shot, record } = editStart(ctx, found, ctx.time());
@@ -860,7 +1007,7 @@
   }
 
   function addKey(ctx) {
-    const found = requireShot(ctx, playheadShot(ctx));
+    const found = requireShot(ctx, editedShot(ctx));
     if (!found) return false;
     const { shot, record } = editStart(ctx, found, ctx.time());
     const frame = shot.frame;
@@ -879,7 +1026,7 @@
   }
 
   function targetKey(ctx) {
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     const selected = stateOf(ctx).selected;
     const owner = selected && (shot && shot.event.id === selected.event ? shot : findShot(ctx, selected.event, ctx.time()));
     const key = owner && selectedKey(ctx, owner);
@@ -900,7 +1047,7 @@
 
   function duplicateKey(ctx) {
     const found = targetKey(ctx);
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     if (!found || !shot || shot.event !== found.shot.event || !shot.editable || shot.frame === found.key.frame) return false;
     const record = clone(shot.record);
     const source = record.keys.find((key) => key.frame === found.key.frame);
@@ -914,7 +1061,7 @@
 
   // Previous (-1) / next (+1) key of the shot under the playhead.
   function stepKey(ctx, direction) {
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     if (!shot || !shot.record || !shot.record.keys.length) return false;
     const local = ctx.time() - shot.event.start;
     const keys = shot.record.keys;
@@ -974,7 +1121,7 @@
     if (index < 0) return false;
     const key = record.keys[index];
     const handles = {};
-    for (const name of CHANNELS) handles[name] = M.handles(record.keys, index, name);
+    for (const name of CHANNELS) handles[name] = M.handles(curveKeys(record), index, name);
     handles[channel][side] = side === "in" ? [Math.min(0, handle[0]), handle[1]] : [Math.max(0, handle[0]), handle[1]];
     key.handle = "free";
     key.handles = handles;
@@ -1003,7 +1150,7 @@
     const handles = new Map();
     record.keys.forEach((key, index) => {
       if (chosen.has(key.frame) && property === "handle" && value === "free" && key.handle !== "free") {
-        handles.set(key, Object.fromEntries(CHANNELS.map((channel) => [channel, M.handles(record.keys, index, channel)])));
+        handles.set(key, Object.fromEntries(CHANNELS.map((channel) => [channel, M.handles(curveKeys(record), index, channel)])));
       }
     });
     for (const key of record.keys) {
@@ -1026,9 +1173,11 @@
     const record = clone(found.shot.record);
     const chosen = new Set(targetKeys(ctx, found));
     const handle = (item, type) => { if (item) { item.handle = type; delete item.handles; } };
-    record.keys.forEach((key, index) => {
+    // A segment may run on to a hidden key past the shot's end: its handle shapes what is shown.
+    const all = curveKeys(record);
+    all.forEach((key, index) => {
       if (!chosen.has(key.frame)) return;
-      const next = record.keys[index + 1];
+      const next = all[index + 1];
       if (preset === "linear") { key.interp = "linear"; return; }
       key.interp = "bezier";
       if (preset === "ease-in-out") { handle(key, "flat"); handle(next, "flat"); }
@@ -1220,7 +1369,7 @@
 
   // Offset deltas of one space in the other, at a frame of the shot.
   function otherSpace(shot, frame, values, space) {
-    const q = M.normalize(shot.source[frame].rotation);
+    const q = M.normalize(sampleAt(shot, frame).rotation);
     const moved = space === "world" ? M.rotateVector(q, [-values.x, values.y, -values.z]) : M.rotateVector(M.conjugate(q), [values.x, values.y, values.z]);
     return space === "world" ? { x: moved[0], y: moved[1], z: moved[2] } : { x: -moved[0], y: moved[1], z: -moved[2] };
   }
@@ -1234,7 +1383,7 @@
     const clip = stateOf(ctx).clipboard;
     if (!clip || !clip.keys.length) { ctx.report(t(ctx, "Copy camera keys first."), true); return false; }
     const at = finite(time) ? time : ctx.time();
-    const found = requireShot(ctx, playheadShot(ctx, at));
+    const found = requireShot(ctx, editedShot(ctx, at));
     if (!found) return false;
     const { shot, record: start } = editStart(ctx, found, at);
     const record = shot.claimed || shot.record ? start : { mode: clip.mode, space: clip.space, keys: [] };
@@ -1275,9 +1424,10 @@
     return keys;
   }
 
+  // Hidden keys past a shortened shot's end convert with the others, at the poses under them.
   function convertRecord(shot, record, mode, space) {
     if (mode === "original") return null;
-    const frames = [0, shot.count - 1, ...(record ? record.keys.map((key) => key.frame) : [])];
+    const frames = [0, shot.count - 1, ...curveKeys(record).map((key) => key.frame)];
     if (mode === "keys") {
       if (record && record.mode === "keys") return record;
       return { mode: "keys", space: record ? record.space : space, keys: absoluteKeys(shot, record, frames) };
@@ -1287,13 +1437,13 @@
     if (record.mode === "offset") {
       if (record.space === space) return record;
       // Same deltas in the other space, at each key.
-      const keys = record.keys.map((key) => ({ ...clone(key), values: { ...key.values, ...otherSpace(shot, key.frame, key.values, space) } }));
+      const keys = curveKeys(record).map((key) => ({ ...clone(key), values: { ...key.values, ...otherSpace(shot, key.frame, key.values, space) } }));
       return { mode: "offset", space, keys };
     }
     // keys -> offset: deltas at the key frames.
     const target = { mode: "offset", space, keys: [] };
     let near = zeros();
-    for (const key of record.keys) {
+    for (const key of curveKeys(record)) {
       const pose = basePose(shot, record, key.frame);
       const values = deltasFor(shot, target, key.frame, { x: pose.position[0], y: pose.position[1], z: pose.position[2], rotation: pose.rotation, fov: pose.fov },
         new Set(["position", "rotation", "fov"]), near);
@@ -1310,12 +1460,12 @@
   };
 
   function setMode(ctx, mode, { confirm = true } = {}) {
-    const found = requireShot(ctx, playheadShot(ctx));
+    const found = requireShot(ctx, editedShot(ctx));
     if (!found || !["original", "offset", "keys"].includes(mode)) return false;
     const current = found.record ? found.record.mode : "original";
     if (current === mode) return false;
     if (found.user && mode !== "keys") return false;
-    const lossy = (current === "offset" && found.record.keys.length) || current === "keys" || (mode === "keys");
+    const lossy = (current === "offset" && hasKeys(found.record)) || current === "keys" || (mode === "keys");
     if (confirm && lossy && typeof global.confirm === "function" && !global.confirm(t(ctx, CONFIRM[mode]))) { renderPanel(ctx, true); return false; }
     // An added clip converts on the grid its keys will own (editStart), from its samples.
     const shot = editStart(ctx, found, ctx.time()).shot;
@@ -1328,7 +1478,7 @@
   function setSpace(ctx, space) {
     if (!["view", "world"].includes(space)) return false;
     stateOf(ctx).space = space;
-    const shot = requireShot(ctx, playheadShot(ctx));
+    const shot = requireShot(ctx, editedShot(ctx));
     if (!shot || !shot.record || shot.record.mode !== "offset" || shot.record.space === space) { renderPanel(ctx, true); return false; }
     const changed = commit(ctx, shot, convertRecord(shot, shot.record, "offset", space), "Change offset space", space);
     renderPanel(ctx, true);
@@ -1337,7 +1487,7 @@
 
   // "Convert to keyframes": the current motion as linear keys within 2 mm / 0.05° / 0.01°.
   function convertToKeys(ctx) {
-    const found = requireShot(ctx, playheadShot(ctx));
+    const found = requireShot(ctx, editedShot(ctx));
     if (!found) return false;
     // An added clip converts on the grid its keys will own (editStart), from its samples.
     const shot = editStart(ctx, found, ctx.time()).shot;
@@ -1437,9 +1587,10 @@
   }
 
   // ---- inspector: the dense samples become a summary ----------------------------------------
-  function openPanel(ctx) {
+  function openPanel(ctx, track) {
     const panel = global.document && document.getElementById("mv-panel-camera");
     if (!panel || panel.hidden) return false;
+    if (cameraTrack(track)) useCamera(ctx, cameraOf(track));
     panel.open = true;
     renderPanel(ctx, true);
     panel.scrollIntoView?.({ block: "nearest" });
@@ -1452,15 +1603,15 @@
     const last = frames[frames.length - 1];
     const rate = frames.length > 1 && last && last.time > 0 ? Math.round((frames.length - 1) / last.time) : FRAME_RATE;
     box.append(ctx.make("span", t(ctx, "Keyframes")), ctx.make("output", format(ctx, "{count} samples · {rate} Hz", { count: frames.length, rate })));
-    if (mainTrack(track)) box.append(ctx.button(t(ctx, "Open camera editor"), () => openPanel(ctx), { class: "mv-cam-open" }));
+    if (cameraTrack(track)) box.append(ctx.button(t(ctx, "Open camera editor"), () => openPanel(ctx, track), { class: "mv-cam-open" }));
     return box;
   }
 
-  // ---- timeline: key diamonds on the MainCamera lane ------------------------------------------
+  // ---- timeline: key diamonds on the camera lanes (main and sub cameras) -----------------------
   // The diamonds of a lane are the options of one multi-select list box (aria-selected), so a
   // screen reader hears which keys are selected.
   function decorate(ctx, track, lane, layout) {
-    if (!mainTrack(track) || !global.document) return;
+    if (!cameraTrack(track) || !global.document) return;
     attachLane(ctx, lane);
     lane.classList.toggle("mv-cam-multi", stateOf(ctx).multi);
     const selected = stateOf(ctx).selected;
@@ -1796,6 +1947,13 @@
   }
 
   // ---- the Camera editor panel ------------------------------------------------------------------
+  const PARTIAL_FRAME = "This shot's length is not whole frames (1/60 s): its camera edits cannot be exported until it is.";
+  const PARTIAL_FRAME_EXPORT = "Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.";
+  const HIDDEN_KEYS = "Keys past the end of this shot: {count}. They are hidden but still shape its motion, and come back if the shot is made longer.";
+  // Continue plays a clip's source on past the shot. The preview has the shot's samples only, so it
+  // holds the end pose; the game plays on where the source is longer (some split-screen sub
+  // cameras). Once the shot has camera edits the writer ends the source with the shot.
+  const CONTINUE_NOTE = "Continue: the preview holds this shot's end pose. In the game it may play on if the camera clip is longer than the shot.";
   const MODES = [["original", "Original motion"], ["offset", "Offset keys"], ["keys", "Keyframes (replace)"]];
   const LABELS = { x: "X", y: "Y", z: "Z", pan: "Pan", tilt: "Tilt", roll: "Roll", fov: "FOV" };
   const VIEW_LABELS = { x: "Truck", y: "Pedestal", z: "Dolly" };
@@ -1812,7 +1970,7 @@
     const project = ctx.project();
     if (!project) return false;
     if (project.nativeTimeline !== true) return true;
-    return mainCameraShots(ctx).some(({ track, event }) => shotInfo(ctx, track, event)?.editable);
+    return cameraShots(ctx).some(({ track, event }) => shotInfo(ctx, track, event)?.editable);
   }
 
   function panelOpen() {
@@ -1852,9 +2010,33 @@
   // The UI language is part of it, so a language switch rebuilds every label.
   function signature(ctx, shot) {
     const language = [global.document && document.documentElement ? document.documentElement.lang : "", t(ctx, "Camera editor")].join("/");
-    if (!shot) return ["none", ctx.project() ? ctx.project().nativeTimeline === true : "", ctx.locked(), language].join("|");
+    const cameras = ctx.project() ? [editedCamera(ctx), ...subCameras(ctx.project()).map((item) => item.camera)].join(",") : "";
+    if (!shot) return ["none", ctx.project() ? ctx.project().nativeTimeline === true : "", ctx.locked(), language, cameras].join("|");
     return [shot.event.id, shot.editable, shot.record ? shot.record.mode : "original", shot.record ? shot.record.space : "", shot.user,
-      ctx.locked(), language].join("|");
+      ctx.locked(), language, cameras].join("|");
+  }
+
+  // The edited camera: the main camera or a split-screen sub camera (shown when the MV has one).
+  function cameraChooser(ctx) {
+    const subs = subCameras(ctx.project());
+    if (!subs.length) return null;
+    const control = ctx.make("select", null, { id: "mv-cam-camera" });
+    control.append(new Option(t(ctx, "Main camera"), "main"));
+    for (const { camera, slot } of subs) control.append(new Option(format(ctx, "Sub camera {slot}", { slot }), camera));
+    control.value = editedCamera(ctx);
+    control.addEventListener("change", () => setCamera(ctx, control.value));
+    const row = ctx.make("div", null, { class: "mv-form-grid mv-cam-settings" }), label = ctx.make("label");
+    label.append(ctx.make("span", t(ctx, "Camera")), control);
+    row.append(label);
+    return row;
+  }
+
+  // Edit the shots of another camera ("main" or a sub camera binding); the panel follows.
+  function setCamera(ctx, camera) {
+    if (camera !== "main" && !cameraTracks(ctx.project(), camera).length) return false;
+    if (!useCamera(ctx, camera)) return false;
+    renderPanel(ctx, true);
+    return true;
   }
 
   function build(ctx, box, shot) {
@@ -1863,9 +2045,11 @@
     const root = ctx.make("div", null, { class: "mv-cam-editor" });
     refs.root = root;
     box.replaceChildren(root);
+    const chooser = ctx.project() ? cameraChooser(ctx) : null;
+    if (chooser) root.append(chooser);
     if (!shot) {
       root.append(ctx.make("p", t(ctx, "No camera shot at the playhead."), { class: "mv-field-note", id: "mv-cam-empty" }));
-      if (ctx.project() && ctx.project().nativeTimeline !== true) {
+      if (ctx.project() && ctx.project().nativeTimeline !== true && editedCamera(ctx) === "main") {
         const add = ctx.button(t(ctx, "New camera shot at playhead"), () => newShotAtPlayhead(ctx), { id: "mv-cam-new-shot" });
         add.disabled = ctx.locked();
         root.append(add);
@@ -1876,7 +2060,6 @@
     root.append(refs.header);
     if (!shot.editable) {
       root.append(ctx.make("p", t(ctx, shot.reason || "This camera shot cannot be edited."), { class: "mv-field-note", id: "mv-cam-locked" }));
-      if (shot.lengthChanged) root.append(ctx.button(t(ctx, "Revert shot"), () => revertShot(ctx, shot.track, shot.event), { id: "mv-cam-revert" }));
       return refs;
     }
     const locked = ctx.locked();
@@ -1913,7 +2096,8 @@
     refs.remove = tool("mv-cam-delete-key", "Delete key", "Delete", () => deleteKeys(ctx));
     refs.previous = tool("mv-cam-prev-key", "Previous key", "[", () => stepKey(ctx, -1));
     refs.next = tool("mv-cam-next-key", "Next key", "]", () => stepKey(ctx, 1));
-    tool("mv-cam-align", "Align view to game camera", "", () => alignView(ctx));
+    // The scene aligns the free view to the main game camera only.
+    if (!shot.sub) tool("mv-cam-align", "Align view to game camera", "", () => alignView(ctx));
     if (!shot.user) refs.revert = tool("mv-cam-revert", "Revert shot", "", () => revertShot(ctx, shot.track, shot.event));
     refs.simplify = tool("mv-cam-simplify", "Convert to keyframes", "", () => convertToKeys(ctx));
     const auto = ctx.make("label", null, { class: "mv-cam-autokey" });
@@ -2081,7 +2265,7 @@
       // A click selects one key and seeks to it; Shift/Ctrl/Cmd+click (and Shift+Space), or a tap
       // in "Select several", adds or removes it.
       onSelectKey(frame, { toggle = false } = {}) {
-        const shot = playheadShot(ctx);
+        const shot = editedShot(ctx);
         if (!shot) return;
         if (toggle || stateOf(ctx).multi) toggleKey(ctx, shot, frame);
         else {
@@ -2094,18 +2278,18 @@
       },
       // A box dragged on the plot (added to the selection with Shift or in "Select several").
       onSelectKeys(frames, { add = false } = {}) {
-        const shot = playheadShot(ctx);
+        const shot = editedShot(ctx);
         if (shot) selectBoxed(ctx, new Map([[shot.event.id, frames]]), add || stateOf(ctx).multi);
       },
       onSeek(frame) {
-        const shot = playheadShot(ctx);
+        const shot = editedShot(ctx);
         if (shot) ctx.seek(frameTime(shot, frame), { audio: false });
       },
       // Dragging a selected key moves every selected key by the same frames and changes the
       // dragged channel of each by the same amount (one undo step); an unselected key moves alone.
       onDragKey(phase, { from, frame, channel, value }) {
         if (phase === "begin") {
-          const shot = playheadShot(ctx);
+          const shot = editedShot(ctx);
           const key = shot && shot.record && shot.record.keys.find((item) => item.frame === from);
           if (!key) return null;
           const frames = selectedFrames(ctx, shot);
@@ -2133,7 +2317,7 @@
       onDragHandle(phase, { frame, channel, side, handle }) {
         if (phase === "begin") { begin("Edit camera handle"); return; }
         if (phase === "end") { end(); return; }
-        const shot = playheadShot(ctx);
+        const shot = editedShot(ctx);
         if (shot) setHandle(ctx, shot.event.id, frame, channel, side, handle);
       },
     };
@@ -2142,7 +2326,7 @@
   // Keys pressed in the curve view (the points are its focusable keys).
   function curveKeydown(ctx, event) {
     if (event.defaultPrevented || event.isComposing || ctx.locked()) return;
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     if (!shot) return;
     const target = event.target, point = target.classList?.contains("mv-cam-curve-key") ? Number(target.dataset.frame) : null;
     const channel = point === null ? null : target.dataset.channel;
@@ -2208,7 +2392,7 @@
   function syncPanel(ctx) {
     const state = stateOf(ctx), refs = state.panel && state.panel.refs;
     if (!refs) return;
-    const shot = playheadShot(ctx);
+    const shot = editedShot(ctx);
     if (!shot || !shot.source) return;
     const frame = shot.frame;
     if (refs.header) {
@@ -2266,14 +2450,18 @@
       if (chip.getAttribute("aria-pressed") !== pressed) chip.setAttribute("aria-pressed", pressed);
     }
     if (refs.curves) {
-      refs.curves.update({ count: shot.count, keys, mode: record ? record.mode : "original", channels: state.channels,
+      // `shape`: the curve runs on to hidden keys past the shot's end; only `keys` are drawn as points.
+      refs.curves.update({ count: shot.count, keys, shape: curveKeys(record), mode: record ? record.mode : "original", channels: state.channels,
         dense: denseCurvesOf(ctx, shot, state.channels), playhead: (ctx.time() - shot.event.start) * FRAME_RATE,
         selected: key ? key.frame : null, selection: selectedFrames(ctx, shot), labels: Object.fromEntries(CHANNELS.map((channel) => [channel, t(ctx, LABELS[channel])])) });
     }
     if (refs.note) {
       const notes = [];
       if (layers.length && affecting(ctx, shot).length) notes.push(t(ctx, "A camera rig also moves this shot."));
-      if (durationLocked(ctx, shot.track, shot.event)) notes.push(t(ctx, "Duration is locked while this shot has camera edits."));
+      if (shot.partialFrame) notes.push(t(ctx, PARTIAL_FRAME));
+      if (record && record.beyond.length) notes.push(format(ctx, HIDDEN_KEYS, { count: record.beyond.length }));
+      const values = shot.event.values || {};
+      if (shot.native && (values.preExtrapolationMode === 4 || values.postExtrapolationMode === 4) && !differs(ctx, shot.event)) notes.push(t(ctx, CONTINUE_NOTE));
       setText(refs.note, notes.join(" "));
     }
   }
@@ -2281,7 +2469,7 @@
   function renderInto(box, ctx) {
     const state = stateOf(ctx);
     watchToggle(ctx, box);
-    const shot = ctx.project() ? playheadShot(ctx) : null;
+    const shot = ctx.project() ? editedShot(ctx) : null;
     const key = signature(ctx, shot);
     if (!state.panel || state.panel.box !== box || state.panel.key !== key || !box.contains(state.panel.refs.root)) {
       // A rebuild (a new mode or shot) keeps keyboard focus on the same control. The new
@@ -2319,11 +2507,11 @@
     if (typeof scene.setGameCameraHelper === "function") scene.setGameCameraHelper(true);
   }
 
-  // History changes that need a rebake: camera records, rigs, or a main-camera shot's timing.
+  // History changes that need a rebake: camera records, rigs, or a camera shot's timing.
   function bakeScope(ctx, command) {
     let all = false;
     const ids = new Set(), records = new Set();
-    const main = new Set(mainTracks(ctx.project()).map((track) => track.id));
+    const main = new Set(cameraTracks(ctx.project()).map((track) => track.id));
     for (const change of command && Array.isArray(command.changes) ? command.changes : []) {
       const target = change.target || {}, path = change.path || [];
       if (target.kind === "editor" && path[0] === "camera") {
@@ -2340,7 +2528,7 @@
   // samples change, and a key can move without changing them (a lone offset key).
   function refreshKeyLanes(ctx, records, skip) {
     if (!records.length) return;
-    for (const track of mainTracks(ctx.project())) {
+    for (const track of cameraTracks(ctx.project())) {
       if (!skip.has(track.id) && track.events.some((event) => event && records.includes(event.id))) ctx.refreshLane(track.id);
     }
   }
@@ -2370,6 +2558,7 @@
       // A project as opened or saved already holds its bakes: nothing is rebaked on load.
       if (info.reason === "load") {
         state.selected = null;
+        state.camera = "main";
         state.memory = new Map();
         state.differs = new WeakMap();
         state.panel = null;
@@ -2397,13 +2586,15 @@
     timeChanged(ctx) {
       hookScene(ctx);
       if (!panelOpen()) return;
-      const state = stateOf(ctx), shot = playheadShot(ctx);
+      const state = stateOf(ctx), shot = editedShot(ctx);
       const key = signature(ctx, shot);
       if (state.panel && state.panel.key === key) syncPanel(ctx);
       else renderPanel(ctx);
     },
     selectionChanged(ctx, selection) {
-      if (!selection || !mainTrack(selection.track)) return;
+      if (!selection || !cameraTrack(selection.track)) return;
+      // The selected shot's camera becomes the edited one.
+      useCamera(ctx, cameraOf(selection.track));
       const panel = global.document && document.getElementById("mv-panel-camera");
       if (panel && !panel.hidden && !panel.open && shotInfo(ctx, selection.track, selection.event)?.editable) panel.open = true;
       renderPanel(ctx);
@@ -2413,16 +2604,12 @@
       if (info.key === "keyframes" && Array.isArray(info.value)) return keyframeSummary(ctx, info.track, info.value);
       if (RAW_FIELDS.includes(info.key)) return null;
       // A static (non-native) shot that the editor has baked: its keys own the pose.
-      if (["position", "rotation", "fov"].includes(info.key) && mainTrack(info.track) && recordOf(ctx, info.event.id)) return null;
+      if (["position", "rotation", "fov"].includes(info.key) && cameraTrack(info.track) && recordOf(ctx, info.event.id)) return null;
       return undefined;
     },
     laneDecorate(ctx, track, lane, layout) { decorate(ctx, track, lane, layout); },
-    clipConstraints(ctx, track, event) {
-      if (!durationLocked(ctx, track, event)) return undefined;
-      return { resize: false, reason: t(ctx, "Duration is locked while this shot has camera edits.") };
-    },
     revertEvent(ctx, track, event) {
-      if (!mainTrack(track)) return false;
+      if (!cameraTrack(track)) return false;
       const shot = shotInfo(ctx, track, event);
       if (!shot || !shot.source || shot.user) return false;
       revertShot(ctx, track, event);
@@ -2452,13 +2639,11 @@
       }
     },
     async beforeSave(ctx) { await (stateOf(ctx).pending || null); },
+    // A resized shot exports its edits on its new grid; only a length off the 60 Hz grid cannot be written.
     async beforeExport(ctx) {
       await (stateOf(ctx).pending || null);
-      for (const { event } of mainCameraShots(ctx)) {
-        const original = ctx.history.originals.get(event.id);
-        if (original && original.duration !== event.duration && differs(ctx, event)) {
-          throw new Error("Restore the original length of camera shots with camera edits before exporting.");
-        }
+      for (const { track, event } of cameraShots(ctx)) {
+        if (differs(ctx, event) && shotInfo(ctx, track, event)?.partialFrame) throw new Error(PARTIAL_FRAME_EXPORT);
       }
     },
   };
@@ -2475,9 +2660,8 @@
     "Auto clamped", "Automatic", "Flat", "Free", "Ease presets", "Ease in-out", "Ease in", "Ease out", "Curve channels",
     "Shot {index} / {count}", "Frame {frame} / {last}", "No camera shot at the playhead.", "New camera shot at playhead",
     "Camera shot", "Camera (editor)", "This camera shot cannot be edited.", "The camera samples of this shot cannot be exported.",
-    "Restore this shot's original length to edit its camera.", "Switch the preview camera to Free camera to key the view.",
-    "Duration is locked while this shot has camera edits.", "A camera rig also moves this shot.",
-    "Restore the original length of camera shots with camera edits before exporting.", "The camera could not be baked.",
+    "Switch the preview camera to Free camera to key the view.", "A camera rig also moves this shot.",
+    PARTIAL_FRAME, PARTIAL_FRAME_EXPORT, HIDDEN_KEYS, CONTINUE_NOTE, "The camera could not be baked.",
     "Edit camera key", "Move camera key", "Delete camera key", "Duplicate camera key", "Edit camera handle", "Change interpolation",
     "Change handle type", "Apply ease preset", "Change camera mode", "Change offset space", "New camera shot", "Add camera key",
     // Multi-key editing.
@@ -2489,6 +2673,8 @@
     "The copied keys do not fit in this shot.", "Keys outside this shot were left out: {count}.",
     "Select at least two keys to scale their timing.", "The timing stops at a neighbouring key or the end of the shot.",
     "Select several", MULTI_TITLE, TOUCH_HINT, "Delete selected keys",
+    // Split-screen sub cameras.
+    "Camera", "Main camera", "Sub camera {slot}",
     ...Object.values(CONFIRM),
   ]);
 
@@ -2497,8 +2683,14 @@
     plugin, STRINGS, USER_TRACK,
     // Lane D (follow camera) and other layers.
     registerLayer, unregisterLayer, requestBake, mainCameraShots, ensureUserShot,
+    // Every editable camera (main and split-screen sub cameras), and the one being edited.
+    // playheadShot(ctx, time) is the main camera's shot (the follow camera covers it);
+    // editedShot(ctx, time) the shot of the camera being edited.
+    cameraShots, setCamera, camera: (ctx) => stateOf(ctx).camera,
     // Model, bake and commands (also used by the tests).
-    shotInfo, findShot, playheadShot, normalizeRecord, basePose, bakeShot, differs, channelValues,
+    shotInfo, findShot, playheadShot, editedShot, normalizeRecord, basePose, bakeShot, differs, channelValues,
+    // The editor's copies of the scene's shot choice and extrapolated time (tests compare them).
+    activeCameraEvent, cameraLocalTime,
     setChannels, keyView, addKey, deleteKey, duplicateKey, stepKey, moveKey, setKeyValue, setHandle, setKeyProperty, ease,
     setMode, setSpace, convertToKeys, revertShot, newShotAtPlayhead, selectKey: (ctx, eventId, frame) => {
       const shot = findShot(ctx, eventId);

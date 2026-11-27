@@ -157,9 +157,140 @@ function members() {
     { slot: 1, name: '', color: null }, { slot: 2, name: '나카스 카스미', color: [1, .8, 0] }, { slot: 3, name: '', color: null }]);
 }
 
+// Tracks whose mute the game sets from a quality flag (LiveQualityOperator.MuteTracks).
+function qualityMutes() {
+  const { tracks } = fixture();
+  const leaf = (label) => tracks.find((track) => track.label === label);
+  const driven = tracks.filter(Tabs.qualityMuted).map((track) => track.label);
+  // 12035: every direct child of a StageEffect category, and of the MemberEffect and PropEffect categories.
+  assert(driven.includes('StageEffect/Expert/Coloring/LED_panel_01'));
+  assert(driven.includes('StageEffect/Expert/Flash Light/Live Flash Light Track'), 'spaces are removed from the category');
+  assert(driven.includes('MemberEffect/Expert/MemberRimlight/Member1 (1)'));
+  assert(!driven.includes('Member1/LipSync') && !driven.includes('CameraMotion/Camera1'), 'other tracks keep their own mute');
+  assert(!driven.some((label) => label.split('/').length !== 4), 'only direct children');
+  assert(tracks.filter(Tabs.isGroup).every((track) => !Tabs.qualityMuted(track)), 'groups never');
+  assert.equal(Tabs.qualityOption(leaf('StageEffect/Expert/Flash Light/Live Flash Light Track')), 'stage_flash_light');
+  assert.equal(Tabs.qualityOption(leaf('StageEffect/Expert/Coloring')), 'stage_coloring', 'the category group itself');
+  assert.equal(Tabs.qualityOption(leaf('MemberEffect/Expert/MemberRimlight/Member1 (1)')), null, 'member flags are not named');
+  assert.equal(Tabs.qualityOption({ label: 'StageEffect/Expert/Coloring/LightShaft/Live Coloring Track', kind: 'display' }), null,
+    'a track in a sub-group keeps its own mute (12023)');
+  assert.equal(Tabs.qualityOption({ label: 'StageEffect/Expert/Overlay/x', kind: 'effects' }), null, 'an unknown category');
+  // The other quality roots count only the categories their client tables name (spaces removed,
+  // lower case); a category with another name keeps its tracks' own mute (12029 PropAnimation).
+  const muted = (label) => Tabs.qualityMuted({ label, kind: 'effects', nativeClass: 'CustomControlTrack' });
+  for (const label of ['MemberEffect/Expert/MemberAmbient/x', 'MemberEffect/Expert/MemberRimlight/x',
+    'MemberEffect/Expert/Member Spot Light Area/x', 'MemberEffect/Expert/MemberSpotLightShaft/x', 'PropEffect/Expert/PropAmbient/x',
+    'PropEffect/Normal/Prop Rim Light/x', 'PropEffect/Expert/PropColoring/x', 'GlobalEffect/Expert/BaseLight/BaseLight',
+    'MotionMisc/Expert/SplitScreen/x']) assert.equal(muted(label), true, label);
+  for (const label of ['PropEffect/Expert/PropAnimation/Animation Track', 'PropEffect/Expert/PropActivity/Activation Track',
+    'MemberEffect/Expert/MemberShadow/x', 'GlobalEffect/Expert/Fog/x', 'MotionMisc/Expert/Camera/x',
+    'StageEffect/Expert/Splitscreen/x', 'MotionMisc/Expert/Post/x']) assert.equal(muted(label), false, label);
+  assert.equal(muted('MemberEffect/Expert/MemberAmbient/Sub/x'), false, 'one group deeper');
+  assert.equal(muted('CameraOffset/Expert/X/x'), false, 'another root');
+  // Every reason the game ignores a track's own mute, in the export's order.
+  assert.equal(Tabs.muteRefusal(leaf('StageEffect/Expert/Coloring')), 'group');
+  assert.equal(Tabs.muteRefusal(leaf('Member1/LipSync')), 'facial', 'the game sets eye and mouth mutes itself');
+  assert.equal(Tabs.muteRefusal(leaf('Member1/Eye')), 'facial');
+  assert.equal(Tabs.muteRefusal(leaf('Member1/Gaze')), null);
+  assert.equal(Tabs.muteRefusal(leaf('StageEffect/Expert/Coloring/LED_panel_01')), 'quality');
+  assert.equal(Tabs.muteRefusal(leaf('CameraMotion/Camera1')), null);
+  assert.equal(Tabs.qualityMuted(leaf('Member1/LipSync')), false, 'not a quality track');
+  assert.deepEqual([...Tabs.FACIAL_MUTE_CLASSES].sort(), ['MemberEyeTrack', 'MemberLipSyncTrack']);
+  assert.deepEqual(Object.keys(Tabs.QUALITY_CATEGORIES).sort(), ['GlobalEffect', 'MemberEffect', 'MotionMisc', 'PropEffect', 'StageEffect']);
+  assert.deepEqual([...Tabs.QUALITY_CATEGORIES.StageEffect], Object.keys(Tabs.STAGE_QUALITY).sort());
+  assert.deepEqual(Object.keys(Tabs.STAGE_QUALITY).sort(), ['ambient', 'animation', 'audience', 'coloring', 'control', 'display',
+    'emissive', 'flashlight', 'overlayeffect', 'post']);
+  assert(Object.values(Tabs.STAGE_QUALITY).every((key) => Tabs.QUALITY_LABELS[key]));
+
+  // Badges: the direct children of a category, except an ActivationTrack (the flag never mutes
+  // one: ApplyMuteToTrack skips it when muting), and a category group with such a child.
+  const badged = tracks.filter((track) => Tabs.qualityBadge(track, tracks)).map((track) => track.label);
+  assert(badged.includes('StageEffect/Expert/Coloring') && badged.includes('StageEffect/Expert/Coloring/LED_panel_01'));
+  assert(!badged.includes('StageEffect/Expert/Display/main_01_act'), 'an ActivationTrack keeps playing');
+  assert(badged.includes('StageEffect/Expert/Display/main_01'));
+  assert(!badged.some((label) => !label.startsWith('StageEffect/')), 'StageEffect only');
+  assert(!badged.includes('StageEffect/Expert'), 'not the difficulty group');
+  assert.equal(Tabs.qualityBadge(leaf('StageEffect/Expert/Coloring')), null, 'a group needs the tracks to look at');
+  // A category whose direct children are only sub-groups and ActivationTracks has no track the
+  // flag mutes, so its heading gets no badge either (12023 StageEffect/Expert/Animation, Coloring).
+  const group = (label) => ({ id: label, label, kind: 'group', nativeClass: 'GroupTrack', events: [] });
+  const track = (label, nativeClass) => ({ id: label, label, kind: 'stage', nativeClass, events: [] });
+  const animation = [group('StageEffect/Expert/Animation'), group('StageEffect/Expert/Animation/Sub'),
+    track('StageEffect/Expert/Animation/Sub/x', 'AnimationTrack'), track('StageEffect/Expert/Animation/act', 'ActivationTrack')];
+  assert.equal(Tabs.qualityBadge(animation[0], animation), null);
+  assert.equal(Tabs.qualityBadge(animation[2], animation), null, 'one group deeper: no badge');
+  assert.equal(Tabs.qualityBadge(animation[3], animation), null);
+  animation.push(track('StageEffect/Expert/Animation/anim', 'AnimationTrack'));
+  assert.equal(Tabs.qualityBadge(animation[0], animation), 'stage_animation', 'one direct leaf child is enough');
+  assert.equal(Tabs.qualityBadge(animation[0], [animation[0], track('StageEffect/Expert/AnimationX/y', 'AnimationTrack')]), null,
+    'a category whose name only starts the same');
+
+  // A mute edit lists its track first in the Edit tab, like an edited clip.
+  const lips = leaf('Member1/LipSync');
+  const plan = Tabs.plan(tracks, { tab: 'edit', editedTracks: new Set([lips.id]) });
+  assert.deepEqual(plan.rows.slice(0, 2).map((row) => row.type + ':' + (row.track ? row.track.label : '')), ['track:Member1/LipSync', 'separator:']);
+  assert.equal(plan.rows.filter((row) => row.type === 'hint').length, 0, 'no hint once a track is edited');
+}
+
+// The mute toggle locks exactly the tracks whose mute the export refuses: Tabs.muteRefusal (a
+// group, an eye or mouth track, or a direct child of a quality category) against the export lane's
+// MVStudioEventFields.trackMuteNote, in a tree that has it (after the export lane's merge). Labels:
+// the 12035 fixture, edge cases, and every stock track when MV_STUDIO_TRACKS_JSON is given. An
+// export lane from before its eye and mouth rule (no facialClasses) is compared without it.
+function exportMuteRule() {
+  require('../webtools/web/static/mv-studio-event-fields.js');
+  const rule = globalThis.MVStudioEventFields && globalThis.MVStudioEventFields.trackMuteNote;
+  if (typeof rule !== 'function') return 'export mute rule: skipped (no trackMuteNote in this tree)';
+  // The same category names as the export lane's table (no spaces, lower case).
+  const table = globalThis.MVStudioEventFields.TABLE.trackMute, roots = table.qualityRoots;
+  assert.deepEqual(Object.keys(roots).sort(), Object.keys(Tabs.QUALITY_CATEGORIES).sort());
+  for (const [root, names] of Object.entries(roots)) assert.deepEqual([...names].sort(), [...Tabs.QUALITY_CATEGORIES[root]].sort(), root);
+  const facial = Array.isArray(table.facialClasses);
+  if (facial) assert.deepEqual([...table.facialClasses].sort(), [...Tabs.FACIAL_MUTE_CLASSES].sort());
+  const tracks = [...fixture().tracks];
+  for (const label of ['StageEffect/Expert/Overlay Effect/x', 'StageEffect/Expert/Overlay/x', 'StageEffect/Normal/Audience/x',
+    'StageEffect/Expert/Coloring/LightShaft/x', 'PropEffect/Expert/PropAnimation/x', 'PropEffect/Expert/Prop Rim Light/x',
+    'MotionMisc/Expert/SplitScreen/x', 'MotionMisc/Expert/Camera/x', 'GlobalEffect/Expert/BaseLight/BaseLight',
+    'GlobalEffect/Expert/Fog/x', 'MemberEffect/Expert/Member Spot Light Shaft/x', 'MemberEffect/Expert/MemberShadow/x',
+    'MemberEffect/Expert/MemberAmbient/Sub/x', 'CameraOffset/Expert/X/x', 'Member1/LipSync']) {
+    tracks.push({ id: label, label, kind: 'effects', nativeClass: 'CustomControlTrack', events: [] });
+  }
+  for (const [label, nativeClass] of [['Member2/Eye', 'MemberEyeTrack'], ['Member2/MouthRina', 'MemberLipSyncTrack'],
+    ['Member2/Gaze', 'MemberGazeTrack'], ['StageEffect/Expert/Coloring/Mouth', 'MemberLipSyncTrack']]) {
+    tracks.push({ id: label, label, kind: 'mouth', nativeClass, events: [] });
+  }
+  const file = process.env.MV_STUDIO_TRACKS_JSON;
+  if (file && fs.existsSync(file)) for (const list of Object.values(JSON.parse(fs.readFileSync(file, 'utf8')))) tracks.push(...list);
+  for (const track of tracks) {
+    const refusal = Tabs.muteRefusal(track);
+    assert.equal(rule(track) !== null, refusal !== null && (facial || refusal !== 'facial' || Tabs.qualityMuted(track)), track.label);
+  }
+  return `export mute rule: ${tracks.length} tracks agree${facial ? '' : ' (export lane without the eye and mouth rule)'}`;
+}
+
+// Every stock MV (MV_STUDIO_TRACKS_JSON): a badged group always has a badged direct child, and
+// every category group with one is badged.
+function stockBadges() {
+  const file = process.env.MV_STUDIO_TRACKS_JSON;
+  if (!file || !fs.existsSync(file)) return 'stock badges: skipped (no MV_STUDIO_TRACKS_JSON)';
+  let groups = 0, withoutChild = 0;
+  for (const tracks of Object.values(JSON.parse(fs.readFileSync(file, 'utf8')))) {
+    for (const track of tracks.filter((item) => Tabs.isGroup(item) && Tabs.qualityOption(item))) {
+      const prefix = track.label + '/';
+      const child = tracks.some((item) => !Tabs.isGroup(item) && item.label.startsWith(prefix) && Tabs.qualityBadge(item));
+      assert.equal(Tabs.qualityBadge(track, tracks), child ? Tabs.qualityOption(track) : null, track.label);
+      if (child) groups++; else withoutChild++;
+    }
+  }
+  return `stock badges: ${groups} category groups badged, ${withoutChild} without a muted track left plain`;
+}
+
 counts12035();
 synthetic();
 keyboard();
 plans();
 members();
-console.log('MV Studio timeline tabs: 12035 counts, synthetic classes, member slots, lane plans per tab and filter, roving keys.');
+qualityMutes();
+const muteRule = exportMuteRule(), stock = stockBadges();
+console.log('MV Studio timeline tabs: 12035 counts, synthetic classes, member slots, lane plans per tab and filter, roving keys, quality-set mutes; ' +
+  muteRule + '; ' + stock + '.');

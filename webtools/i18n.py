@@ -2632,17 +2632,22 @@ _MV_EDITOR_C_TRANSLATIONS = {
     "This camera shot cannot be edited.": ("이 카메라 샷은 편집할 수 없습니다.", "このカメラショットは編集できません。"),
     "The camera samples of this shot cannot be exported.": (
         "이 샷의 카메라 샘플은 내보낼 수 없습니다.", "このショットのカメラサンプルは書き出せません。"),
-    "Restore this shot's original length to edit its camera.": (
-        "카메라를 편집하려면 이 샷의 길이를 원래대로 되돌리세요.", "カメラを編集するには、このショットの長さを元に戻してください。"),
     "Switch the preview camera to Free camera to key the view.": (
         "시점을 키로 저장하려면 미리보기 카메라를 자유 카메라로 바꾸세요.",
         "視点をキーにするには、プレビューカメラを自由カメラに切り替えてください。"),
-    "Duration is locked while this shot has camera edits.": (
-        "카메라를 편집한 샷은 길이를 바꿀 수 없습니다.", "カメラを編集したショットは長さを変えられません。"),
     "A camera rig also moves this shot.": ("카메라 리그도 이 샷을 움직입니다.", "カメラリグもこのショットを動かしています。"),
-    "Restore the original length of camera shots with camera edits before exporting.": (
-        "내보내기 전에 카메라를 편집한 샷의 길이를 원래대로 되돌리세요.",
-        "書き出す前に、カメラを編集したショットの長さを元に戻してください。"),
+    "This shot's length is not whole frames (1/60 s): its camera edits cannot be exported until it is.": (
+        "이 샷의 길이가 프레임(1/60초) 단위가 아닙니다. 프레임 단위로 맞추기 전에는 카메라 편집을 내보낼 수 없습니다.",
+        "このショットの長さがフレーム（1/60秒）単位ではありません。フレーム単位にするまでカメラの編集は書き出せません。"),
+    "Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.": (
+        "내보내기 전에 카메라를 편집한 샷의 길이를 프레임(1/60초) 단위로 맞추세요.",
+        "書き出す前に、カメラを編集したショットの長さをフレーム（1/60秒）単位にしてください。"),
+    "Keys past the end of this shot: {count}. They are hidden but still shape its motion, and come back if the shot is made longer.": (
+        "이 샷의 끝 뒤에 있는 키: {count}개. 숨겨져 있지만 움직임에는 계속 반영되며, 샷을 늘리면 다시 나타납니다.",
+        "このショットの終わりより後のキー：{count} 個。非表示ですが動きには反映され、ショットを長くすると戻ります。"),
+    "Continue: the preview holds this shot's end pose. In the game it may play on if the camera clip is longer than the shot.": (
+        "계속: 미리보기는 이 샷의 마지막 포즈를 유지합니다. 카메라 클립이 샷보다 길면 게임에서는 이어서 재생될 수 있습니다.",
+        "続ける：プレビューはこのショットの最後のポーズを保ちます。カメラクリップがショットより長いと、ゲームでは再生が続くことがあります。"),
     "The camera could not be baked.": ("카메라를 굽지 못했습니다.", "カメラを焼き込めませんでした。"),
     "Edit camera key": ("카메라 키 편집", "カメラキーを編集"),
     "Add camera key": ("카메라 키 추가", "カメラキーを追加"),
@@ -2711,6 +2716,9 @@ _MV_EDITOR_C_TRANSLATIONS = {
         "タッチ: 「複数選択」をオンにするかキーを長押しして、キーをタップします。カメラレーンやグラフを横にドラッグすると範囲選択します。"
         "選択したキーをドラッグするとまとめて動きます。"),
     "Delete selected keys": ("선택한 키 삭제", "選択したキーを削除"),
+    # Split-screen sub cameras ("Camera" is translated in the MV Studio table).
+    "Main camera": ("메인 카메라", "メインカメラ"),
+    "Sub camera {slot}": ("서브 카메라 {slot}", "サブカメラ {slot}"),
 }
 for _source, (_korean, _japanese) in _MV_EDITOR_C_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
@@ -3165,6 +3173,77 @@ for _source, (_korean, _japanese) in _MV_EDITOR_A_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 
+# MV Studio timeline host (mv-studio.js): derived blends, timing fields per clip type,
+# track mute and quality badges.
+_MV_EDITOR_E2_TRANSLATIONS = {
+    "Set by the overlap with the next or previous clip": (
+        "앞뒤 클립과 겹치는 길이로 정해집니다", "前後のクリップと重なる長さで決まります"),
+    "The game does not use these timing fields of this clip type: {fields}.": (
+        "이 클립 종류에서 게임이 쓰지 않는 시간 항목: {fields}.", "このクリップの種類でゲームが使わない時間項目: {fields}。"),
+    "Before and after the clip": ("클립 앞뒤", "クリップの前後"),
+    "Clip offset": ("클립 오프셋", "クリップオフセット"),
+    "Playback speed": ("재생 속도", "再生速度"),
+    "Ease and blend": ("이즈와 블렌드", "イーズとブレンド"),
+    "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows.": (
+        "카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.",
+        "カメラショットはオフセットと速度を変えられず、プレビューに出る「なし」と「保持」だけを選べます。"),
+    "Camera shots keep their offset and speed: the preview plays the samples read from the shot.": (
+        "카메라 샷은 오프셋과 속도를 바꿀 수 없습니다. 미리보기는 샷에서 읽은 샘플을 그대로 재생합니다.",
+        "カメラショットはオフセットと速度を変えられません。プレビューはショットから読んだサンプルをそのまま再生します。"),
+    "Restore original value": ("원래 값으로 되돌리기", "元の値に戻す"),
+    # The extrapolation mode after None, Hold (and before Ping-pong, Continue), which have theirs.
+    "Loop": ("반복", "ループ"),
+    "This shot overlaps another: the game crossfades them, the preview cuts to the later shot.": (
+        "이 샷은 다른 샷과 겹칩니다. 게임은 두 샷을 겹쳐 전환하지만, 미리보기는 뒤의 샷으로 바로 바뀝니다.",
+        "このショットは別のショットと重なっています。ゲームでは重ねて切り替わりますが、プレビューは後のショットにすぐ切り替わります。"),
+    "{tracks} tracks · {clips} clips · {edited} edited · {follow} with recomputed blends or times": (
+        "트랙 {tracks}개 · 클립 {clips}개 · 편집 {edited}개 · 블렌드나 시간만 다시 계산된 클립 {follow}개",
+        "トラック{tracks}件 · クリップ{clips}件 · 編集{edited}件 · ブレンドや時間だけ再計算されたクリップ{follow}件"),
+    "Mute track": ("트랙 음소거", "トラックをミュート"),
+    "Unmute track": ("트랙 음소거 해제", "トラックのミュートを解除"),
+    "Muted": ("음소거됨", "ミュート中"),
+    "Muted group": ("음소거된 그룹", "ミュート中のグループ"),
+    "This track is muted. The preview skips it.": (
+        "이 트랙은 음소거되어 미리보기에서 재생되지 않습니다.", "このトラックはミュート中で、プレビューでは再生されません。"),
+    "A group's mute does not reach the game: the game plays each track in it by its own mute.": (
+        "그룹 음소거는 게임에 반영되지 않습니다. 게임은 그룹 안의 각 트랙을 그 트랙의 음소거 설정대로 재생합니다.",
+        "グループのミュートはゲームに反映されません。ゲームはグループ内の各トラックを、そのトラック自身のミュート設定で再生します。"),
+    "The game sets this track's mute from the {option} quality setting when the MV starts.": (
+        "이 트랙의 음소거는 MV가 시작될 때 게임이 '{option}' 그래픽 설정에 따라 정합니다.",
+        "このトラックのミュートは、MVの開始時にゲームが「{option}」のグラフィック設定に合わせて決めます。"),
+    "The game sets this track's mute from the MV quality settings when the MV starts.": (
+        "이 트랙의 음소거는 MV가 시작될 때 게임이 MV 그래픽 설정에 따라 정합니다.",
+        "このトラックのミュートは、MVの開始時にゲームがMVのグラフィック設定に合わせて決めます。"),
+    "The game sets the mute of eye and mouth tracks itself when the MV starts.": (
+        "눈과 입 트랙의 음소거는 MV가 시작될 때 게임이 직접 정합니다.",
+        "目と口のトラックのミュートは、MVの開始時にゲームが自分で決めます。"),
+    # English names of the stage quality flags (core/mv_studio_quality._FIELDS) for a project without options.
+    "Stage ambient lighting": ("무대 환경광", "ステージ環境光"),
+    "Stage animation": ("무대 애니메이션", "ステージアニメーション"),
+    "Stage coloring": ("무대 색상 연출", "ステージの色演出"),
+    "Stage controls": ("무대 제어", "ステージ制御"),
+    "Stage overlay effects": ("무대 오버레이 효과", "ステージのオーバーレイ効果"),
+    "Stage flash lighting": ("무대 점멸 조명", "ステージの点滅照明"),
+    "Stage displays": ("무대 화면", "ステージのスクリーン"),
+    "Post-processing effects": ("후처리 효과", "ポストエフェクト"),
+    "Stage emissive surfaces": ("무대 발광 표면", "ステージの発光面"),
+    # "Audience" (관객/観客) comes from the editor lane B table.
+    "Plays only while {option} is on in the MV quality settings.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 켜져 있을 때만 재생됩니다.", "MVのグラフィック設定で「{option}」がオンのときだけ再生されます。"),
+    "Its tracks play only while {option} is on in the MV quality settings.": (
+        "이 그룹의 트랙은 MV 그래픽 설정에서 '{option}'이(가) 켜져 있을 때만 재생됩니다.",
+        "このグループのトラックは、MVのグラフィック設定で「{option}」がオンのときだけ再生されます。"),
+    "{option} is off in the MV quality settings, so the game mutes this track.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 꺼져 있어 게임은 이 트랙을 재생하지 않습니다.",
+        "MVのグラフィック設定で「{option}」がオフなので、ゲームはこのトラックを再生しません。"),
+    "{option} is off in the MV quality settings, so the game mutes its tracks.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 꺼져 있어 게임은 이 그룹의 트랙을 재생하지 않습니다.",
+        "MVのグラフィック設定で「{option}」がオフなので、ゲームはこのグループのトラックを再生しません。"),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_E2_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
 # MV Studio free camera views (mv-studio-free-camera.js). Front, Back, Left side, Right side
 # and FOV are the 3D model tab's and the camera editor's strings.
 _MV_FREE_CAMERA_TRANSLATIONS = {
@@ -3482,11 +3561,14 @@ _MV_REGISTER_TRANSLATIONS = {
     "This camera animation is shared or external. Edit its timing only.": (
         "이 카메라 애니메이션은 공유되거나 외부에 있습니다. 타이밍만 편집하세요.",
         "このカメラアニメーションは共有または外部のものです。タイミングだけを編集してください。"),
-    "Camera point edits require an untrimmed, full native shot with unchanged sample times.": (
-        "카메라 포인트를 편집하려면 잘리지 않은 원래 컷 전체와 바뀌지 않은 샘플 시간이 필요합니다.",
-        "カメラポイントの編集には、切り詰めていない元のカット全体と変わっていないサンプル時刻が必要です。"),
-    "Keep the original camera point count and times.": (
-        "카메라 포인트의 원래 개수와 시간을 유지하세요.", "カメラポイントの元の数と時刻を保ってください。"),
+    "Keep one camera point per frame of the shot, at its frame times.": (
+        "샷의 프레임마다 카메라 포인트를 하나씩, 그 프레임 시간에 두세요.",
+        "ショットのフレームごとにカメラポイントを1つずつ、そのフレームの時刻に置いてください。"),
+    "Camera point edits need an untrimmed native shot: clip offset 0, speed 1 and its own camera bindings.": (
+        "카메라 포인트를 편집하려면 잘리지 않은 원래 샷이어야 합니다: 클립 오프셋 0, 속도 1, 원래 카메라 바인딩.",
+        "カメラポイントを編集するには、切り詰めていない元のショットが必要です（クリップオフセット0、速度1、元のカメラバインディング）。"),
+    "A camera shot with camera edits needs a length of whole frames (1/60 s).": (
+        "카메라를 편집한 샷의 길이는 프레임(1/60초) 단위여야 합니다.", "カメラを編集したショットの長さは、フレーム（1/60秒）単位にしてください。"),
     "The native copy changed unrelated Unity objects or resources.": (
         "게임용 사본에서 관계없는 Unity 오브젝트나 리소스가 바뀌었습니다.",
         "ゲーム用のコピーで無関係なUnityオブジェクトまたはリソースが変わりました。"),
@@ -4309,6 +4391,88 @@ _MV_EDITOR_B_TRANSLATIONS = {
         "メンバーにピントを合わせるには、クリップのメンバー位置が1〜12である必要があります。"),
 }
 for _source, (_korean, _japanese) in _MV_EDITOR_B_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# MV Studio export slots (mv_studio_timeline): track mutes that reach the game, their plan lines
+# (mv-studio-apply.js, mv-studio-register.js) and export refusals.
+_MV_EXPORT_SLOT_TRANSLATIONS = {
+    "Tracks muted or unmuted: {count}": ("음소거를 바꾼 트랙: {count}개", "ミュートを切り替えたトラック: {count}"),
+    "Apply all: {count} track mutes differ from the original MV": (
+        "전체 적용: 원본 MV와 음소거가 다른 트랙 {count}개", "全体を適用: 元のMVとミュートが異なるトラック{count}個"),
+    "A group track's mute does not reach the game. Mute the tracks inside it.": (
+        "그룹 트랙의 음소거는 게임에 반영되지 않습니다. 그 안의 트랙을 음소거하세요.",
+        "グループトラックのミュートはゲームに反映されません。中のトラックをミュートしてください。"),
+    "The game's quality settings turn this track on and off, so its mute does not reach the game.": (
+        "이 트랙은 게임의 품질 설정이 켜고 끄므로 음소거가 게임에 반영되지 않습니다.",
+        "このトラックはゲームの画質設定でオン・オフが決まるため、ミュートはゲームに反映されません。"),
+    "The game turns eye and mouth tracks on and off itself, so this mute does not reach the game.": (
+        "눈과 입 트랙은 게임이 직접 켜고 끄므로 이 음소거는 게임에 반영되지 않습니다.",
+        "目と口のトラックはゲームが自分でオン・オフを決めるため、このミュートはゲームに反映されません。"),
+    "A track mute must be on or off.": ("트랙 음소거는 켜기나 끄기로만 정할 수 있습니다.", "トラックのミュートはオンかオフで指定してください。"),
+    "This native track has no mute to change.": ("이 원본 트랙에는 바꿀 수 있는 음소거가 없습니다.", "この元のトラックには変更できるミュートがありません。"),
+    # Member targets (mv-studio-event-fields.js descriptors, mv_studio_timeline.MEMBER_SLOT).
+    "Focus member": ("초점 맞출 멤버", "ピントを合わせるメンバー"),
+    "Focus target": ("초점 대상", "ピントの対象"),
+    "The chosen member": ("지정한 멤버", "指定したメンバー"),
+    "The nearest member": ("가장 가까운 멤버", "いちばん近いメンバー"),
+    "The member nearest the centre": ("화면 중앙에 가장 가까운 멤버", "画面の中央にいちばん近いメンバー"),
+    "Colour member": ("색 기준 멤버", "色の基準メンバー"),
+    "Height from member": ("높이 기준 멤버", "高さの基準メンバー"),
+    "Choose a member this MV has.": ("이 MV에 있는 멤버를 고르세요.", "このMVにいるメンバーを選んでください。"),
+    # Penlight crowd motion (LivePenlightClip descriptors and export guards).
+    "Swing motion": ("흔들기 동작", "振りの動き"),
+    "Penlight colours": ("펜라이트 색", "ペンライトの色"),
+    "Colour {n}": ("색 {n}", "色 {n}"),
+    "Still": ("멈춤", "止める"),
+    "Front-back swing": ("앞뒤 흔들기", "前後の振り"),
+    "Rising swing": ("올려 흔들기", "持ち上げる振り"),
+    "Side swing": ("좌우 흔들기", "左右の振り"),
+    "Sway": ("살랑 흔들기", "ゆらゆら揺らす"),
+    "Crowd position (m)": ("관객 위치 (m)", "観客の位置 (m)"),
+    "Front-back swing: lift (m)": ("앞뒤 흔들기: 올림 (m)", "前後の振り: 上げ幅 (m)"),
+    "Front-back swing: reach (m)": ("앞뒤 흔들기: 앞으로 뻗기 (m)", "前後の振り: 前への幅 (m)"),
+    "Front-back swing: tilt (rad)": ("앞뒤 흔들기: 기울기 (rad)", "前後の振り: 傾き (rad)"),
+    "Front-back swing: rest point": ("앞뒤 흔들기: 기준 위치", "前後の振り: 基準の位置"),
+    "Front-back swing: snap": ("앞뒤 흔들기: 끊어 치기", "前後の振り: キレ"),
+    "Rising swing: lift (m)": ("올려 흔들기: 올림 (m)", "持ち上げる振り: 上げ幅 (m)"),
+    "Rising swing: reach (m)": ("올려 흔들기: 앞으로 뻗기 (m)", "持ち上げる振り: 前への幅 (m)"),
+    "Rising swing: tilt (rad)": ("올려 흔들기: 기울기 (rad)", "持ち上げる振り: 傾き (rad)"),
+    "Rising swing: rest point": ("올려 흔들기: 기준 위치", "持ち上げる振り: 基準の位置"),
+    "Rising swing: snap": ("올려 흔들기: 끊어 치기", "持ち上げる振り: キレ"),
+    "Rising swing: turn point": ("올려 흔들기: 전환 지점", "持ち上げる振り: 切り替えの位置"),
+    "Rising swing: lift curve": ("올려 흔들기: 올림 곡선", "持ち上げる振り: 上げのカーブ"),
+    "Side swing: tilt (rad)": ("좌우 흔들기: 기울기 (rad)", "左右の振り: 傾き (rad)"),
+    "Side swing: reach (m)": ("좌우 흔들기: 옆으로 뻗기 (m)", "左右の振り: 横への幅 (m)"),
+    "Side swing: lift (m)": ("좌우 흔들기: 올림 (m)", "左右の振り: 上げ幅 (m)"),
+    "Sway: side tilt (rad)": ("살랑 흔들기: 좌우 기울기 (rad)", "ゆらゆら揺らす: 左右の傾き (rad)"),
+    "Sway: front tilt (rad)": ("살랑 흔들기: 앞뒤 기울기 (rad)", "ゆらゆら揺らす: 前後の傾き (rad)"),
+    "Keep the penlight colour list's length and fields.": (
+        "펜라이트 색 목록의 길이와 항목은 그대로 두세요.", "ペンライトの色リストの長さと項目はそのままにしてください。"),
+}
+# Range refusals of the native export for each bounded field (mv_studio_timeline._LIMITED_VALUES and
+# _FLOAT_RANGES; tests/test_mv_studio_editable_values.py pins these lists to them). The UI bounds its
+# inputs, so only a hand-edited or API project meets them.
+for _field in ("index", "target", "cheekType", "colorSpecifiedType", "kernelSize", "useMemberDistance",
+               "cameraAutoDistanceMode", "ambientColorType", "rimlightColorType", "status", "swingMode"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"'{_field}' is outside the supported native range."] = (
+        f"'{_field}' 값이 지원하는 원본 범위를 벗어났습니다.", f"'{_field}'の値が対応する元の範囲を外れています。")
+for _field in ("focusTransitionTime", "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ",
+               "basicYZSwingPowerZ", "growthYZMoveY", "growthYZMoveZ", "growthYZRotateZ", "growthYZSwingBackZ",
+               "growthYZSwingPowerZ", "growthYZSwingBottomZ", "basicXRotateX", "basicXMoveX", "basicXMoveY",
+               "simpleXZRotateX", "simpleXZRotateZ"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"The timeline has an invalid {_field}."] = (
+        f"타임라인의 '{_field}' 값이 올바르지 않습니다.", f"タイムラインの'{_field}'の値が正しくありません。")
+# Refusals of a vector value (mv_studio_timeline._replace_value): a missing or extra axis, or an axis
+# beyond ±1e6, which a typed number box can reach. These are the fields with a "vector" control in
+# mv-studio-event-fields.js (the test pins the list to the descriptor table).
+for _field in ("center", "direction", "offset", "position", "randomDelay", "randomUp", "rimlightDirection", "scale",
+               "scrollSpeed"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"'{_field}' is not a supported native value for this clip."] = (
+        f"'{_field}' 값은 이 클립에서 지원하지 않는 원본 값입니다.", f"'{_field}'の値はこのクリップで対応していない元の値です。")
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"The timeline has an invalid {_field}."] = (
+        f"타임라인의 '{_field}' 값이 올바르지 않습니다.", f"タイムラインの'{_field}'の値が正しくありません。")
+for _source, (_korean, _japanese) in _MV_EXPORT_SLOT_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 

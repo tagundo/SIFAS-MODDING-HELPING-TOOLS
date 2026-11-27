@@ -592,7 +592,11 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         warnings = project["warnings"]
         # Receipts are only written once the whole import has succeeded (flush below).
         receipts = mv_studio_import_cache.open_cache(media, pending=[])
-        with tempfile.TemporaryDirectory(prefix="import-", dir=_root()) as name:
+        from .game_motion_selection import shared_reads
+        # Every member's dance selection reads the same timeline and choreography bundles,
+        # and many sections share a pack: each is read, or downloaded, once per import.
+        with (tempfile.TemporaryDirectory(prefix="import-", dir=_root()) as name, shared_reads(),
+              mv_studio_game.shared_downloads()):
             directory = Path(name)
             local, rows = {}, {}
             from . import mv_studio_external_clips

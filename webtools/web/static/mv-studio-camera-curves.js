@@ -10,8 +10,9 @@
      handlers: onSelectKey(frame, { toggle }), onSelectKeys(frames, { add }), onSeek(frame),
                onDragKey(phase "begin"|"move"|"end", { from, frame, channel, value }) → current frame,
                onDragHandle(phase, { frame, channel, side "in"|"out", handle: [dFrames, dValue] }), t(label)
-     model:    { count, keys, mode, channels, dense: { channel: Float64Array }, playhead, selected (the active
-                key), selection (selected frames), labels } */
+     model:    { count, keys, shape, mode, channels, dense: { channel: Float64Array }, playhead, selected (the active
+                key), selection (selected frames), labels }; shape (optional): every key the curve runs
+                through, keys past the shot's end included (they are not drawn as points) */
 (function (global) {
   "use strict";
 
@@ -20,6 +21,8 @@
   const COLORS = Object.freeze({ x: "#ef5350", y: "#66bb6a", z: "#42a5f5", pan: "#ffb74d", tilt: "#ba68c8", roll: "#26c6da", fov: "#f06292" });
   const HEIGHT = 150, LEFT = 44, RIGHT = 8, TOP = 8, BOTTOM = 18;
   const finite = Number.isFinite;
+  // The width a curve view's container last had, by any view's ResizeObserver.
+  let observedWidth = null;
 
   function node(tag, attrs = {}) {
     const element = document.createElementNS(SVG, tag);
@@ -45,9 +48,11 @@
     const resizing = global.ResizeObserver ? new global.ResizeObserver(() => {
       if (!container.isConnected) return;
       const next = container.clientWidth;
+      observedWidth = next;
       if (next === width) return;
       width = next;
-      if (model) draw();
+      // A graph already drawn at this width stays (a redraw would give the same drawing).
+      if (model && !(layout && graphWidth() === layout.width)) draw();
     }) : null;
     resizing?.observe(container);
 
@@ -59,7 +64,7 @@
         const dense = current.dense && current.dense[channel];
         if (dense) for (const value of dense) take(value);
         for (const key of current.keys) take(key.values[channel]);
-        if (current.keys.length) for (let frame = 0; frame < current.count; frame += Math.max(1, Math.floor(current.count / 120))) take(M.curve(current.keys, channel, frame));
+        if (current.shape.length) for (let frame = 0; frame < current.count; frame += Math.max(1, Math.floor(current.count / 120))) take(M.curve(current.shape, channel, frame));
       }
       if (!finite(low)) { low = -1; high = 1; }
       if (high - low < 1e-6) { const middle = (high + low) / 2; low = middle - 1; high = middle + 1; }
@@ -67,8 +72,14 @@
       return { low: low - pad, high: high + pad };
     }
 
+    // A new view (the panel is rebuilt for every other shot) draws first at the width the
+    // last view's container had: reading clientWidth there forced a style and layout pass of
+    // the whole page in the middle of a click (about 57 ms with a nine-member timeline). Its
+    // observer's first callback, after this frame's layout and before it is painted, redraws
+    // it at the container's own width, as it already did after the first draw.
     function graphWidth() {
-      return Math.max(160, Math.round((resizing && width !== null ? width : container.clientWidth) || 320));
+      const known = resizing ? width ?? observedWidth : null;
+      return Math.max(160, Math.round((known ?? container.clientWidth) || 320));
     }
 
     function geometry(current) {
@@ -123,10 +134,10 @@
           if (finite(dense[model.count - 1])) points.push([x(model.count - 1), y(dense[model.count - 1])]);
           parts.push(polyline(points, { class: "mv-cam-dense", stroke: color, "data-channel": channel }));
         }
-        if (model.keys.length) {
+        if (model.shape.length) {
           const points = [];
-          for (let frame = 0; frame < model.count; frame += step) points.push([x(frame), y(M.curve(model.keys, channel, frame))]);
-          points.push([x(model.count - 1), y(M.curve(model.keys, channel, model.count - 1))]);
+          for (let frame = 0; frame < model.count; frame += step) points.push([x(frame), y(M.curve(model.shape, channel, frame))]);
+          points.push([x(model.count - 1), y(M.curve(model.shape, channel, model.count - 1))]);
           parts.push(polyline(points, { class: "mv-cam-curve", stroke: color, "data-channel": channel }));
         }
       }
@@ -137,14 +148,14 @@
         playheadLine = node("line", { class: "mv-cam-playhead", x1: px, x2: px, y1: plot.top, y2: plot.top + plot.height });
         parts.push(playheadLine);
       }
-      // Handles of the selected key (bezier segments only).
-      const index = model.keys.findIndex((key) => key.frame === model.selected);
+      // Handles of the selected key (bezier segments only; the shape's keys are its neighbours).
+      const index = model.shape.findIndex((key) => key.frame === model.selected && model.keys.some((item) => item.frame === key.frame));
       if (index >= 0) {
-        const key = model.keys[index], previous = model.keys[index - 1];
+        const key = model.shape[index], previous = model.shape[index - 1];
         for (const channel of model.channels) {
-          const handles = M.handles(model.keys, index, channel), value = key.values[channel];
+          const handles = M.handles(model.shape, index, channel), value = key.values[channel];
           for (const side of ["in", "out"]) {
-            const used = side === "out" ? key.interp === "bezier" && index + 1 < model.keys.length
+            const used = side === "out" ? key.interp === "bezier" && index + 1 < model.shape.length
               : !!previous && previous.interp === "bezier";
             if (!used) continue;
             const [df, dv] = handles[side];
@@ -192,7 +203,8 @@
       if (!previous || previous.count !== next.count || previous.mode !== next.mode || previous.selected !== next.selected ||
           selectionOf(previous).join(",") !== selectionOf(next).join(",") ||
           finite(previous.playhead) !== finite(next.playhead) || previous.channels.join(",") !== next.channels.join(",") ||
-          JSON.stringify(previous.keys) !== JSON.stringify(next.keys) || JSON.stringify(previous.labels) !== JSON.stringify(next.labels)) return false;
+          JSON.stringify(previous.keys) !== JSON.stringify(next.keys) || JSON.stringify(previous.shape) !== JSON.stringify(next.shape) ||
+          JSON.stringify(previous.labels) !== JSON.stringify(next.labels)) return false;
       for (const channel of next.channels) {
         const a = previous.dense && previous.dense[channel], b = next.dense && next.dense[channel];
         if (a === b) continue;
@@ -306,7 +318,8 @@
     const view = {
       element: svg,
       update(next) {
-        model = { ...next, keys: M.sortedKeys(next.keys), channels: (next.channels || []).filter((channel) => COLORS[channel]) };
+        const keys = M.sortedKeys(next.keys);
+        model = { ...next, keys, shape: Array.isArray(next.shape) ? M.sortedKeys(next.shape) : keys, channels: (next.channels || []).filter((channel) => COLORS[channel]) };
         // While the MV plays only the playhead moves: the graph is not rebuilt.
         if (!drag && samePlot(drawn && drawn.model, model) && movePlayhead()) return;
         const focused = document.activeElement && svg.contains(document.activeElement)

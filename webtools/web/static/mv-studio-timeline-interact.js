@@ -161,6 +161,137 @@
     return changes;
   }
 
+  /* Port of the Unity editor's ComputeBlendsFromOverlaps (TrackExtensions), which the
+     editor runs after a clip is moved or trimmed. The client has no copy of it
+     (global-metadata.dat has no such name), so the game plays the stored values. Every
+     clip gets -1; in start order (equal starts: the shorter clip first) a clip that
+     starts before the previous one ends blends with it: the overlap becomes this clip's
+     blendIn and the previous clip's blendOut, 0 for an overlap of at most EPSILON. A clip
+     that ends inside the previous one gets no blend (stock data has none).
+     clips: [{ id, start, duration }] → Map<id, { blendIn, blendOut }>. */
+  function blendTimes(clips) {
+    const ordered = clips.map((clip, index) => ({ clip, index }))
+      .sort((first, second) => first.clip.start - second.clip.start || first.clip.duration - second.clip.duration ||
+        first.index - second.index).map((item) => item.clip);
+    const result = new Map(ordered.map((clip) => [clip.id, { blendIn: -1, blendOut: -1 }]));
+    for (let i = 1; i < ordered.length; i++) {
+      const previous = ordered[i - 1], clip = ordered[i];
+      const end = previous.start + previous.duration;
+      if (!(end > clip.start) || clip.start + clip.duration < end) continue;
+      const overlap = end - clip.start <= EPSILON ? 0 : end - clip.start;
+      result.get(clip.id).blendIn = overlap;
+      result.get(previous.id).blendOut = overlap;
+    }
+    return result;
+  }
+
+  // Gate: the port reproduces every stored blendIn/blendOut of the track. Stock data (773
+  // tracks of 13 timelines): 621 pass with no difference at all, among them every
+  // Live*/Member* track; the 152 others are Activation, CustomControl and LiveMemberCuller
+  // tracks, whose clips all keep 0/0 because the editor never blended them.
+  function blendGate(track) {
+    const events = track && Array.isArray(track.events) ? track.events : [];
+    if (!events.length) return false;
+    for (const event of events) {
+      const values = event && event.values;
+      if (!values || !finite(values.blendIn) || !finite(values.blendOut)) return false;
+    }
+    const times = blendTimes(clipsOf(track));
+    return events.every((event) => {
+      const computed = times.get(event.id);
+      return computed && near(computed.blendIn, event.values.blendIn) && near(computed.blendOut, event.values.blendOut);
+    });
+  }
+
+  /* The track as it was loaded before any edit: each edited clip as its original
+     (originals: project.editor.originals, id → original clip, or null for a clip the editor
+     added, which is left out). A clip removed without an original cannot be put back. */
+  function originalTrack(track, originals) {
+    if (!track || !Array.isArray(track.events) || !originals || typeof originals !== "object") return track;
+    let changed = false;
+    const events = [];
+    for (const event of track.events) {
+      const id = event && event.id;
+      if (!Object.prototype.hasOwnProperty.call(originals, id)) { events.push(event); continue; }
+      changed = true;
+      const original = originals[id];
+      if (original && typeof original === "object") events.push({ ...original, id });
+    }
+    return changed ? { ...track, events } : track;
+  }
+
+  /* Gate of a loaded track: its stored blends follow the port now, or did before the edits
+     the project holds (a project saved with moves made before blends were recomputed keeps
+     stale blends; the next timing edit on the track rewrites them all). Nothing is written
+     on load. */
+  function loadedBlendGate(track, originals) {
+    if (blendGate(track)) return true;
+    const original = originalTrack(track, originals);
+    return original !== track && blendGate(original);
+  }
+
+  /* Writes that keep a gated track's blends equal to the port after the timing
+     (start/duration) of some events changes. overrides as for extrapolationChanges. */
+  function blendChanges(track, overrides) {
+    const times = blendTimes(clipsOf(track, overrides));
+    const changes = [];
+    for (const event of track.events || []) {
+      const computed = times.get(event.id);
+      if (!computed) continue;
+      for (const key of ["blendIn", "blendOut"]) {
+        if (!near(computed[key], Number(event.values[key]))) changes.push({ event, key, value: computed[key] });
+      }
+    }
+    return changes;
+  }
+
+  /* Which timing fields reach the game for a clip (Unity ClipCaps). TimelineClip reads
+     clipIn as 0 without ClipCaps.ClipIn, timeScale as 1 without SpeedMultiplier, both
+     extrapolation modes as None without Extrapolation, and no ease or blend without
+     Blending. The built-in classes have their Unity caps. The game's own clips are
+     measured on 13 stock timelines: none of the 647 non-Animation tracks (29 classes,
+     20,869 clips) stores an extrapolation mode or time, a clip offset or a speed, except
+     a clip offset on 35 CustomControlClips, and the editor blended every Live and Member
+     track but never a CustomControl or LiveMemberCuller one. Camera shots keep their
+     offset and speed: the preview plays the samples read from the shot (clip offset and
+     speed already applied). They offer every mode once the preview plays Loop, Ping-pong
+     and Continue (MVStudioScene.cameraLocalTime), and only None and Hold before that.
+     → null for a clip without a playable class (nothing is restricted). */
+  const ALL = Object.freeze({ extrapolation: true, clipIn: true, timeScale: true, blending: true });
+  const CLIP_CAPS = Object.freeze({
+    AnimationPlayableAsset: ALL,
+    ActivationPlayableAsset: Object.freeze({ extrapolation: false, clipIn: false, timeScale: false, blending: false }),
+    ControlPlayableAsset: Object.freeze({ extrapolation: false, clipIn: true, timeScale: true, blending: false }),
+    AudioPlayableAsset: Object.freeze({ extrapolation: false, clipIn: true, timeScale: true, blending: true }),
+    CustomControlClip: Object.freeze({ extrapolation: false, clipIn: true, timeScale: false, blending: false }),
+    LiveMemberCullerClip: Object.freeze({ extrapolation: false, clipIn: false, timeScale: false, blending: false }),
+  });
+  const GAME_CLIP = Object.freeze({ extrapolation: false, clipIn: false, timeScale: false, blending: true });
+  const EXTRAPOLATION_MODES = Object.freeze([0, 1, 2, 3, 4]), HOLD_MODES = Object.freeze([0, 1]);
+  // The camera modes the preview plays: all five with MVStudioScene.cameraLocalTime (read when
+  // asked, as the scene script loads after this one), else None and Hold (activeCameraEvent).
+  const cameraModes = () => global.MVStudioScene && typeof global.MVStudioScene.cameraLocalTime === "function"
+    ? EXTRAPOLATION_MODES : HOLD_MODES;
+  const TIMING_CAPS = Object.freeze({
+    preExtrapolationMode: "extrapolation", postExtrapolationMode: "extrapolation",
+    preExtrapolationTime: "extrapolation", postExtrapolationTime: "extrapolation",
+    clipIn: "clipIn", timeScale: "timeScale", easeIn: "blending", easeOut: "blending", blendIn: "blending", blendOut: "blending",
+  });
+
+  function clipCaps(track, event) {
+    const native = event && event.values && event.values.playableClass;
+    if (typeof native !== "string" || !native) return null;
+    const caps = Object.prototype.hasOwnProperty.call(CLIP_CAPS, native) ? CLIP_CAPS[native] : GAME_CLIP;
+    const camera = native === "AnimationPlayableAsset" && !!track && track.kind === "camera";
+    if (camera) return { ...caps, clipIn: false, timeScale: false, modes: cameraModes(), camera: true };
+    return { ...caps, modes: caps.extrapolation ? EXTRAPOLATION_MODES : Object.freeze([]), camera: false };
+  }
+
+  // Whether the game uses this timing field of the clip (true for any other key).
+  function timingField(caps, key) {
+    return !caps || !Object.prototype.hasOwnProperty.call(TIMING_CAPS, key) || caps[TIMING_CAPS[key]] === true;
+  }
+
   const coarse = () => !!(global.matchMedia && global.matchMedia("(pointer: coarse)").matches);
 
   /* Drag/trim on one element.
@@ -297,5 +428,6 @@
   global.MVStudioTimelineInteract = Object.freeze({
     FRAME_RATE, FRAME, UNBOUNDED, snapFrame, snapTime, moveRange, resizeRange, nudgeRange,
     extrapolationTimes, extrapolationGate, extrapolationChanges, storedTime, attachDrag,
+    blendTimes, blendGate, originalTrack, loadedBlendGate, blendChanges, CLIP_CAPS, TIMING_CAPS, clipCaps, timingField,
   });
 })(typeof window !== "undefined" ? window : globalThis);

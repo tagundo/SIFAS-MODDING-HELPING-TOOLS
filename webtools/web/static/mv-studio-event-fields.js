@@ -17,21 +17,46 @@
   "use strict";
 
   // The table is JSON (tests/test_mv_studio_editable_values.py reads it):
+  //   trackMute: which track mutes reach the game (trackMuteNote; the export's own rule is
+  //            mv_studio_timeline.track_mute_refusal): the notes, the eye and mouth track
+  //            classes whose mute the game sets itself, and per quality root the category
+  //            names (no spaces, lower case) whose direct child tracks the game's quality
+  //            settings switch;
   //   sets:    named option lists [[value, English label]];
   //   labels:  English label per value key (a descriptor's "label" overrides it);
   //   classes: playable class → value key → { control, ... }.
   // Controls: number (min, max, step, integer), slider (min, max, step), vector (unit),
   //   color, enum (set), enum-observed (scope: track | timeline, set or format),
-  //   enum-members (gaze targets), bool-int, text (maxLength), facial-index
-  //   (facial: eyes | mouth), readonly (set, member). badge "not-previewed": the
+  //   enum-members (gaze targets), member-slot (the project's member slots), bool-int,
+  //   text (maxLength), facial-index (facial: eyes | mouth), readonly (set, member).
+  //   member: true shows a slot as "Member n · name". member-colors: a penlight palette
+  //   (colour, colour source, member per entry). badge "not-previewed": the
   //   value is exported but the 3D preview does not show it.
   const TABLE = /* descriptors:begin */ {
+    "trackMute": {
+      "notes": {
+        "group": "A group track's mute does not reach the game. Mute the tracks inside it.",
+        "quality": "The game's quality settings turn this track on and off, so its mute does not reach the game.",
+        "facial": "The game turns eye and mouth tracks on and off itself, so this mute does not reach the game."
+      },
+      "facialClasses": ["MemberEyeTrack", "MemberLipSyncTrack"],
+      "qualityRoots": {
+        "StageEffect": ["ambient", "animation", "audience", "coloring", "control", "display", "emissive", "flashlight",
+                        "overlayeffect", "post"],
+        "MemberEffect": ["memberambient", "memberrimlight", "memberspotlightarea", "memberspotlightshaft"],
+        "PropEffect": ["propambient", "propcoloring", "proprimlight"],
+        "GlobalEffect": ["baselight"],
+        "MotionMisc": ["splitscreen"]
+      }
+    },
     "sets": {
       "colorSource": [[0, "Custom colour"], [1, "Member colour"], [2, "Original member colour"]],
       "kernelSize": [[0, "Small"], [1, "Medium"], [2, "Large"], [3, "Very large"]],
       "flashStatus": [[0, "Off"], [1, "On"], [2, "All"]],
       "cheekType": [[0, "Blush pattern 1"], [1, "Blush pattern 2"]],
-      "bodyPart": [[0, "Head"], [1, "Head (all)"], [2, "Face"], [3, "Hips"], [4, "Neck"]]
+      "bodyPart": [[0, "Head"], [1, "Head (all)"], [2, "Face"], [3, "Hips"], [4, "Neck"]],
+      "focusTarget": [[0, "The chosen member"], [1, "The nearest member"], [2, "The member nearest the centre"]],
+      "swingMode": [[0, "Still"], [1, "Front-back swing"], [2, "Rising swing"], [3, "Side swing"], [4, "Sway"]]
     },
     "labels": {
       "color": "Colour",
@@ -83,15 +108,16 @@
       },
       "LiveDepthOfFieldClip": {
         "focusDistance": {"control": "number", "min": 0, "max": 10000, "label": "Focus distance (m)"},
-        "aperture": {"control": "number", "min": 0, "max": 10000, "label": "Aperture"},
+        "aperture": {"control": "number", "min": -100, "max": 10000, "label": "Aperture"},
         "focalLength": {"control": "number", "min": 0, "max": 10000, "label": "Focal length (mm)"},
         "useCameraFov": {"control": "bool-int", "label": "Use the camera field of view"},
         "antiAura": {"control": "bool-int", "label": "Anti-aura"},
         "kernelSize": {"control": "enum", "set": "kernelSize", "label": "Blur size"},
         "useMemberDistance": {"control": "bool-int", "label": "Focus on the member"},
         "bodyPart": {"control": "enum-observed", "scope": "timeline", "set": "bodyPart", "label": "Focus body part"},
-        "memberPosition": {"control": "readonly", "member": true},
-        "focusTransitionTime": {"control": "readonly", "label": "Focus transition time (s)"}
+        "cameraAutoDistanceMode": {"control": "enum", "set": "focusTarget", "label": "Focus target"},
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Focus member"},
+        "focusTransitionTime": {"control": "number", "min": 0, "max": 60, "label": "Focus transition time (s)"}
       },
       "LiveBaseLightClip": {
         "ambientColor": {"control": "color"},
@@ -100,41 +126,41 @@
         "rimlightIntensity": {"control": "number", "min": 0, "max": 100},
         "rimlightSharpness": {"control": "number", "min": 0, "max": 1000},
         "rimlightDirection": {"control": "vector", "unit": "deg"},
-        "ambientColorType": {"control": "readonly", "set": "colorSource"},
-        "rimlightColorType": {"control": "readonly", "set": "colorSource"},
-        "ambientMemberPosition": {"control": "readonly", "member": true},
-        "rimlightMemberPosition": {"control": "readonly", "member": true}
+        "ambientColorType": {"control": "enum", "set": "colorSource"},
+        "rimlightColorType": {"control": "enum", "set": "colorSource"},
+        "ambientMemberPosition": {"control": "member-slot", "member": true},
+        "rimlightMemberPosition": {"control": "member-slot", "member": true}
       },
       "LiveMemberAmbientClip": {
         "color": {"control": "color"},
         "tintColor": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveStageAmbientClip": {
         "color": {"control": "color"},
         "tintColor": {"control": "color"},
         "blendColor": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveStageSingleAmbientClip": {
         "color": {"control": "color"},
         "tintColor": {"control": "color"},
         "blendColor": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveStageEmissiveClip": {
         "color": {"control": "color"},
         "intensity": {"control": "number", "min": 0, "max": 100},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveMemberSpotLightAreaClip": {
         "color": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveMemberSpotLightShaftClip": {
         "color": {"control": "color"},
@@ -143,7 +169,7 @@
         "smoothTime": {"control": "number", "min": 0, "max": 100, "label": "Follow smoothing (s)"},
         "drawObjectIndex": {"control": "enum-observed", "scope": "track", "format": "Shaft shape {n}", "label": "Shaft shape"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveRimlightClip": {
         "color": {"control": "color"},
@@ -151,7 +177,7 @@
         "sharpness": {"control": "number", "min": 0, "max": 1000},
         "direction": {"control": "vector", "unit": "deg"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveFlareClip": {
         "color": {"control": "color"},
@@ -161,14 +187,14 @@
         "roundness": {"control": "number", "min": 0, "max": 100, "label": "Roundness"},
         "rounded": {"control": "bool-int", "label": "Rounded"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveFlashLightClip": {
         "tintColor": {"control": "color"},
         "speed": {"control": "number", "min": 0, "max": 1000},
         "status": {"control": "enum", "set": "flashStatus", "label": "Flash lights"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LiveDisplayClip": {
         "scrollSpeed": {"control": "vector", "label": "Scroll speed"},
@@ -183,7 +209,7 @@
       },
       "LiveCameraOffsetClip": {
         "intensity": {"control": "number", "min": 0, "max": 100, "label": "Offset strength"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Height from member"}
       },
       "LivePenlightClip": {
         "tintColor": {"control": "color"},
@@ -193,7 +219,27 @@
         "beatOffset": {"control": "number", "min": -1000, "max": 1000, "label": "Beat offset"},
         "randomDelay": {"control": "vector", "label": "Random delay"},
         "randomUp": {"control": "vector", "label": "Random rise"},
-        "randomSwingIntensity": {"control": "slider", "min": 0, "max": 1, "step": 0.001, "label": "Random swing strength"}
+        "randomSwingIntensity": {"control": "slider", "min": 0, "max": 1, "step": 0.001, "label": "Random swing strength"},
+        "swingMode": {"control": "enum", "set": "swingMode", "label": "Swing motion"},
+        "memberColors": {"control": "member-colors", "label": "Penlight colours"},
+        "position": {"control": "vector", "label": "Crowd position (m)"},
+        "basicYZMoveY": {"control": "number", "min": -10, "max": 10, "label": "Front-back swing: lift (m)"},
+        "basicYZMoveZ": {"control": "number", "min": -10, "max": 10, "label": "Front-back swing: reach (m)"},
+        "basicYZRotateZ": {"control": "number", "min": -10, "max": 10, "label": "Front-back swing: tilt (rad)"},
+        "basicYZSwingBackZ": {"control": "number", "min": -10, "max": 10, "label": "Front-back swing: rest point"},
+        "basicYZSwingPowerZ": {"control": "number", "min": 0, "max": 100, "label": "Front-back swing: snap"},
+        "growthYZMoveY": {"control": "number", "min": -10, "max": 10, "label": "Rising swing: lift (m)"},
+        "growthYZMoveZ": {"control": "number", "min": -10, "max": 10, "label": "Rising swing: reach (m)"},
+        "growthYZRotateZ": {"control": "number", "min": -10, "max": 10, "label": "Rising swing: tilt (rad)"},
+        "growthYZSwingBackZ": {"control": "number", "min": -10, "max": 10, "label": "Rising swing: rest point"},
+        "growthYZSwingPowerZ": {"control": "number", "min": 0, "max": 100, "label": "Rising swing: snap"},
+        "growthYZSwingBottomZ": {"control": "number", "min": 0.01, "max": 0.99, "label": "Rising swing: turn point"},
+        "growthYZSwingPowerY": {"control": "readonly", "label": "Rising swing: lift curve"},
+        "basicXRotateX": {"control": "number", "min": -10, "max": 10, "label": "Side swing: tilt (rad)"},
+        "basicXMoveX": {"control": "number", "min": -10, "max": 10, "label": "Side swing: reach (m)"},
+        "basicXMoveY": {"control": "number", "min": -10, "max": 10, "label": "Side swing: lift (m)"},
+        "simpleXZRotateX": {"control": "number", "min": -10, "max": 10, "label": "Sway: side tilt (rad)"},
+        "simpleXZRotateZ": {"control": "number", "min": -10, "max": 10, "label": "Sway: front tilt (rad)"}
       },
       "CustomControlClip": {
         "weight": {"control": "slider", "min": 0, "max": 1, "step": 0.001, "badge": "not-previewed"},
@@ -206,7 +252,7 @@
         "color": {"control": "color"},
         "tintColor": {"control": "color"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       },
       "LivePropRimlightClip": {
         "color": {"control": "color"},
@@ -214,7 +260,7 @@
         "sharpness": {"control": "number", "min": 0, "max": 1000},
         "direction": {"control": "vector", "unit": "deg"},
         "colorSpecifiedType": {"control": "enum", "set": "colorSource"},
-        "memberPosition": {"control": "readonly", "member": true}
+        "memberPosition": {"control": "member-slot", "member": true, "label": "Colour member"}
       }
     }
   } /* descriptors:end */;
@@ -366,6 +412,8 @@
         labels.has(value) ? ctx.t(labels.get(value)) : spec.format ? ctx.format(spec.format, { n: value }) : String(value)]);
     } else if (spec.control === "enum-members") {
       options = gazeOptions(ctx, info);
+    } else if (spec.control === "member-slot") {
+      options = memberSlots(ctx).map(({ slot, name }) => [slot, memberLabel(ctx, slot, name)]);
     } else if (spec.control === "facial-index") {
       options = facialOptions(ctx, info, spec.facial);
     } else options = (set || []).map(([value, label]) => [value, ctx.t(label)]);
@@ -373,6 +421,21 @@
       options.push([info.value, ctx.format("Value {n}", { n: info.value })]);
     }
     return options;
+  }
+
+  // The English note (for ctx.t) on why a track's mute does not reach the game, or null when it does:
+  // a GroupTrack, an eye or mouth track (the game sets their mute when it sets up each member's head),
+  // or a track directly inside a quality category group (<root>/<difficulty>/<category>/<track>),
+  // whose mute the game's quality settings decide.
+  function trackMuteNote(track) {
+    const rule = TABLE.trackMute;
+    if (!isObject(track) || track.nativeClass === "GroupTrack") return rule.notes.group;
+    if (rule.facialClasses.includes(track.nativeClass)) return rule.notes.facial;
+    const parts = typeof track.label === "string" ? track.label.split("/") : [];
+    if (parts.length === 4 && own(rule.qualityRoots, parts[0])) {
+      if (rule.qualityRoots[parts[0]].includes(parts[2].replace(/ /g, "").toLowerCase())) return rule.notes.quality;
+    }
+    return null;
   }
 
   // ---- DOM ---------------------------------------------------------------------------
@@ -580,6 +643,28 @@
     return row(ctx, info.key, spec, [input]);
   }
 
+  // LivePenlightClip.memberColors: one group per palette entry with its colour, colour source and
+  // member. The list keeps its length; each control writes the whole list with one entry changed.
+  function memberColorsControl(ctx, info, spec) {
+    const list = info.value;
+    if (!Array.isArray(list) || !list.length || list.length > 12 || !list.every((entry) => isObject(entry) &&
+      isColor(entry.color) && Number.isInteger(entry.colorSpecifiedType) && Number.isInteger(entry.memberPosition))) return undefined;
+    const current = () => { const value = stored(info, list); return Array.isArray(value) && value.length === list.length ? value : list; };
+    const entries = list.map((_, index) => {
+      const entry = () => current()[index];
+      const part = (key) => ({ ...info, key, path: `${info.path}.${index}.${key}`, value: entry()[key],
+        event: { values: { get [key]() { return entry()[key]; } } },
+        set: (next) => info.set(current().map((item, at) => at === index ? { ...item, [key]: next } : item)) });
+      const group = ctx.make("fieldset", null, { class: "mv-value-entry", "data-mv-entry": String(index) });
+      group.append(ctx.make("legend", ctx.format("Colour {n}", { n: index + 1 })),
+        colorControl(ctx, part("color"), { control: "color" }),
+        selectControl(ctx, part("colorSpecifiedType"), { control: "enum", set: "colorSource" }),
+        selectControl(ctx, part("memberPosition"), { control: "member-slot", member: true, label: "Colour member" }));
+      return group;
+    });
+    return row(ctx, info.key, spec, entries, { wide: true, group: true });
+  }
+
   // A value that is not writable: the same reading, no input and no data-mv-field.
   function readonlyControl(ctx, info, spec) {
     const value = info.value;
@@ -612,8 +697,9 @@
 
   const builders = {
     number: numberControl, slider: sliderControl, vector: vectorControl, color: colorControl,
-    enum: selectControl, "enum-observed": selectControl, "enum-members": selectControl, "facial-index": selectControl,
-    "bool-int": boolControl, text: textControl,
+    enum: selectControl, "enum-observed": selectControl, "enum-members": selectControl, "member-slot": selectControl,
+    "facial-index": selectControl,
+    "bool-int": boolControl, text: textControl, "member-colors": memberColorsControl,
   };
 
   function valueControl(ctx, info) {
@@ -651,6 +737,6 @@
 
   const plugin = { id: "event-fields", order: 10, valueControl, eventFooter };
   (global.MVStudioPlugins ||= []).push(plugin);
-  global.MVStudioEventFields = Object.freeze({ TABLE, plugin, descriptorFor, identityKey, colorParts, pickColor, scaleColor,
+  global.MVStudioEventFields = Object.freeze({ TABLE, plugin, descriptorFor, identityKey, trackMuteNote, colorParts, pickColor, scaleColor,
     observedValues, enumOptions, isColor, vectorAxes });
 })(typeof window !== "undefined" ? window : globalThis);
