@@ -29,6 +29,13 @@
      loading), the time advances with the frames, as it does without a soundtrack;
    - during playback the time it returns is never below the last one.
 
+   Known limit: a soundtrack whose reported time changes only every `maxStall` (0.5 s) or less
+   often looks stalled between changes, so the picture holds and then catches up at each one
+   (in simulation, updates 0.9-1.1 s apart lag by up to about 0.57 s; updates 250 ms apart are
+   followed within 12 ms). Headless Chromium reports in steps of tens of milliseconds; phone web
+   views were not measured. A stall limit raised with the learned step would let the picture run
+   on that much longer over a real stall, so it is left at 0.5 s.
+
    Pure state: mv-studio.js feeds it one reading per animation frame. Frame captures step
    MVStudioScene.playbackFrame at fixed times and do not use it. */
 (function (global) {
