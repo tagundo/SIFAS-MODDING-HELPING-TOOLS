@@ -198,7 +198,7 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
     (transient_failures).
     """
     models = [path, *companions]
-    key = None
+    key = receipt = None
     cache = _ACTOR_PREVIEWS if performer else _STAGE_PREVIEWS
     if reuse and ((performer and motions and companions) or (not performer and not motions and not companions)):
         # Game stage previews depend on one exact input. Performer previews
@@ -207,25 +207,31 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
                tuple((item.name, game_models._sha(item)) for item in motions), tuple(stage_bindings),
                native_stage_effect) + ((attach,) if attach else ()) + (
             (json.dumps(list(prop_skeleton), sort_keys=True),) if prop_skeleton else ())
+        if store is not None and not performer:
+            try:
+                receipt = store.key("preview", str(key[0]), [list(item) for item in key[1]],
+                                    [list(item) for item in key[2]], list(key[3]), key[4])
+            except (TypeError, ValueError):
+                receipt = None
         cached = model_viewer._conversion_get(cache, key, time.monotonic() + model_viewer.BUILD_SECONDS)
         if cached is not None:
             name, rig = json.loads(cached)
             try:
                 previous, _ = media(name)
                 if game_models._sha(previous)[:32] == previous.stem:
+                    if receipt is not None and store.get(receipt) is None:
+                        # An earlier import in this process converted it but was cancelled or
+                        # failed before its receipts were written. The memory cache holds only
+                        # conversions without warnings; the put is deferred like every other,
+                        # so it lands only when this import completes.
+                        store.put(receipt, {"name": name, "rig": rig, "warnings": []})
                     if reused is not None:
                         reused.append(True)
                     return _MEDIA_URL + name, rig
             except OSError:
                 pass
-    receipt = None
-    if key is not None and store is not None and not performer:
-        try:
-            receipt = store.key("preview", str(key[0]), [list(item) for item in key[1]], [list(item) for item in key[2]],
-                                list(key[3]), key[4])
-        except (TypeError, ValueError):
-            receipt = None
-        saved = store.get(receipt) if receipt is not None else None
+    if receipt is not None:
+        saved = store.get(receipt)
         if saved is not None:
             if warnings is not None:
                 warnings.extend(saved["warnings"])
