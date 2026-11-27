@@ -316,13 +316,9 @@ def read(objects, mono, tracks, deadline):
         laser_track = binding == _LASER_BINDING and track["label"] == _LASER_TRACK
         parent = timeline._pointer(obj, tree.get("m_Parent"))
         setting = "stage_overlay_effect" if overlay else _quality(track["label"], parent=parent, mono=mono)
-        material_scope = None
-        if setting == "stage_overlay_effect":
-            material_scope = "overlay"
-        elif _quality(track["label"]) in {"stage_animation", "stage_control"}:
-            # Nested groups can affect the authored world pass even when the
-            # game's quality switch does not mute their AnimationTrack output.
-            material_scope = "world"
+        # An AnimationTrack animates its bound renderers' materials whatever its timeline group:
+        # the group only decides which quality switch mutes it. Layer-20 overlays keep their own scope.
+        material_scope = "overlay" if setting == "stage_overlay_effect" else "world"
         for event in track["events"]:
             _remaining(deadline)
             values = event["values"]

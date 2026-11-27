@@ -97,5 +97,26 @@ class DroppedCurveCoverageTests(unittest.TestCase):
                                 (coverage.NOT_RENDERED, "Clips the stage-motion reader rejects."): 2})
 
 
+class RealSmokeClipTests(unittest.TestCase):
+    """Set SIFAS_TEST_TIMELINE_11030 to the original Android live_timeline bundle of 11030/3."""
+
+    def test_11030_smoke_clip_plays_its_shader_floats(self):
+        raw = os.environ.get("SIFAS_TEST_TIMELINE_11030")
+        if not raw or not Path(raw).is_file():
+            self.skipTest("Set SIFAS_TEST_TIMELINE_11030 to the original live_timeline bundle")
+        from webtools.core import mv_studio_timeline as timeline
+
+        motion = timeline.parse_timeline(Path(raw).read_bytes(), Path(raw).name, preview_stage_motion=True)["stageMotion"]
+        self.assertIn("/EntryPoint/Live/Stages/MainStage/Effect/fx_stg_so1030_05/root", motion["bindings"])
+        smoke = [clip for clip in motion["clips"].values()
+                 if {"_CurvePower", "_FadeOutPower", "_FadeOutScale", "_TextureRate"} <= {
+                     channel.get("property") for channel in clip["channels"]}]
+        self.assertEqual(len(smoke), 1)
+        # Its ParticleSystemRenderer _Color and _Density curves have no preview material.
+        self.assertEqual({row["rendererClass"] for row in smoke[0]["droppedChannels"]}, {199})
+        reported = [clip for clip in motion["clips"].values() if clip.get("droppedChannels")]
+        self.assertGreaterEqual(len(reported), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
