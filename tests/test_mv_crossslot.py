@@ -159,6 +159,24 @@ class ConversionCase(reg_tests.Case):
                                             template_bytes=self.remote["tl2101i"])
         self.assertEqual((again, self.loads), (output, []))
 
+    def test_only_what_mv_studio_writes_passes_the_editor_bytes_check(self):
+        stock, stock_ios = self.local["tl2101"], self.local["tl2101i"]
+        edited = conversion.convert_parsed(self.edited_android(), stock)  # an edit exported onto the stock
+        self.assertNotEqual(edited, stock)
+        conversion.check_editor_bytes(stock, stock)  # the original itself
+        conversion.check_editor_bytes(edited, stock)  # MV Studio's export onto the source's stock
+        converted = conversion.convert_timeline(edited, "android", "ios", "gl", 2101, root=self.root)
+        conversion.check_editor_bytes(converted, stock_ios)  # and its conversion
+        document = json.loads(edited[8:].rstrip(b" "))
+        tampered = [b"UnityFS\0" + json.dumps({**document, "hidden": [float("nan")]}, sort_keys=True).encode(),
+                    edited + b"\0", b"UnityFS\0garbage", b"not a timeline", edited.replace(b'"edited"', b'"hand"')]
+        for raw in tampered:
+            with self.subTest(raw=raw[:24]), self.assertRaisesRegex(
+                    ValueError, "^" + __import__("re").escape(conversion.NOT_EDITOR) + "$"):
+                conversion.check_editor_bytes(raw, stock)
+        with self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(conversion.NOT_EDITOR) + "$"):
+            conversion.check_editor_bytes(edited, stock_ios)  # checked against the other platform's stock
+
     def test_stage_bound_tracks(self):
         tracks = reg_tests.base_tracks() + [
             {"id": "g", "label": "StageEffect", "nativeClass": "GroupTrack", "events": []},
@@ -199,6 +217,14 @@ class RealSampleConversionTests(unittest.TestCase):
         self.assertEqual(conversion.blob_platform(converted), "ios")
         self.assertEqual(register._parse(converted)["tracks"], register._parse(edited)["tracks"])
         self.assertEqual(conversion.convert_parsed(converted, android), edited)
+        # The editor bytes check: MV Studio's outputs pass byte for byte; one flipped byte inside a clip
+        # (which the parser does not see) fails.
+        conversion.check_editor_bytes(edited, android)
+        conversion.check_editor_bytes(converted, ios)
+        flipped = bytearray(edited)
+        flipped[len(flipped) // 2] ^= 0xFF
+        with self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(conversion.NOT_EDITOR) + "$"):
+            conversion.check_editor_bytes(bytes(flipped), android)
 
 
 # ---------------------------------------------------------------- another MV slot

@@ -4032,6 +4032,9 @@ _MV_CROSS_SLOT_TRANSLATIONS = {
     "The timeline does not belong to this 3D MV:": ("이 3D MV의 타임라인이 아닙니다:", "この3D MVのタイムラインではありません："),
     "The converted timeline would differ from the source, so nothing was converted:": (
         "변환 결과가 원래 타임라인과 달라지므로 변환하지 않았습니다:", "変換結果が元のタイムラインと異なるため、変換しませんでした："),
+    "The timeline holds data MV Studio does not write: it may have been changed outside MV Studio. Open the pack in MV Studio and export it again.": (
+        "타임라인에 MV Studio가 쓰지 않는 데이터가 있습니다. MV Studio 밖에서 바뀌었을 수 있습니다. 팩을 MV Studio에서 열어 다시 내보내세요.",
+        "タイムラインにMV Studioが書き込まないデータがあります。MV Studioの外で変更された可能性があります。パックをMV Studioで開いて書き出し直してください。"),
     "Choose the conversion direction.": ("변환 방향을 선택하세요.", "変換の方向を選んでください。"),
     "Choose a native MV timeline (.unity) or an MV timeline pack (.sifasmv).": (
         "MV 타임라인(.unity)이나 MV 타임라인 팩(.sifasmv)을 선택하세요.", "MVタイムライン（.unity）かMVタイムラインパック（.sifasmv）を選んでください。"),

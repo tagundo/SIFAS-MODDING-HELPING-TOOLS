@@ -37,8 +37,10 @@ TEMPLATE_DOWNLOAD = ("The original timeline of this 3D MV for the output platfor
                      "download.")
 NOT_THIS_ASSET = "The timeline does not belong to this 3D MV:"
 LOSSY = "The converted timeline would differ from the source, so nothing was converted:"
+NOT_EDITOR = ("The timeline holds data MV Studio does not write: it may have been changed outside MV Studio. Open the "
+              "pack in MV Studio and export it again.")
 MESSAGES = (PLATFORM, REGION, ASSET, SAME_PLATFORM, WRONG_PLATFORM, NOT_TIMELINE, NO_ASSET, NO_TEMPLATE,
-            TEMPLATE_DOWNLOAD, NOT_THIS_ASSET, LOSSY)
+            TEMPLATE_DOWNLOAD, NOT_THIS_ASSET, LOSSY, NOT_EDITOR)
 
 _STAGE_ROOT = "/EntryPoint/Live/Stages/"
 
@@ -141,6 +143,23 @@ def convert_parsed(src_bytes, dst_template, *, name="timeline"):
     if converted != source["tracks"]:
         raise ConversionError(LOSSY, _differing(source["tracks"], converted))
     return output
+
+
+def check_editor_bytes(raw, template_bytes):
+    """Raise ValueError(NOT_EDITOR) unless ``raw`` is exactly what MV Studio writes for its own content.
+
+    ``template_bytes`` is the TRUE stock of the timeline's source MV for the same platform. MV
+    Studio's every output (Apply all, another slot, a pack, a conversion) is its parsed content
+    exported onto that stock, so exporting ``raw``'s parsed content onto it again gives ``raw``
+    byte for byte. A timeline changed elsewhere (a value MV Studio cannot write, such as a NaN
+    curve key or an out-of-range index inside a clip it does not model) does not: the check
+    shared packs get before Elichika installs them (its install_pack ``check``)."""
+    try:
+        again = convert_parsed(raw, template_bytes)
+    except Exception as error:  # noqa: BLE001 - any unreadable or unexportable content is refused alike
+        raise ValueError(NOT_EDITOR) from error
+    if again != raw:
+        raise ValueError(NOT_EDITOR)
 
 
 def convert_timeline(src_bytes, src_platform, dst_platform, region, asset_id, *, root, download=False, name="timeline",
