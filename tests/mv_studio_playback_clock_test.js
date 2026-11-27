@@ -7,8 +7,9 @@
    reading per frame, as mv-studio.js tick() does, and moves the soundtrack when the clock
    asks it to realign.
 
-   Bounds checked (DEFAULTS): once locked, every frame advances by its frame interval times
-   a rate within 1 ± maxSlew (3 %), never by zero and never backwards, except on the frames
+   Bounds checked, with the documented constants written out here (not read from DEFAULTS, so a
+   change to the module's constants fails this test): once locked, every frame advances by its
+   frame interval times a rate within 1 ± 3 %, never by zero and never backwards, except on the frames
    that snap forward or hold; the shown time stays within 30 ms of the soundtrack at 60 Hz
    (45 ms at 30 Hz), drift of ±1 % included: the dead zone (8 ms) plus the drift the rate
    correction carries (1 % × slewTime 0.5 s = 5 ms) plus the up to one frame by which the
@@ -22,7 +23,12 @@ const assert = require('node:assert/strict');
 globalThis.window = globalThis;
 require('../webtools/web/static/mv-studio-playback-clock.js');
 const Clock = globalThis.MVStudioPlaybackClock;
-const D = Clock.DEFAULTS;
+// The documented contract: rate within 1 ± 3 %, dead zone 8 ms, snap beyond 50 ms once two
+// fresh readings agree, realign a soundtrack more than 0.5 s behind, give up on one not advancing
+// for 1 s, stall limit at most 0.5 s, frame gaps over 250 ms resynchronise.
+const SLEW = 0.03, DEAD_ZONE = 0.008, SNAP = 0.05, CONFIRM = 2, REALIGN = 0.5, GIVE_UP = 1, MAX_STALL = 0.5, MAX_GAP = 0.25;
+assert.deepEqual(Clock.DEFAULTS, { deadZone: DEAD_ZONE, slewTime: 0.5, maxSlew: SLEW, filterTime: 0.2, snap: SNAP, realign: REALIGN,
+  confirm: CONFIRM, stallSteps: 3, minStall: 0.1, maxStall: MAX_STALL, giveUp: GIVE_UP, maxGap: MAX_GAP }, 'the documented constants');
 
 function rng(seed) {
   let a = seed >>> 0;
@@ -114,7 +120,7 @@ const monotonic = (rows, label) => {
 };
 const evenSteps = (rows, label, slack = 1e-9) => {
   for (const step of steps(rows)) {
-    assert(step.ratio >= 1 - D.maxSlew - slack && step.ratio <= 1 + D.maxSlew + slack,
+    assert(step.ratio >= 1 - SLEW - slack && step.ratio <= 1 + SLEW + slack,
       `${label}: frame ${step.k} advances ${step.advance * 1000} ms over ${step.interval * 1000} ms`);
   }
 };
@@ -159,7 +165,8 @@ const report = {};
     evenSteps(settled, `readings every ${range} s`);
     assert(maxAbs(offsets(settled)) <= 0.030, `readings every ${range} s: within 30 ms`);
     assert.equal(state.holds, 0, `readings every ${range} s are not taken for stalls once their step is learned`);
-    assert(state.stallLimit >= Math.min(D.maxStall, D.stallSteps * range[0]) - 1e-9, 'the stall limit follows the reading step');
+    assert(state.stallLimit >= Math.min(MAX_STALL, 3 * range[0]) - 1e-9 && state.stallLimit <= MAX_STALL,
+      `the stall limit follows the reading step, up to ${MAX_STALL} s (${state.stallLimit})`);
   }
 
   for (const drift of [0.01, -0.01]) {
@@ -232,7 +239,7 @@ const report = {};
   assert(heldFor >= 0.12 && heldFor <= 0.22, `holds until the soundtrack catches up (${heldFor} s)`);
   const jumpAt = back.rows.find((row) => row.k === 120).t;
   const confirmed = back.rows.find((row) => row.holding);
-  assert(confirmed.t - jumpAt <= (D.confirm + 1) * 50 + 17, 'the hold starts within three readings (a late reading needs one more)');
+  assert(confirmed.t - jumpAt <= (CONFIRM + 1) * 50 + 17, 'the hold starts within three readings (a late reading needs one more)');
   const resumed = back.rows.filter((row) => row.t >= jumpAt + 500);
   evenSteps(resumed, 'after the backward step');
   assert(maxAbs(offsets(resumed)) <= 0.030, 'after the backward step: within 30 ms');
@@ -243,7 +250,7 @@ const report = {};
 {
   const jump = run({ seconds: 4, events: { 120: (audio, clock, t) => audio.jump(0.2, t) } });
   monotonic(jump.rows, 'forward jump');
-  const big = steps(jump.rows).filter((step) => step.ratio > 1 + D.maxSlew + 1e-9);
+  const big = steps(jump.rows).filter((step) => step.ratio > 1 + SLEW + 1e-9);
   assert.equal(big.length, 1, 'one forward snap');
   const jumpAt = jump.rows.find((row) => row.k === 120).t;
   assert(jump.rows.find((row) => row.k === big[0].k).t - jumpAt <= 2 * 50 + 17, 'snapped within two readings');
@@ -300,7 +307,8 @@ const report = {};
   const stall = run({ seconds: 5, events: { 120: (audio, clock, t) => audio.stall(t), 150: (audio, clock, t) => audio.resume(t) } });
   monotonic(stall.rows, 'stall');
   const stallAt = stall.rows.find((row) => row.k === 120).t, frozen = stall.rows.find((row) => row.k === 149);
-  assert(frozen.time - frozen.truth <= stall.state.stallLimit + 1 / 60 + D.deadZone,
+  assert(stall.state.stallLimit <= 3 * 0.05 + 1e-9, `three reading steps of at most 50 ms (${stall.state.stallLimit})`);
+  assert(frozen.time - frozen.truth <= stall.state.stallLimit + 1 / 60 + DEAD_ZONE,
     `leads the stalled soundtrack by at most the stall limit and a frame (${frozen.time - frozen.truth})`);
   assert(stall.rows.some((row) => row.t > stallAt && row.mode === 'wait'), 'waits during the stall');
   assert(maxAbs(offsets(stall.rows.filter((row) => row.t >= stallAt + 900))) <= 0.030, 'after the stall: within 30 ms');
@@ -319,6 +327,10 @@ const report = {};
   monotonic(long.rows, 'long stall');
   const free = long.rows.filter((row) => row.k > 120 && row.k < 300 && row.mode === 'free');
   assert(free.length > 60, 'frames only after giveUp');
+  // Counted from the soundtrack's last new reading, not from when the stall was noticed.
+  const lastNew = long.rows.filter((row, i) => i > 0 && row.k <= 300 && row.reading !== long.rows[i - 1].reading).at(-1);
+  const gaveUp = free[0].t - lastNew.t;
+  assert(gaveUp > GIVE_UP * 1000 && gaveUp <= GIVE_UP * 1000 + 1000 / 60 + 1e-6, `gives up 1 s after the last new reading (${gaveUp} ms)`);
   for (const step of steps(free)) assert(Math.abs(step.advance - step.interval) < 1e-9, 'free-running advances by the frame interval');
   assert.equal(long.state.realigns, 1, 'one realignment');
   assert(!long.rows.some((row) => row.holding), 'the far-behind soundtrack is moved, not waited for');
@@ -380,7 +392,7 @@ const report = {};
   const broken = run({ seconds: 3, events: { 1: (audio, clock, t, host) => { host.reading = () => 0; } } });
   monotonic(broken.rows, 'broken');
   const freeFrom = broken.rows.find((row) => row.mode === 'free');
-  assert(Math.abs(freeFrom.t - 1000 - D.giveUp * 1000) <= 17, 'gives up after giveUp');
+  assert(Math.abs(freeFrom.t - 1000 - GIVE_UP * 1000) <= 17, 'gives up after 1 s');
   for (const step of steps(broken.rows.filter((row) => row.mode === 'free'))) assert(Math.abs(step.advance - step.interval) < 1e-9);
 
   // The browser pauses the soundtrack (an interruption) and resumes it where it stopped.
@@ -402,12 +414,24 @@ const report = {};
 
 // ---- No soundtrack: exactly the frame clock, as before ------------------------------------------
 {
-  const { rows } = run({ seconds: 2, soundtrack: false, frameJitter: 4, start: 3 });
+  // A seek while playing (frame 60) goes on from the sought time by the frame interval, as the
+  // frame clock did.
+  const { rows } = run({ seconds: 2, soundtrack: false, frameJitter: 4, start: 3, events: { 60: (audio, clock) => clock.seek(20, true) } });
   assert(rows.every((row) => row.mode === 'free'));
   let previous = { t: 1000, time: 3 };
   for (const row of rows) {
-    assert(Math.abs(row.time - (previous.time + (row.t - previous.t) / 1000)) < 1e-12, 'time + frame interval');
+    const from = row.k === 60 ? 20 : previous.time;
+    assert(Math.abs(row.time - (from + (row.t - previous.t) / 1000)) < 1e-12, `time + frame interval (frame ${row.k})`);
     previous = row;
+  }
+  // A start without a frame timestamp: the time towards giveUp counts from the first frame.
+  {
+    const clock = Clock.create();
+    clock.start(5, NaN);
+    const out = [];
+    for (let k = 0; k <= 70; k++) out.push(clock.next(2000 + k * 1000 / 60, 5, true));
+    assert.equal(out[0].time, 5, 'the first frame shows the start time');
+    assert.equal(out.findIndex((step) => step.mode === 'free'), 61, 'gives up 1 s after the first frame');
   }
   // A frame timestamp before the start timestamp (a rAF time older than the click) does not go back.
   const clock = Clock.create();
@@ -432,7 +456,112 @@ const report = {};
   assert(slewing.rows.find((row) => row.k === 149).rate > 1.01, 'slewing when the gap starts');
   assert.equal(slewing.state.holds, 0, 'no hold after the gap');
   const landed = slewing.rows.find((row) => row.k === 150);
-  assert(Math.abs(landed.time - landed.truth) <= D.snap, `the slew carries on after the gap, below snap (${landed.time - landed.truth})`);
+  assert(Math.abs(landed.time - landed.truth) <= SNAP, `the slew carries on after the gap, below snap (${landed.time - landed.truth})`);
+}
+
+// ---- Exact readings: the rules at lock, confirmation counts and hold release --------------------
+// The soundtrack is read on every 60 Hz frame with no coarse steps, so the clock's target is the
+// soundtrack's position itself and each rule shows on a known frame. The soundtrack starts at
+// `audioStart` (the clock at `start`) one frame after the first, by default so that it reaches
+// `start` on the frame the clock locks; `reading(k, truth)` may change a frame's reading; a
+// realignment moves the soundtrack to the picture, playing again a frame later.
+function exact({ start = 10, audioStart = start - 1 / 60, frames = 150, reading = null } = {}) {
+  const clock = Clock.create(), interval = 1000 / 60, writes = [];
+  let base = audioStart, anchor = 1000 + interval;
+  clock.start(start, 1000);
+  const rows = [];
+  for (let k = 1; k <= frames; k++) {
+    const t = 1000 + k * interval;
+    const truth = base + Math.max(0, t - anchor) / 1000;
+    const out = clock.next(t, reading ? reading(k, truth) : truth, true);
+    rows.push({ k, t, truth, time: out.time, mode: out.mode, holding: out.holding, rate: out.rate, realign: out.realign });
+    if (out.realign) { writes.push(out.time); base = out.time; anchor = t + interval; }
+  }
+  return { rows, writes, state: clock.state(), interval: interval / 1000 };
+}
+{
+  const lockOf = (rows) => rows.find((row) => row.mode === 'sync');
+  // The soundtrack lands a little behind the picture (a seek to a codec frame before the sought
+  // time): the picture keeps its time and slews, it neither steps back nor holds.
+  for (const behind of [0.012, 0.03, 0.045]) {
+    const { rows, state, writes } = exact({ audioStart: 10 - 1 / 60 - behind });
+    const lock = lockOf(rows);
+    assert(Math.abs(lock.truth - 10 + behind) < 1e-9, 'locks with the soundtrack behind the picture');
+    assert.equal(lock.time, 10, `${behind * 1000} ms behind: the picture keeps its time at the lock`);
+    monotonic(rows, `${behind * 1000} ms behind at the lock`);
+    evenSteps(rows.slice(rows.indexOf(lock)), `${behind * 1000} ms behind at the lock`);
+    assert.equal(state.holds + state.snaps + state.realigns + writes.length, 0, `${behind * 1000} ms behind: no hold, snap or realignment`);
+    const slowest = Math.min(...rows.map((row) => row.rate));
+    assert(slowest < 1, `${behind * 1000} ms behind: slowed down to catch up`);
+    // (error - dead zone) / slewTime 0.5 s, at most 3 %.
+    if (behind >= 0.03) assert(Math.abs(slowest - (1 - SLEW)) < 1e-12, `${behind * 1000} ms behind: at most 3 % slower (${slowest})`);
+    else assert(Math.abs(slowest - (1 - (behind - DEAD_ZONE) / 0.5)) < 1e-9, `${behind * 1000} ms behind: slewed over 0.5 s (${slowest})`);
+    assert(maxAbs(offsets(rows.slice(-30))) <= DEAD_ZONE + 0.002, `${behind * 1000} ms behind: worked off`);
+  }
+  // Ahead of the picture at the lock: moves forward to the soundtrack at once.
+  {
+    const { rows, state } = exact({ audioStart: 10.2 });
+    const lock = lockOf(rows);
+    assert.equal(lock.time, lock.truth, 'ahead at the lock: shows the soundtrack time');
+    assert.equal(state.snaps, 1);
+  }
+  // 0.1-0.5 s behind at the lock: hold the picture until the soundtrack reaches it (no realign);
+  // the frame that lets go advances by no more than its own interval.
+  for (const behind of [0.1, 0.3, 0.45]) {
+    const { rows, state, writes, interval } = exact({ audioStart: 10 - 1 / 60 - behind });
+    monotonic(rows, `${behind} s behind at the lock`);
+    assert.equal(state.holds, 1, `${behind} s behind: holds`);
+    assert.equal(state.realigns + writes.length, 0, `${behind} s behind: the soundtrack is not moved`);
+    const release = rows.findIndex((row, i) => i > 0 && rows[i - 1].holding && !row.holding);
+    assert(release > 0, `${behind} s behind: the hold ends`);
+    assert(rows.slice(0, release).every((row) => row.time === 10), `${behind} s behind: held at the start time`);
+    const advance = rows[release].time - rows[release - 1].time;
+    assert(advance >= 0 && advance <= interval + 1e-9, `${behind} s behind: the release frame advances ${advance * 1000} ms`);
+    assert.equal(rows[release].time, rows[release].truth, `${behind} s behind: continues from the soundtrack's time`);
+    assert(Math.abs((rows[release].t - rows[0].t) / 1000 - behind) <= 2 * interval + 1e-9, `${behind} s behind: held for about ${behind} s`);
+    evenSteps(rows.slice(release), `${behind} s behind: after the hold`);
+  }
+  // More than 0.5 s behind at the lock: the soundtrack is moved to the picture, which never holds.
+  for (const behind of [0.55, 0.8]) {
+    const { rows, state, writes } = exact({ audioStart: 10 - 1 / 60 - behind });
+    monotonic(rows, `${behind} s behind at the lock`);
+    assert.equal(state.holds, 0, `${behind} s behind: no hold`);
+    assert.deepEqual(writes, [10], `${behind} s behind: the soundtrack is moved once, to the picture's time`);
+    assert.equal(rows.filter((row) => row.realign).length, 1);
+    assert(rows.slice(-60).every((row) => row.mode === 'sync' && Math.abs(row.time - row.truth) < 1e-9), `${behind} s behind: in sync afterwards`);
+  }
+
+  // Confirmation counts: a forward error beyond snap acts on the second reading that shows it, a
+  // backward one (late readings) on the third.
+  {
+    const { rows, state } = exact({ reading: (k, truth) => truth + (k >= 60 ? 0.2 : 0) });
+    const snapped = steps(rows).filter((step) => step.ratio > 1 + SLEW + 1e-9);
+    assert.deepEqual(snapped.map((step) => step.k), [61], 'a forward jump snaps on the second reading that shows it');
+    assert.equal(state.snaps, 1);
+    const back = exact({ reading: (k, truth) => truth - (k >= 60 ? 0.2 : 0) });
+    assert.equal(back.rows.find((row) => row.holding).k, 62, 'a backward jump holds on the third reading that shows it');
+    // A single reading beyond snap is no confirmation, nor are two that disagree in sign.
+    const single = exact({ reading: (k, truth) => truth + (k === 60 ? 0.2 : 0) });
+    assert.equal(single.state.snaps, 0, 'one early reading: no snap');
+    evenSteps(single.rows.slice(30), 'one early reading');
+  }
+  // Outliers of alternating sign: after a lock 45 ms behind (the picture leads), a reading low by
+  // 10 ms is beyond snap below the picture, and one 0.1 s high right after it beyond snap above:
+  // neither direction is confirmed.
+  {
+    const { rows, state } = exact({ audioStart: 10 - 1 / 60 - 0.045, reading: (k, truth) => truth + (k === 4 ? -0.01 : k === 5 ? 0.1 : 0) });
+    const lock = lockOf(rows);
+    assert.equal(lock.k, 2);
+    assert.equal(state.snaps + state.holds, 0, 'alternating outliers: no snap and no hold');
+    monotonic(rows, 'alternating outliers');
+    evenSteps(rows.slice(1), 'alternating outliers');
+  }
+  // A frame gap just over 250 ms resynchronises at once, a soundtrack skip during it included.
+  {
+    const gap = run({ seconds: 4, frames: (k) => k === 120 ? 300 : 1000 / 60, events: { 120: (audio, clock, t) => audio.jump(0.3, t - 150) } });
+    const skip = gap.rows.find((row) => row.k === 120);
+    assert(Math.abs(skip.time - skip.truth) <= 0.030, `a 300 ms gap: the skip is caught up on the frame after it (${skip.time - skip.truth})`);
+  }
 }
 
 // ---- Heavy load: irregular frames (16-230 ms) and stale readings --------------------------------
