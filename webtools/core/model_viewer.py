@@ -677,6 +677,16 @@ def _as_blend_material(obj, tree):
         return False
 
 
+def _as_alpha_blend(obj, tree):
+    """An AS/* material whose pass blends with OneMinusSrcAlpha is never drawn opaque."""
+    from .mv_studio_shader_identity import alpha_blended
+
+    try:
+        return obj is not None and alpha_blended(obj, tree)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+
+
 def _as_tint_default(scene, obj, tree):
     """ShaderLab default _TintColor of a verified AS/* shader whose tint is _TintColor; None otherwise."""
     if obj is None:
@@ -1152,7 +1162,8 @@ class _Materials:
         mode, keywords = floats.get("_Mode", 0), str(tree.get("m_ShaderKeywords", ""))
         if mode == 1 or "_ALPHATEST_ON" in keywords:
             material.update(alphaMode="MASK", alphaCutoff=min(1., max(0., float(floats.get("_Cutoff", .5)))))
-        elif mode in (2, 3) or "_ALPHABLEND_ON" in keywords or "_ALPHAPREMULTIPLY_ON" in keywords:
+        elif (mode in (2, 3) or "_ALPHABLEND_ON" in keywords or "_ALPHAPREMULTIPLY_ON" in keywords
+              or _as_alpha_blend(obj, tree)):
             material["alphaMode"] = "BLEND"
         envs = _properties(tree, "m_TexEnvs")
         main = envs.get("_MainTex") or envs.get("_BaseMap")
@@ -1676,7 +1687,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         if not overlay and renderer_type == "MeshRenderer":
                             stage_soft = mv_studio_soft_billboards.read_material(scene, candidate)
                         if stage_soft is None:
-                            stage_transparent = mv_studio_stage_overlay.read_material(scene, candidate, world=not overlay)
+                            stage_transparent = mv_studio_stage_overlay.read_material(
+                                scene, candidate, world=not overlay, full=True)
                     if (stage_transparent is None and candidate is not None and not overlay
                             and renderer_type == "SkinnedMeshRenderer" and len(material_refs) == 1):
                         identity = _key(candidate)
@@ -2026,7 +2038,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     overlay_material = {**transparent_skin_material, "rendererClass": 137}
                 else:
                     try:
-                        overlay_material = (mv_studio_stage_overlay.material(scene, materials, material_obj)
+                        overlay_material = (mv_studio_stage_overlay.material(scene, materials, material_obj, full=True)
                                             if overlay else mv_studio_stage_overlay.export_material(
                                                 materials, stage_transparent, renderer_tree=tree,
                                                 mesh=(raw or {}).get("mesh"), builtin_mesh=bool(builtin_mesh)))
@@ -2151,6 +2163,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     if coloring_uv is None:
                         coloring_uv = glb.attribute(stage_inputs["lightUV"], "VEC2")
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR_INDEX": coloring_uv}
+                    if descriptor.get("vertexColor") and "color" in stage_inputs:
+                        if stage_color is None:
+                            stage_color = glb.attribute(stage_inputs["color"], "VEC4")
+                        primitives[-1]["attributes"]["_STAGE_COLOR"] = stage_color
                     primitives[-1]["extras"]["mvStageColoring"] = descriptor
             prop = (mv_studio_stage_props.light(prop_light, scene.name(material_obj))
                     if prop_light is not None and material_obj is not None else None)

@@ -2212,6 +2212,8 @@
         record.stageMaterial?.update(currentTime, project, lighting, frameClock);
         record.stagePropLight?.update(currentTime, frameClock, !!lighting?.baseTrack);
       }
+      // The _AUTO_PLAY_ON coloring programs read _Time.y: the game run's clock when one is set.
+      for (const record of records) record.stageColoring?.useClock?.(particleClock);
       for (const record of records) record.stageColoring?.update(currentTime, project);
       // The wave screens read _Time.y: the game run's clock when one is set.
       for (const record of records) record.stageDisplay?.update(currentTime, project, particleClock);

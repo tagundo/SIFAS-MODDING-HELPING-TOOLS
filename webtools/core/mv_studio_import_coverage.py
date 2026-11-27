@@ -166,6 +166,7 @@ def _prop_tracks(project, tracks, gap):
 
 _NO_PERFORMER = "No performer is loaded at its member slot."
 _REJECTED = "Clips the stage-motion reader rejects."
+_DROPPED_CURVES = "Stage-node animation without the material curves no preview material holds."
 # MVStudioStageMotion drives a stage binding only through exactly one track of each class.
 _SHARED = {"AnimationTrack": "More than one AnimationTrack on this stage binding; none is animated.",
            "ActivationTrack": "More than one accepted ActivationTrack on this stage binding; none is switched."}
@@ -256,7 +257,13 @@ def _classify(track, project, context):
             if context["animated"].get(binding, 0) > 1:
                 return [(NOT_RENDERED, len(events), _SHARED[native])]
             mixed = sum(event.get("id") in context["mix"] for event in events)
-            return _split(len(events), mixed, "Stage-node animation.", _REJECTED)
+            # The reader drops a material curve it cannot play and keeps the clip's other channels.
+            partial = sum(event.get("id") in context["mix"] and bool((context["clips"].get(
+                (event.get("values") or {}).get("animation")) or {}).get("droppedChannels")) for event in events)
+            rows = _split(len(events) - partial, mixed - partial, "Stage-node animation.", _REJECTED)
+            if not partial:
+                return rows
+            return [*(row for row in rows if row[1]), (PARTIAL, partial, _DROPPED_CURVES)]
         else:
             status, note = NOT_RENDERED, "No preview module animates this binding."
     elif native == "ActivationTrack":
@@ -316,6 +323,8 @@ def report(project, prop_gap=None, shadow_gap=None, display_gaps=None):
     context = {
         "motion": set(motion.get("bindings") or ()),
         "mix": motion.get("mix") if isinstance(motion.get("mix"), dict) else {},
+        "clips": {key: clip for key, clip in (motion.get("clips") or {}).items() if isinstance(clip, dict)}
+                 if isinstance(motion.get("clips"), dict) else {},
         "activations": activations,
         "animated": animated,
         "switched": switched,

@@ -29,6 +29,25 @@ KNOWN = {
     ("cab-fc0511ca63f2d94bbfe211260d08ddd1", -6509019661097744245): "AS/Stage",
     ("cab-4004e36071ab5261ebac9281e0eccd75", 3926475870365283136): "AS/Penlight",
     ("cab-f8a6d724e5bbefa191ed2e1f27102738", -3111404110691668338): "AS/Blend/Opaque",
+    # The soft billboard, smoke and matcap effects (assoftparticlebillboard, assmoke, asmatcaptransparent bundles).
+    ("cab-b214ce933be761e55a829d7470161d63", -1880739195722111294): "AS/SoftParticleBillboard",
+    ("cab-c559ebedb55c9abf2ff34a672d5d7a6d", -5163972902431082470): "AS/Smoke",
+    ("cab-2700399fc9d3cc42e6ceeda597765088", 4078992641913009367): "AS/MatCap/Transparent",
+}
+
+# Each shared shader's keyword space: the names of its passes' m_NameIndices, which are the
+# only keywords any of its compiled programs is keyed by. Unity selects a pass's program by
+# the material's keywords, so a saved keyword outside this space (a stale one left by another
+# shader or an old Toggle) selects nothing: the program for the keywords inside it is the one
+# drawn. Every combination of these keywords has its own GLES3 program in these shaders.
+KEYWORD_SPACES = {
+    "AS/General/Transparent": frozenset({"PROCEDURAL_INSTANCING_ON", "SOFTPARTICLES_ON", "_SATURATE_ON",
+                                         "_VERTEX_COLOR_ON"}),
+    "AS/Coloring/Transparent": frozenset({"_AUTO_PLAY_ON", "_SATURATE_ON", "_VERTEX_COLOR_ON"}),
+    "AS/FlashLight": frozenset({"_AUTO_PLAY_ON", "_FLASH_ALL_ON", "_SATURATE_ON"}),
+    "AS/SoftParticleBillboard": frozenset(),
+    "AS/Smoke": frozenset({"_FADE_ON"}),
+    "AS/MatCap/Transparent": frozenset(),
 }
 
 # A loaded Shader's type tree holds its compiled programs; read its name once per object.
@@ -65,3 +84,79 @@ def name(material, tree):
 
 def matches(material, tree, expected):
     return name(material, tree) == expected
+
+
+# The destination blend factor of each shared AS shader's pass: the material float it is bound
+# to, or its fixed UnityEngine.Rendering.BlendMode value.
+_BLEND_DESTINATIONS = {
+    "AS/General/Transparent": "_BlendDst", "AS/Coloring/Transparent": "_BlendDst", "AS/FlashLight": "_BlendDst",
+    "AS/SoftParticleBillboard": 10, "AS/Smoke": 10, "AS/MatCap/Transparent": 10,
+}
+_ONE_MINUS_SRC_ALPHA = 10
+
+
+def _loaded_destination(shader):
+    form = shader.read_typetree().get("m_ParsedForm") or {}
+    factors = set()
+    for subshader in form.get("m_SubShaders") or ():
+        for shader_pass in (subshader or {}).get("m_Passes") or ():
+            factor = (((shader_pass or {}).get("m_State") or {}).get("rtBlend0") or {}).get("destBlend") or {}
+            name = factor.get("name")
+            factors.add(factor.get("val") if name in (None, "<noninit>") else name)
+    return factors.pop() if len(factors) == 1 else None
+
+
+def alpha_blended(material, tree):
+    """Whether an AS/* material's pass blends with OneMinusSrcAlpha (Unity draws it transparent).
+
+    The factor comes from the loaded shader's pass state, else from the shared shader of that name;
+    a property-bound factor reads the material's saved float (the shader default is One)."""
+    pointer = (tree or {}).get("m_Shader") or {}
+    shader = viewer._ref(material, pointer) if isinstance(pointer, dict) and pointer.get("m_PathID") else None
+    shader_name = name(material, tree)
+    if not isinstance(shader_name, str) or not shader_name.startswith("AS/"):
+        return False
+    destination = (_loaded_destination(shader) if shader is not None and shader.type.name == "Shader"
+                   else _BLEND_DESTINATIONS.get(shader_name))
+    if isinstance(destination, str):
+        destination = viewer._properties(tree, "m_Floats").get(destination, 1)
+    return destination == _ONE_MINUS_SRC_ALPHA
+
+
+def _loaded_space(shader):
+    form = shader.read_typetree().get("m_ParsedForm") or {}
+    subshaders = form.get("m_SubShaders") if isinstance(form, dict) else None
+    if not isinstance(subshaders, list):
+        return None
+    space = set()
+    for subshader in subshaders:
+        for shader_pass in (subshader or {}).get("m_Passes") or ():
+            for row in (shader_pass or {}).get("m_NameIndices") or ():
+                keyword = row[0] if isinstance(row, (list, tuple)) and row else None
+                if not isinstance(keyword, str):
+                    return None
+                space.add(keyword)
+    return frozenset(space)
+
+
+def keyword_space(material, tree):
+    """The keywords that select a program of the material's shader, or None when unknown.
+
+    A loaded shader object (an embedded copy) gives its own passes' keywords; otherwise the
+    verified space of the shared shader of that name is used."""
+    pointer = (tree or {}).get("m_Shader") or {}
+    shader = viewer._ref(material, pointer) if isinstance(pointer, dict) and pointer.get("m_PathID") else None
+    if shader is not None and shader.type.name == "Shader":
+        space = _loaded_space(shader)
+        if space is not None:
+            return space
+    return KEYWORD_SPACES.get(name(material, tree))
+
+
+def keywords(material, tree):
+    """The material's saved keywords that take effect in its shader (see KEYWORD_SPACES).
+
+    Unknown shaders keep every saved keyword, so a reader still sees (and refuses) them."""
+    saved = frozenset(str((tree or {}).get("m_ShaderKeywords") or "").split())
+    space = keyword_space(material, tree)
+    return saved if space is None else saved & space

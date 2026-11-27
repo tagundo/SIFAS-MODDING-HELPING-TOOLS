@@ -66,6 +66,15 @@
     root.traverse(node => {
       const fields = node.geometry?.userData?.mvStageFlash;
       if (!node.isMesh || !fields) return;
+      if (fields.kind === "transparent") {
+        // An AS/General/Transparent flash light keeps its own pass; the mixer drives its tint and renderer.
+        if (!Array.isArray(node.material) && typeof fields.binding === "string" && typeof fields.enabled === "boolean" &&
+            fields.transparent && (fields.transparent.texture === null || Number.isSafeInteger(fields.transparent.texture)) &&
+            Number.isInteger(fields.queue)) {
+          candidates.push({ node, fields, visible: node.visible, original: node.material, order: node.renderOrder });
+        }
+        return;
+      }
       const visible = node.visible;
       node.visible = false;
       if (!Array.isArray(node.material) && node.geometry.getAttribute("_stage_flash_uv") &&
@@ -88,6 +97,29 @@
     }
     for (const candidate of candidates) {
       const { node, fields } = candidate;
+      if (fields.kind === "transparent") {
+        let image;
+        try {
+          image = fields.transparent.texture === null ? null : await texture(fields.transparent.texture);
+        } catch {
+          continue;
+        }
+        let white = null;
+        if (!image) {
+          image = white = new T.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+          white.needsUpdate = true;
+        }
+        const material = global.MVStudioStageOverlay?.transparentMaterial?.(T, fields.transparent, image);
+        if (!material) {
+          white?.dispose();
+          continue;
+        }
+        node.material = material;
+        node.renderOrder = fields.queue;
+        node.visible = fields.enabled;
+        ready.push({ ...candidate, material, white });
+        continue;
+      }
       let image, atlas;
       try {
         [image, atlas] = await Promise.all([texture(fields.texture), texture(fields.atlas)]);
@@ -125,6 +157,14 @@
           const track = tracks.get(fields.binding);
           const state = track && !track.muted && project.quality?.values?.stage_flash_light !== false
             ? mix(track, project, time) : null;
+          if (fields.kind === "transparent") {
+            // LiveFlashLightMixer.PostProcess: ApplyTintColor sets _TintColor and ApplyFlashStatus
+            // enables the renderer for status 1 and 2. _SelfTime, _Speed and _FLASH_ALL_ON have no
+            // AS/General/Transparent input. Without a mixer the renderer and material keep their own state.
+            node.visible = state ? state.status !== 0 : fields.enabled;
+            material.uniforms.uTint.value.fromArray(state ? state.tint : fields.transparent.tint);
+            continue;
+          }
           node.visible = Boolean(state && state.status !== 0);
           if (!node.visible) continue;
           const u = material.uniforms;
@@ -138,11 +178,12 @@
       },
       invalidate() { registered = undefined; },
       dispose() {
-        for (const { node, material, original, visible, order } of ready) {
+        for (const { node, material, original, visible, order, white } of ready) {
           node.material = original;
           node.visible = visible;
           node.renderOrder = order;
           material.dispose();
+          white?.dispose();
         }
         for (const copy of textures.values()) copy.then(texture => texture.dispose(), () => {});
       },

@@ -174,4 +174,25 @@ async function testSmoke() {
   console.log("Native smoke inputs and first-touch stencil, shared depth, sampler ownership and role validation passed.");
 }
 
-run().then(testSmoke).catch(error => { console.error(error); process.exitCode = 1; });
+async function testQueue() {
+  // 11060/3's fog keeps its authored transparent queue 3010; queues outside the transparent range are refused.
+  const parser = {getDependency: () => Promise.resolve(new T.Texture({width: 1, height: 1}))};
+  for (const [queue, drawn] of [[3010, true], [2501, true], [5000, true], [2500, false], [5001, false], [3000.5, false]]) {
+    const root = new T.Scene();
+    const {mesh, original, data} = fog(root);
+    data.queue = queue;
+    data.mainSampler = {mipmaps: [0], filterMode: 1, anisotropy: 1};
+    const controller = await MVStudioSoftBillboards.apply(T, root, parser);
+    assert.equal(mesh.material !== original, drawn, `queue ${queue}`);
+    if (drawn) {
+      assert.equal(mesh.renderOrder, queue);
+      assert.equal(controller.sortEntries()[0].queue, queue);
+      controller.dispose();
+    } else {
+      assert.equal(controller, null);
+    }
+  }
+  console.log("Native soft billboards keep their authored transparent queue.");
+}
+
+run().then(testSmoke).then(testQueue).catch(error => { console.error(error); process.exitCode = 1; });

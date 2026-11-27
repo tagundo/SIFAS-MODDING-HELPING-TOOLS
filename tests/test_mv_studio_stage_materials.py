@@ -190,9 +190,14 @@ class StageAlphaMaterialTests(unittest.TestCase):
                                   "depthTest": True, "depthWrite": True})
         self.assertEqual(overlay.export_material(None, fields), fields)
         for rejected in ({"_ZWriteParam": 2.}, {"_BlendDst": 10., "_StencilComp": 3.},
-                         {"_StencilComp": 3.}, {"_ZTestMode": 8.}, {"_SATURATE": 1.}):
+                         {"_StencilComp": 3.}, {"_ZTestMode": 8.}):
             with self.subTest(rejected=rejected), patch.dict(floats, rejected):
                 self.assertIsNone(overlay.read_material(scene, material, world=True))
+        # The _SATURATE toggle only sets the keyword: the keyword selects the program.
+        with patch.dict(floats, {"_SATURATE": 1.}):
+            self.assertIsNotNone(overlay.read_material(scene, material, world=True))
+        with patch.dict(tree, {"m_ShaderKeywords": "_SATURATE_ON _VERTEX_COLOR_ON"}):
+            self.assertIsNone(overlay.read_material(scene, material, world=True))
         floats["_ZWriteParam"] = 0.
         self.assertNotIn("depthWrite", overlay.read_material(scene, material, world=True))
         self.assertNotIn("depthWrite", overlay.read_material(scene, material))
