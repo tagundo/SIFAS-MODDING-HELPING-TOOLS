@@ -508,7 +508,7 @@
         var panelState = panels.map(function (p) { return { mesh: p.mesh.value, submesh: p.submesh.value, bone: p.bone && p.bone.value, sourceBone: p.sourceBone && p.sourceBone.value }; });
         var next = {};
         Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: selectionSet(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1, geometryRevision: (old.geometryRevision || 0) + 1, positionRevision: (old.positionRevision || 0) + 1 }); });
-        Object.keys(prepared).forEach(function (id) { var item = prepared[id], mesh = next[id] || makeMesh(item.data); mesh.deleted = item.edits.deleted; mesh.positions = item.edits.positions; mesh.weights = item.edits.weights; geometryChanged(mesh); positionsChanged(mesh); next[id] = mesh; });
+        Object.keys(prepared).forEach(function (id) { var item = prepared[id], mesh = next[id] || makeMesh(item.data); mesh.deleted = item.edits.deleted; mesh.positions = item.edits.positions; mesh.weights = item.edits.weights; geometryChanged(mesh); next[id] = mesh; });
         function restorePanels(values, fallback) {
           fillMeshes(); panels.forEach(function (p, index) {
             var value = values[index]; p.mesh.value = cache[value.mesh] ? value.mesh : fallback || '';
