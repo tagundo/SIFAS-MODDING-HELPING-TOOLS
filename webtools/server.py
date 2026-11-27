@@ -784,6 +784,9 @@ class Handler(BaseHTTPRequestHandler):
             "library_roots": list(dict.fromkeys(
                 os.path.realpath(root) for root in filebrowser.allowed_roots().values())),
             "cache_dir": cache_dir,
+            # Game-assets import receipts survive a restart; face completion
+            # reads them only for the exact imported model bytes.
+            "game_models_dir": str(game_models_dir()),
         }
         try:
             with ExitStack() as opened:

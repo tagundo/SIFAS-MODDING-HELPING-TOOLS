@@ -35,6 +35,9 @@ MAX_AUTO_FILES = 4
 COMPANION_HINT = "viewer-companions.json"
 MAX_HINT_BYTES = 64 * 1024
 FACE_SECONDS = 40
+# Downloads that may still find the face a body references stop this long
+# before the face deadline, so another prefab of the member can still be used.
+FALLBACK_SECONDS = 10
 _DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 _OWNER = re.compile(r"(?:^|[^a-z0-9])ch(\d{4})(?=[^0-9]|$)", re.I)
 _PACK = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
@@ -734,6 +737,8 @@ class FacePlan:
         # The body's own BodyPartManager.face CAB names, its verified game
         # selections, and same-owner candidates kept until no exact face exists.
         self.face_references, self._game_records, self._deferred = set(), [], []
+        # Catalog identities of the member's default suit body itself.
+        self._suit_models = set()
         self.initial_roles = roles(scene) if self.enabled else set()
         if not self.enabled:
             return
@@ -819,16 +824,44 @@ class FacePlan:
             if source in sources and source not in hashes:
                 hashes[source] = _source_hash(obj)
         origins = self.context.get("origins", {})
-        records = []
-        for source in sorted(hashes):
-            # Archive members and motion copies have another origin; only the
-            # imported model file itself carries the server's receipt.
-            if origins.get(source, source) != source:
-                continue
+        # Archive members and motion copies have another origin; only the
+        # imported model file itself carries the server's receipt.
+        eligible = [source for source in sorted(hashes) if origins.get(source, source) == source]
+        records, stored = [], None
+        for source in eligible:
             record = imported_record(source, hashes[source])
+            if record is None:
+                # A restart empties the in-memory registry. The import cache
+                # keeps its own receipt binding these exact bytes to the suit.
+                if stored is None:
+                    stored = self._stored_records({source: hashes[source] for source in eligible})
+                record = stored.get((str(Path(source).resolve()), hashes[source]))
             if record is not None and record not in records:
                 records.append(record)
         return records
+
+    def _stored_records(self, hashes):
+        """Selections the Game-assets import cache persisted for these bytes.
+
+        The same bounded, SHA-bound receipt scan that pairs game sources for
+        packaging; only the application's own game-model cache is read.
+        """
+        root = self.context.get("game_models_dir")
+        if not isinstance(root, str) or not root or not hashes:
+            return {}
+        from .viewer_mod_flow import cached_receipts
+        from .viewer_mod_sources import _record
+        try:
+            rows = cached_receipts({"containers": [{"path": path, "sha256": digest} for path, digest in hashes.items()]}, root)
+        except Exception:
+            return {}
+        result = {}
+        for row in rows:
+            try:
+                result.setdefault((row["path"], row["sha256"]), _record(row["record"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return result
 
     def warn(self, code, message):
         warning = {"code": code, "message": message}
@@ -1230,6 +1263,8 @@ class FacePlan:
                         identity = tuple(resource[key] for key in ("pack_name", "head", "size", "key1", "key2", "pack_size"))
                         if identity not in seen:
                             seen.add(identity)
+                            if body and resource is body[0]:
+                                self._suit_models.add(identity)
                             yield resource
                             if len(seen) >= MAX_DESCRIPTOR_CANDIDATES:
                                 return
@@ -1379,6 +1414,13 @@ class FacePlan:
                 if self.needed:
                     for descriptor in self._descriptor_iter():
                         _check(self.deadline)
+                        if self.face_references and self._suit_model(descriptor):
+                            # The default suit's own body is not the face a
+                            # BodyPartManager references. It stays a late,
+                            # non-exact candidate, never decrypted or fetched
+                            # only to be compared.
+                            pending.append(descriptor)
+                            continue
                         try:
                             if self._accept(self._resource(descriptor, download=False), exact=True):
                                 break
@@ -1387,17 +1429,41 @@ class FacePlan:
             except Exception:
                 # Standalone/local-only viewers do not need an asset catalog.
                 pass
-            # The client downloads its own suit's missing face pack; do the
-            # same before settling for another prefab of this member.
+            # The client downloads its own suit's missing face pack, and a
+            # stock body's referenced face may only be on the CDN while another
+            # prefab of this member is cached. Download those exact candidates
+            # before settling for another prefab, but leave time for it.
+            failed = set()
             try:
-                if self.needed and selected_pending and self.context.get("allow_download", True):
-                    for descriptor in selected_pending:
-                        _check(self.deadline)
-                        try:
-                            if self._accept(self._resource(descriptor), exact=True):
-                                break
-                        except Exception:
-                            continue
+                if self.needed and self.context.get("allow_download", True) and (
+                        selected_pending or self.face_references and pending):
+                    original_deadline = self.deadline
+                    self.deadline = min(self.deadline, max(time.monotonic(), self.deadline - FALLBACK_SECONDS))
+                    try:
+                        for descriptor in selected_pending:
+                            _check(self.deadline)
+                            try:
+                                if self._accept(self._resource(descriptor), exact=True):
+                                    break
+                            except Exception:
+                                continue
+                        if self.needed and self.face_references:
+                            for index, descriptor in enumerate(pending):
+                                if self._suit_model(descriptor):
+                                    continue
+                                _check(self.deadline)
+                                try:
+                                    path = self._resource(descriptor)
+                                except Exception:
+                                    # Tried once; the late pass does not repeat it.
+                                    failed.add(index)
+                                    continue
+                                # Another downloaded prefab keeps its old place,
+                                # after the local search, in the late pass below.
+                                if self._accept(path, exact=True, defer=False):
+                                    break
+                    finally:
+                        self.deadline = original_deadline
             except Exception:
                 pass
             # None of those is the face the body references, e.g. a mod
@@ -1424,7 +1490,9 @@ class FacePlan:
                 finally:
                     self.deadline = original_deadline
             if self.needed:
-                for descriptor in pending:
+                for index, descriptor in enumerate(pending):
+                    if index in failed:
+                        continue
                     _check(self.deadline)
                     try:
                         if self._accept(self._resource(descriptor)):
@@ -1448,7 +1516,10 @@ class FacePlan:
             pass
         return list(self.auto_paths)
 
-    def _accept(self, path, exact=False):
+    def _suit_model(self, descriptor):
+        return tuple(descriptor.get(key) for key in ("pack_name", "head", "size", "key1", "key2", "pack_size")) in self._suit_models
+
+    def _accept(self, path, exact=False, defer=True):
         if path in self.paths or path in self.auto_paths or len(self.auto_paths) >= MAX_AUTO_FILES:
             return False
         if exact and self.face_references:
@@ -1459,7 +1530,7 @@ class FacePlan:
             except Exception:
                 referenced = False
             if not referenced:
-                if path not in self._deferred:
+                if defer and path not in self._deferred:
                     self._deferred.append(path)
                 return False
         try:

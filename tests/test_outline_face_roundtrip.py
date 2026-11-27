@@ -263,6 +263,60 @@ class OutlineFaceRoundTripTests(unittest.TestCase):
                 self.assert_face_editable(editing)
                 self.assertEqual([_sha(Path(row["path"]).read_bytes()) for row in companions], [_sha(stock_face)])
 
+        # (d) After a restart the import registry is empty and the face cache
+        # may be gone. Reloading the installed body file itself still gets
+        # its private face, through the Game-assets cache's own receipt.
+        from webtools.core import viewer_mod_sources
+        installed_body = self.game_import(INSTALLED_SUIT)
+        viewer_mod_sources._REGISTRY.clear()
+        shutil.rmtree(self.library / ".viewer-cache" / "models")
+        editing, companions = self.open([installed_body], "android")
+        _, proof = self.assert_face_editable(editing)
+        self.assertEqual([_sha(Path(row["path"]).read_bytes()) for row in companions], [_sha(installed["F"])])
+        self.assertEqual({proof["faceAsset"]}, {name.casefold() for name in bundle_identity._cab_names(installed["F"])})
+
+        # (e) The private face is cached again, and the stock face is neither
+        # cached nor in the local packs, only on the CDN. The stock body
+        # opened as a file downloads its own face instead of borrowing it.
+        from webtools.core import model_faces
+        stock_pack = self.pack_of(stock_face)
+        cdn = self.root / "cdn"
+        cdn.mkdir()
+        shutil.move(self.runtime / "static" / stock_pack, cdn / stock_pack)
+        for path in list((self.library / ".viewer-cache" / "models").glob("*.unity")):
+            if path.read_bytes() == stock_face:
+                path.unlink()
+                Path(str(path) + ".json").unlink(missing_ok=True)
+        served = []
+
+        def download(url, expected, deadline, byte_limit):
+            name = url.rsplit("/", 1)[1]
+            served.append(name)
+            if not (cdn / name).is_file():
+                raise model_faces.FaceUnavailable("Not on this CDN")
+            return (cdn / name).read_bytes()
+
+        with patch.object(model_faces, "_download", download):
+            editing, companions = self.open([stock_copy])
+        self.assert_face_editable(editing)
+        self.assertEqual([_sha(Path(row["path"]).read_bytes()) for row in companions], [_sha(stock_face)])
+        self.assertEqual(served, [stock_pack])
+
+    def pack_of(self, raw):
+        """The runtime pack whose decrypted catalog section is ``raw``."""
+        catalog = self.runtime / "assets" / "db" / "gl" / "asset_a_en.db"
+        with closing(sqlite3.connect(catalog)) as db:
+            rows = db.execute("SELECT pack_name,head,size,key1,key2 FROM member_model").fetchall()
+        for pack, head, size, key1, key2 in rows:
+            path = self.runtime / "static" / pack
+            if size != len(raw) or not path.is_file():
+                continue
+            data = bytearray(path.read_bytes()[head:head + size])
+            self.extractor.decrypt_section(data, self.extractor.FIXED_KEY0, key1, key2)
+            if bytes(data) == raw:
+                return pack
+        self.fail("The stock face pack is not in the runtime catalog")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -646,10 +646,10 @@ class FaceTests(unittest.TestCase):
         with patch.object(faces.FacePlan, "_face_references", return_value=set()):
             self.assertEqual(self.plan().resolve(), [str(first)])
 
-    def game_catalog(self, model, dependencies, rows):
+    def game_catalog(self, model, dependencies, rows, name="asset_a_en.db"):
         root = Path(self.context["repo_root"]) / "assets" / "db" / "gl"
-        root.mkdir(parents=True)
-        with sqlite3.connect(root / "asset_a_en.db") as db:
+        root.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(root / name) as db:
             db.executescript("CREATE TABLE member_model(asset_path TEXT,pack_name TEXT,head INTEGER,size INTEGER,key1 INTEGER,key2 INTEGER);"
                              "CREATE TABLE member_model_dependency(asset_path TEXT,dependency TEXT);"
                              "CREATE TABLE m_asset_package_mapping(package_key TEXT,pack_name TEXT,file_size INTEGER);")
@@ -748,6 +748,266 @@ class FaceTests(unittest.TestCase):
             self.context["allow_download"] = False
             self.assertEqual(self.plan().resolve(), [str(other)])
             self.assertEqual(calls, [("privateface", False)])
+
+    def face_files(self, **faces_by_name):
+        """Same-member face bundles outside every automatic search root."""
+        directory = self.root / "packs"
+        directory.mkdir(exist_ok=True)
+        paths = {}
+        for name, raw in faces_by_name.items():
+            paths[name] = directory / (name + ".unity")
+            paths[name].write_bytes(raw)
+        return paths
+
+    def recording_resource(self, files, calls, *, local=(), fail=()):
+        """A catalog resource stand-in: ``local`` names need no download."""
+        def resource(plan, descriptor, download=True):
+            name = descriptor["asset_path"]
+            calls.append((name, download))
+            if name in fail or name not in files or not download and name not in local:
+                raise faces.FaceUnavailable("Not available here")
+            return str(files[name])
+        return resource
+
+    @staticmethod
+    def catalog_descriptor(name, size=1000):
+        return {"asset_path": name, "pack_name": name + "pack", "head": 0, "size": size,
+                "key1": 0, "key2": 0, "pack_size": None}
+
+    def test_plain_body_downloads_its_referenced_face_before_another_cached_member_face(self):
+        # A stock body opened as a file after an installed costume's private
+        # face was cached: the stock face it references is only on the CDN.
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        other = directory / ("ch0207_" + "a" * 24 + ".unity")
+        faces._save(other, self.referenced_donor("CAB-" + "1" * 32), 207)
+        files = self.face_files(stockface=self.referenced_donor("CAB-" + "2" * 32))
+        descriptor = self.catalog_descriptor("stockface")
+        for allow, references, expected, requested in (
+                (True, {"cab-" + "2" * 32}, files["stockface"], [("stockface", False), ("stockface", True)]),
+                # Offline, the other cached prefab stays the fallback.
+                (False, {"cab-" + "2" * 32}, other, [("stockface", False)]),
+                # Without a body reference the old order never downloads first.
+                (True, set(), other, [])):
+            calls = []
+            self.context["allow_download"] = allow
+            with self.subTest(allow=allow, references=references), \
+                    patch.object(faces.FacePlan, "_face_references", return_value=references), \
+                    patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([dict(descriptor)])), \
+                    patch.object(faces.FacePlan, "_resource", self.recording_resource(files, calls)):
+                plan = self.plan()
+                self.assertEqual(plan.resolve(), [str(expected)])
+                self.assertEqual(calls, requested)
+                self.assertEqual(plan.status, "added")
+
+    def test_failed_exact_download_is_tried_once(self):
+        files = self.face_files(stockface=self.referenced_donor("CAB-" + "2" * 32))
+        calls = []
+        self.context["allow_download"] = True
+        with patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([self.catalog_descriptor("stockface")])), \
+                patch.object(faces.FacePlan, "_resource", self.recording_resource(files, calls, fail={"stockface"})):
+            plan = self.plan()
+            self.assertEqual(plan.resolve(), [])
+        self.assertEqual(calls, [("stockface", False), ("stockface", True)])
+        self.assertEqual(plan.status, "unavailable")
+
+    def test_downloaded_member_face_that_is_not_referenced_keeps_its_place_after_the_local_search(self):
+        # The body references a face that exists nowhere. The default suit's
+        # face is fetched to compare it, but the old order still applies: a
+        # local same-member face comes before a downloaded original.
+        local = self.library / "costume_face_copy.unity"
+        local.write_bytes(self.referenced_donor("CAB-" + "4" * 32))
+        files = self.face_files(stockface=self.referenced_donor("CAB-" + "2" * 32))
+        calls = []
+        self.context["allow_download"] = True
+        with patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "3" * 32}), \
+                patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([self.catalog_descriptor("stockface")])), \
+                patch.object(faces.FacePlan, "_resource", self.recording_resource(files, calls)):
+            self.assertEqual(self.plan().resolve(), [str(local)])
+        self.assertEqual(calls, [("stockface", False), ("stockface", True)])
+        # Without a body reference nothing is fetched before the local search.
+        calls.clear()
+        with patch.object(faces.FacePlan, "_face_references", return_value=set()), \
+                patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([self.catalog_descriptor("stockface")])), \
+                patch.object(faces.FacePlan, "_resource", self.recording_resource(files, calls)):
+            self.assertEqual(self.plan().resolve(), [str(local)])
+        self.assertEqual(calls, [("stockface", False)])
+        # Without that local face the downloaded one is still used, from cache.
+        local.unlink()
+        calls.clear()
+        with patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "3" * 32}), \
+                patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([self.catalog_descriptor("stockface")])), \
+                patch.object(faces.FacePlan, "_resource", self.recording_resource(files, calls)):
+            self.assertEqual(self.plan().resolve(), [str(files["stockface"])])
+        self.assertEqual(calls, [("stockface", False), ("stockface", True), ("stockface", True)])
+
+    def test_hung_exact_download_leaves_time_for_another_member_face(self):
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        other = directory / ("ch0207_" + "a" * 24 + ".unity")
+        faces._save(other, self.referenced_donor("CAB-" + "1" * 32), 207)
+        observed = []
+
+        def resource(plan, descriptor, download=True):
+            if not download:
+                raise faces.FaceUnavailable("Not local")
+            # An unreachable CDN: the download waits for the caller's deadline.
+            observed.append(plan.deadline)
+            while time.monotonic() < plan.deadline:
+                time.sleep(.02)
+            raise faces.FaceUnavailable("Timed out")
+
+        self.context["allow_download"] = True
+        with patch.object(faces, "FACE_SECONDS", 8), patch.object(faces, "FALLBACK_SECONDS", 5), \
+                patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([self.catalog_descriptor("stockface")])), \
+                patch.object(faces.FacePlan, "_resource", resource):
+            plan = self.plan()
+            deadline = plan.deadline
+            self.assertEqual(plan.resolve(), [str(other)])
+        self.assertEqual(len(observed), 1)
+        self.assertAlmostEqual(observed[0], deadline - 5, delta=.5)
+        self.assertEqual(plan.deadline, deadline)
+
+    @EXTRACTOR_REQUIRED
+    def test_referenced_face_search_never_reads_the_default_suit_body(self):
+        data = self.donor()
+        descriptor = self.databases(data)
+        body = self.scene("Body2")
+        body_descriptor = dict(descriptor, asset_path="body207", pack_name="bodypack207", size=len(body), pack_size=len(body))
+        catalog = Path(self.context["repo_root"]) / "assets" / "db" / "gl" / "asset_a_en.db"
+        with sqlite3.connect(catalog) as db:
+            db.execute("INSERT INTO member_model VALUES(?,?,?,?,?,?)",
+                       tuple(body_descriptor[key] for key in ("asset_path", "pack_name", "head", "size", "key1", "key2")))
+            db.execute("INSERT INTO m_asset_package_mapping VALUES(?,?)", (body_descriptor["pack_name"], len(body)))
+        for value, raw in ((descriptor, data), (body_descriptor, body)):
+            (self.library / value["pack_name"]).write_bytes(self.encrypted(raw, value))
+        real, calls = faces.FacePlan._resource, []
+
+        def resource(plan, value, download=True):
+            calls.append((value["asset_path"], download))
+            return real(plan, value, download=download)
+
+        self.context["allow_download"] = True
+        with patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "f" * 32}), \
+                patch.object(faces.FacePlan, "_resource", resource), patch.object(faces, "_download") as fetch:
+            plan = self.plan()
+            chosen = plan.resolve()
+        fetch.assert_not_called()
+        # No face declares the reference: the member's stock face is the
+        # fallback, and the default suit's own body was never decrypted.
+        self.assertEqual(calls, [("face207", False)])
+        self.assertEqual([Path(path).read_bytes() for path in chosen], [data])
+        self.assertEqual(plan._suit_models, {tuple(body_descriptor[key] for key in
+                                                    ("pack_name", "head", "size", "key1", "key2", "pack_size"))})
+        # Without a body reference the old order is unchanged.
+        calls.clear()
+        for path in (Path(self.context["cache_dir"]) / "models").iterdir():
+            path.unlink()
+        with patch.object(faces.FacePlan, "_face_references", return_value=set()), \
+                patch.object(faces.FacePlan, "_resource", resource), patch.object(faces, "_download") as fetch:
+            self.assertEqual([Path(path).read_bytes() for path in self.plan().resolve()], [data])
+        self.assertEqual(calls, [("face207", False)])
+
+    def test_ios_game_import_reads_its_own_platform_catalog(self):
+        from collections import OrderedDict
+        from webtools.core import viewer_mod_sources
+        files = self.face_files(
+            iosface=bundle([(name + ".assets", self.scene(name, platform=9)) for name in ("Face", "Eyes", "Private")]),
+            androidface=bundle([(name + ".assets", self.scene(name)) for name in ("Face", "Eyes", "Decoy")]))
+        # Both platform catalogs list the same model path with their own face.
+        self.game_catalog("installedbody", ["iosface"], [("iosface", "iospack", 0, 900, 0, 0)], name="asset_i_en.db")
+        self.game_catalog("installedbody", ["androidface"], [("androidface", "androidpack", 0, 900, 0, 0)])
+        calls = []
+        for platform, native, expected in (("ios", 9, "iosface"), ("android", 13, "androidface")):
+            self.body.write_bytes(self.scene("Body", platform=native))
+            record = {"region": "gl", "suit_id": 900000001, "variant": "primary", "download": False,
+                      "model": "installedbody", "purpose": "viewer", "platform": platform, "selection_language": "en"}
+            with self.subTest(platform=platform), patch.object(viewer_mod_sources, "_REGISTRY", OrderedDict()), \
+                    patch.object(faces.FacePlan, "_resource",
+                                 self.recording_resource(files, calls, local={"iosface", "androidface"})), \
+                    patch.object(faces.FacePlan, "_local", return_value=[]):
+                viewer_mod_sources.register_game_import(str(self.body), record)
+                plan = self.plan()
+                self.assertEqual([row["asset_path"] for row in plan._selected_iter()], [expected])
+                self.assertEqual(plan.resolve(), [str(files[expected])])
+
+    def test_selected_suit_uses_its_largest_dependencies_and_only_the_referenced_face(self):
+        from collections import OrderedDict
+        from webtools.core import viewer_mod_sources
+        files = self.face_files(otherface=self.referenced_donor("CAB-" + "1" * 32),
+                                privateface=self.referenced_donor("CAB-" + "2" * 32))
+        # A larger other prefab of the member is listed first; small shared
+        # packs past the four-file bound must not push the faces out.
+        rows = [("otherface", "otherpack", 0, 5000, 0, 0), ("privateface", "privatepack", 0, 4000, 0, 0)]
+        rows += [(f"tiny{index}", f"tinypack{index}", 0, 10 * index, 0, 0) for index in range(1, 5)]
+        self.game_catalog("installedbody", [row[0] for row in reversed(rows)] + ["installedbody"], rows)
+        record = {"region": "gl", "suit_id": 900000001, "variant": "primary", "download": False,
+                  "model": "installedbody", "purpose": "viewer", "platform": "android", "selection_language": "en"}
+        # Both faces local, or both only downloadable for this suit.
+        for local, expected in (({"otherface", "privateface"}, [("otherface", False), ("privateface", False)]),
+                                (set(), [("otherface", False), ("privateface", False), ("tiny4", False), ("tiny3", False),
+                                         ("otherface", True), ("privateface", True)])):
+            calls = []
+            self.context["allow_download"] = not local
+            with self.subTest(local=sorted(local)), patch.object(viewer_mod_sources, "_REGISTRY", OrderedDict()), \
+                    patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                    patch.object(faces.FacePlan, "_resource", self.recording_resource(files, calls, local=local)), \
+                    patch.object(faces.FacePlan, "_local", return_value=[]):
+                viewer_mod_sources.register_game_import(str(self.body), record)
+                plan = self.plan()
+                self.assertEqual([row["asset_path"] for row in plan._selected_iter()],
+                                 ["otherface", "privateface", "tiny4", "tiny3"])
+                self.assertEqual(plan.resolve(), [str(files["privateface"])])
+                self.assertEqual(calls, expected)
+
+    def test_restart_reads_the_import_cache_receipt_for_the_same_body_bytes(self):
+        from collections import OrderedDict
+        from webtools.core import viewer_mod_sources
+        models = self.root / "game-models"
+        imported = models / "gl-900000001-abcdefgh" / "ch0207_suit900000001_primary.unity"
+        imported.parent.mkdir(parents=True)
+        imported.write_bytes(self.body.read_bytes())
+        self.body = imported
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        other = directory / ("ch0207_" + "a" * 24 + ".unity")
+        faces._save(other, self.referenced_donor("CAB-" + "1" * 32), 207)
+        files = self.face_files(privateface=self.referenced_donor("CAB-" + "2" * 32))
+        self.game_catalog("installedbody", ["privateface"], [("privateface", "privatepack", 0, 900, 0, 0)])
+        record = {"region": "gl", "suit_id": 900000001, "variant": "primary", "download": False,
+                  "model": "installedbody", "purpose": "viewer", "platform": "android", "selection_language": "en"}
+        manifest = models / (".selection-" + "0" * 32 + ".json")
+
+        def receipt(digest, selection=record):
+            manifest.write_text(json.dumps({"model": "gl-900000001-abcdefgh/" + imported.name, "sha256": digest,
+                                            "source": [], "selection_record": selection}), encoding="utf-8")
+
+        receipt(hashlib.sha256(imported.read_bytes()).hexdigest())
+        calls = []
+        # A restarted server has no in-memory import registry.
+        with patch.object(viewer_mod_sources, "_REGISTRY", OrderedDict()), \
+                patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                patch.object(faces.FacePlan, "_resource",
+                             self.recording_resource(files, calls, local={"privateface"})), \
+                patch.object(faces.FacePlan, "_local", return_value=[]):
+            self.context["game_models_dir"] = str(models)
+            plan = self.plan()
+            self.assertEqual(plan._game_records, [record])
+            self.assertEqual(plan.resolve(), [str(files["privateface"])])
+            # The receipt binds other bytes, or the application's cache root
+            # is not given: no suit is inferred and the old choice remains.
+            receipt("0" * 64)
+            self.assertEqual(self.plan()._game_records, [])
+            # A receipt whose selection is not a valid import record is ignored.
+            receipt(hashlib.sha256(imported.read_bytes()).hexdigest(), {key: value for key, value in record.items() if key != "download"})
+            self.assertEqual(self.plan()._game_records, [])
+            receipt(hashlib.sha256(imported.read_bytes()).hexdigest())
+            del self.context["game_models_dir"]
+            plan = self.plan()
+            self.assertEqual(plan._game_records, [])
+            self.assertEqual(plan.resolve(), [str(other)])
 
     def test_known_candidate_and_cache_entry_bounds_are_applied_before_sorting(self):
         roots = []
