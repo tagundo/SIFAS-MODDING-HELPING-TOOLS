@@ -129,9 +129,10 @@
   /* Every mark takes a 32 px touch target, centred on it, whatever it draws. */
   #tab-mv :is(.mv-lane-mute, .mv-lane-quality)::before { content: ""; position: absolute; inset: calc(50% - 16px); }
 }
-/* Narrow screens (the label column is about 6rem): small marks, so a name keeps the width. A
-   group heading leaves its quality badge to its tracks' rows (it would take a line of its own). */
-@media (max-width: 480px) {
+/* Narrow label columns (6rem on touch screens up to 800 px wide, where 12vw is less; phones):
+   small marks, so a name keeps the width. A group heading leaves its quality badge to its
+   tracks' rows (it would take a line of its own). */
+@media (max-width: 480px), (pointer: coarse) and (max-width: 800px) {
   #tab-mv .mv-lane-label:not(.mv-lane-group) .mv-lane-mute { width: 20px; height: 20px; }
   #tab-mv .mv-lane-label:not(.mv-lane-group) .mv-lane-quality { width: 16px; height: 16px; }
   #tab-mv .mv-lane-group .mv-lane-quality { display: none; }
