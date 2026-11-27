@@ -3,6 +3,7 @@
 import math
 
 from . import model_viewer as viewer
+from .mv_studio_shader_identity import keywords as shader_keywords
 
 
 _ROOT = "/EntryPoint/Live/Stages/MainStage/Effect/"
@@ -69,9 +70,10 @@ def binding(scene, component, tree):
     original = scene.tree(material)
     if not _shader(material, original):
         return None
-    keywords = set(str(original.get("m_ShaderKeywords", "")).split())
+    # Only the shader's own keywords select its program (mv_studio_shader_identity).
+    keywords = shader_keywords(material, original)
     floats = viewer._properties(original, "m_Floats")
-    if (keywords - {"_VERTEXCOLOR_OFF"} or any(floats.get(option) for option in ("_AUTO_PLAY", "_VERTEX_COLOR", "_SATURATE"))
+    if (keywords or any(floats.get(option) for option in ("_AUTO_PLAY", "_VERTEX_COLOR", "_SATURATE"))
             or (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1)) != (5, 1)):
         return None
     # LiveCoreStageColoring.ApplyTextureIndex swaps _MainTex for

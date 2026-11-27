@@ -3,6 +3,7 @@
 import math
 
 from . import model_viewer as viewer
+from .mv_studio_shader_identity import keywords as shader_keywords
 from .mv_studio_stage_coloring import _coordinates, _path
 
 _STAGE = "/EntryPoint/Live/Stages/MainStage/Effect/"
@@ -57,7 +58,7 @@ def binding(scene, component, tree):
 
 def export(materials, binding):
     path, material, source = binding
-    flags = set(str(source.get("m_ShaderKeywords", "")).split())
+    flags = shader_keywords(material, source)
     floats = viewer._properties(source, "m_Floats")
     length, queue = floats.get("_Length", 16), source.get("m_CustomRenderQueue", -1)
     if (flags - _KEYWORDS or (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1)) != (5, 1)

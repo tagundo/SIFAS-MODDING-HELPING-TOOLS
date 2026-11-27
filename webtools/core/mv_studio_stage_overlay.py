@@ -4,6 +4,7 @@ import math
 from zlib import crc32
 
 from . import model_viewer as viewer
+from .mv_studio_shader_identity import keywords as shader_keywords
 from .mv_studio_stage_display import _shader_matches
 
 
@@ -135,7 +136,8 @@ def read_material(scene, original, *, world=False):
     if not _shader_matches(original, tree, "AS/General/Transparent"):
         return None
     floats = viewer._properties(tree, "m_Floats")
-    flags = set(str(tree.get("m_ShaderKeywords", "")).split())
+    # Saved keywords outside the shader's keyword space select no program (mv_studio_shader_identity).
+    flags = shader_keywords(original, tree)
     cull, depth = floats.get("_CullMode", 0), floats.get("_ZTestMode", 4)
     destination = floats.get("_BlendDst", 1)
     depth_write = floats.get("_ZWriteParam", 0)
