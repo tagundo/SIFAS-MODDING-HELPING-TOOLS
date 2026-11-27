@@ -59,11 +59,57 @@
     "    vec4 surface = texture2D(uTexture, vTexture);",
     "  #endif",
     "  gl_FragColor = surface * vColor * uTint;",
+    // AS/General/Transparent _SATURATE_ON: SV_Target.rgb = (tex.rgb^2)^2 + tex * tint * COLOR,
+    // alpha unchanged (its GLES3 fragment program).
+    "  #ifdef SATURATE",
+    "    vec3 square = surface.rgb * surface.rgb;",
+    "    gl_FragColor.rgb += square * square;",
+    "  #endif",
     "}"
   ].join("\n");
 
-  function hasVisible({ node, material }) {
-    if (material.uniforms.uTint.value.w <= 0) return false;
+  // UnityEngine.Rendering.BlendMode, CompareFunction and StencilOp, in their enum order.
+  function blendFactor(T, value) {
+    return [T.ZeroFactor, T.OneFactor, T.DstColorFactor, T.SrcColorFactor, T.OneMinusDstColorFactor,
+      T.SrcAlphaFactor, T.OneMinusSrcColorFactor, T.DstAlphaFactor, T.OneMinusDstAlphaFactor,
+      T.SrcAlphaSaturateFactor, T.OneMinusSrcAlphaFactor][value];
+  }
+  function depthFunction(T, value) {
+    return [T.AlwaysDepth, T.NeverDepth, T.LessDepth, T.EqualDepth, T.LessEqualDepth, T.GreaterDepth,
+      T.NotEqualDepth, T.GreaterEqualDepth, T.AlwaysDepth][value];
+  }
+  function stencilFunction(T, value) {
+    return [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc, T.EqualStencilFunc, T.LessEqualStencilFunc,
+      T.GreaterStencilFunc, T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc][value];
+  }
+  function stencilOperation(T, value) {
+    return [T.KeepStencilOp, T.ZeroStencilOp, T.ReplaceStencilOp, T.IncrementStencilOp, T.DecrementStencilOp,
+      T.InvertStencilOp, T.IncrementWrapStencilOp, T.DecrementWrapStencilOp][value];
+  }
+  const integer = (value, high) => Number.isInteger(value) && value >= 0 && value <= high;
+
+  // The pass state of one descriptor: [src, dst] blend, ZTest, ZWrite and [comp, ref, pass, zFail]
+  // stencil, all property-bound in AS/General/Transparent. Descriptors exported before those
+  // fields carry the additive profile or the world alpha profile masked by stencil Equal.
+  function passState(fields) {
+    if (fields.blend === undefined && fields.zTest === undefined && fields.stencil === undefined) {
+      const alpha = fields.alphaBlend === true;
+      return { blend: [5, alpha ? 10 : 1], zTest: fields.depthTest === true ? 4 : 8, zWrite: fields.depthWrite === true,
+        stencil: fields.stencilRef === undefined ? [8, 2, 0, 0] : [3, fields.stencilRef, 0, 0], full: false };
+    }
+    const { blend, zTest, stencil } = fields;
+    if (!Array.isArray(blend) || blend.length !== 2 || !blend.every(value => integer(value, 10)) || !integer(zTest, 8) ||
+        !Array.isArray(stencil) || stencil.length !== 4 || !integer(stencil[0], 8) || !integer(stencil[1], 255) ||
+        !integer(stencil[2], 7) || !integer(stencil[3], 7) || fields.depthTest !== undefined && fields.depthTest !== (zTest === 4) ||
+        fields.saturate !== undefined && fields.saturate !== true) return null;
+    return { blend, zTest, zWrite: fields.depthWrite === true, stencil, full: true };
+  }
+
+  function hasVisible({ node, material, state }) {
+    // SrcAlpha with One or OneMinusSrcAlpha leaves the target unchanged at zero alpha.
+    if (material.uniforms.uTint.value.w <= 0 && state.blend[0] === 5 && (state.blend[1] === 1 || state.blend[1] === 10)) {
+      return false;
+    }
     let current = node;
     while (current) {
       if (!current.visible) return false;
@@ -105,20 +151,25 @@
       const rendererClass = fields.rendererClass === undefined ? 23 : fields.rendererClass;
       const scope = fields.world === true ? "world" : "overlay";
       const skinned = node.isSkinnedMesh === true;
-      if (rendererClass !== (skinned ? 137 : 23) || (scope === "world" && fields.depthTest !== true)) return;
+      const state = passState(fields);
+      if (!state || rendererClass !== (skinned ? 137 : 23) ||
+          (scope === "world" && !state.full && fields.depthTest !== true)) return;
       const alphaBlend = fields.alphaBlend === true, stencilRef = fields.stencilRef;
       const matcap = fields.matcap === true, depthWrite = fields.depthWrite === true;
       if (fields.depthWrite !== undefined && typeof fields.depthWrite !== "boolean") return;
-      if (depthWrite && (scope !== "world" || alphaBlend || matcap || stencilRef !== undefined ||
+      if (matcap && state.full) return;
+      if (!state.full && depthWrite && (scope !== "world" || alphaBlend || matcap || stencilRef !== undefined ||
           fields.queue !== 3000 || fields.texture !== null || fields.vertexColor !== true)) return;
       if (matcap) {
         if (!validMatcap(node.geometry, fields)) return;
-      } else if ((alphaBlend || stencilRef !== undefined) &&
+      } else if (!state.full && (alphaBlend || stencilRef !== undefined) &&
           (scope !== "world" || !alphaBlend || !Number.isInteger(stencilRef) || stencilRef < 0 || stencilRef > 255)) return;
       if (skinned && (!(node.userData.mvStageSkin === true || node.parent?.userData.mvStageSkin === true) ||
           !node.skeleton || !node.geometry.getAttribute("skinIndex") || !node.geometry.getAttribute("skinWeight"))) return;
       const sort = sortEntry(T, node, fields, skinned);
-      if (alphaBlend && !sort) return;
+      // World alpha blends draw in Unity's back-to-front order; the orthographic overlay camera
+      // keeps Three's view-depth order.
+      if (alphaBlend && !sort && (scope === "world" || !state.full)) return;
       let owner = node;
       while (owner && typeof owner.userData.mvStageNode?.binding !== "string") owner = owner.parent;
       if (!owner) return;
@@ -126,7 +177,8 @@
       if (!classes) owners.set(owner, classes = new Map());
       const key = materialKey(scope, rendererClass);
       classes.set(key, 1 + (classes.get(key) || 0));
-      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, depthWrite, stencilRef, sort, original: node.material,
+      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, depthWrite, stencilRef, sort,
+        state, original: node.material,
         order: node.renderOrder, layer: node.layers.mask, frustumCulled: node.frustumCulled });
     });
     const ready = [], sortEntries = [], usable = meshes.filter(({ owner, key }) => owners.get(owner).get(key) === 1);
@@ -172,7 +224,7 @@
     try {
       for (const mesh of usable) {
         if (!active()) break;
-        const { node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, depthWrite, stencilRef } = mesh;
+        const { node, owner, fields, rendererClass, scope, key, skinned, matcap, depthWrite, state } = mesh;
         const map = sampler && scope === "world" && fields.texture !== null && fields.mainSampler
           ? await sampler.sampledNativeTexture(fields.texture, fields.mainSampler) : await texture(fields.texture);
         if (!active()) break;
@@ -189,16 +241,21 @@
         // Unity's CullMode values specify the side to discard. Three's side
         // specifies the faces to retain. Old previews are double-sided.
         const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull] ?? T.DoubleSide;
-        const blendDst = alphaBlend ? T.OneMinusSrcAlphaFactor : T.OneFactor;
-        const stencilTest = stencilRef !== undefined;
+        const [blendSrc, blendDst] = state.blend.map(value => blendFactor(T, value));
+        const [comparison, reference, pass, zFail] = state.stencil;
+        // Comp Disabled/Always with Keep on pass and depth fail leaves the stencil untouched.
+        const stencilTest = !(comparison === 0 || comparison === 8) || pass !== 0 || zFail !== 0;
+        // ZTest Disabled/Always passes every fragment; WebGL writes depth only with its test on.
+        const always = state.zTest === 0 || state.zTest === 8;
+        const defines = matcap ? { MATCAP: 1 } : fields.saturate === true ? { SATURATE: 1 } : {};
         const material = new T.ShaderMaterial({
-          vertexShader, fragmentShader, defines: matcap ? { MATCAP: 1 } : {}, transparent: true, skinning: skinned,
-          depthTest: fields.depthTest === true, depthFunc: T.LessEqualDepth, depthWrite,
+          vertexShader, fragmentShader, defines, transparent: true, skinning: skinned,
+          depthTest: !always || depthWrite, depthFunc: always ? T.AlwaysDepth : depthFunction(T, state.zTest), depthWrite,
           toneMapped: false, side, blending: T.CustomBlending,
-          blendSrc: T.SrcAlphaFactor, blendDst, blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: blendDst,
-          stencilWrite: stencilTest, stencilFunc: stencilTest ? T.EqualStencilFunc : T.AlwaysStencilFunc,
-          stencilRef: stencilRef ?? 0, stencilFuncMask: 255, stencilWriteMask: 255,
-          stencilFail: T.KeepStencilOp, stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
+          blendSrc, blendDst, blendSrcAlpha: blendSrc, blendDstAlpha: blendDst,
+          stencilWrite: stencilTest, stencilFunc: stencilTest ? stencilFunction(T, comparison) : T.AlwaysStencilFunc,
+          stencilRef: stencilTest ? reference : 0, stencilFuncMask: 255, stencilWriteMask: 255,
+          stencilFail: T.KeepStencilOp, stencilZFail: stencilOperation(T, zFail), stencilZPass: stencilOperation(T, pass),
           uniforms
         });
         material.name = scope === "world" ? "Native stage transparent" : "Native stage overlay";

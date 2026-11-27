@@ -1674,7 +1674,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         if not overlay and renderer_type == "MeshRenderer":
                             stage_soft = mv_studio_soft_billboards.read_material(scene, candidate)
                         if stage_soft is None:
-                            stage_transparent = mv_studio_stage_overlay.read_material(scene, candidate, world=not overlay)
+                            stage_transparent = mv_studio_stage_overlay.read_material(
+                                scene, candidate, world=not overlay, full=True)
                     if (stage_transparent is None and candidate is not None and not overlay
                             and renderer_type == "SkinnedMeshRenderer" and len(material_refs) == 1):
                         identity = _key(candidate)
@@ -2023,7 +2024,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     overlay_material = {**transparent_skin_material, "rendererClass": 137}
                 else:
                     try:
-                        overlay_material = (mv_studio_stage_overlay.material(scene, materials, material_obj)
+                        overlay_material = (mv_studio_stage_overlay.material(scene, materials, material_obj, full=True)
                                             if overlay else mv_studio_stage_overlay.export_material(
                                                 materials, stage_transparent, renderer_tree=tree,
                                                 mesh=(raw or {}).get("mesh"), builtin_mesh=bool(builtin_mesh)))

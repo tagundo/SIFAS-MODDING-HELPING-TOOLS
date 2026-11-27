@@ -127,7 +127,36 @@ def _read_matcap(material, tree):
             "depthTest": True, "alphaBlend": True}
 
 
-def read_material(scene, original, *, world=False):
+# AS/General/Transparent binds every render state to a material float: Blend [_BlendSrc]
+# [_BlendDst], Cull [_CullMode], ZWrite [_ZWriteParam], ZTest [_ZTestMode] and Stencil
+# {Ref [_StencilRef] Comp [_StencilComp] Pass [_StencilPassOp] ZFail [_StencilZFailOp]}
+# (Fail Keep, masks 255). (name, ShaderLab default, largest UnityEngine.Rendering value.)
+_STATE_FLOATS = (("_BlendSrc", 5, 10), ("_BlendDst", 1, 10), ("_CullMode", 0, 2), ("_ZTestMode", 4, 8),
+                 ("_ZWriteParam", 0, 1), ("_StencilComp", 8, 8), ("_StencilRef", 2, 255),
+                 ("_StencilPassOp", 0, 7), ("_StencilZFailOp", 0, 7))
+# Blends whose result does not depend on draw order (additive, multiplicative); any other
+# blend is drawn in Unity's back-to-front transparent order (alphaBlend, with sort bounds).
+_UNORDERED_BLENDS = frozenset({(0, 1), (1, 1), (5, 1), (2, 0), (0, 3)})
+# The particle programs of the keyword space (procedural instancing, soft particles).
+_PARTICLE_KEYWORDS = frozenset({"PROCEDURAL_INSTANCING_ON", "SOFTPARTICLES_ON"})
+
+
+def _state(floats):
+    values = []
+    for name, default, high in _STATE_FLOATS:
+        value = floats.get(name, default)
+        if type(value) not in (int, float) or not math.isfinite(value) or value != int(value) or not 0 <= value <= high:
+            return None
+        values.append(int(value))
+    return values
+
+
+def read_material(scene, original, *, world=False, full=False):
+    """The native transparent pass of an AS/General/Transparent (or world AS/MatCap/Transparent) material.
+
+    ``full`` reads the whole property-bound pass state (blend, ZTest, ZWrite, stencil, cull) and the
+    _SATURATE_ON program; without it only the original additive and stencil-masked alpha profiles the
+    per-effect readers rely on are returned."""
     if original is None or original.type.name != "Material":
         return None
     tree = scene.tree(original)
@@ -138,19 +167,15 @@ def read_material(scene, original, *, world=False):
     floats = viewer._properties(tree, "m_Floats")
     # Saved keywords outside the shader's keyword space select no program (mv_studio_shader_identity).
     flags = shader_keywords(original, tree)
-    cull, depth = floats.get("_CullMode", 0), floats.get("_ZTestMode", 4)
-    destination = floats.get("_BlendDst", 1)
-    depth_write = floats.get("_ZWriteParam", 0)
-    comparison, reference = floats.get("_StencilComp", 8), floats.get("_StencilRef", 2)
-    if (flags - {"_VERTEX_COLOR_ON"} or floats.get("_SATURATE") or cull not in (0, 1, 2)
-            or depth not in (4, 8) or world and depth != 4 or depth_write not in (0, 1)
-            or (floats.get("_BlendSrc", 5), floats.get("_StencilPassOp", 0),
-                floats.get("_StencilZFailOp", 0)) != (5, 0, 0)):
+    state = _state(floats)
+    if state is None or flags & _PARTICLE_KEYWORDS or not full and flags - {"_VERTEX_COLOR_ON"}:
         return None
-    alpha_blend = (world and (destination, comparison) == (10, 3)
-                   and type(reference) in (float, int) and 1 <= reference <= 255 and reference == int(reference))
-    if not alpha_blend and (destination, comparison) != (1, 8):
-        return None
+    source, destination, cull, depth, depth_write, comparison, reference, pass_op, zfail_op = state
+    if not full:
+        if (depth not in (4, 8) or world and depth != 4 or (source, pass_op, zfail_op) != (5, 0, 0)
+                or not ((destination, comparison) == (1, 8)
+                        or world and (destination, comparison) == (10, 3) and reference >= 1)):
+            return None
     values = viewer._properties(tree, "m_Colors")
     tint = [values.get("_TintColor", {}).get(axis, 1) for axis in "rgba"]
     main = viewer._properties(tree, "m_TexEnvs").get("_MainTex", {})
@@ -165,19 +190,26 @@ def read_material(scene, original, *, world=False):
         texture = viewer._ref(original, pointer)
         if texture is None or texture.type.name != "Texture2D":
             return None
+    alpha_blend = (source, destination) not in _UNORDERED_BLENDS
     fields = {"texture": texture, "tint": tint, "uv": uv, "vertexColor": "_VERTEX_COLOR_ON" in flags,
-              "cull": int(cull), "queue": 3000 if queue == -1 else queue}
+              "cull": cull, "queue": 3000 if queue == -1 else queue}
     if depth == 4:
         fields["depthTest"] = True
     if depth_write:
         # The original vertex-colored additive floors participate in the
         # main transparent pass and write its depth, even at zero tint alpha.
-        if (not world or alpha_blend or fields["queue"] != 3000 or texture is not None
-                or not fields["vertexColor"]):
+        if not full and (not world or alpha_blend or fields["queue"] != 3000 or texture is not None
+                         or not fields["vertexColor"]):
             return None
         fields["depthWrite"] = True
     if alpha_blend:
-        fields.update(alphaBlend=True, stencilRef=int(reference))
+        fields["alphaBlend"] = True
+    if comparison == 3 and (pass_op, zfail_op) == (0, 0):
+        fields["stencilRef"] = reference
+    if full:
+        fields.update(blend=[source, destination], zTest=depth, stencil=[comparison, reference, pass_op, zfail_op])
+        if "_SATURATE_ON" in flags:
+            fields["saturate"] = True
     return fields
 
 
@@ -207,10 +239,12 @@ def _sort_bounds(tree, mesh, skinned=False, *, builtin_mesh=False):
     return fields
 
 
-def export_material(materials, fields, *, renderer_tree=None, mesh=None, skinned=False, builtin_mesh=False):
+def export_material(materials, fields, *, renderer_tree=None, mesh=None, skinned=False, builtin_mesh=False,
+                    overlay=False):
     if fields is None:
         return None
-    if fields.get("alphaBlend") or fields.get("depthWrite") and not skinned:
+    # The layer-20 OverlayCamera is orthographic: its meshes keep their draw order by view depth.
+    if not overlay and (fields.get("alphaBlend") or fields.get("depthWrite") and not skinned):
         bounds = _sort_bounds(renderer_tree, mesh, skinned, builtin_mesh=builtin_mesh)
         if bounds is not None:
             fields = {**fields, **bounds}
@@ -220,5 +254,5 @@ def export_material(materials, fields, *, renderer_tree=None, mesh=None, skinned
     return {**fields, "texture": materials.texture(texture) if texture is not None else None}
 
 
-def material(scene, materials, original):
-    return export_material(materials, read_material(scene, original))
+def material(scene, materials, original, *, full=False):
+    return export_material(materials, read_material(scene, original, full=full), overlay=full)
