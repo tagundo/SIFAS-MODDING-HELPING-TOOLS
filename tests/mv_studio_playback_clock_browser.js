@@ -15,6 +15,7 @@
    - a soundtrack the browser pauses on its own: the time goes on with the frames; when the
      soundtrack comes back far behind, it is moved to the picture;
    - a soundtrack offset change while playing moves the soundtrack and follows the new offset;
+   - a playing soundtrack whose readyState stays below HAVE_FUTURE_DATA is still followed;
    - without a soundtrack every frame advances by exactly its frame interval (as before);
    - fixed-step frame captures (mv_frame_capture.renderFrame) are the same PNG and scene state
      before and after all of the above (the reference after one warm-up capture: the first
@@ -89,7 +90,7 @@ function installFakeAudio() {
   const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const now = () => performance.now();
   const fake = window.fakeAudio = { steps: [0.02, 0.05], jitter: 0.002, latency: 0.06, playing: false, stalled: false,
-    base: 0, anchor: 0, reported: 0, next: 0, writes: [], plays: 0, readAt: 0 };
+    base: 0, anchor: 0, reported: 0, next: 0, writes: [], plays: 0, readAt: 0, readyState: 4 };
   const step = () => (fake.steps[0] + (fake.steps[1] - fake.steps[0]) * random()) * 1000;
   fake.truth = (t = now()) => fake.playing && !fake.stalled ? fake.base + Math.max(0, t - fake.anchor) / 1000 : fake.base;
   fake.start = (position) => {
@@ -123,7 +124,7 @@ function installFakeAudio() {
   define('paused', () => !fake.playing);
   define('ended', () => false);
   define('seeking', () => false);
-  define('readyState', () => 4);
+  define('readyState', () => fake.readyState);
   const { play, pause } = proto;
   proto.play = function () {
     if (!mine(this)) return play.call(this);
@@ -355,6 +356,14 @@ async function synthetic(browser, url) {
   await page.waitForTimeout(1200);
   result.offsetChange = analyse(await take(page));
   steady('offset change', result.offsetChange);
+
+  // A playing soundtrack whose readyState stays below HAVE_FUTURE_DATA is still followed
+  // (buffering shows as readings that stop changing).
+  await page.evaluate(() => { window.playLog.length = 0; window.fakeAudio.readyState = 2; });
+  await page.waitForTimeout(1000);
+  result.lowReadyState = analyse(await take(page), { settle: 0 });
+  await page.evaluate(() => { window.fakeAudio.readyState = 4; });
+  steady('readyState 2', result.lowReadyState);
   await pause(page);
 
   // Fixed-step captures are unchanged by all of the above.

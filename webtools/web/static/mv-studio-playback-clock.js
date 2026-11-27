@@ -132,8 +132,9 @@
 
     // One display frame at timestamp `now` (ms). `media`: the soundtrack's song time (s),
     // or NaN without a usable soundtrack (none, paused by the browser, ended); `ready`:
-    // false while it seeks or buffers. Returns { time, mode, rate, holding, realign };
-    // realign asks the host to move the soundtrack to `time`.
+    // false while it seeks (buffering shows as readings that stop changing: a stall).
+    // Returns { time, mode, rate, holding, realign }; realign asks the host to move the
+    // soundtrack to `time`.
     function next(now, media, ready = true) {
       const dt = finite(last) && finite(now) ? Math.max(0, now - last) / 1000 : 0;
       if (finite(now)) last = now;
