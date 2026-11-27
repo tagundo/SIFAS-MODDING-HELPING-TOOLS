@@ -41,6 +41,7 @@ assert.deepStrictEqual(groupsOf([[base, high, -0.5], [base + 4.9e-7, high - 4.9e
 assert.deepStrictEqual(groupsOf([[base, high, -0.5], [base + 5.1e-7, high, -0.5]]), [], '5.1e-7 stays apart');
 assert.deepStrictEqual(groupsOf([[base, high, -0.5], [base, high, -0.5 - 5.1e-7]]), [], 'on any axis');
 assert.deepStrictEqual(groupsOf([[base, high, -0.5], [step(base, 1), high, -0.5]], 0), [], 'the exact rule keeps one step apart');
+assert.deepStrictEqual(groupsOf([[0, 0.5, 0.5], [T, 0.5, 0.5]]), [[0, 1]], 'a gap of exactly the tolerance joins');
 // Seams at and across zero. Real Hair copies of member 1 (Android): X
 // 2.78e-9 and 6.41e-9 (3.6e-9 apart, ten million float32 steps), Z 2.7e-9
 // apart near -0.0017 (23 steps). Four-step rules missed them.
@@ -113,6 +114,14 @@ for (const sign of [1, -1]) {
   assert.deepStrictEqual(groupsOf([corner.map(x => x - 2e-7), corner.map(x => x + 2e-7)]), [[0, 1]], 'across a cell corner on all three axes');
 }
 assert.deepStrictEqual(groupsOf([[1e6, -1e6, 999999.99], [1e6, -1e6, 999999.99]]), [[0, 1]], 'very large coordinates still hash to one cell');
+// Exact edge cases with a power-of-two tolerance: a neighbour exactly one
+// tolerance away sits on the next cell's first value.
+for (const k of [9830, -9830, 1]) {
+  const edge = k * CELL, small = Math.pow(2, -22);
+  assert.deepStrictEqual(groupsOf([[edge - small, 0.5, 0.5], [edge, 0.5, 0.5]], small), [[0, 1]], 'exactly one tolerance below a cell edge: ' + k);
+  assert.deepStrictEqual(groupsOf([[edge, 0.5, 0.5], [edge - small, 0.5, 0.5]], small), [[0, 1]], 'either order: ' + k);
+  assert.deepStrictEqual(groupsOf([[0.5, edge - small, edge], [0.5, edge, edge - small]], small), [[0, 1]], 'on the other axes: ' + k);
+}
 function brute(positions, tolerance) {
   const parent = positions.map((_, i) => i), root = v => parent[v] === v ? v : (parent[v] = root(parent[v]));
   for (let a = 0; a < positions.length; a++) for (let b = a + 1; b < positions.length; b++)
@@ -120,7 +129,7 @@ function brute(positions, tolerance) {
   const groups = new Map(); positions.forEach((_, v) => { const r = root(v); groups.set(r, (groups.get(r) || []).concat([v])); });
   return Array.from(groups.values()).filter(g => g.length > 1);
 }
-for (const tolerance of [0, 1e-7, T, 4e-6, 5e-5]) {
+for (const tolerance of [0, 1e-7, T, 4e-6, 5e-5, 1.5e-4]) {
   for (let round = 0; round < 6; round++) {
     const positions = [];
     for (let i = 0; i < 160; i++) {
