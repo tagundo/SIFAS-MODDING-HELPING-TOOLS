@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from webtools.core import game_motion_selection as selection
-from webtools.core import model_viewer
+from webtools.core import cri_audio_decode, model_viewer, mv_studio, mv_studio_actor_cache, mv_studio_quality
 from webtools.core import mv_studio_game as studio
 
 
@@ -163,6 +163,64 @@ class SharedDownloadTests(unittest.TestCase):
             self.assertIsNone(studio.load_asset(self.root, self.section(0, 8), download=True))
             self.assertIsNone(studio.load_asset(self.root, self.section(0, 8), download=True))
         self.assertEqual(self.remote.call_count, 2)
+
+
+class LoadGameWiringTests(unittest.TestCase):
+    """load_game holds one shared read and download store for the whole import, and none after it."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.seen = []
+        asset = lambda name, size: {"table": "test-assets", "asset": name, "available": True, "size": size}
+        chosen = {
+            "name": "Wiring fixture", "region": "gl", "platform": "android", "liveId": 10, "assetId": 11,
+            "timeline": asset("timeline", 300), "choreography": [asset("dance", 40)],
+            "stage": {"name": "Original stage", "model": asset("stage", 200)},
+            "performers": [{"position": 1, "memberId": 210, "memberName": "Ayumu", "model": asset("actor", 900)},
+                           {"position": 2, "memberId": 211, "memberName": "Kasumi", "model": asset("actor2", 800)}],
+            "audio": {"cue": "song", "acb": asset("audio", 70), "awb": asset("wave", 30)},
+        }
+        self.addCleanup(patch.stopall)
+        patch.object(studio, "resolve", return_value=chosen).start()
+        patch.object(studio, "load_asset", side_effect=self.load_asset).start()
+        patch.object(mv_studio_quality, "read_quality", return_value={"values": {}}).start()
+        patch.object(mv_studio_actor_cache, "open_cache", return_value=None).start()
+        patch.object(mv_studio, "_root", return_value=self.root).start()
+        patch.object(mv_studio, "_timeline", side_effect=lambda path: (path.read_bytes(), {
+            "duration": 12.0, "tracks": [{"id": "t", "kind": "camera", "label": "camera", "events": []}]})).start()
+        patch.object(mv_studio, "_preview", side_effect=lambda path, **kwargs: (
+            "/api/mv-studio/media/" + "0" * 32 + ".glb", {"clips": []} if kwargs.get("performer") else {})).start()
+        patch.object(mv_studio, "_motion", side_effect=self.motion).start()
+        patch.object(mv_studio, "_facial", side_effect=lambda timeline, motion, *args: motion).start()
+        patch.object(cri_audio_decode, "decode_cue").start()
+        patch.object(mv_studio, "_song_audio", return_value={"url": "/api/mv-studio/media/test.wav", "duration": 14.0}).start()
+        patch.object(mv_studio, "_register", side_effect=lambda project, native: {**project, "token": "t" * 32}).start()
+
+    def note(self, where):
+        reads, packs = getattr(selection._SHARED, "reads", None), getattr(studio._SHARED, "packs", None)
+        self.seen.append((where, isinstance(reads, dict) and id(reads), isinstance(packs, dict) and id(packs)))
+
+    def load_asset(self, root, descriptor, *, download, deadline):
+        self.note("load")
+        return descriptor["asset"].encode()
+
+    def motion(self, *args):
+        self.note("motion")
+        return [], {"bodySegments": []}
+
+    def test_one_store_of_each_kind_spans_the_import(self):
+        mv_studio.load_game(self.root, region="gl", platform="android", live_id=10, asset_id=11, language="en",
+                            download=True)
+        self.assertEqual([where for where, _, _ in self.seen].count("motion"), 2)
+        self.assertGreater([where for where, _, _ in self.seen].count("load"), 2)
+        # Every member's dance selection and every section read sees the same two stores.
+        self.assertTrue(all(reads and packs for _, reads, packs in self.seen), self.seen)
+        self.assertEqual(len({(reads, packs) for _, reads, packs in self.seen}), 1)
+        # Nothing is kept once the import returns.
+        self.assertIsNone(getattr(selection._SHARED, "reads", None))
+        self.assertIsNone(getattr(studio._SHARED, "packs", None))
 
 
 if __name__ == "__main__":
