@@ -98,7 +98,7 @@ class WhitelistTests(unittest.TestCase):
         scaling = table["LiveMemberScalingClip"]["intensity"]
         self.assertEqual((scaling["control"], scaling["min"], scaling["max"]), ("slider", 0, 1))
         controls = {"number", "slider", "vector", "color", "enum", "enum-observed", "enum-members", "member-slot",
-                    "bool-int", "text", "facial-index", "readonly"}
+                    "member-colors", "bool-int", "text", "facial-index", "readonly"}
         for native, fields in table.items():
             for field, spec in fields.items():
                 self.assertIn(spec["control"], controls, f"{native}.{field}")
@@ -147,6 +147,44 @@ class WhitelistTests(unittest.TestCase):
         for bad in (-.5, 61.0):
             with self.assertRaisesRegex(ValueError, "invalid focusTransitionTime"):
                 studio._set_playable_value(tree, "LiveDepthOfFieldClip", "focusTransitionTime", bad)
+
+    def test_penlight_motion_ranges_and_palette(self):
+        tree = {"swingMode": 1, "basicYZMoveY": .5, "growthYZSwingBottomZ": .8, "basicYZSwingPowerZ": 4.,
+                "position": {"x": 0., "y": -.4, "z": 0.}}
+        for mode in range(5):
+            studio._set_playable_value(tree, "LivePenlightClip", "swingMode", mode)
+        self.assertEqual(tree["swingMode"], 4)
+        for bad in (5, -1, 1.0):
+            with self.assertRaisesRegex(ValueError, "outside the supported native range"):
+                studio._set_playable_value(tree, "LivePenlightClip", "swingMode", bad)
+        for field, good, bad in (("basicYZMoveY", -10, 10.5), ("growthYZSwingBottomZ", .99, 1.0),
+                                 ("growthYZSwingBottomZ", .01, 0.0), ("basicYZSwingPowerZ", 0, -.1)):
+            with self.subTest(field=field):
+                studio._set_playable_value(tree, "LivePenlightClip", field, good)
+                self.assertEqual(tree[field], good)
+                with self.assertRaisesRegex(ValueError, f"invalid {field}"):
+                    studio._set_playable_value(tree, "LivePenlightClip", field, bad)
+        studio._set_playable_value(tree, "LivePenlightClip", "position", {"x": 1., "y": 0., "z": -2.})
+        self.assertEqual(tree["position"], {"x": 1., "y": 0., "z": -2.})
+        self.assertNotIn("growthYZSwingPowerY", studio._EDITABLE_VALUES["LivePenlightClip"])
+
+        def entry(slot, kind=1, color=None):
+            return {"color": color or {"r": 1., "g": 1., "b": 1., "a": 1.}, "colorSpecifiedType": kind, "memberPosition": slot}
+
+        palette = {"memberColors": [entry(1), entry(2), entry(0, 0)]}
+        revised = [entry(2, 2), entry(2), entry(0, 0, {"r": 2., "g": .5, "b": 0., "a": 1.})]
+        studio._set_playable_value(palette, "LivePenlightClip", "memberColors", deepcopy(revised))
+        self.assertEqual(palette["memberColors"], revised)
+        for bad, message in (([entry(1)], "length and fields"), ([*revised, entry(3)], "length and fields"),
+                             ([{**entry(1), "extra": 1}, entry(2), entry(0, 0)], "length and fields"),
+                             ([entry(1, 3), entry(2), entry(0, 0)], "colorSpecifiedType"),
+                             ([entry(13), entry(2), entry(0, 0)], "Choose a member this MV has"),
+                             ([entry(1, True), entry(2), entry(0, 0)], "colorSpecifiedType"),
+                             ("x", "length and fields")):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, message):
+                studio._set_playable_value(deepcopy(palette), "LivePenlightClip", "memberColors", bad)
+        # An unchanged entry keeps its stock value (slot 0 here) as it is.
+        self.assertEqual(palette["memberColors"][2]["memberPosition"], 0)
 
     def test_colour_source_classes_are_the_ones_with_a_member_colour_preview(self):
         self.assertEqual(studio._COLOR_SOURCE_CLASSES, {
@@ -265,6 +303,29 @@ class CheckValuesTests(unittest.TestCase):
         studio._check_values(bound, revise("dof:1", memberPosition=2, useMemberDistance=1))
         with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
             studio._check_values(bound, revise("rim:2", colorSpecifiedType=1))
+
+    def test_a_penlight_palette_entry_names_a_performer_slot(self):
+        def entry(slot, kind=1):
+            return {"color": {"r": 1., "g": 1., "b": 1., "a": 1.}, "colorSpecifiedType": kind, "memberPosition": slot}
+
+        original = timeline(("crowd", [event("crowd:0", "LivePenlightClip", {"memberColors": [entry(1), entry(2), entry(0, 0)]})]))
+        original["tracks"].extend({"id": f"d{slot}", "kind": "dance", "nativeClass": "AnimationTrack", "label": f"d{slot}",
+                                   "binding": f"/EntryPoint/Live/Members/Member{slot}/Model", "events": []} for slot in (1, 2))
+
+        def revise(*entries):
+            revised = deepcopy(original)
+            revised["tracks"][0]["events"][0]["values"]["memberColors"] = list(entries)
+            return revised
+
+        studio._check_values(original, revise(entry(2), entry(1), entry(0, 0)))
+        studio._check_values(original, revise(entry(1, 0), entry(2, 2), entry(0, 0)))
+        with self.assertRaisesRegex(ValueError, "Choose a member this MV has"):
+            studio._check_values(original, revise(entry(3), entry(2), entry(0, 0)))
+        with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
+            studio._check_values(original, revise(entry(1), entry(2), entry(0, 1)))
+        # Malformed palettes are left to the export's own check.
+        studio._check_values(original, revise(entry(1)))
+        studio._check_values(original, revise("x", entry(2), entry(0, 0)))
 
     def test_malformed_revisions_are_left_to_the_structure_check(self):
         for revised in (None, {}, {"tracks": None}, {"tracks": [None, {"events": [None, {"id": 3}]}]}):
@@ -547,6 +608,65 @@ class GroupMemberTests(unittest.TestCase):
         item["values"]["memberPosition"] = max(studio.performer_slots(parsed["tracks"])) + 1
         with self.assertRaisesRegex(ValueError, "Choose a member this MV has"):
             studio.export_timeline(raw, path.name, tracks)
+
+
+class PenlightTests(unittest.TestCase):
+    """Penlight crowd motion on a real timeline (12035 here): export, parse back, Elichika's validator."""
+
+    @classmethod
+    def setUpClass(cls):
+        for path in sample_timelines():
+            raw = path.read_bytes()
+            parsed = studio.parse_timeline(raw, path.name)
+            if any("memberColors" in item["editableValues"] for track in parsed["tracks"] for item in track["events"]):
+                cls.sample = path, raw, parsed
+                return
+        raise unittest.SkipTest("No original timeline sample with an editable penlight clip")
+
+    def test_motion_fields_export_parse_back_and_pass_the_install_validator(self):
+        path, raw, parsed = self.sample
+        slots = sorted(studio.performer_slots(parsed["tracks"]))
+        tracks = deepcopy(parsed["tracks"])
+        clip = next(item for track in tracks for item in track["events"] if "memberColors" in item["editableValues"])
+        values = clip["values"]
+        values["swingMode"] = 4 if values["swingMode"] != 4 else 2
+        values["basicXMoveX"] = .45
+        values["growthYZSwingBottomZ"] = .6
+        values["position"] = {**values["position"], "z": values["position"]["z"] - 1.5}
+        colors = deepcopy(values["memberColors"])
+        colors[0] = {**colors[0], "color": {"r": 2., "g": .25, "b": .5, "a": 1.}, "colorSpecifiedType": 0,
+                     "memberPosition": slots[-1]}
+        values["memberColors"] = colors
+        output = studio.export_timeline(raw, path.name, tracks)
+        again = {item["id"]: item for track in studio.parse_timeline(output, path.name)["tracks"] for item in track["events"]}
+        got = again[clip["id"]]["values"]
+        self.assertEqual((got["swingMode"], got["memberColors"][0]["colorSpecifiedType"],
+                          got["memberColors"][0]["memberPosition"]), (values["swingMode"], 0, slots[-1]))
+        for field in ("basicXMoveX", "growthYZSwingBottomZ"):
+            self.assertAlmostEqual(got[field], values[field], places=6)
+        self.assertAlmostEqual(got["position"]["z"], values["position"]["z"], places=5)
+        self.assertAlmostEqual(got["memberColors"][0]["color"]["g"], .25, places=6)
+        try:
+            import UnityPy
+            import mv_studio_native_assets as native
+        except ImportError:
+            return
+        import time
+        platform = int(list(UnityPy.load(raw).assets)[0].target_platform)
+        native._validate_timeline(output, raw, platform, time.monotonic() + 120)
+
+    def test_a_project_saved_before_the_motion_fields_exports_unchanged(self):
+        path, raw, parsed = self.sample
+        added = set(studio._EDITABLE_VALUES["LivePenlightClip"]) - {
+            "tintColor", "fogIntensity", "randomBrightness", "beatLength", "beatOffset", "randomDelay", "randomUp",
+            "randomSwingIntensity"}
+        old = deepcopy(parsed["tracks"])
+        for track in old:
+            for item in track["events"]:
+                if item["values"].get("playableClass") == "LivePenlightClip":
+                    item["editableValues"] = [field for field in item["editableValues"] if field not in added]
+        self.assertNotEqual(old, parsed["tracks"])
+        self.assertIs(studio.export_timeline(raw, path.name, old), raw)
 
 
 class ServerGuardMessageTests(unittest.TestCase):

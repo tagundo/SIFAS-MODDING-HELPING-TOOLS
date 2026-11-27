@@ -4333,6 +4333,37 @@ _MV_EXPORT_SLOT_TRANSLATIONS = {
     "Colour member": ("색 기준 멤버", "色の基準メンバー"),
     "Height from member": ("높이 기준 멤버", "高さの基準メンバー"),
     "Choose a member this MV has.": ("이 MV에 있는 멤버를 고르세요.", "このMVにいるメンバーを選んでください。"),
+    # Penlight crowd motion (LivePenlightClip descriptors and export guards).
+    "Swing motion": ("흔들기 동작", "振りの動き"),
+    "Penlight colours": ("펜라이트 색", "ペンライトの色"),
+    "Colour {n}": ("색 {n}", "色 {n}"),
+    "Still": ("멈춤", "止める"),
+    "Front-back swing": ("앞뒤 흔들기", "前後の振り"),
+    "Rising swing": ("올려 흔들기", "持ち上げる振り"),
+    "Side swing": ("좌우 흔들기", "左右の振り"),
+    "Sway": ("살랑 흔들기", "ゆらゆら揺らす"),
+    "Crowd position (m)": ("관객 위치 (m)", "観客の位置 (m)"),
+    "Front-back swing: lift (m)": ("앞뒤 흔들기: 올림 (m)", "前後の振り: 上げ幅 (m)"),
+    "Front-back swing: reach (m)": ("앞뒤 흔들기: 앞으로 뻗기 (m)", "前後の振り: 前への幅 (m)"),
+    "Front-back swing: tilt (rad)": ("앞뒤 흔들기: 기울기 (rad)", "前後の振り: 傾き (rad)"),
+    "Front-back swing: rest point": ("앞뒤 흔들기: 기준 위치", "前後の振り: 基準の位置"),
+    "Front-back swing: snap": ("앞뒤 흔들기: 끊어 치기", "前後の振り: キレ"),
+    "Rising swing: lift (m)": ("올려 흔들기: 올림 (m)", "持ち上げる振り: 上げ幅 (m)"),
+    "Rising swing: reach (m)": ("올려 흔들기: 앞으로 뻗기 (m)", "持ち上げる振り: 前への幅 (m)"),
+    "Rising swing: tilt (rad)": ("올려 흔들기: 기울기 (rad)", "持ち上げる振り: 傾き (rad)"),
+    "Rising swing: rest point": ("올려 흔들기: 기준 위치", "持ち上げる振り: 基準の位置"),
+    "Rising swing: snap": ("올려 흔들기: 끊어 치기", "持ち上げる振り: キレ"),
+    "Rising swing: turn point": ("올려 흔들기: 전환 지점", "持ち上げる振り: 切り替えの位置"),
+    "Rising swing: lift curve": ("올려 흔들기: 올림 곡선", "持ち上げる振り: 上げのカーブ"),
+    "Side swing: tilt (rad)": ("좌우 흔들기: 기울기 (rad)", "左右の振り: 傾き (rad)"),
+    "Side swing: reach (m)": ("좌우 흔들기: 옆으로 뻗기 (m)", "左右の振り: 横への幅 (m)"),
+    "Side swing: lift (m)": ("좌우 흔들기: 올림 (m)", "左右の振り: 上げ幅 (m)"),
+    "Sway: side tilt (rad)": ("살랑 흔들기: 좌우 기울기 (rad)", "ゆらゆら揺らす: 左右の傾き (rad)"),
+    "Sway: front tilt (rad)": ("살랑 흔들기: 앞뒤 기울기 (rad)", "ゆらゆら揺らす: 前後の傾き (rad)"),
+    "Keep the penlight colour list's length and fields.": (
+        "펜라이트 색 목록의 길이와 항목은 그대로 두세요.", "ペンライトの色リストの長さと項目はそのままにしてください。"),
+    "'colorSpecifiedType' is outside the supported native range.": (
+        "'colorSpecifiedType' 값이 지원하는 원본 범위를 벗어났습니다.", "'colorSpecifiedType'の値が対応する元の範囲を外れています。"),
 }
 for _source, (_korean, _japanese) in _MV_EXPORT_SLOT_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean

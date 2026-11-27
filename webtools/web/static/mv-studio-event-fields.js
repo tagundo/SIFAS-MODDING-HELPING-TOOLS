@@ -24,7 +24,8 @@
   //   color, enum (set), enum-observed (scope: track | timeline, set or format),
   //   enum-members (gaze targets), member-slot (the project's member slots), bool-int,
   //   text (maxLength), facial-index (facial: eyes | mouth), readonly (set, member).
-  //   member: true shows a slot as "Member n · name". badge "not-previewed": the
+  //   member: true shows a slot as "Member n · name". member-colors: a penlight palette
+  //   (colour, colour source, member per entry). badge "not-previewed": the
   //   value is exported but the 3D preview does not show it.
   const TABLE = /* descriptors:begin */ {
     "sets": {
@@ -33,7 +34,8 @@
       "flashStatus": [[0, "Off"], [1, "On"], [2, "All"]],
       "cheekType": [[0, "Blush pattern 1"], [1, "Blush pattern 2"]],
       "bodyPart": [[0, "Head"], [1, "Head (all)"], [2, "Face"], [3, "Hips"], [4, "Neck"]],
-      "focusTarget": [[0, "The chosen member"], [1, "The nearest member"], [2, "The member nearest the centre"]]
+      "focusTarget": [[0, "The chosen member"], [1, "The nearest member"], [2, "The member nearest the centre"]],
+      "swingMode": [[0, "Still"], [1, "Front-back swing"], [2, "Rising swing"], [3, "Side swing"], [4, "Sway"]]
     },
     "labels": {
       "color": "Colour",
@@ -196,7 +198,27 @@
         "beatOffset": {"control": "number", "min": -1000, "max": 1000, "label": "Beat offset"},
         "randomDelay": {"control": "vector", "label": "Random delay"},
         "randomUp": {"control": "vector", "label": "Random rise"},
-        "randomSwingIntensity": {"control": "slider", "min": 0, "max": 1, "step": 0.001, "label": "Random swing strength"}
+        "randomSwingIntensity": {"control": "slider", "min": 0, "max": 1, "step": 0.001, "label": "Random swing strength"},
+        "swingMode": {"control": "enum", "set": "swingMode", "label": "Swing motion"},
+        "memberColors": {"control": "member-colors", "label": "Penlight colours"},
+        "position": {"control": "vector", "label": "Crowd position (m)"},
+        "basicYZMoveY": {"control": "number", "min": -10, "max": 10, "label": "Front-back swing: lift (m)"},
+        "basicYZMoveZ": {"control": "number", "min": -10, "max": 10, "label": "Front-back swing: reach (m)"},
+        "basicYZRotateZ": {"control": "number", "min": -10, "max": 10, "label": "Front-back swing: tilt (rad)"},
+        "basicYZSwingBackZ": {"control": "number", "min": -10, "max": 10, "label": "Front-back swing: rest point"},
+        "basicYZSwingPowerZ": {"control": "number", "min": 0, "max": 100, "label": "Front-back swing: snap"},
+        "growthYZMoveY": {"control": "number", "min": -10, "max": 10, "label": "Rising swing: lift (m)"},
+        "growthYZMoveZ": {"control": "number", "min": -10, "max": 10, "label": "Rising swing: reach (m)"},
+        "growthYZRotateZ": {"control": "number", "min": -10, "max": 10, "label": "Rising swing: tilt (rad)"},
+        "growthYZSwingBackZ": {"control": "number", "min": -10, "max": 10, "label": "Rising swing: rest point"},
+        "growthYZSwingPowerZ": {"control": "number", "min": 0, "max": 100, "label": "Rising swing: snap"},
+        "growthYZSwingBottomZ": {"control": "number", "min": 0.01, "max": 0.99, "label": "Rising swing: turn point"},
+        "growthYZSwingPowerY": {"control": "readonly", "label": "Rising swing: lift curve"},
+        "basicXRotateX": {"control": "number", "min": -10, "max": 10, "label": "Side swing: tilt (rad)"},
+        "basicXMoveX": {"control": "number", "min": -10, "max": 10, "label": "Side swing: reach (m)"},
+        "basicXMoveY": {"control": "number", "min": -10, "max": 10, "label": "Side swing: lift (m)"},
+        "simpleXZRotateX": {"control": "number", "min": -10, "max": 10, "label": "Sway: side tilt (rad)"},
+        "simpleXZRotateZ": {"control": "number", "min": -10, "max": 10, "label": "Sway: front tilt (rad)"}
       },
       "CustomControlClip": {
         "weight": {"control": "slider", "min": 0, "max": 1, "step": 0.001, "badge": "not-previewed"},
@@ -585,6 +607,28 @@
     return row(ctx, info.key, spec, [input]);
   }
 
+  // LivePenlightClip.memberColors: one group per palette entry with its colour, colour source and
+  // member. The list keeps its length; each control writes the whole list with one entry changed.
+  function memberColorsControl(ctx, info, spec) {
+    const list = info.value;
+    if (!Array.isArray(list) || !list.length || list.length > 12 || !list.every((entry) => isObject(entry) &&
+      isColor(entry.color) && Number.isInteger(entry.colorSpecifiedType) && Number.isInteger(entry.memberPosition))) return undefined;
+    const current = () => { const value = stored(info, list); return Array.isArray(value) && value.length === list.length ? value : list; };
+    const entries = list.map((_, index) => {
+      const entry = () => current()[index];
+      const part = (key) => ({ ...info, key, path: `${info.path}.${index}.${key}`, value: entry()[key],
+        event: { values: { get [key]() { return entry()[key]; } } },
+        set: (next) => info.set(current().map((item, at) => at === index ? { ...item, [key]: next } : item)) });
+      const group = ctx.make("fieldset", null, { class: "mv-value-entry", "data-mv-entry": String(index) });
+      group.append(ctx.make("legend", ctx.format("Colour {n}", { n: index + 1 })),
+        colorControl(ctx, part("color"), { control: "color" }),
+        selectControl(ctx, part("colorSpecifiedType"), { control: "enum", set: "colorSource" }),
+        selectControl(ctx, part("memberPosition"), { control: "member-slot", member: true, label: "Colour member" }));
+      return group;
+    });
+    return row(ctx, info.key, spec, entries, { wide: true, group: true });
+  }
+
   // A value that is not writable: the same reading, no input and no data-mv-field.
   function readonlyControl(ctx, info, spec) {
     const value = info.value;
@@ -619,7 +663,7 @@
     number: numberControl, slider: sliderControl, vector: vectorControl, color: colorControl,
     enum: selectControl, "enum-observed": selectControl, "enum-members": selectControl, "member-slot": selectControl,
     "facial-index": selectControl,
-    "bool-int": boolControl, text: textControl,
+    "bool-int": boolControl, text: textControl, "member-colors": memberColorsControl,
   };
 
   function valueControl(ctx, info) {

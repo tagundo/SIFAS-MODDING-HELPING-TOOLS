@@ -701,7 +701,11 @@ _EDITABLE_VALUES = {
     "LiveColoringClip": {"shift", "tintColor", "speed", "textureIndex"},
     "LiveCameraOffsetClip": {"intensity", "memberPosition"},
     "LivePenlightClip": {"tintColor", "fogIntensity", "randomBrightness", "beatLength", "beatOffset",
-                         "randomDelay", "randomUp", "randomSwingIntensity"},
+                         "randomDelay", "randomUp", "randomSwingIntensity", "swingMode", "position", "memberColors",
+                         "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ", "basicYZSwingPowerZ",
+                         "growthYZMoveY", "growthYZMoveZ", "growthYZRotateZ", "growthYZSwingBackZ", "growthYZSwingPowerZ",
+                         "growthYZSwingBottomZ", "basicXRotateX", "basicXMoveX", "basicXMoveY", "simpleXZRotateX",
+                         "simpleXZRotateZ"},
     "CustomControlClip": {"weight", "offset"},
     "LiveMemberScalingClip": {"intensity"},
     "LivePropAmbientClip": {"color", "tintColor", "colorSpecifiedType", "memberPosition"},
@@ -725,6 +729,9 @@ _LIMITED_VALUES = {
     ("LiveBaseLightClip", "ambientColorType"): (0, 2),
     ("LiveBaseLightClip", "rimlightColorType"): (0, 2),
     ("LiveFlashLightClip", "status"): (0, 2),
+    # AS/Penlight ships one variant per swing keyword (_SWING_MODE_STOP, _BASIC_YZ, _GROWTH_YZ,
+    # _BASIC_X, _SIMPLE_XZ); stock clips use 0 to 3 (mv-studio-penlight.js uMode).
+    ("LivePenlightClip", "swingMode"): (0, 4),
 }
 # Values that name a member slot: a changed one must be a slot this timeline binds a performer
 # model to (_PERFORMER_MODEL). The client reads Members[slot - 1] behind a bounds check and throws
@@ -737,7 +744,23 @@ MEMBER_SLOT = "Choose a member this MV has."
 # Float fields with a native range (other floats take any value within +-1e6).
 _FLOAT_RANGES = {
     ("LiveDepthOfFieldClip", "focusTransitionTime"): (0, 60),
+    # AS/Penlight swing shapes (mv-studio-penlight.js): moves in metres, tilts in radians, the
+    # rest offsets, and two exponents of a 0..1 wave (negative would divide by zero at 0).
+    # growthYZSwingBottomZ splits the growth cycle (cycle / z and (cycle - z) / (1 - z)), so it stays
+    # inside 0..1. growthYZSwingPowerY stays read-only: the preview reads LivePenlightMixer as passing
+    # it on multiplied by its reset output (mv-studio-penlight.js uGrowthShape.x = 0), so an edit would
+    # change nothing in the game (not re-read for this change).
+    **{("LivePenlightClip", field): (-10, 10) for field in (
+        "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ", "growthYZMoveY", "growthYZMoveZ",
+        "growthYZRotateZ", "growthYZSwingBackZ", "basicXRotateX", "basicXMoveX", "basicXMoveY", "simpleXZRotateX",
+        "simpleXZRotateZ")},
+    ("LivePenlightClip", "basicYZSwingPowerZ"): (0, 100),
+    ("LivePenlightClip", "growthYZSwingPowerZ"): (0, 100),
+    ("LivePenlightClip", "growthYZSwingBottomZ"): (.01, .99),
 }
+# LivePenlightClip.memberColors: one entry per palette slot; the length stays (the client sizes the
+# palette from it), each entry keeps its fields.
+_MEMBER_COLOR_KEYS = frozenset({"color", "colorSpecifiedType", "memberPosition"})
 # Indices into game-side lists the bundle does not describe (coloring textures,
 # display materials, shaft draw objects, BodyPartManager parts): a revision may
 # only pick a value the original MV already uses for that field, on the same
@@ -914,7 +937,31 @@ def _set_timing(clip, field, value):
     clip[_TIMING_NATIVE[field]] = value
 
 
+def _member_colors(native, value):
+    """A revised LivePenlightClip.memberColors: the same length and fields; an entry takes a colour, a
+    changed colour source 0..2 and a changed member slot 1..12 (_check_values checks the slot against
+    the MV). An unchanged source or slot stays as stock has it (custom-colour entries may hold 0)."""
+    if (not isinstance(native, list) or not isinstance(value, list) or len(value) != len(native)
+            or any(not isinstance(entry, dict) or entry.keys() != _MEMBER_COLOR_KEYS for entry in (*native, *value))):
+        raise ValueError("Keep the penlight colour list's length and fields.")
+    result = []
+    for old, new in zip(native, value):
+        if new == old:
+            result.append(old)
+            continue
+        kind, slot = new["colorSpecifiedType"], new["memberPosition"]
+        if type(kind) is not int or kind != old["colorSpecifiedType"] and not 0 <= kind <= 2:
+            raise ValueError("'colorSpecifiedType' is outside the supported native range.")
+        if type(slot) is not int or slot != old["memberPosition"] and not 1 <= slot <= 12:
+            raise ValueError(MEMBER_SLOT)
+        result.append({key: _replace_value(old[key], new[key], "memberColors") for key in old})
+    return result
+
+
 def _set_playable_value(tree, native, field, value):
+    if native == "LivePenlightClip" and field == "memberColors":
+        tree[field] = _member_colors(tree[field], value)
+        return
     bounds = _LIMITED_VALUES.get((native, field))
     if bounds and (type(value) is not int or not bounds[0] <= value <= bounds[1]):
         raise ValueError(f"'{field}' is outside the supported native range.")
@@ -945,6 +992,23 @@ def performer_slots(tracks):
             if match:
                 slots.add(int(match[1]))
     return frozenset(slots)
+
+
+def _check_member_colors(before, after, slots):
+    """A changed penlight palette entry names a performer slot, and a member colour source needs a
+    member slot; malformed lists are left to _member_colors."""
+    if not isinstance(before, list) or not isinstance(after, list) or len(before) != len(after):
+        return
+    for old, new in zip(before, after):
+        if not isinstance(old, dict) or not isinstance(new, dict) or new == old:
+            continue
+        slot = new.get("memberPosition")
+        if slot != old.get("memberPosition") and not (type(slot) is int and slot in slots):
+            raise ValueError(MEMBER_SLOT)
+        kind = new.get("colorSpecifiedType")
+        if (kind != old.get("colorSpecifiedType") and type(kind) is int and kind in (1, 2)
+                and not (type(slot) is int and 1 <= slot <= 12)):
+            raise ValueError(_COLOUR_MEMBER)
 
 
 def _check_values(original, revised):
@@ -987,6 +1051,8 @@ def _check_values(original, revised):
                     raise ValueError(f"Choose a value this MV already uses for '{field}'.")
                 if (native, field) in _MEMBER_POSITIONS and not (type(value) is int and value in slots):
                     raise ValueError(MEMBER_SLOT)
+                if native == "LivePenlightClip" and field == "memberColors":
+                    _check_member_colors(before[field], value, slots)
                 rule = _MEMBER_SLOT_VALUES.get((native, field))
                 slot = after.get(rule[2], before.get(rule[2])) if rule else None
                 if rule and type(value) is int and value in rule[0] and not (type(slot) is int and 1 <= slot <= 12):
