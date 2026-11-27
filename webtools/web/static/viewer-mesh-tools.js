@@ -173,17 +173,46 @@
   function buildPositionGroups(count, positionAt, tolerance) {
     tolerance = tolerance === undefined ? SAME_POSITION_TOLERANCE : Math.max(0, +tolerance || 0);
     // Spatial hash over power-of-two cells wider than the tolerance, hashed to
-    // an integer, with a chain of vertices per hash. A neighbour within the
-    // tolerance is in this cell or, near its edge, the next one. Collisions
-    // only add candidates; every candidate is compared on all three axes.
+    // an integer. A neighbour within the tolerance is in this cell or, near
+    // its edge, the next one. Collisions only add candidates; every candidate
+    // is compared on all three axes.
+    // Each hash keeps its vertices in buckets, one per connected component
+    // (components only ever merge, so a bucket stays one component). A vertex
+    // skips buckets of its own component and stops a bucket at the first
+    // member within the tolerance: one match joins the whole bucket. So many
+    // copies at one point, or a dense cluster of near copies (a collapsed or
+    // shrunken part), cost one comparison each instead of the whole cell.
     var cell = SAME_POSITION_CELL; while (cell <= tolerance) cell *= 2;
-    var parent = new Int32Array(count), coords = new Float64Array(count * 3), next = new Int32Array(count), heads = new Map(), joined = false;
+    var parent = new Int32Array(count), coords = new Float64Array(count * 3), next = new Int32Array(count), heads = new Map(), joined = false, compares = 0;
+    var bucketCount = 0, bucketRep = new Int32Array(count), bucketHead = new Int32Array(count), bucketTail = new Int32Array(count), bucketNext = new Int32Array(count);
     function root(v) { while (parent[v] !== v) { parent[v] = parent[parent[v]]; v = parent[v]; } return v; }
     function join(a, b) { a = root(a); b = root(b); if (a !== b) { if (b < a) { var swap = a; a = b; b = swap; } parent[b] = a; joined = true; } }
     function hash(x, y, z) { return Math.imul(x | 0, 73856093) ^ Math.imul(y | 0, 19349663) ^ Math.imul(z | 0, 83492791); }
     function scan(v, x, y, z) {
-      for (var other = heads.get(hash(x, y, z)); other !== undefined && other >= 0; other = next[other])
-        if (Math.abs(coords[other * 3] - coords[v * 3]) <= tolerance && Math.abs(coords[other * 3 + 1] - coords[v * 3 + 1]) <= tolerance && Math.abs(coords[other * 3 + 2] - coords[v * 3 + 2]) <= tolerance) join(other, v);
+      var first = heads.get(hash(x, y, z)), vx = coords[v * 3], vy = coords[v * 3 + 1], vz = coords[v * 3 + 2];
+      for (var bucket = first === undefined ? -1 : first; bucket >= 0; bucket = bucketNext[bucket]) {
+        if (root(bucketRep[bucket]) === root(v)) continue;
+        for (var other = bucketHead[bucket]; other >= 0; other = next[other]) {
+          compares++;
+          if (Math.abs(coords[other * 3] - vx) <= tolerance && Math.abs(coords[other * 3 + 1] - vy) <= tolerance && Math.abs(coords[other * 3 + 2] - vz) <= tolerance) { join(other, v); break; }
+        }
+      }
+    }
+    // Adds v to its hash, newest first, in its component's bucket; buckets
+    // that v's matches merged into one component become one bucket.
+    function insert(v, key) {
+      var first = heads.get(key), rv = root(v), target = -1, previous = -1;
+      for (var bucket = first === undefined ? -1 : first; bucket >= 0;) {
+        var following = bucketNext[bucket];
+        if (root(bucketRep[bucket]) === rv) {
+          if (target < 0) target = bucket;
+          else { next[bucketTail[target]] = bucketHead[bucket]; bucketTail[target] = bucketTail[bucket]; bucketNext[previous] = following; bucket = following; continue; }
+        }
+        previous = bucket; bucket = following;
+      }
+      if (target >= 0) { next[v] = bucketHead[target]; bucketHead[target] = v; return; }
+      target = bucketCount++; bucketRep[target] = v; bucketHead[target] = v; bucketTail[target] = v; next[v] = -1;
+      bucketNext[target] = first === undefined ? -1 : first; heads.set(key, target);
     }
     for (var v = 0; v < count; v++) {
       parent[v] = v; var p = positionAt(v), px = +p[0], py = +p[1], pz = +p[2];
@@ -195,7 +224,7 @@
         if (pz - cz * cell <= tolerance) z0--; if ((cz + 1) * cell - pz <= tolerance) z1++;
       }
       for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) for (var z = z0; z <= z1; z++) scan(v, x, y, z);
-      var key = hash(cx, cy, cz), head = heads.get(key); next[v] = head === undefined ? -1 : head; heads.set(key, v);
+      insert(v, hash(cx, cy, cz));
     }
     // Roots are the lowest member, so groups and members come out ascending.
     var groupOf = new Int32Array(count).fill(-1), groups = [];
@@ -204,7 +233,7 @@
       for (var vertex = 0; vertex < count; vertex++) { var r = root(vertex), members = byRoot.get(r); if (members) members.push(vertex); else byRoot.set(r, [vertex]); }
       byRoot.forEach(function (list) { if (list.length > 1) { list.forEach(function (member) { groupOf[member] = groups.length; }); groups.push(list); } });
     }
-    return { count: count, tolerance: tolerance, groupOf: groupOf, groups: groups };
+    return { count: count, tolerance: tolerance, groupOf: groupOf, groups: groups, compares: compares };
   }
   // The vertices that move with `vertices` (the chosen ones): every other
   // member of their groups. `groups` lists each touched group with its chosen

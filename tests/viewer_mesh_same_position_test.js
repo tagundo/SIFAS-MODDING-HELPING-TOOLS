@@ -142,6 +142,58 @@ for (const tolerance of [0, 1e-7, T, 4e-6, 5e-5, 1.5e-4]) {
   }
 }
 
+// 4b. Degenerate meshes stay linear: many copies at one point, dense clusters
+// of near copies (a collapsed or shrunken part) and a cluster beside other
+// vertices of its cell. A vertex compares with one member of each bucket (one
+// bucket per component per hash) instead of the whole cell; the earlier chain
+// scan took 2.3 s for 4,000 copies at one point and 56 s for a 7,555-vertex
+// mesh plus 20,000 vertices collapsed onto the origin.
+const work = (positions, tolerance) => build(positions.length, v => positions[v], tolerance).compares;
+const onePoint = Array.from({ length: 4000 }, () => [0.25, 1.5, -0.125]);
+assert(work(onePoint) < 4000 && work(onePoint, 0) < 4000, '4000 copies at one point: one comparison each, ' + work(onePoint));
+assert.deepStrictEqual(groupsOf(onePoint).map(group => group.length), [4000]);
+const line = Array.from({ length: 4000 }, (_, i) => [i * 1e-9, 0, 0]);
+assert(work(line) < 4000, 'distinct vertices 1e-9 apart in vertex order: ' + work(line));
+assert.deepStrictEqual(groupsOf(line).map(group => group.length), [4000], 'one chain');
+const shuffled = line.slice().sort(() => random() - 0.5);
+assert(work(shuffled) < 8 * 4000, 'the same vertices shuffled: ' + work(shuffled));
+const blob = Array.from({ length: 4000 }, () => [0.1 + random() * 1e-6, 0.2 + random() * 1e-6, 0.3 + random() * 1e-6]);
+assert(work(blob) < 8 * 4000, '4000 vertices in a 1e-6 cube: ' + work(blob));
+{
+  const mesh = Array.from({ length: 7555 }, () => [random() - 0.5, random() * 1.7, random() - 0.5].map(Math.fround));
+  const collapsed = mesh.concat(Array.from({ length: 20000 }, () => [0, 0, 0])), started = Date.now();
+  const index = build(collapsed.length, v => collapsed[v]);
+  assert(index.compares < 2 * collapsed.length, 'a mesh plus 20,000 vertices collapsed onto the origin: ' + index.compares);
+  assert.equal(index.groups.find(group => group.length === 20000)[0], 7555); assert(Date.now() - started < 2000);
+}
+// Brute force on small degenerate sets. Clusters sit in two cells whose hashes
+// collide (cells (-60,-1,59) and (-60,1,-59) of 2^-15), so their buckets share
+// one list; exact copies, chains, cluster-joining vertices and outliers mix.
+const hashOf = (x, y, z) => Math.imul(x | 0, 73856093) ^ Math.imul(y | 0, 19349663) ^ Math.imul(z | 0, 83492791);
+assert.equal(hashOf(-60, -1, 59), hashOf(-60, 1, -59), 'the two cells share a hash');
+const inCell = (c, offset) => c.map((k, axis) => (k + 0.5) * CELL + offset[axis]);
+for (let round = 0; round < 30; round++) {
+  const tolerance = [T, 0, 4e-6][round % 3], spread = Math.max(tolerance, 1e-7), positions = [];
+  const centres = [inCell([-60, -1, 59], [0, 0, 0]), inCell([-60, 1, -59], [0, 0, 0]), inCell([-60, -1, 59], [3 * spread, -2 * spread, 0]), [0.5, 0.5, 0.5]];
+  for (let i = 0; i < 220; i++) {
+    const centre = centres[Math.floor(random() * centres.length)], kind = random();
+    if (kind < 0.35) positions.push(centre.slice());
+    else if (kind < 0.7) positions.push(centre.map(x => x + (random() - 0.5) * 2.4 * spread));
+    else if (kind < 0.9 && positions.length) { const from = positions[Math.floor(random() * positions.length)]; positions.push(from.map(x => x + (random() - 0.5) * 1.9 * spread)); }
+    else positions.push(centre.map(x => x + (random() - 0.5) * 12 * CELL / 32));
+  }
+  assert.deepStrictEqual(groupsOf(positions, tolerance), brute(positions, tolerance), 'degenerate clusters = brute force, round ' + round);
+}
+{
+  // Bucket merging: u1 and u2 are 1.8 tolerances apart (two buckets), w is
+  // another vertex of the cell inserted between them, c joins u1 and u2 (one
+  // bucket from then on), and later vertices near u1, u2 or w only.
+  const at = inCell([-60, -1, 59], [0, 0, 0]), shift = (dx) => [at[0] + dx * T, at[1], at[2]];
+  const positions = [shift(0), [at[0], at[1] + 5 * T, at[2]], shift(1.8), shift(0.9), shift(-0.6), shift(2.5), [at[0], at[1] + 5.5 * T, at[2]], inCell([-60, 1, -59], [0, 0, 0]), shift(3.3)];
+  assert.deepStrictEqual(groupsOf(positions), brute(positions, T));
+  assert.deepStrictEqual(groupsOf(positions), [[0, 2, 3, 4, 5, 8], [1, 6]]);
+}
+
 // 5. Partners: the chosen vertices' other group members, each tied to the
 // group's lowest chosen vertex; ungrouped and out-of-range picks are ignored.
 const index = build(exact.length, v => exact[v], 0);
