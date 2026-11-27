@@ -16,7 +16,8 @@
      soundtrack catches up, or, beyond `realign`, by asking the host to move the soundtrack
      to the picture (once per start or seek; a soundtrack that still lags is then ignored).
      A reading that falls behind the soundtrack's course is taken for a late one and used
-     only when `confirm` + 1 readings in a row agree;
+     only when `confirm` + 1 readings in a row agree (it still shows that the soundtrack's
+     clock is running, so it does not count toward a stall);
    - after start() or seek(), and whenever the soundtrack stops or resumes (seeking,
      buffering, a stall, a long frame gap), the clock holds and waits for the soundtrack to
      advance, then locks onto it with no confirmation;
@@ -51,8 +52,9 @@
     let last = NaN; // timestamp of the last frame (ms)
     let mode = "wait"; // "wait": hold for the soundtrack; "sync": follow it; "free": frames only
     let rate = 1, error = 0, holding = false, realigned = false, ignored = false;
-    let audio = NaN; // latest distinct soundtrack reading (s) and when it was first seen (ms)
-    let seen = NaN, since = NaN; // since: when waiting began (ms)
+    let audio = NaN, seen = NaN; // the reading followed (s) and when it was first seen (ms)
+    let read = NaN, alive = NaN; // the latest distinct reading, used or not, and when it came (ms)
+    let since = NaN; // when waiting began (ms)
     let step = 1 / 30; // typical advance between distinct readings (s)
     let outliers = 0, outlierSign = 0, late = 0;
     const counts = { snaps: 0, holds: 0, realigns: 0 };
@@ -60,7 +62,7 @@
     const stallLimit = () => clamp(o.stallSteps * step, o.minStall, o.maxStall);
 
     function forget(now) {
-      audio = seen = NaN;
+      audio = seen = read = alive = NaN;
       since = now;
       outliers = outlierSign = late = 0;
     }
@@ -146,21 +148,25 @@
         time += dt;
         return result();
       }
-      let fresh = ready && media !== audio;
-      if (fresh && mode === "sync" && media < audio + Math.min((now - seen) / 1000, stallLimit()) - o.snap) {
+      let fresh = false, advanced = false;
+      if (ready && media !== read) {
+        // A new reading: the soundtrack's clock is alive.
+        read = media;
+        alive = now;
         // Behind where the soundtrack was heading: most likely a late reading (under load a
         // media element can hand out an old position). Used only once `confirm` + 1 agree.
-        if (++late <= o.confirm) fresh = false;
-      } else if (fresh) late = 0;
-      let advanced = false;
-      if (fresh) {
-        const advance = media - audio;
-        advanced = advance > 0;
-        if (advanced && advance < 1) step += (Math.min(advance, o.maxStall) - step) / 4;
-        audio = media;
-        seen = now;
+        const behind = mode === "sync" && media < audio + Math.min((now - seen) / 1000, stallLimit()) - o.snap;
+        late = behind ? late + 1 : 0;
+        if (!behind || late > o.confirm) {
+          fresh = true;
+          const advance = media - audio;
+          advanced = advance > 0;
+          if (advanced && advance < 1) step += (Math.min(advance, o.maxStall) - step) / 4;
+          audio = media;
+          seen = now;
+        }
       }
-      if (mode === "sync" && (!ready || (now - seen) / 1000 > stallLimit())) wait(now, ready ? seen : now);
+      if (mode === "sync" && (!ready || (now - alive) / 1000 > stallLimit())) wait(now, ready ? alive : now);
       if (mode !== "sync") {
         if (advanced) return lock(media, now);
         if (mode === "wait" && (now - since) / 1000 > o.giveUp) mode = "free";

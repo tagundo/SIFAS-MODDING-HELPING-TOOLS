@@ -188,6 +188,20 @@ const report = {};
   assert.equal(glitch.state.holds, 0, 'one stray reading does not hold the picture');
   assert(maxAbs(offsets(after(glitch.rows, 1000))) <= 0.030, 'glitch: within 30 ms');
 
+  // Two late readings in a row (a backward error needs one reading more than a forward one).
+  let updates = 0;
+  const twice = run({ seconds: 4, events: { 120: (audio, clock, t, host) => {
+    host.reading = (track, now) => {
+      const value = track.read(now);
+      if (value !== host.lastValue) { host.lastValue = value; updates++; }
+      return updates >= 2 && updates <= 3 ? value - 0.2 : value;
+    };
+  } } });
+  assert(updates > 3);
+  monotonic(twice.rows, 'two late readings');
+  evenSteps(after(twice.rows, 1000), 'two late readings');
+  assert.equal(twice.state.holds, 0, 'two late readings do not hold the picture');
+
   const back = run({ seconds: 5, events: { 120: (audio, clock, t) => audio.jump(-0.2, t) } });
   monotonic(back.rows, 'backward step');
   assert.equal(back.state.holds, 1, 'a confirmed backward step holds once');
@@ -360,7 +374,7 @@ const report = {};
     backwardsNaive += naiveSteps.filter((step) => step.advance < 0).length;
     total += naiveSteps.length;
   }
-  assert(worst <= D.snap + 0.23, `under load the offset stays below snap plus one long frame (${worst})`);
+  assert(worst <= 0.1, `under load the offset stays within 100 ms (${worst})`);
   assert(backwardsNaive > 0, 'the readings alone go backwards under load');
   report.load = { frames: total, naiveRepeatedFrames: naive, naiveBackwardFrames: backwardsNaive, clockBackwardFrames: 0,
     maxOffsetMs: +(worst * 1000).toFixed(1) };
