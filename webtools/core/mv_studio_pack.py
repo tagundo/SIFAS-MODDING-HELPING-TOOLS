@@ -298,8 +298,9 @@ def export_pack(repo_root, request, *, language="en"):
         # The source's STOCK stage (what "Change the stage too" carries in apply), not its current row.
         stage = apply._source_stage(live, repo_root, loaded["region"], loaded["assetId"])
     # The legacy layout (for the old "Replace Live Camera Timeline" tool) needs a complete stage: the
-    # target slot's own when this pack does not carry the source's, and the source's stock key.
-    target_stage = apply.stage_fields(repo_root, loaded["region"], target["assetId"])
+    # target slot's original one when this pack does not carry the source's (what an install without a
+    # stage puts back), and the source's stock key.
+    target_stage = apply._source_stage(live, repo_root, loaded["region"], target["assetId"])
     data = pack.write_pack(name=request["name"], note=request["note"],
                            song={"liveId": loaded["liveId"], "title": str(loaded["title"])[:160]},
                            source={"region": loaded["region"], "assetId": loaded["assetId"]},

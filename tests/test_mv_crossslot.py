@@ -635,6 +635,19 @@ class PackTests(reg_tests.Case):
                 {"project": project, "name": "p", "target": target}))
             self.assertIsNone(self.written[-1]["stage"])
 
+    def test_the_legacy_layout_gets_the_target_slots_original_stage(self):
+        """Without a stage, an install puts the target slot's ORIGINAL stage back: the legacy layout's
+        target stage is that one, not a stage an override gave the slot."""
+        target_stock = {**STAGE_2101, "live_stage_master_id": 102, "stage_effect_asset_path": "E2201-original"}
+        self.assertNotEqual(apply.stage_fields(self.root, "gl", 2201), target_stock)  # the row now
+        register.store.return_value.overrides[("gl", 2201)] = {"key": "A2201", "stage": STAGE_2101, "source": None,
+                                                               "timelines": {}, "stockStage": target_stock}
+        project = self.project(source={"kind": "game", "region": "gl", "platform": "android", "liveId": 21,
+                                       "assetId": 2101, "mvOnly": False, "registered": False, "timelineKey": "A2101"})
+        mv_studio_pack.export_pack(self.root, mv_studio_pack.validate_export(
+            {"project": project, "name": "p", "target": {"assetId": 2201, "stage": False}}))
+        self.assertEqual((self.written[-1]["stage"], self.written[-1]["targetStage"]), (None, target_stock))
+
     def test_a_pack_without_its_other_original_and_a_legacy_zip(self):
         self.remote["tl2101i"] = self.local.pop("tl2101i")
         project = self.project(source={"kind": "game", "region": "gl", "platform": "android", "liveId": 21,
