@@ -2710,6 +2710,9 @@ _MV_EDITOR_C_TRANSLATIONS = {
         "タッチ: 「複数選択」をオンにするかキーを長押しして、キーをタップします。カメラレーンやグラフを横にドラッグすると範囲選択します。"
         "選択したキーをドラッグするとまとめて動きます。"),
     "Delete selected keys": ("선택한 키 삭제", "選択したキーを削除"),
+    # Split-screen sub cameras ("Camera" is translated in the MV Studio table).
+    "Main camera": ("메인 카메라", "メインカメラ"),
+    "Sub camera {slot}": ("서브 카메라 {slot}", "サブカメラ {slot}"),
 }
 for _source, (_korean, _japanese) in _MV_EDITOR_C_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean

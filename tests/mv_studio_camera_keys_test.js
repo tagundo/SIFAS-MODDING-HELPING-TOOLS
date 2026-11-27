@@ -4,7 +4,7 @@
    updates the key at round(local·60) (the snap-back fix); keys follow a moved shot;
    revert; the duration lock; a layer at order 30 sees the keyed pose; undo/redo
    rebakes identical arrays; Key current view (aspect correction and LiveCameraOffset);
-   quaternion hemisphere continuity; static and editor-made shots of non-native
+   quaternion hemisphere continuity; split-screen sub camera shots; static and editor-made shots of non-native
    projects; simplify; async layers; and the no-regression rule: an unedited project is
    never written to and gets no project.editor. */
 'use strict';
@@ -441,6 +441,102 @@ function keyView() {
   second.at(.5);
   assert(K.keyView(second.ctx));
   near(M.sampleFrames(event(plain, 'cam:0').values.keyframes, .5).fov, 40, 1e-9, 'no correction without the native lens');
+}
+
+// Split-screen sub cameras (12056): their shots take keys, curves and undo like the main camera's,
+// relative to their own rig; the follow camera and other layers stay on the main camera.
+const SPLIT = '/EntryPoint/Live/Cameras/SplitScreenEffect/Cameras';
+function splitProject() {
+  const project = nativeProject();
+  const shot = (id, start, count, phase) => ({ ...copy(project.tracks[0].events[0]), id, start, duration: (count - 1) / 60, label: id,
+    values: { ...copy(project.tracks[0].events[0].values), keyframes: samples(count, { phase }) } });
+  project.tracks.push(
+    { id: 'sub1', kind: 'camera', label: 'Split/SubCamera1', nativeClass: 'AnimationTrack', binding: `${SPLIT}/SubCamera1`,
+      events: [shot('sub1:0', 1, 61, 90), shot('sub1:1', 6, 31, 100)] },
+    { id: 'sub1-offset', kind: 'camera', label: 'Split/SubCamera1 offset', nativeClass: 'LiveCameraOffsetTrack', binding: `${SPLIT}/SubCamera1`,
+      events: [{ id: 'sub1-offset:0', start: 1, duration: 1, values: { playableClass: 'LiveCameraOffsetClip', intensity: 1, memberPosition: 1 } }] },
+    { id: 'sub3', kind: 'camera', label: 'Split/SubCamera3', nativeClass: 'AnimationTrack', binding: `${SPLIT}/SubCamera3`,
+      events: [shot('sub3:0', 1, 61, 120)] });
+  return project;
+}
+
+function subCameras() {
+  const project = splitProject(), before = copy(project);
+  const view = { mode: 'orbit', position: [-3, 2.5, 9], quaternion: M.normalize([.05, .2, -.01, .97]), fov: 40, aspect: 4 / 3 };
+  const bindings = [];
+  const scene = { getViewPose: () => ({ ...view }), onViewChange: () => () => {}, setGameCameraHelper() {},
+    cameraOffsetAt: (time, binding) => { bindings.push(binding); return binding === `${SPLIT}/SubCamera1` ? .2 : 0; } };
+  const { ctx, history, at } = harness(project, { scene });
+  const seen = [];
+  const remove = K.registerLayer({ id: 'probe-main', order: 30, affects: () => true, apply(context, item) { seen.push(item.event.id); } });
+  try {
+    K.requestBake(ctx, {});
+    assert.deepEqual([...new Set(seen)].sort(), ['cam:0', 'cam:1', 'cam:2'], 'layers bake the main camera only');
+  } finally { remove(); }
+  K.requestBake(ctx, {});
+  assert.deepEqual(project.tracks.slice(3), before.tracks.slice(3), 'sub camera shots untouched');
+  assert(Object.keys(project.editor?.originals || {}).every((id) => id.startsWith('cam:')), 'the layer wrote main camera shots only');
+  assert.deepEqual(K.mainCameraShots(ctx).map((item) => item.event.id), ['cam:0', 'cam:1', 'cam:2']);
+  assert.deepEqual(K.cameraShots(ctx).map((item) => item.event.id).sort(), ['cam:0', 'cam:1', 'cam:2', 'sub1:0', 'sub1:1', 'sub3:0']);
+  assert.equal(K.camera(ctx), 'main');
+  at(1.5);
+  assert.equal(K.playheadShot(ctx).event.id, 'cam:0', 'the main camera by default');
+  assert.equal(K.setCamera(ctx, `${SPLIT}/SubCamera2`), false, 'a sub camera the MV does not have');
+  assert(K.setCamera(ctx, `${SPLIT}/SubCamera1`));
+  let shot = K.playheadShot(ctx);
+  assert.equal(shot.event.id, 'sub1:0');
+  assert.deepEqual([shot.sub, shot.index, shot.total, shot.lens, shot.count, shot.frame], [1, 0, 2, false, 61, 30]);
+  at(4);
+  assert.equal(K.playheadShot(ctx), null, 'no sub camera shot here (no hold past a sub shot)');
+  // An offset key moves the sub camera along its own view; the main camera is not rewritten.
+  const sub = event(project, 'sub1:0'), main = event(project, 'cam:0'), mainSamples = main.values.keyframes;
+  const original = copy(sub.values.keyframes);
+  at(1.5);
+  assert(K.setChannels(ctx, 'offset', { z: 1 }));
+  assert.deepEqual(project.editor.camera.shots['sub1:0'].keys.map((key) => key.frame), [30]);
+  sub.values.keyframes.forEach((sample, index) => {
+    const forward = M.rotateVector(M.normalize(original[index].rotation), [0, 0, -1]);
+    nearVector(sample.position.map((value, axis) => value - original[index].position[axis]), forward, 1e-12, `sub sample ${index}`);
+  });
+  assert.equal(main.values.keyframes, mainSamples, 'the main camera is not rewritten');
+  assert(ctx.edited('sub1:0'));
+  // Undo and redo rebake the sub camera shot.
+  history.undo();
+  assert.deepEqual(sub.values.keyframes, original);
+  history.redo();
+  near(sub.values.keyframes[0].position[2] - original[0].position[2], M.rotateVector(M.normalize(original[0].rotation), [0, 0, -1])[2], 1e-12, 'redo');
+  // Key current view: the sub camera's own LiveCameraOffset is removed and its FOV is the view's (no lens correction).
+  at(1 + 45 / 60);
+  assert(K.keyView(ctx));
+  assert.equal(bindings.at(-1), `${SPLIT}/SubCamera1`);
+  const pose = M.sampleFrames(sub.values.keyframes, 45 / 60), rotation = M.threeToUnityQuaternion(view.quaternion);
+  const up = M.rotateVector(rotation, [0, .2, 0]);
+  nearVector(pose.position, M.threeToUnityPosition(view.position).map((value, axis) => value - up[axis]), 1e-9, 'the view, offset removed');
+  assert(angle(pose.rotation, rotation) < 1e-6);
+  near(pose.fov, 40, 1e-9, 'a sub camera has no aspect correction');
+  // A key in another sub camera's shot: one record per shot.
+  assert(K.setCamera(ctx, `${SPLIT}/SubCamera3`));
+  assert.equal(K.playheadShot(ctx).event.id, 'sub3:0');
+  assert(K.setChannels(ctx, 'offset', { fov: 2 }));
+  assert.deepEqual(Object.keys(project.editor.camera.shots).sort(), ['sub1:0', 'sub3:0']);
+  // A timeline selection picks its camera.
+  plugin.selectionChanged(ctx, { track: track(project, 'cam'), event: main });
+  assert.equal(K.camera(ctx), 'main');
+  plugin.selectionChanged(ctx, { track: track(project, 'sub1'), event: sub });
+  assert.equal(K.camera(ctx), `${SPLIT}/SubCamera1`);
+  plugin.selectionChanged(ctx, { track: track(project, 'sub1-offset'), event: event(project, 'sub1-offset:0') });
+  assert.equal(K.camera(ctx), `${SPLIT}/SubCamera1`, 'an offset clip is not a camera shot');
+  // Moving and resizing a sub camera shot keeps its keys on their frames.
+  assert(history.apply({ label: 'Resize clip', changes: [{ target: { kind: 'event', track: 'sub1', event: 'sub1:0' }, path: ['duration'], after: 1.5 }] }));
+  assert.equal(sub.values.keyframes.length, 91, 'the longer grid');
+  assert.deepEqual(project.editor.camera.shots['sub1:0'].keys.map((key) => key.frame), [30, 45]);
+  // Revert shot restores the timing and the original samples.
+  assert(K.revertShot(ctx, track(project, 'sub1'), sub));
+  assert.equal(sub.duration, 1);
+  assert.deepEqual(sub.values.keyframes, original);
+  // Reopening a project goes back to the main camera.
+  plugin.projectChanged(ctx, { reason: 'load' });
+  assert.equal(K.camera(ctx), 'main');
 }
 
 function hemisphere() {
@@ -1080,6 +1176,7 @@ function multiKeys() {
   layers();
   await asyncLayers();
   keyView();
+  subCameras();
   hemisphere();
   absoluteEdit();
   simplifyShot();

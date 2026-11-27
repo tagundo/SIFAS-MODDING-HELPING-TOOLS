@@ -18,6 +18,11 @@
    - every camera editor string has Korean and Japanese copy, and the whole panel follows a
      language switch (en, ja, back to ko).
 
+   Split-screen sub cameras (synthetic): selecting a sub camera shot opens the editor on that
+   camera (the Camera choice), an offset key moves only that shot along its own view, its key
+   diamonds show on its lane, Ctrl+Z / Ctrl+Shift+Z restore and redo it, it resizes with its keys
+   on their frames, and the main camera's shots stay untouched.
+
    Real 12035 timeline (skipped unless ELICHIKA_STUDIO_TIMELINE_DIR holds
    a-1203503-live_timeline.unity; no game data in Git): an unedited project exports the
    original bytes, and the export of an edited shot re-parses to the baked samples, also
@@ -95,6 +100,22 @@ function gameProject(local) {
         events: [{ id: 'light:0', start: 0, duration: 9, values: { playableClass: 'LiveBaseLightClip' } }] },
     ],
   };
+}
+
+// gameProject with two split-screen sub cameras (SubCamera1: two shots, SubCamera2: one).
+const SPLIT = '/EntryPoint/Live/Cameras/SplitScreenEffect/Cameras';
+function splitProject(local) {
+  const project = gameProject(local);
+  project.name = 'Split camera MV';
+  const base = project.tracks[0].events[0];
+  const shot = (id, start, count, from, to) => ({ ...JSON.parse(JSON.stringify(base)), id, start, duration: (count - 1) / 60, label: id,
+    values: { ...JSON.parse(JSON.stringify(base.values)), keyframes: shotSamples(count, from, to) } });
+  project.tracks.push(
+    { id: 'sub1', kind: 'camera', label: 'SplitScreen/SubCamera1', nativeClass: 'AnimationTrack', binding: `${SPLIT}/SubCamera1`,
+      events: [shot('sub1:0', 1, 121, 60, 80), shot('sub1:1', 6, 61, 90, 100)] },
+    { id: 'sub2', kind: 'camera', label: 'SplitScreen/SubCamera2', nativeClass: 'AnimationTrack', binding: `${SPLIT}/SubCamera2`,
+      events: [shot('sub2:0', 1, 121, -60, -40)] });
+  return project;
 }
 
 async function importGame(page, project) {
@@ -683,6 +704,75 @@ async function synthetic(browser, url) {
   await page.close();
 }
 
+async function subCameras(browser, url) {
+  const errors = [];
+  const page = await newPage(browser, errors);
+  await page.goto(url + '/#mv');
+  await page.waitForFunction(() => MVStudio.getState().visible);
+  const local = await page.request.post(url + '/api/mv-studio/open', { data: { path: path.join(modded, 'stage-fixture.glb') } }).then((reply) => reply.json());
+  const project = splitProject(local);
+  await importGame(page, project);
+  await page.locator('#mv-camera-mode').waitFor();
+  assert.deepEqual((await state(page)).project, project, 'the opened project is unchanged');
+  const find = (value, id) => value.tracks.flatMap((track) => track.events).find((item) => item.id === id);
+  const original = find(project, 'sub1:0').values.keyframes;
+
+  // A sub camera shot opens the editor on its camera.
+  await page.locator('.mv-clip[data-event="sub1:0"]').click();
+  assert(await page.locator('#mv-panel-camera').evaluate((panel) => panel.open), 'selecting a sub camera shot opens the camera editor');
+  await page.waitForFunction((camera) => document.getElementById('mv-cam-camera')?.value === camera, `${SPLIT}/SubCamera1`);
+  assert.deepEqual(await page.locator('#mv-cam-camera option').allTextContents(), ['메인 카메라', '서브 카메라 1', '서브 카메라 2']);
+  await seek(page, 1.5);
+  await page.waitForFunction(() => /^샷 1 \/ 2 · sub1:0 · 프레임 30 \/ 120/.test(document.getElementById('mv-cam-shot')?.textContent || ''));
+  assert.equal(await page.locator('#mv-cam-align').count(), 0, 'Align view (main camera only) is not offered');
+  const dolly = page.locator('#mv-camera-fields [data-mv-cam="offset.z"]');
+  await dolly.fill('1');
+  await dolly.press('Tab');
+  await page.waitForFunction(() => !!MVStudio.getState().project.editor?.camera?.shots?.['sub1:0']);
+  let current = await state(page);
+  assert.deepEqual(current.project.editor.camera.shots['sub1:0'].keys.map((key) => [key.frame, key.values.z]), [[30, 1]]);
+  assert.equal(current.history.undoLabel, 'Edit camera key');
+  const moved = await page.evaluate(([before, after]) => after.every((sample, index) => {
+    const M = window.MVStudioCameraMath, forward = M.rotateVector(M.normalize(before[index].rotation), [0, 0, -1]);
+    return sample.position.every((value, axis) => Math.abs(value - before[index].position[axis] - forward[axis]) < 1e-9);
+  }), [original, find(current.project, 'sub1:0').values.keyframes]);
+  assert(moved, 'every sample moved 1 m along the sub camera\'s own view');
+  for (const id of ['cam:0', 'cam:1', 'sub1:1', 'sub2:0']) assert.deepEqual(find(current.project, id), find(project, id), `${id} untouched`);
+  const diamond = page.locator('.mv-lane[data-track="sub1"] .mv-cam-key[data-event="sub1:0"]');
+  await diamond.waitFor();
+  assert.equal(await diamond.getAttribute('data-frame'), '30');
+  await page.screenshot({ path: path.join(evidence, 'camera-sub-ko.png') });
+
+  // Undo and redo.
+  await page.locator('#mv-timeline-label').click();
+  await page.keyboard.press('Control+z');
+  current = await state(page);
+  assert.equal(current.project.editor?.camera?.shots?.['sub1:0'], undefined);
+  assert.deepEqual(find(current.project, 'sub1:0').values.keyframes, original, 'undo restores the sub camera samples');
+  await page.keyboard.press('Control+Shift+z');
+  await page.waitForFunction(() => !!MVStudio.getState().project.editor?.camera?.shots?.['sub1:0']);
+  const redone = find((await state(page)).project, 'sub1:0');
+  assert.notDeepEqual(redone.values.keyframes, original);
+
+  // Resize: ten frames longer, its key stays on frame 30 and the edit covers the new frames.
+  await page.locator('.mv-clip[data-event="sub1:0"]').click();
+  const durationField = page.locator('#mv-event-fields [data-mv-field=duration]');
+  assert.equal(await durationField.count(), 1, 'an edited shot can be resized');
+  await durationField.fill(String(130 / 60));
+  await durationField.press('Tab');
+  await page.waitForFunction(() => MVStudio.getState().project.tracks.find((track) => track.id === 'sub1').events[0].values.keyframes.length === 131);
+  current = await state(page);
+  assert.deepEqual(current.project.editor.camera.shots['sub1:0'].keys.map((key) => key.frame), [30]);
+
+  // The main camera is edited again from the Camera choice; its shots were never touched.
+  await page.locator('#mv-cam-camera').selectOption('main');
+  await page.waitForFunction(() => /^샷 1 \/ 2 · /.test(document.getElementById('mv-cam-shot')?.textContent || '') &&
+    document.getElementById('mv-cam-align') !== null);
+  for (const id of ['cam:0', 'cam:1']) assert.deepEqual(find(current.project, id), find(project, id), `${id} untouched`);
+  assert.deepEqual(errors, []);
+  await page.close();
+}
+
 // Several camera keys at once, in the Korean UI: Shift/Ctrl+click, Shift+Space, a Shift+drag box on
 // the camera lane and a box in the curve view, Ctrl+A (not in a text field), Escape; a group drag
 // (stopped by the next key), arrow keys, a curve-view drag of a selected key's value, Alt+drag and
@@ -1176,6 +1266,7 @@ async function run() {
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     await synthetic(browser, server.url);
+    await subCameras(browser, server.url);
     await multiKeys(browser, server.url);
     await multiKeysTouch(browser, server.url);
     const roundTrip = await exportRoundTrip(browser, server.url);
