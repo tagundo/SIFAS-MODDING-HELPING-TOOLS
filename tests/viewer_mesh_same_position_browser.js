@@ -134,8 +134,13 @@ async function desktop(url) {
     // yellow dot (same UV) still shows; the filled dot ends at 4 px.
     assert((await uvRow(page, data.uv[8], [-6, -5.5, -5])).some(pink), 'the partner ring is drawn outside the dot');
     assert(!(await uvRow(page, data.uv[3], [-6, -5.5, -5])).some(pink), 'no ring around a non-partner');
+    // The partner lookup is reused while the selection and positions stay.
+    let lookups = (await snapshot(page)).mesh.samePosition.lookups;
+    await page.evaluate(() => { window.__meshTool.updateLanguage(); window.__meshTool.updateLanguage(); window.__meshTool.refresh(); });
+    assert.equal((await snapshot(page)).mesh.samePosition.lookups, lookups, 'redraws without a selection change reuse the partners');
     await pick(page, data, 2); value = await snapshot(page);
     assert.deepEqual(value.mesh.selectedVertices, [2]); assert.deepEqual(value.mesh.samePosition.partners, [6], 'partners in any submesh');
+    assert(value.mesh.samePosition.lookups > lookups, 'a new selection looks the partners up again');
     assert(!pink(await uvPixel(page, data.uv[6])), 'a partner in a hidden material gets no dot');
     assert(!(await uvRow(page, data.uv[6], [-6, -5.5, -5, 5, 5.5, 6])).some(pink), 'and no ring');
     assert.match(await page.locator('#viewer-mesh-modify-count').textContent(), /^Selected vertices: 1 \(\+1 at the same position\) · /);
@@ -145,7 +150,7 @@ async function desktop(url) {
     assert(await quick.isVisible()); assert(await quick.isChecked(), 'default ON'); assert(await settings.isChecked(), 'the settings copy agrees');
     assert.equal((await page.locator('#viewer-mesh-modify .mesh-transform-together label').textContent()).trim(), 'Move vertices at the same position together');
     result.moveToolsHeight = (await page.locator('#viewer-mesh-modify .mesh-transform-tools').boundingBox()).height;
-    result.cases.push('Pick shows partners (count + pink UV dot and ring, none in a hidden material); Move shows the checkbox, default ON, selection unchanged');
+    result.cases.push('Pick shows partners (count + pink UV dot and ring, none in a hidden material, lookup reused across redraws); Move shows the checkbox, default ON, selection unchanged');
     // Nudge with partners, one Undo step.
     await page.locator('#viewer-mesh-modify-move-axis').selectOption('x'); await page.locator('#viewer-mesh-modify-move-step').fill('.025');
     const start = await snapshot(page); await page.locator('#viewer-mesh-modify-nudge-plus').click(); value = await snapshot(page);

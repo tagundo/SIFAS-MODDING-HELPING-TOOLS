@@ -259,7 +259,17 @@
     function geometryChanged(m) { m.geometryRevision = (m.geometryRevision || 0) + 1; }
     // Same-position groups follow the current positions. The index is rebuilt
     // once per geometry revision; a drag freezes the groups it started with.
-    var groupStats = { builds: 0, lastBuildMs: 0, lastBuildVertices: 0 };
+    var groupStats = { builds: 0, lastBuildMs: 0, lastBuildVertices: 0, lookups: 0 };
+    // Vertex selections count their changes, so the partner lookup is reused
+    // until the selection or the position groups change (paint strokes and
+    // other redraws would otherwise repeat it on every pointer move).
+    function selectionSet(values) {
+      var set = new Set(values || []); set.revision = 0;
+      set.add = function (value) { if (!Set.prototype.has.call(set, value)) set.revision++; return Set.prototype.add.call(set, value); };
+      set.delete = function (value) { var removed = Set.prototype.delete.call(set, value); if (removed) set.revision++; return removed; };
+      set.clear = function () { if (set.size) set.revision++; Set.prototype.clear.call(set); };
+      return set;
+    }
     function currentPosition(m, vertex) { return m.positions[vertex] || m.data.positions[vertex]; }
     function positionIndex(m) {
       if (!m.positionGroups || m.positionGroups.revision !== m.geometryRevision) {
@@ -273,14 +283,17 @@
     function samePosition(panel, m) {
       if (!m || !movesTogether(panel) || !m.selected.size) return null;
       if (runtimeGesture && runtimeGesture.together && runtimeGesture.together.mesh === m) return runtimeGesture.together.value;
-      return samePositionPartners(positionIndex(m), m.selected);
+      var index = positionIndex(m), selected = m.selected, cached = m.partnerCache;
+      if (cached && cached.index === index && cached.selected === selected && selected.revision !== undefined && cached.revision === selected.revision) return cached.value;
+      groupStats.lookups++; var value = samePositionPartners(index, selected);
+      m.partnerCache = { index: index, selected: selected, revision: selected.revision, value: value }; return value;
     }
     // Selected vertices first, then their partners: the set a position edit writes.
     function movingVertices(panel, m) {
       var vertices = Array.from(m.selected), together = samePosition(panel, m);
       return together ? vertices.concat(together.partners) : vertices;
     }
-    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = new Set(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); panels.forEach(function (p) { p.positionDraft = false; }); changed(); }
+    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = selectionSet(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); panels.forEach(function (p) { p.positionDraft = false; }); changed(); }
     function undo() { if (busy || runtimeGesture || !interactive() || !history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
     function redo() { if (busy || runtimeGesture || !interactive() || !future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
     function status(panel, text, error) { panel.status.textContent = text; panel.status.classList.toggle('mesh-error', !!error); }
@@ -300,7 +313,7 @@
       finally { if (ticket === request) { busy = false; redraw(); if (options.onChange) options.onChange(); } }
     }
     function makeMesh(data) {
-        var m = { data: data, deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, geometryRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
+        var m = { data: data, deleted: new Set(), marked: new Set(), selected: selectionSet(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, geometryRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
         if (data.uv) {
           var grid = {}, cells = 0; data.triangles.forEach(function (face, index) {
             if (cells > 500000) return; var points = face.map(function (v) { return data.uv[v]; });
@@ -401,7 +414,7 @@
         Object.keys(cache).forEach(function (id) { previous.values[id] = Object.assign({}, cache[id]); });
         var panelState = panels.map(function (p) { return { mesh: p.mesh.value, submesh: p.submesh.value, bone: p.bone && p.bone.value, sourceBone: p.sourceBone && p.sourceBone.value }; });
         var next = {};
-        Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1, geometryRevision: (old.geometryRevision || 0) + 1 }); });
+        Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: selectionSet(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1, geometryRevision: (old.geometryRevision || 0) + 1 }); });
         Object.keys(prepared).forEach(function (id) { var item = prepared[id], mesh = next[id] || makeMesh(item.data); mesh.deleted = item.edits.deleted; mesh.positions = item.edits.positions; mesh.weights = item.edits.weights; geometryChanged(mesh); next[id] = mesh; });
         function restorePanels(values, fallback) {
           fillMeshes(); panels.forEach(function (p, index) {
@@ -965,7 +978,7 @@
       getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, hasUnappliedSelection: summary.hasUnappliedSelection, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved,
         samePosition: (function () { var p = panels.filter(function (panel) { return panel.modify; })[0], m = activePanel && activePanel.modify ? current(activePanel) : null, together = m ? samePosition(activePanel, m) : null;
           return { enabled: !!(p && p.moveTogether), partners: together ? together.partners.slice().sort(function (a, b) { return a - b; }) : [], groups: together ? together.groups.length : 0,
-            builds: groupStats.builds, lastBuildMs: groupStats.lastBuildMs, lastBuildVertices: groupStats.lastBuildVertices, tolerance: SAME_POSITION_TOLERANCE }; })() }; },
+            builds: groupStats.builds, lookups: groupStats.lookups, lastBuildMs: groupStats.lastBuildMs, lastBuildVertices: groupStats.lastBuildVertices, tolerance: SAME_POSITION_TOLERANCE }; })() }; },
       dispose: function () { disposed = true; request++; runtimeGesture = null; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.dispose(); p.root.remove(); }); style.remove(); cache = {}; } };
   }
   window.ViewerMeshTools = { create: create, normalizeInfluences: normalize, redistributeInfluence: redistributeInfluence, circleIntersectsTriangle: intersects,
