@@ -37,15 +37,23 @@ class DisplayMaterialTests(unittest.TestCase):
         material = _material(floats=[("_CullMode", 2), ("_StencilPassOp", 2), ("_VERTEX_COLOR", 0)],
                              colors=[("_AmbientColor", {"r": 0, "g": 0, "b": 0, "a": 0})],
                              envs=[("_AdditiveTex", _env((.5, 1), (.25, 0))), ("_MainTex", _env())])
-        fields = _read("AS/Blend/AdditiveOpaque", material, _scene(mv_stage_display_camera=True))
+        fields = _read("AS/Blend/AdditiveOpaque", material)
         self.assertEqual(fields, {
             "material": "CAB-display:7", "kind": "blendAdditive", "texture": None, "uv": [1, 1, 0, 0], "tint": [1, 1, 1, 1], "ambient": [0, 0, 0, 0],
             "cull": 2, "queue": 2000, "stencil": 2, "stencilComp": 8, "stencilPass": 2, "stencilZFail": 0,
-            "additive": {"texture": None, "uv": [.5, 1, .25, 0]}, "displayCamera": True, "vertexColor": True})
-        # Without LiveCoreStageDisplayCamera nothing replaces the authored _AdditiveTex; _CullMode defaults to Back.
+            "additive": {"texture": None, "uv": [.5, 1, .25, 0]}, "vertexColor": True})
+        # _CullMode defaults to Back.
         material.tree["m_SavedProperties"]["m_Floats"] = []
         fields = _read("AS/Blend/AdditiveOpaque", material)
-        self.assertEqual((fields["displayCamera"], fields["cull"], fields["stencilPass"]), (False, 2, 0))
+        self.assertEqual((fields["cull"], fields["stencilPass"]), (2, 0))
+
+    def test_additive_opaque_fed_by_the_display_camera_is_unsupported(self):
+        # LiveCoreStageDisplayCamera replaces _AdditiveTex with its live image of the members, which
+        # the preview does not render: the screen keeps its own material while such a variant is selected.
+        material = _material(envs=[("_AdditiveTex", _env((.5, 1), (.25, 0)))])
+        with self.assertRaisesRegex(displays.Unsupported, "display camera"):
+            _read("AS/Blend/AdditiveOpaque", material, _scene(mv_stage_display_camera=True))
+        self.assertEqual(_read("AS/General/Opaque", material, _scene(mv_stage_display_camera=True))["kind"], "general")
 
     def test_wave_texture_reads_four_layers_with_shader_defaults(self):
         # mat_dis_shd_so1005_uni_01 (11005/3): _MainTex_ST scale (1, 0), _TintColor black, one layer left at defaults.
@@ -183,19 +191,24 @@ class ActualDisplayVariantTests(unittest.TestCase):
         return [(variant["background"]["kind"], variant["logo"] and variant["logo"]["kind"])
                 for variant in screen["variants"]]
 
-    def test_11054_main_switches_to_the_display_camera_screen(self):
+    def test_11054_main_display_camera_screen_keeps_the_own_material(self):
         screens, scene = self.screens(11054)
         self.assertTrue(scene.mv_stage_display_camera)
-        self.assertEqual(self.kinds(screens["main"]), [("blendAdditive", "transparent"), ("general", "transparent")])
-        additive = screens["main"]["variants"][0]["background"]
-        self.assertEqual((additive["texture"], additive["additive"], additive["displayCamera"]),
-                         (None, {"texture": None, "uv": [.5, 1, .25, 0]}, True))
+        main = screens["main"]
+        self.assertIn("display camera", main["variants"][0]["unsupported"])
+        self.assertEqual((main["variants"][1]["background"]["kind"], main["variants"][1]["logo"]["kind"]),
+                         ("general", "transparent"))
+        self.assertEqual((main["initial"]["background"]["kind"], main["initial"]["logo"]), ("general", None))
         self.assertEqual(self.kinds(screens["sub_01"]), [("general", "transparent")])
+        self.assertEqual([warning["unsupported"][0][0] for warning in scene.warnings
+                          if warning["code"] == coverage.DISPLAY_VARIANTS_UNSUPPORTED], [0])
 
     def test_12074_screens_keep_all_six_variants(self):
         screens, _ = self.screens(12074)
         for name in ("main_01", "sub_01"):
-            self.assertEqual([kind for kind, _ in self.kinds(screens[name])], ["general"] * 5 + ["blendAdditive"])
+            variants = screens[name]["variants"]
+            self.assertEqual([variant["background"]["kind"] for variant in variants[:5]], ["general"] * 5)
+            self.assertIn("display camera", variants[5]["unsupported"])
 
     def test_11005_and_12030_wave_screens(self):
         screens, scene = self.screens(11005)

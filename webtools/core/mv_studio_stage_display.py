@@ -13,7 +13,9 @@ editor cannot draw is reported (``unsupported``) and the others still switch.
 Initialize(enabled) leaves the renderer's own materials in place while the stage
 display is enabled; only a disabled display shows material2DReference (and a
 display without one is forced enabled). LiveCoreStageDisplayCamera binds its
-render texture to _AdditiveTex of every display bg material that declares it.
+render texture to _AdditiveTex of every display bg material that declares it;
+the preview does not render that camera, so such a variant is unsupported (the
+screen keeps its own material while it is selected).
 """
 
 import math
@@ -69,7 +71,7 @@ def binding(scene, component, tree):
         return None
     kind = _class(scene, component, tree)
     if kind == "LiveCoreStageDisplayCamera":
-        # Its render texture feeds _AdditiveTex of the display bg materials (export below).
+        # Its render texture replaces _AdditiveTex of the display bg materials (read below).
         scene.mv_stage_display_camera = True
         return None
     if kind != "LiveCoreStageDisplay":
@@ -174,10 +176,12 @@ def read(scene, materials, material):
     if shader == _OPAQUE:
         fields.update(kind="general", cull=_integer(floats.get("_CullMode", 0), 0, 2, "_CullMode"))
     elif shader == _ADDITIVE:
+        if getattr(scene, "mv_stage_display_camera", False):
+            # The game draws the display camera's live image (the members) where it covers the screen.
+            raise Unsupported("its _AdditiveTex is the display camera's image, which the preview does not render")
         additive, additive_uv = _texture(materials, material, envs, "_AdditiveTex")
         fields.update(kind="blendAdditive", cull=_integer(floats.get("_CullMode", 2), 0, 2, "_CullMode"),
-                      additive={"texture": additive, "uv": additive_uv},
-                      displayCamera=bool(getattr(scene, "mv_stage_display_camera", False)))
+                      additive={"texture": additive, "uv": additive_uv})
         # The program reads COLOR unconditionally (the _VERTEX_COLOR toggle selects no keyword).
         fields["vertexColor"] = True
     elif shader in _WAVES:
