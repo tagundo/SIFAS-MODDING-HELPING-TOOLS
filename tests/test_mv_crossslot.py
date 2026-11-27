@@ -50,6 +50,7 @@ class FakeStore:
 
     def __init__(self, *, cross=True, regions=("gl",)):
         self.calls, self.overrides, self.originals, self.regions = [], {}, [], regions
+        self.checks, self.refuse_stage = [], {}  # refuse_stage: {region: message} for a stage the region lacks
         if not cross:
             self.apply_mv_timeline = self._legacy_apply
 
@@ -68,9 +69,14 @@ class FakeStore:
                 **({"stage": {"current": record.get("stage"), "stock": record["stockStage"], "changed": True}}
                    if record and record.get("stockStage") else {})}
 
-    def validate_mv_timelines(self, repo_root, *, region, asset_id, timelines, originals=None):
-        self.calls.append(("validate", region, asset_id, sorted(timelines)))
+    def validate_mv_timelines(self, repo_root, *, region, asset_id, timelines, originals=None, source_asset_id=None,
+                              stage="keep"):
+        # ("validate", region, the asset whose stock checks the payloads, platforms); ``checks`` has the rest.
+        self.calls.append(("validate", region, source_asset_id or asset_id, sorted(timelines)))
+        self.checks.append((region, asset_id, source_asset_id, stage))
         self.originals.append(("validate", region, dict(originals or {})))
+        if self.refuse_stage and isinstance(stage, dict) and region in self.refuse_stage:
+            raise ValueError(self.refuse_stage[region])
         return {"assetId": asset_id, "validated": sorted(timelines)}
 
     def apply_mv_timeline(self, repo_root, *, region, asset_id, timelines, expected_key, originals=None, fingerprints=None,
@@ -271,6 +277,8 @@ class CrossSlotTests(reg_tests.Case):
         self.assertTrue(summary.startswith("Applied to the game: ") and summary.endswith(" · 3D 2201."), summary)
         validate = [call for call in self.store.calls if call[0] == "validate"]
         self.assertEqual(validate, [("validate", "gl", 2101, ["android", "ios"])])  # the SOURCE asset's stock
+        # The check is the write's own: the target slot, its source and the stage.
+        self.assertEqual(self.store.checks, [("gl", 2201, 2101, STAGE_2101)])
         _, region, asset, source, stage, timelines = next(call for call in self.store.calls if call[0] == "apply")
         self.assertEqual((region, asset, source, stage), ("gl", 2201, 2101, STAGE_2101))
         android = json.loads(timelines["android"][8:].rstrip(b" "))
@@ -289,6 +297,7 @@ class CrossSlotTests(reg_tests.Case):
                        target={"assetId": 2201, "stage": False})
         _, _, _, _, stage, timelines = next(call for call in self.store.calls if call[0] == "apply")
         self.assertIsNone(stage)
+        self.assertEqual(self.store.checks[-1], ("gl", 2201, 2101, None))  # the slot's own original stage
         self.assertEqual(timelines, {"android": self.local["tl2101"], "ios": self.local["tl2101i"]})
         # Restore per target slot.
         plan = apply.plan(self.root, plain, target={"assetId": 2201, "stage": False})
@@ -414,6 +423,21 @@ class TwoRegionCrossSlotTests(reg_tests.Case):
                         [(kind, region, sorted(value)) for kind, region, value in self.store.originals])
         self.assertIn(("jtl2101", True), self.loads)
         self.assertIn(("jtl2101i", True), self.loads)
+
+    def test_a_stage_the_second_region_lacks_is_refused_before_anything_is_written(self):
+        """"Both GL and JP": JP's catalogs lack the source's stage. The store's check refuses it before the
+        game server stops and before GL is written (no PARTIAL_GL)."""
+        missing = "The chosen stage, stage effect, prop skeleton or shader variant is not in this region's game catalogs."
+        self.store.refuse_stage = {"jp": missing}
+        project = self.imported()
+        target = {"assetId": 2201, "stage": True, "regions": ["gl", "jp"]}
+        plan = apply.plan(self.root, project, target=target)
+        plan["_target"] = target
+        with mock.patch.object(register, "_store_step", side_effect=AssertionError("the server was stopped")), \
+                self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(missing) + "$"):
+            self.apply(project, plan, download=True)
+        self.assertEqual([call[:2] for call in self.store.calls], [("validate", "gl"), ("validate", "jp")])
+        self.assertEqual(self.store.checks, [("gl", 2201, 2101, STAGE_2101), ("jp", 2201, 2101, STAGE_2101)])
 
 
 @NEEDS_STORE
@@ -663,4 +687,28 @@ class RealStoreCrossSlotTests(reg_tests.Case):
             apply.run_restore(FakeJob(), self.root, apply.validate_restore(
                 {"assetId": 2201, "regions": {"gl": {"key": plan["expected"]["keys"]["gl"]}}}))
         self.assertEqual(apply.stage_fields(self.root, "gl", 2201), before)
+        self.assertFalse(mv_studio_live.describe_mv_timeline(self.root, region="gl", asset_id=2201)["override"])
+
+    def test_a_stage_missing_from_the_catalog_is_refused_by_the_check(self):
+        """The real store's check gets the target slot, its source and the stage, so STAGE_MISSING comes
+        from the validation step, before the game server would be stopped."""
+        import mv_studio_stock
+        import sqlite3
+        project = self.project(source={"kind": "game", "region": "gl", "platform": "android", "liveId": 21,
+                                       "assetId": 2101, "mvOnly": False, "registered": False, "timelineKey": "A2101"})
+        project["tracks"][1]["events"][0]["values"]["intensity"] = 2.5
+        plan = apply.plan(self.root, project, target={"assetId": 2201, "stage": True})
+        self.assertEqual(plan["blocked"], [])
+        # The source's stage 101 leaves the catalog (an inconsistent region, as a JP-only stage in GL).
+        with sqlite3.connect(Path(self.root) / "assets/db/gl/masterdata.db") as master:
+            master.execute("DELETE FROM m_live_stage WHERE id=101")
+        request = apply.validate_apply(self.root, {"mode": "all", "project": project, "platforms": ["android", "ios"],
+                                                   "target": {"assetId": 2201, "stage": True},
+                                                   "expected": plan["expected"]})
+        job = FakeJob()
+        with mock.patch.object(register, "managed", return_value=True), \
+                mock.patch.object(register, "_store_step", side_effect=AssertionError("the server was stopped")), \
+                self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(mv_studio_stock.STAGE_MISSING) + "$"):
+            apply.run_apply(job, self.root, request)
+        self.assertEqual([event["stage"] for event in job.events if event["type"] == "mv-stage"][-1], "validate")
         self.assertFalse(mv_studio_live.describe_mv_timeline(self.root, region="gl", asset_id=2201)["override"])
