@@ -811,6 +811,12 @@
         box.append(make("p", t("Set by the overlap with the next or previous clip"), { class: "mv-field-note", "data-mv-note": "blend" }));
       }
     }
+    // Overlapping camera shots crossfade in the game (blendIn/blendOut), but the preview shows
+    // the later shot alone (MVStudioScene activeCameraEvent has no blend weights).
+    if (track.kind === "camera" && (Number(values.blendIn) > 0 || Number(values.blendOut) > 0)) {
+      box.append(make("p", t("This shot overlaps another: the game crossfades them, the preview cuts to the later shot."),
+        { class: "mv-field-note", "data-mv-note": "camera-blend" }));
+    }
     // Once, below the values: why some timing fields are read only.
     if (capsNoted) {
       const note = !caps.camera ? "The game does not use the read-only timing fields of this clip type."

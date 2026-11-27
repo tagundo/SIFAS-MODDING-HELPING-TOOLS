@@ -1030,6 +1030,14 @@ async function run() {
     legacy.editor.originals[movedLip.id] = JSON.parse(JSON.stringify(movedLip));
     movedLip.start = Math.round(movedLip.start * 60 + 5) / 60;
     assert.equal(Interact.blendGate(savedLips), false, 'the saved blends are stale');
+    // Two camera shots overlap in this save (the second one is longer): the game crossfades them.
+    const legacyCamera = legacy.tracks.find((track) => track.label === 'CameraMotion/Camera1');
+    const longShot = legacyCamera.events[1];
+    legacy.editor.originals[longShot.id] = JSON.parse(JSON.stringify(longShot));
+    longShot.duration += .5;
+    const cameraBlends = Interact.blendTimes(legacyCamera.events);
+    for (const event of legacyCamera.events) Object.assign(event.values, cameraBlends.get(event.id));
+    assert(longShot.values.blendOut > 0 && legacyCamera.events[2].values.blendIn > 0);
     // A muted group (as stock 11054 and 10120 have) shows its state and why it does not count.
     const mutedGroup = legacy.tracks.find((track) => track.label === 'StageEffect/Expert/Post');
     mutedGroup.muted = true;
@@ -1103,6 +1111,15 @@ async function run() {
     await page.locator('#mv-timeline-label').click();
     await page.keyboard.press('Control+z');
     assert.deepEqual((await savedLipsNow()).events, savedLips.events, 'undo puts the saved blends back');
+    // An overlapping camera shot says the preview cuts where the game crossfades; one that does not, nothing.
+    await page.locator('#mv-tab-camera').click();
+    for (const [event, expected] of [[longShot, 1], [legacyCamera.events[2], 1], [legacyCamera.events[3], 0]]) {
+      await page.locator(`.mv-clip[data-event="${event.id}"]`).click();
+      assert.equal(await page.locator('#mv-event-fields [data-mv-note=camera-blend]').count(), expected, event.id);
+    }
+    await page.locator(`.mv-clip[data-event="${longShot.id}"]`).click();
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=camera-blend]').textContent(),
+      '이 샷은 다른 샷과 겹칩니다. 게임은 두 샷을 겹쳐 전환하지만, 미리보기는 뒤의 샷으로 바로 바뀝니다.');
 
     // The English UI names the same tabs.
     await page.locator('#lang-select').selectOption('en');

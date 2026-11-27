@@ -3179,6 +3179,9 @@ _MV_EDITOR_E2_TRANSLATIONS = {
         "카메라 샷은 오프셋과 속도를 바꿀 수 없습니다. 미리보기는 샷에서 읽은 샘플을 그대로 재생합니다.",
         "カメラショットはオフセットと速度を変えられません。プレビューはショットから読んだサンプルをそのまま再生します。"),
     "Restore original value": ("원래 값으로 되돌리기", "元の値に戻す"),
+    "This shot overlaps another: the game crossfades them, the preview cuts to the later shot.": (
+        "이 샷은 다른 샷과 겹칩니다. 게임은 두 샷을 겹쳐 전환하지만, 미리보기는 뒤의 샷으로 바로 바뀝니다.",
+        "このショットは別のショットと重なっています。ゲームでは重ねて切り替わりますが、プレビューは後のショットにすぐ切り替わります。"),
     "{tracks} tracks · {clips} clips · {edited} edited · {follow} with recomputed blends or times": (
         "트랙 {tracks}개 · 클립 {clips}개 · 편집 {edited}개 · 블렌드나 시간만 다시 계산된 클립 {follow}개",
         "トラック{tracks}件 · クリップ{clips}件 · 編集{edited}件 · ブレンドや時間だけ再計算されたクリップ{follow}件"),
