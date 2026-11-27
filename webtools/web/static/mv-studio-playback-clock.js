@@ -25,8 +25,8 @@
      buffering, a stall, a long frame gap), the clock holds and waits for the soundtrack to
      advance, then locks onto it with no confirmation;
    - with no soundtrack, one the browser paused or ended, or one not advancing for `giveUp`
-     (not counting the time it spends seeking, nor, before it first advances after start(),
-     loading), the time advances with the frames, as it does without a soundtrack;
+     (not counting the time it spends seeking, nor, before it first advances after start() or
+     a realignment, loading), the time advances with the frames, as it does without a soundtrack;
    - during playback the time it returns is never below the last one.
 
    Known limit: a soundtrack whose reported time changes only every `maxStall` (0.5 s) or less
@@ -63,7 +63,7 @@
     let last = NaN; // timestamp of the last frame (ms)
     let mode = "wait"; // "wait": hold for the soundtrack; "sync": follow it; "free": frames only
     let rate = 1, error = 0, holding = false, realigned = false, ignored = false;
-    let locked = false; // the soundtrack has advanced since start()
+    let locked = false; // the soundtrack has advanced since start() or the last realignment
     let stale = false; // a seek left the soundtrack at another time
     let audio = NaN, seen = NaN; // the reading followed (s) and when it was first seen (ms)
     let read = NaN, alive = NaN; // the latest distinct reading, used or not, and when it came (ms)
@@ -146,6 +146,9 @@
         return result();
       }
       realigned = true;
+      // The moved soundtrack may have to load again (a seek past the buffered data): it is
+      // waited for as after start().
+      locked = false;
       counts.realigns++;
       forget(now);
       wait(now);
@@ -156,7 +159,8 @@
     // or NaN without a usable soundtrack (none, paused by the browser, ended); `ready`:
     // false while it seeks (buffering shows as readings that stop changing: a stall);
     // `loading`: the element has too little data to play yet (readyState below
-    // HAVE_FUTURE_DATA), used only until the soundtrack first advances after start().
+    // HAVE_FUTURE_DATA), used only until the soundtrack first advances after start() or a
+    // realignment.
     // Returns { time, mode, rate, holding, realign }; realign asks the host to move the
     // soundtrack to `time`.
     function next(now, media, ready = true, loading = false) {

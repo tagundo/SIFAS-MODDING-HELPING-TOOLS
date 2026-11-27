@@ -440,6 +440,40 @@ const report = {};
     'held at the realigned time while the soundtrack seeks');
   assert(slowRealign.rows.slice(-60).every((row) => row.mode === 'sync'), 'following the soundtrack at the end');
   assert(maxAbs(offsets(slowRealign.rows.slice(-120))) <= 0.030, 'after the slow realignment seek: within 30 ms');
+  // A long stall whose realignment seek lands in data not loaded yet (a soundtrack fetched by
+  // range requests on a phone): after a 0.1 s seek it loads for 2 s (too little data, the
+  // position held). The picture waits at the realigned time while it loads, as after a start,
+  // and follows it afterwards; the soundtrack is not given up on. A later long stall while
+  // buffering (loading again, after the soundtrack played) still gives up after 1 s and is
+  // realigned again.
+  const loadAfterSeek = (audio, clock, t, host) => {
+    const seek = audio.seek;
+    audio.seek = (position, at) => {
+      seek(position, at);
+      host.loadUntil = audio.seekingUntil + 2000;
+      audio.anchor = host.loadUntil + 30;
+    };
+    host.loading = (track, now) => track.stalled || now < host.loadUntil;
+  };
+  const reloading = run({ seconds: 17, audio: { seekTime: 0.1 }, events: { 1: loadAfterSeek, 120: stop, 300: go, 600: stop, 780: go } });
+  monotonic(reloading.rows, 'loading after the realignment');
+  assert.equal(reloading.state.realigns, 2, 'loading after the realignment: two long stalls, two realignments');
+  assert.equal(reloading.audio.seeks, 2);
+  assert.equal(reloading.state.ignored, false, 'loading after the realignment: the soundtrack is still used');
+  const firstRealign = reloading.rows.find((row) => row.realign && row.k < 600);
+  const loadingRows = reloading.rows.filter((row) => row.t > firstRealign.t && row.t < firstRealign.t + 100 + 2000);
+  assert(loadingRows.length > 110 && loadingRows.every((row) => row.mode === 'wait' && row.time === firstRealign.time),
+    'loading after the realignment: held at the realigned time while the soundtrack seeks and loads');
+  assert(reloading.rows.filter((row) => row.k >= 480 && row.k < 600).every((row) => row.mode === 'sync'), 'in sync once it plays');
+  assert(maxAbs(offsets(reloading.rows.filter((row) => row.k >= 480 && row.k < 600))) <= 0.030, 'after loading: within 30 ms');
+  const lastBefore = reloading.rows.filter((row, i) => i > 0 && row.k <= 780 && row.reading !== reloading.rows[i - 1].reading).at(-1);
+  const freeAgain = reloading.rows.find((row) => row.k > 600 && row.mode === 'free');
+  assert(freeAgain && freeAgain.t - lastBefore.t <= GIVE_UP * 1000 + 1000 / 60 + 1e-6,
+    'a later stall while buffering, after the soundtrack played: frames after 1 s');
+  assert(reloading.rows.slice(-60).every((row) => row.mode === 'sync'), 'loading after the realignment: following the soundtrack at the end');
+  assert(maxAbs(offsets(reloading.rows.slice(-60))) <= 0.030, 'loading after the realignment: within 30 ms at the end');
+  report.loadingAfterRealign = { heldFrames: loadingRows.length, realigns: reloading.state.realigns,
+    tailMaxOffsetMs: +(maxAbs(offsets(reloading.rows.slice(-60))) * 1000).toFixed(1) };
 
   // A soundtrack that does not follow the realignment is ignored until the next start or seek.
   const stuck = run({ seconds: 7, audio: { seekable: false }, events: { 120: (audio, clock, t) => audio.stall(t), 300: (audio, clock, t) => audio.resume(t) } });

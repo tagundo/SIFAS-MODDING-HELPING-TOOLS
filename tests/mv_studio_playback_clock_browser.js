@@ -25,6 +25,8 @@
    - a 1.5 s seek holds the picture at the sought time until the soundtrack plays (the fake's
      seeking flag is the only sign of it), then follows;
    - two 2 s stalls in one playback are each realigned and end in sync;
+   - a 2 s stall whose realignment seek lands in data not loaded yet (2.5 s of loading after the
+     write) holds the picture at the realigned time while the soundtrack loads, then follows it;
    - a soundtrack that ends before the MV (ended, not paused): the time goes on with the frames;
    - a soundtrack loading for 1.5 s after play holds the picture at the paused time without
      moving the soundtrack; one that fails to load (an error) is given up on after 1 s;
@@ -99,15 +101,17 @@ async function startServer() {
 // read returns the position of its latest update, updates coming 20-50 ms apart. A currentTime
 // write seeks for seekMs (seeking true, the position held; readyState stays as set, so only the
 // seeking flag tells the clock); play() from paused loads for loadMs (readyState 1, the position
-// held); at endAt the soundtrack ends (ended true while paused stays false, so only the ended
-// flag tells the clock). Each write records the time shown by the next frame drawn.
+// held); with loadAfterWrite set, a write also loads for that long after its seek (readyState 1,
+// the position held: a seek into data not fetched yet); at endAt the soundtrack ends (ended true
+// while paused stays false, so only the ended flag tells the clock). Each write records the time
+// shown by the next frame drawn.
 function installFakeAudio() {
   let seed = 12345;
   const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const now = () => performance.now();
   const fake = window.fakeAudio = { steps: [0.02, 0.05], jitter: 0.002, latency: 0.06, playing: false, stalled: false,
     base: 0, anchor: 0, reported: 0, next: 0, writes: [], plays: 0, readAt: 0, readyState: 4, seekMs: 40, seekUntil: 0, loadMs: 0,
-    loadUntil: 0, endAt: Infinity, error: null };
+    loadUntil: 0, loadAfterWrite: 0, endAt: Infinity, error: null };
   const step = () => (fake.steps[0] + (fake.steps[1] - fake.steps[0]) * random()) * 1000;
   fake.truth = (t = now()) => Math.min(fake.endAt,
     fake.playing && !fake.stalled ? fake.base + Math.max(0, t - fake.anchor) / 1000 : fake.base);
@@ -142,7 +146,8 @@ function installFakeAudio() {
   define('currentTime', () => fake.read(), (value) => {
     fake.writes.push({ value, at: now() });
     fake.seekUntil = now() + fake.seekMs;
-    fake.start(value, fake.seekMs);
+    if (fake.loadAfterWrite) fake.loadUntil = fake.seekUntil + fake.loadAfterWrite;
+    fake.start(value, fake.seekMs + fake.loadAfterWrite);
   });
   define('paused', () => !fake.playing);
   define('ended', () => fake.playing && fake.truth() >= fake.endAt);
@@ -493,6 +498,30 @@ async function synthetic(browser, url) {
     const tail = frames.filter((frame) => frame.stamp >= frames.at(-1).stamp - 500);
     assert(excess(tail) <= 0, `long stall ${round}: in sync again (${excess(tail)} s beyond the bound)`);
     result.longStalls.push({ frames: frames.length, movedTo: moved[0].value, tailMaxOffsetMs: +(Math.max(...tail.map((frame) => Math.abs(frame.time - frame.truth))) * 1000).toFixed(1) });
+  }
+
+  // A 2 s stall whose realignment lands in data not loaded yet (a soundtrack fetched by range
+  // requests on a phone): after the write the soundtrack seeks, then loads for 2.5 s (readyState 1,
+  // the position held). The picture waits at the realigned time while it loads, as at a start,
+  // and follows the soundtrack once it plays (it is not given up on and left behind).
+  {
+    await page.evaluate(() => { window.playLog.length = 0; window.fakeAudio.stall(); });
+    await page.waitForTimeout(2000);
+    await page.evaluate(() => { window.fakeAudio.loadAfterWrite = 2500; window.fakeAudio.resume(); });
+    await page.waitForTimeout(4300);
+    await page.evaluate(() => { window.fakeAudio.loadAfterWrite = 0; });
+    const frames = await take(page), moved = await writesOf(page);
+    assert.equal(analyse(frames, { settle: 0 }).back, 0, 'loading after the realignment: no frame goes back');
+    assert.equal(moved.length, 1, `loading after the realignment: the soundtrack is moved once (${JSON.stringify(moved)})`);
+    assert(near(moved[0].value, moved[0].shown + offset), 'loading after the realignment: to the shown time plus the offset');
+    const first = frames.findIndex((frame) => frame.time === moved[0].shown);
+    const loading = frames.slice(first).filter((frame) => frame.stamp < moved[0].at + 40 + 2500 - 100);
+    assert(first >= 0 && loading.length > 10 && loading.every((frame) => frame.time === moved[0].shown),
+      `loading after the realignment: held at the realigned time while the soundtrack loads (${loading.length} frames)`);
+    const tail = frames.filter((frame) => frame.stamp >= frames.at(-1).stamp - 500);
+    assert(excess(tail) <= 0, `loading after the realignment: in sync once it plays (${excess(tail)} s beyond the bound)`);
+    result.loadingAfterRealign = { frames: frames.length, heldFrames: loading.length, movedTo: moved[0].value,
+      tailMaxOffsetMs: +(Math.max(...tail.map((frame) => Math.abs(frame.time - frame.truth))) * 1000).toFixed(1) };
   }
 
   // The soundtrack ends before the MV (ended, not paused): the time goes on with the frames.
