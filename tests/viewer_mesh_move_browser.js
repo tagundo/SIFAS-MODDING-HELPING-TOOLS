@@ -162,5 +162,5 @@ async function runProfile(url, profile) {
     await runProfile(url, { name: 'phone-touch', width: 450, height: 1000, touch: true });
     assert.deepEqual(report.pageErrors, []); report.status = 'PASS'; console.log(JSON.stringify({ status: report.status, profiles: report.profiles.length, cases: report.profiles.reduce((sum, profile) => sum + profile.cases.length, 0), evidence }));
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); console.error(error); }
-  finally { if (browser) await browser.close(); if (server) server.kill(); fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n'); if (report.status !== 'PASS') process.exitCode = 1; }
+  finally { if (browser) await browser.close(); if (server) server.kill(); fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n'); fs.rmSync(library, { recursive: true, force: true }); if (report.status !== 'PASS') process.exitCode = 1; }
 })();
