@@ -316,6 +316,8 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
         { nativeClass: 'CustomControlTrack', label: 'StageEffect/Expert/Flash Light/F' }, { nativeClass: 'CustomControlTrack', label: 'StageEffect/Expert/Overlay/F' },
         { nativeClass: 'LiveColoringTrack', label: 'StageEffect/Expert/Coloring/LightShaft/L' }, { nativeClass: 'LiveRimlightTrack', label: 'MemberEffect/Expert/Member Rim Light/R' },
         { nativeClass: 'MemberLipSyncTrack', label: 'Member1/LipSync' }, null,
+        { nativeClass: 'MemberEyeTrack', label: 'Member1/Eye' }, { nativeClass: 'MemberLipSyncTrack', label: 'Member1/MouthRina' },
+        { nativeClass: 'MemberGazeTrack', label: 'Member1/Gaze' },
         { nativeClass: 'AnimationTrack', label: 'PropEffect/Expert/PropAnimation/A' }, { nativeClass: 'LivePropAmbientTrack', label: 'PropEffect/Expert/Prop Ambient/A' },
         { nativeClass: 'LiveBaseLightTrack', label: 'GlobalEffect/Expert/BaseLight/B' }, { nativeClass: 'CustomControlTrack', label: 'MotionMisc/Expert/SplitScreen/S' },
         { nativeClass: 'CustomControlTrack', label: 'MotionMisc/Expert/Other/S' }].map((track) => F.trackMuteNote(track));
@@ -449,8 +451,9 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
     assert.deepEqual(result.powerY, { fields: [], text: '0.7' }, 'the lift curve stays read only');
     const group = "A group track's mute does not reach the game. Mute the tracks inside it.";
     const quality = "The game's quality settings turn this track on and off, so its mute does not reach the game.";
-    assert.deepEqual(result.mute, [group, quality, quality, null, null, quality, null, group, null, quality, quality, quality, null],
-      'groups and direct children of quality categories are noted; nested, uncategorised and member tracks reach the game');
+    const facial = 'The game turns eye and mouth tracks on and off itself, so this mute does not reach the game.';
+    assert.deepEqual(result.mute, [group, quality, quality, null, null, quality, facial, group, facial, facial, null, null, quality, quality, quality, null],
+      'groups, eye and mouth tracks and direct children of quality categories are noted; nested, uncategorised and other member tracks reach the game');
     console.log('MV Studio event fields: descriptors, HDR colour, 0/1 ints, observed options, data-mv-field, native data, gestures passed');
   } finally {
     await browser.close();

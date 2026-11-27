@@ -809,6 +809,14 @@ _QUALITY_CATEGORIES = {
     "MotionMisc": frozenset({"splitscreen"}),
 }
 QUALITY_MUTE = "The game's quality settings turn this track on and off, so its mute does not reach the game."
+# The client also sets the mute of every eye and mouth track itself: after BindTimeline, director
+# setup always runs LiveDirector.InitializeMemberHead (0x2924d04), which per member collects
+# GetTracks<MemberEyeTrack> and GetTracks<MemberLipSyncTrack> (no muted test) and calls
+# SetupFacialTrackMute (0x29250d4); that sets muted = IsRinaFacial XOR useRina on each of them
+# (eor at 0x29251ac and 0x2925298, TrackAsset.set_muted 0x35d10e8), replacing the authored m_Muted
+# (game_motion_timeline.parse_timeline models the same rule).
+_FACIAL_MUTE_CLASSES = frozenset({"MemberEyeTrack", "MemberLipSyncTrack"})
+FACIAL_MUTE = "The game turns eye and mouth tracks on and off itself, so this mute does not reach the game."
 
 
 def quality_category(label):
@@ -828,6 +836,8 @@ def track_mute_refusal(track):
     """Why a mute of this parsed track does not reach the game, or None when it does."""
     if not isinstance(track, dict) or track.get("nativeClass") == "GroupTrack":
         return GROUP_MUTE
+    if track.get("nativeClass") in _FACIAL_MUTE_CLASSES:
+        return FACIAL_MUTE
     if quality_category(track.get("label")) is not None:
         return QUALITY_MUTE
     return None
@@ -890,7 +900,8 @@ def _changes(original, revised):
 
 def _track_fields(before, after):
     """[(field, value)] of the EXPORTABLE_TRACK_FIELDS ``after`` changes on one track, or ValueError
-    when the change cannot reach the game (a GroupTrack, a quality category's track) or is not a bool."""
+    when the change cannot reach the game (a GroupTrack, an eye or mouth track, a quality category's
+    track) or is not a bool."""
     result = []
     for field in EXPORTABLE_TRACK_FIELDS:
         if field not in before or after.get(field) == before[field]:
@@ -1630,6 +1641,8 @@ def _rewrite_timeline(raw, original, revised):
         tree, native = mono[track]
         if native == "GroupTrack":
             raise ValueError(GROUP_MUTE)
+        if native in _FACIAL_MUTE_CLASSES:
+            raise ValueError(FACIAL_MUTE)
         if field != "muted" or type(tree.get("m_Muted")) not in (bool, int):
             raise ValueError("This native track has no mute to change.")
         tree["m_Muted"] = value if type(tree["m_Muted"]) is bool else int(value)

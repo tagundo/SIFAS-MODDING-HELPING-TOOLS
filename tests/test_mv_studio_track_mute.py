@@ -34,7 +34,8 @@ def timeline(*tracks):
 
 class RuleTests(unittest.TestCase):
     def test_which_mutes_reach_the_game(self):
-        reach = [("CameraMotion/Camera1", "AnimationTrack"), ("Member1/LipSync", "MemberLipSyncTrack"),
+        reach = [("CameraMotion/Camera1", "AnimationTrack"), ("Member1/Gaze", "MemberGazeTrack"),
+                 ("Member1/Cheek", "MemberCheekTrack"),
                  # One group deeper than a quality category: ApplyMuteToChildTracks does not recurse.
                  ("StageEffect/Expert/Coloring/LightShaft/LED_p", "LiveColoringTrack"),
                  # A StageEffect category the quality table has no entry for (12023's "Overlay").
@@ -68,6 +69,15 @@ class RuleTests(unittest.TestCase):
                 self.assertEqual(studio.quality_category(label), category)
                 self.assertEqual(studio.track_mute_refusal(track("t", label)), studio.QUALITY_MUTE)
                 self.assertEqual(studio.exportable_track_fields(track("t", label)), ())
+        # The game sets every eye and mouth track's mute itself (SetupFacialTrackMute), by class
+        # whatever the name or place.
+        facial = [("Member1/LipSync", "MemberLipSyncTrack"), ("Member1/Eye", "MemberEyeTrack"),
+                  ("Member1/Mouth", "MemberLipSyncTrack"), ("Member1/MouthRina", "MemberLipSyncTrack"),
+                  ("Member1/EyeRina", "MemberEyeTrack"), ("MemberEffect/Expert/Member Ambient/E", "MemberEyeTrack")]
+        for label, native_class in facial:
+            with self.subTest(label=label):
+                self.assertEqual(studio.track_mute_refusal(track("t", label, native_class)), studio.FACIAL_MUTE)
+                self.assertEqual(studio.exportable_track_fields(track("t", label, native_class)), ())
         self.assertEqual(studio.track_mute_refusal(track("g", "StageEffect", "GroupTrack")), studio.GROUP_MUTE)
         self.assertEqual(studio.track_mute_refusal(track("g", "Member1", "GroupTrack")), studio.GROUP_MUTE)
         self.assertEqual(studio.track_mute_refusal(None), studio.GROUP_MUTE)
@@ -79,7 +89,8 @@ class ExportRuleTests(unittest.TestCase):
     def setUp(self):
         self.original = timeline(track("leaf", "Member1/Gaze", "MemberGazeTrack", events=[clip("leaf:0")]),
                                  track("led", "StageEffect/Expert/Coloring/LED"),
-                                 track("group", "StageEffect", "GroupTrack"))
+                                 track("group", "StageEffect", "GroupTrack"),
+                                 track("eye", "Member1/Eye", "MemberEyeTrack"))
 
     def revise(self, identity, **fields):
         revised = deepcopy(self.original)
@@ -95,7 +106,8 @@ class ExportRuleTests(unittest.TestCase):
         self.assertEqual(studio._track_changes(self.original, self.revise("leaf", muted=0)), [])
 
     def test_mutes_that_do_not_reach_the_game_are_refused(self):
-        for identity, message in (("led", studio.QUALITY_MUTE), ("group", studio.GROUP_MUTE)):
+        for identity, message in (("led", studio.QUALITY_MUTE), ("group", studio.GROUP_MUTE),
+                                  ("eye", studio.FACIAL_MUTE)):
             with self.subTest(identity=identity), self.assertRaises(ValueError) as caught:
                 studio._changes(self.original, self.revise(identity, muted=True))
             self.assertEqual(str(caught.exception), message)
@@ -113,7 +125,8 @@ class RegistrationTests(unittest.TestCase):
     def setUp(self):
         self.original = timeline(track("leaf", "Member1/Gaze", "MemberGazeTrack", events=[clip("leaf:0")]),
                                  track("led", "StageEffect/Expert/Coloring/LED", events=[clip("led:0")]),
-                                 track("group", "StageEffect", "GroupTrack"))["tracks"]
+                                 track("group", "StageEffect", "GroupTrack"),
+                                 track("mouth", "Member1/LipSync", "MemberLipSyncTrack", events=[clip("mouth:0")]))["tracks"]
 
     def posted(self, **mutes):
         tracks = deepcopy(self.original)
@@ -123,9 +136,9 @@ class RegistrationTests(unittest.TestCase):
         return tracks
 
     def test_normalize_keeps_a_leaf_mute_and_reports_the_others(self):
-        normalized, report = register.normalize(self.original, self.posted(leaf=True, led=True, group=True))
-        self.assertEqual([item["muted"] for item in normalized], [True, False, False])
-        self.assertEqual(report["trackSettings"], ["StageEffect", "StageEffect/Expert/Coloring/LED"])
+        normalized, report = register.normalize(self.original, self.posted(leaf=True, led=True, group=True, mouth=True))
+        self.assertEqual([item["muted"] for item in normalized], [True, False, False, False])
+        self.assertEqual(report["trackSettings"], ["Member1/LipSync", "StageEffect", "StageEffect/Expert/Coloring/LED"])
         counts = register.count_edits(self.original, normalized)
         self.assertEqual(counts, {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 1})
         self.assertTrue(register.has_edits(counts))
@@ -138,7 +151,10 @@ class RegistrationTests(unittest.TestCase):
         identity = "tl:0:1:1:1"
         plain = register.timeline_fingerprint("android", identity, self.original)
         self.assertNotEqual(plain, register.timeline_fingerprint("android", identity, self.posted(leaf=True)))
-        self.assertEqual(plain, register.timeline_fingerprint("android", identity, self.posted(led=True, group=True)))
+        self.assertEqual(plain, register.timeline_fingerprint("android", identity, self.posted(led=True, group=True, mouth=True)))
+        # A project whose only mute is an eye or mouth track has no edit to register.
+        normalized, _ = register.normalize(self.original, self.posted(mouth=True))
+        self.assertFalse(register.has_edits(register.count_edits(self.original, normalized)))
 
 
 class MergeTests(unittest.TestCase):
@@ -235,15 +251,27 @@ class ActualTimelineTests(unittest.TestCase):
                     self.assertEqual(studio.parse_timeline(edited, path.name)["tracks"], tracks)
                     if native is not None:
                         native._validate_timeline(edited, raw, platform, time.monotonic() + 120)
+                facial = [item for item in parsed["tracks"]
+                          if item["nativeClass"] in ("MemberEyeTrack", "MemberLipSyncTrack")]
+                # Every sample has a performer's eye and mouth tracks.
+                self.assertEqual({item["nativeClass"] for item in facial}, {"MemberEyeTrack", "MemberLipSyncTrack"})
+                self.assertEqual({studio.track_mute_refusal(item) for item in facial}, {studio.FACIAL_MUTE})
                 for refused in (next((item for item in parsed["tracks"]
                                       if studio.track_mute_refusal(item) == studio.QUALITY_MUTE), None),
-                                next(item for item in parsed["tracks"] if item["nativeClass"] == "GroupTrack")):
+                                next(item for item in parsed["tracks"] if item["nativeClass"] == "GroupTrack"),
+                                *(next(item for item in facial if item["nativeClass"] == native)
+                                  for native in ("MemberEyeTrack", "MemberLipSyncTrack"))):
                     if refused is None:
                         continue
                     attempt = deepcopy(parsed["tracks"])
                     next(item for item in attempt if item["id"] == refused["id"])["muted"] = not refused["muted"]
-                    with self.assertRaisesRegex(ValueError, "does not reach the game"):
+                    with self.assertRaises(ValueError) as caught:
                         studio.export_timeline(raw, path.name, attempt)
+                    self.assertEqual(str(caught.exception), studio.track_mute_refusal(refused))
+                    # Registration sends it back to the game's value and notes it.
+                    normalized, report = register.normalize(parsed["tracks"], attempt)
+                    self.assertEqual(normalized, parsed["tracks"])
+                    self.assertEqual(report["trackSettings"], [refused["label"]])
 
     def test_the_writer_refuses_a_track_change_the_rules_would_have_refused(self):
         # _changes refuses these first; the writer's own guards hold if a track change ever gets past it.
@@ -254,7 +282,9 @@ class ActualTimelineTests(unittest.TestCase):
         parsed = studio.parse_timeline(raw, path.name)
         group = next(item for item in parsed["tracks"] if item["nativeClass"] == "GroupTrack")
         leaf = next(item for item in parsed["tracks"] if studio.track_mute_refusal(item) is None)
+        mouth = next(item for item in parsed["tracks"] if item["nativeClass"] == "MemberLipSyncTrack")
         for crafted, message in (([(group["id"], "muted", True)], studio.GROUP_MUTE),
+                                 ([(mouth["id"], "muted", True)], studio.FACIAL_MUTE),
                                  ([(leaf["id"], "label", True)], "This native track has no mute to change.")):
             with self.subTest(crafted=crafted), mock.patch.object(studio, "_track_changes", return_value=crafted):
                 with self.assertRaises(ValueError) as caught:

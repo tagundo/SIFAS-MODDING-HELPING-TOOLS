@@ -188,7 +188,9 @@ class WhitelistTests(unittest.TestCase):
 
     def test_the_track_mute_note_data_is_the_export_rule(self):
         rule = descriptors()["trackMute"]
-        self.assertEqual(rule["notes"], {"group": studio.GROUP_MUTE, "quality": studio.QUALITY_MUTE})
+        self.assertEqual(rule["notes"], {"group": studio.GROUP_MUTE, "quality": studio.QUALITY_MUTE,
+                                         "facial": studio.FACIAL_MUTE})
+        self.assertEqual(set(rule["facialClasses"]), studio._FACIAL_MUTE_CLASSES)
         self.assertEqual({root: set(names) for root, names in rule["qualityRoots"].items()},
                          {root: set(names) for root, names in studio._QUALITY_CATEGORIES.items()})
 

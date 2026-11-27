@@ -18,9 +18,10 @@
 
   // The table is JSON (tests/test_mv_studio_editable_values.py reads it):
   //   trackMute: which track mutes reach the game (trackMuteNote; the export's own rule is
-  //            mv_studio_timeline.track_mute_refusal): the notes, and per quality root the
-  //            category names (no spaces, lower case) whose direct child tracks the game's
-  //            quality settings switch;
+  //            mv_studio_timeline.track_mute_refusal): the notes, the eye and mouth track
+  //            classes whose mute the game sets itself, and per quality root the category
+  //            names (no spaces, lower case) whose direct child tracks the game's quality
+  //            settings switch;
   //   sets:    named option lists [[value, English label]];
   //   labels:  English label per value key (a descriptor's "label" overrides it);
   //   classes: playable class → value key → { control, ... }.
@@ -35,8 +36,10 @@
     "trackMute": {
       "notes": {
         "group": "A group track's mute does not reach the game. Mute the tracks inside it.",
-        "quality": "The game's quality settings turn this track on and off, so its mute does not reach the game."
+        "quality": "The game's quality settings turn this track on and off, so its mute does not reach the game.",
+        "facial": "The game turns eye and mouth tracks on and off itself, so this mute does not reach the game."
       },
+      "facialClasses": ["MemberEyeTrack", "MemberLipSyncTrack"],
       "qualityRoots": {
         "StageEffect": ["ambient", "animation", "audience", "coloring", "control", "display", "emissive", "flashlight",
                         "overlayeffect", "post"],
@@ -421,11 +424,13 @@
   }
 
   // The English note (for ctx.t) on why a track's mute does not reach the game, or null when it does:
-  // a GroupTrack, or a track directly inside a quality category group
-  // (<root>/<difficulty>/<category>/<track>), whose mute the game's quality settings decide.
+  // a GroupTrack, an eye or mouth track (the game sets their mute when it sets up each member's head),
+  // or a track directly inside a quality category group (<root>/<difficulty>/<category>/<track>),
+  // whose mute the game's quality settings decide.
   function trackMuteNote(track) {
     const rule = TABLE.trackMute;
     if (!isObject(track) || track.nativeClass === "GroupTrack") return rule.notes.group;
+    if (rule.facialClasses.includes(track.nativeClass)) return rule.notes.facial;
     const parts = typeof track.label === "string" ? track.label.split("/") : [];
     if (parts.length === 4 && own(rule.qualityRoots, parts[0])) {
       if (rule.qualityRoots[parts[0]].includes(parts[2].replace(/ /g, "").toLowerCase())) return rule.notes.quality;
