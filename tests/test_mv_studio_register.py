@@ -699,6 +699,21 @@ class PlanTests(Case):
         self.assertIn({"message": register.UNBAKED}, result["blocked"])
         self.assertIn({"message": register.FOLLOW_NOTE}, result["warnings"])
 
+    def test_a_mute_only_project_is_an_edit(self):
+        # Only a track mute that reaches the game (no clip edit): the original MV must not play.
+        project = self.project()
+        project["tracks"][0]["muted"] = True
+        result = self.plan(project)
+        self.assertEqual(result["edits"], {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 1,
+                                           "follow": False})
+        self.assertFalse(result["timeline"]["unchanged"])
+        self.assertEqual(result["timeline"]["bake"], ["android", "ios"])
+        self.assertEqual(result["notInGame"], [])
+        stock = {"kind": "stock", "raw": self.local["tl2101"]}
+        self.assertFalse(register._unchanged_stock(stock, project["tracks"]))
+        self.assertTrue(register._unchanged_stock(stock, base_tracks()))
+        self.assertEqual(EXPORTS, [], "The plan never bakes")
+
     def test_structural_change_blocks_with_the_track_label(self):
         project = self.project()
         project["tracks"][2]["events"].append({"id": "cab-1:30:1", "start": 3, "duration": 1, "label": "x",
@@ -813,6 +828,18 @@ class RegisterJobTests(Case):
         self.assertEqual(song["platforms"], {"android": "stock", "ios": "stock"})
         self.assertEqual(song["fingerprints"], {})
         self.assertEqual(self.validated, [])
+
+    def test_a_mute_only_project_bakes_both_platforms(self):
+        project = self.project()
+        project["tracks"][0]["muted"] = True
+        job, _ = self.run_job(self.request(project))
+        song = job.song()["song"]
+        self.assertEqual(song["platforms"], {"android": "custom", "ios": "custom"})
+        self.assertEqual(sorted(song["fingerprints"]), ["android", "ios"])
+        self.assertEqual([export["base"]["platform"] for export in EXPORTS], ["android", "ios"])
+        for export in EXPORTS:
+            self.assertEqual([track["muted"] for track in export["tracks"]], [True, False, False])
+        self.assertEqual(sorted(self.validated), [("android", "android", 13), ("ios", "ios", 9)])
 
     def test_one_unchanged_platform_gets_no_override(self):
         project = self.edited(self.project())
@@ -1802,6 +1829,28 @@ class RealSampleUpdateTests(Case):
     def bloom(project):
         return next(event for track in project["tracks"] if track["nativeClass"] == "LiveBloomTrack"
                     for event in track["events"] if "intensity" in event["editableValues"])
+
+    def test_12035_a_mute_only_project_registers_the_mute_on_both_platforms(self):
+        stock = {"kind": "game", "region": "gl", "platform": "android", "liveId": 21, "assetId": 2101,
+                 "mvOnly": False, "registered": False}
+        project = self.imported(self.local["tl2101"], stock)
+        leaf = next(track for track in project["tracks"] if track["events"] and not track["muted"]
+                    and mv_studio_timeline.track_mute_refusal(track) is None)
+        leaf["muted"] = True
+        plan = register.plan(self.root, project)
+        self.assertEqual((plan["edits"]["clips"], plan["edits"]["tracks"]), (0, 1))
+        self.assertEqual((plan["timeline"]["unchanged"], plan["timeline"]["bake"], plan["blocked"]),
+                         (False, ["android", "ios"], []))
+        job, _, _ = self.job(self.request(project, title="음소거 곡"))
+        song = mv_studio_live.describe_mv_song(self.root, region="gl", live_id=job.song()["song"]["liveId"])
+        self.assertEqual(song["platforms"], {"android": "custom", "ios": "custom"})
+        self.assertEqual(len(self.exports), 2)
+        for platform, raw in register._registered_timelines(self.root, song).items():
+            with self.subTest(platform=platform):
+                tracks = {track["id"]: track for track in REAL_PARSE(raw, platform)["tracks"]}
+                self.assertIs(tracks[leaf["id"]]["muted"], True)
+                self.assertEqual(sum(track["muted"] for track in tracks.values()),
+                                 1 + sum(track["muted"] for track in REAL_PARSE(self.local["tl2101"], "a")["tracks"]))
 
     def test_12035_update_after_opening_the_registered_song_never_stops_the_server(self):
         stock = {"kind": "game", "region": "gl", "platform": "android", "liveId": 21, "assetId": 2101,

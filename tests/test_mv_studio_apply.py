@@ -142,6 +142,17 @@ class PlanTests(ApplyCase):
         scratch = mv_studio._blank("scratch")
         self.assertEqual(self.plan(scratch)["blocked"], [{"message": apply.NO_TARGET}])
 
+    def test_a_mute_only_project_has_edits_to_apply(self):
+        project = self.imported()
+        project["tracks"][0]["muted"] = True
+        plan = self.plan(project)
+        counts = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 1}
+        edits = plan["edits"]
+        self.assertEqual((edits["counts"], edits["unchanged"], sorted(edits["apply"]), edits["pending"]),
+                         (counts, False, ["android", "ios"], {"android": 1, "ios": 1}))
+        self.assertNotIn({"message": apply.NO_EDITS}, edits["blocked"])
+        self.assertEqual((plan["all"]["unchanged"], plan["all"]["counts"]), (False, counts))
+
     def test_edit_counts_and_a_structure_change(self):
         project = self.edited(self.imported())
         plan = self.plan(project)
@@ -179,6 +190,26 @@ class ApplyEditsTests(ApplyCase):
                              "Each platform's edit is written on that platform's own timeline")
         # Validated against the true stock of each platform (before the stop; the store reuses it).
         self.assertEqual(sorted(self.validated), [("android", "android", 13), ("ios", "ios", 9)])
+
+    def test_a_mute_only_project_applies_its_mute_to_both_platforms(self):
+        project = self.imported()
+        project["tracks"][0]["muted"] = True
+        job, _ = self.run_apply(project, "edits")
+        result = self.result(job)
+        self.assertEqual((result["changed"], result["parts"]), (True, ["android", "ios"]))
+        self.assertEqual(job.stages(), ["check", "merge-android", "merge-ios", "validate", "stop", "write", "restart"])
+        for platform in ("android", "ios"):
+            self.assertEqual([track["muted"] for track in tracks_of(self.served(platform))], [True, False, False])
+        # The page keeps the record of this apply: the mute is agreed, nothing waits for another apply.
+        applied = self.result(job)["applied"]
+        self.assertEqual({platform: list(fields) for platform, fields in applied["platforms"].items()},
+                         {"android": ["cab-1:10"], "ios": ["cab-1:10"]})
+        project["source"]["applied"] = applied
+        plan = self.plan(project)
+        self.assertEqual((plan["edits"]["pending"], plan["edits"]["unchanged"]), ({"android": 0, "ios": 0}, True))
+        # Unmuting it again is an edit of its own.
+        project["tracks"][0]["muted"] = False
+        self.assertEqual(self.plan(project)["edits"]["pending"], {"android": 1, "ios": 1})
 
     def test_edits_on_top_of_an_earlier_apply_keep_both(self):
         first, second = self.imported(), self.imported()
