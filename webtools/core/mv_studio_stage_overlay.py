@@ -31,24 +31,36 @@ _WORLD_SCALARS = {
 }
 # AS/Blend/Opaque _AmbientColor (its .x-.w or .r-.a lanes, like _TintColor).
 _AMBIENT_COLOR = crc32(b"_AmbientColor") & 0x0FFFFFFF
+_NULL_SCRIPT = {"m_FileID": 0, "m_PathID": 0}
+# Renderer classes whose material curves no preview material holds (ParticleSystemRenderer).
+DROPPED_RENDERERS = frozenset({199})
 
 
-def material_channels(bindings, curves, width_of, *, world=False):
-    """Decode built-in renderer material bindings with Unity's component nibble."""
-    outputs, renderer_classes, count, offset = {}, {}, 0, 0
+def material_channels(bindings, curves, width_of, *, world=False, dropped=None):
+    """Decode built-in renderer material bindings with Unity's component nibble.
+
+    With a ``dropped`` list, a material property no preview material holds (an unknown property,
+    an unexpected lane family, a property whose lanes are incomplete, or a renderer class in
+    DROPPED_RENDERERS) is left out and recorded there instead of refusing every channel."""
+    outputs, renderer_classes, count, offset, unknown = {}, {}, 0, 0, {}
     for binding in bindings:
         width = width_of(binding)
         renderer_class = binding.get("typeID")
-        if renderer_class in (23, 137) and (binding.get("customType"), binding.get("isPPtrCurve")) == (22, 0):
+        if (binding.get("customType"), binding.get("isPPtrCurve")) == (22, 0) and (
+                renderer_class in (23, 137) or dropped is not None and renderer_class in DROPPED_RENDERERS):
             attribute = binding["attribute"]
             property_hash = attribute & 0x0FFFFFFF
-            kind = _MATERIAL_PROPERTIES.get(property_hash)
+            kind = _MATERIAL_PROPERTIES.get(property_hash) if renderer_class in (23, 137) else None
             property_name = None
             family, channel = divmod(attribute >> 28, 4)
             path = binding.get("path")
+            # A renderer's material binding names no script (class 23's typed properties never did).
+            scripted = binding.get("script") != _NULL_SCRIPT and (renderer_class != 23 or kind is None)
+            if scripted or width != 1 or not path:
+                return [], 0
+            if renderer_classes.setdefault(path, renderer_class) != renderer_class:
+                return [], 0
             if kind is None and world and renderer_class == 23:
-                if binding.get("script") != {"m_FileID": 0, "m_PathID": 0}:
-                    return [], 0
                 if property_hash == _SOFT_BILLBOARD_COLOR and family == 0:
                     kind = "overlayColor"
                 elif property_hash == _AMBIENT_COLOR and family in (0, 1):
@@ -57,13 +69,18 @@ def material_channels(bindings, curves, width_of, *, world=False):
                     property_name = _WORLD_SCALARS.get(property_hash)
                     if property_name is not None:
                         kind = "overlayScalar"
-            elif (family not in (0, 1) or family == 1 and kind != "overlayTint"
-                  or renderer_class == 137 and binding.get("script") != {"m_FileID": 0, "m_PathID": 0}):
-                return [], 0
-            if kind is None or width != 1 or not path:
-                return [], 0
-            if renderer_classes.setdefault(path, renderer_class) != renderer_class:
-                return [], 0
+            elif kind is not None and (family not in (0, 1) or family == 1 and kind != "overlayTint"):
+                kind = None
+            if kind is None:
+                if dropped is None:
+                    return [], 0
+                lanes = unknown.setdefault((path, property_hash, renderer_class), set())
+                if (family, channel) in lanes:
+                    return [], 0
+                lanes.add((family, channel))
+                count += 1
+                offset += width
+                continue
             # Keep the scalar, vector and color families distinct until all
             # lanes of every property are present.
             components = outputs.setdefault((path, kind, property_name, family), {})
@@ -72,18 +89,31 @@ def material_channels(bindings, curves, width_of, *, world=False):
             components[channel] = curves[offset]
             count += 1
         offset += width
-    if (any(len(components) != (1 if kind == "overlayScalar" else 4)
-            for (_, kind, _, _), components in outputs.items())
-            or len({(path, kind, name) for path, kind, name, _ in outputs}) != len(outputs)):
+    if len({(path, kind, name) for path, kind, name, _ in outputs}) != len(outputs):
+        return [], 0
+    incomplete = [key for key, components in outputs.items()
+                  if len(components) != (1 if key[1] == "overlayScalar" else 4)]
+    if incomplete and dropped is None:
         return [], 0
     channels = []
-    for (path, kind, property_name, _), components in outputs.items():
+    for (path, kind, property_name, family), components in outputs.items():
+        if (path, kind, property_name, family) in incomplete:
+            unknown.setdefault((path, None, renderer_classes[path]), set()).add(kind if property_name is None else property_name)
+            continue
         channel = {"path": path, "kind": kind, "curves": [components[index] for index in range(len(components))]}
         if property_name is not None:
             channel["property"] = property_name
         if renderer_classes[path] == 137:
             channel["rendererClass"] = 137
         channels.append(channel)
+    if dropped is not None:
+        for (path, property_hash, renderer_class), lanes in unknown.items():
+            row = {"path": path, "rendererClass": renderer_class}
+            if property_hash is None:
+                row["incomplete"] = sorted(lanes)
+            else:
+                row["propertyHash"] = property_hash
+            dropped.append(row)
     return channels, count
 
 

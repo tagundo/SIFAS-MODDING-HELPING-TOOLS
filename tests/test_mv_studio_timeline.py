@@ -316,12 +316,19 @@ class TimelineContractTests(unittest.TestCase):
               for lane, name in enumerate(props, 4)],
             {"path": floor, "kind": "overlayTint", "curves": [("constant", lane) for lane in range(13, 17)]},
         ])
-        self.assertIsNone(read(color + scalars + tint, overlay=True))
-        for invalid in (color[1:] + scalars, color + scalars + scalars[:1],
-                        color + [binding(fog, "_Density", 9)], color + [binding(fog, "_Density", 8, 137)],
-                        color + [binding(fog, "_UnknownFloat", 8)],
+        # The layer-20 overlay pass holds no soft billboard: those curves are dropped and reported.
+        declaration, _ = read(color + scalars + tint, overlay=True)
+        self.assertEqual([channel["kind"] for channel in declaration["channels"]], ["overlayTint"])
+        self.assertEqual(len(declaration["droppedChannels"]), 1 + len(props))
+        for invalid in (color + scalars + scalars[:1], color + [binding(fog, "_Density", 8, 137)],
                         color + [{**scalars[0], "script": {"m_FileID": 0, "m_PathID": 77}}]):
             self.assertIsNone(read(invalid + tint, world=True))
+        # An incomplete color, a scalar in another lane or an unknown float is dropped, not the clip.
+        for partial, kept in ((color[1:] + scalars, len(props)), (color + [binding(fog, "_Density", 9)], 1),
+                              (color + [binding(fog, "_UnknownFloat", 8)], 1)):
+            declaration, _ = read(partial + tint, world=True)
+            self.assertEqual(len(declaration["channels"]), kept + 1)
+            self.assertEqual(len(declaration["droppedChannels"]), 1)
 
     def test_stage_motion_rejects_partial_native_clip_playback(self):
         from webtools.core import mv_studio_stage_motion as stage
