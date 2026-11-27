@@ -548,7 +548,8 @@ class ExportFormatTests(unittest.TestCase):
     # What the native export writes, as of EXPORT_FORMAT. A change here means MV Studio writes something
     # an older one does not: raise mv_timeline_platform.EXPORT_FORMAT and record the new digest, so a
     # server whose MV Studio tools are older says "made by a newer MV Studio".
-    SURFACE = {1: "c77e54a2182a617365242889880227a87a0f9a31759b8c5491203d39b3032308"}
+    SURFACE = {1: "c77e54a2182a617365242889880227a87a0f9a31759b8c5491203d39b3032308",
+               2: "1322aa7f6f86517881ce977b58992f1eed086de44974ba3b2a84d842dbc45136"}
 
     def test_the_export_format_pins_what_the_export_writes(self):
         import hashlib

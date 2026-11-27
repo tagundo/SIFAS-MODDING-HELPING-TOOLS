@@ -32,7 +32,10 @@ REGIONS = ("gl", "jp")
 # say a pack was made by a newer MV Studio. Raise it whenever the export starts writing something it
 # did not (a value in mv_studio_timeline._EDITABLE_VALUES, a track field in EXPORTABLE_TRACK_FIELDS,
 # clip timing): tests/test_mv_crossslot.py pins that surface to this number.
-EXPORT_FORMAT = 1
+# 2: track mutes, member targets (member positions, base light colour sources, depth-of-field focus),
+# penlight motion and colours; in the same release, split-screen sub camera shot edits and resized
+# camera shots with edits.
+EXPORT_FORMAT = 2
 
 PLATFORM = "Choose Android or iOS."
 REGION = "Select the GL or JP catalog."
