@@ -3482,9 +3482,6 @@ _MV_REGISTER_TRANSLATIONS = {
     "This camera animation is shared or external. Edit its timing only.": (
         "이 카메라 애니메이션은 공유되거나 외부에 있습니다. 타이밍만 편집하세요.",
         "このカメラアニメーションは共有または外部のものです。タイミングだけを編集してください。"),
-    "Camera point edits require an untrimmed, full native shot with unchanged sample times.": (
-        "카메라 포인트를 편집하려면 잘리지 않은 원래 컷 전체와 바뀌지 않은 샘플 시간이 필요합니다.",
-        "カメラポイントの編集には、切り詰めていない元のカット全体と変わっていないサンプル時刻が必要です。"),
     "Keep one camera point per frame of the shot, at its frame times.": (
         "샷의 프레임마다 카메라 포인트를 하나씩, 그 프레임 시간에 두세요.",
         "ショットのフレームごとにカメラポイントを1つずつ、そのフレームの時刻に置いてください。"),

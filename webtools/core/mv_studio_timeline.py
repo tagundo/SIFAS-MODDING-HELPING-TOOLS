@@ -927,14 +927,15 @@ def _camera_vector(value, length, label):
 def _write_camera(tree, clip, old_event, new_event):
     """Write a shot's points as the clip's dense 60 Hz samples, its stop time at the shot's end.
 
-    `clip` is the TimelineClip as it will be saved (its new timing)."""
+    `clip` is the TimelineClip as it will be saved (its new timing). A resized shot (new_event's
+    duration) brings the points of its new grid, ceil(duration·60) + 1 of them at min(i/60,
+    duration): the clip is written for that length."""
     unity_euler_near = animation.unity_euler_near
 
     after = new_event["values"]["keyframes"]
-    span = old_event["duration"]
-    if (new_event["duration"] != span or old_event["values"].get("clipIn", 0) != 0
-            or old_event["values"].get("timeScale", 1) != 1):
-        raise ValueError("Camera point edits require an untrimmed, full native shot with unchanged sample times.")
+    span = new_event["duration"]
+    if old_event["values"].get("clipIn", 0) != 0 or old_event["values"].get("timeScale", 1) != 1:
+        raise ValueError(_CAMERA_SOURCE)
     refusal = _camera_rewrite_refusal(tree, clip, span)
     if refusal:
         raise ValueError(refusal)

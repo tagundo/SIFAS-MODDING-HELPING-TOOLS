@@ -219,6 +219,73 @@ class Real12035Tests(Checks):
         self.check_reparse(exported)
         self.check_validator(exported, platform)
 
+    def test_a_cut_moved_ten_frames_exports_both_edited_shots_on_their_new_grids(self):
+        """Shot 6 loses its last ten frames, shot 7 starts ten frames earlier: both carry camera edits."""
+        for platform, path in samples(12035).items():
+            with self.subTest(platform=platform):
+                raw = path.read_bytes()
+                parsed = studio.parse_timeline(raw, path.name)
+                tracks = deepcopy(parsed["tracks"])
+                camera = next(track for track in tracks if MAIN(track) and track["nativeClass"] == "AnimationTrack")
+                first, second = camera["events"][5], camera["events"][6]
+                # Stock shots leave a one-frame gap (held by a 1/60 s post-extrapolation): the cut moves, the gap stays.
+                cut = 10 / 60
+                first["duration"] = round((first["duration"] - cut) * 60) / 60
+                second["start"] = round((second["start"] - cut) * 60) / 60
+                second["duration"] = round((second["duration"] + cut) * 60) / 60
+                for event, phase in ((first, 0), (second, 1)):
+                    old = event["values"]["keyframes"]
+                    # The original motion by time on the new grid, its last pose held (the editor's bake source).
+                    grid = [{**old[min(index, len(old) - 1)], "time": min(index / 60, event["duration"])}
+                            for index in range(round(event["duration"] * 60) + 1)]
+                    event["values"]["keyframes"] = baked(grid, phase)
+                native = {event["id"]: event for track in parsed["tracks"] for event in track["events"]}
+                self.assertEqual(len(first["values"]["keyframes"]), len(native[first["id"]]["values"]["keyframes"]) - 10)
+                self.assertEqual(len(second["values"]["keyframes"]), len(native[second["id"]]["values"]["keyframes"]) + 10)
+                output = studio.export_timeline(raw, path.name, tracks)
+                again = studio.parse_timeline(output, path.name)
+                events = {event["id"]: event for track in again["tracks"] for event in track["events"]}
+                _, objects, _ = studio._read(raw, "original", time.monotonic() + 120)
+                _, after, _ = studio._read(output, "edited", time.monotonic() + 120)
+                by_id = {studio._id(key): key for key in objects}
+                for event in (first, second):
+                    got = events[event["id"]]
+                    self.assertEqual((got["start"], got["duration"]), (event["start"], event["duration"]))
+                    self.assertIn("keyframes", got["editableValues"])
+                    want = event["values"]["keyframes"]
+                    self.assertEqual(len(got["values"]["keyframes"]), len(want))
+                    worst = 0.
+                    for a, b in zip(got["values"]["keyframes"], want):
+                        self.assertEqual(a["time"], b["time"])
+                        sign = 1 if sum(x * y for x, y in zip(a["rotation"], b["rotation"])) >= 0 else -1
+                        worst = max(worst, *(abs(x - y) for x, y in zip(a["position"], b["position"])),
+                                    *(abs(x - sign * y) for x, y in zip(a["rotation"], b["rotation"])), abs(a["fov"] - b["fov"]))
+                    self.assertLess(worst, 1e-6)
+                    key = by_id[event["values"]["animation"]]
+                    old_tree, new_tree = objects[key].read_typetree(), after[key].read_typetree()
+                    self.assertEqual(new_tree["m_MuscleClip"]["m_StopTime"], f32(event["duration"]))
+                    growth = len(after[key].get_raw_data()) - len(objects[key].get_raw_data())
+                    if growth > 0:
+                        self.assertEqual(new_tree["m_MuscleClipSize"], ceil16(old_tree["m_MuscleClipSize"] + growth + 64))
+                    else:
+                        self.assertEqual(new_tree["m_MuscleClipSize"], old_tree["m_MuscleClipSize"])
+                if NATIVE is not None:
+                    NATIVE._validate_timeline(output, raw, NATIVE.PLATFORMS[platform][1], time.monotonic() + 120)
+
+    def test_a_resize_without_camera_edits_writes_only_the_clip_timing(self):
+        path = next(iter(samples(12035).values()))
+        raw = path.read_bytes()
+        parsed = studio.parse_timeline(raw, path.name)
+        tracks = deepcopy(parsed["tracks"])
+        camera = next(track for track in tracks if MAIN(track) and track["nativeClass"] == "AnimationTrack")
+        camera["events"][5]["duration"] -= 10 / 60
+        output = studio.export_timeline(raw, path.name, tracks)
+        _, objects, _ = studio._read(raw, "original", time.monotonic() + 120)
+        _, after, _ = studio._read(output, "edited", time.monotonic() + 120)
+        changed = [key for key in objects if objects[key].get_raw_data() != after[key].get_raw_data()]
+        self.assertEqual([studio._id(key) for key in changed], [camera["id"]], "only the track's clip list")
+        self.assertIs(studio.export_timeline(raw, path.name, deepcopy(parsed["tracks"])), raw)
+
     def test_export_with_an_editor_layer_and_unedited_tracks_returns_the_original_bytes(self):
         path = next(iter(samples(12035).values()))
         raw = path.read_bytes()
@@ -344,6 +411,31 @@ class WriterRuleTests(unittest.TestCase):
         before = points(tree, 1.)
         studio._write_camera(tree, {}, shot(1., before), shot(1., deepcopy(before)))
         self.assertIs(tree["m_MuscleClip"]["m_StopTime"], stored, "the same float32 value is not rewritten")
+
+    def test_a_resized_shot_is_written_on_its_new_grid(self):
+        tree = dense_camera(61)
+        for frames in (10, -10, 1):
+            length = (60 + frames) / 60
+            with self.subTest(frames=frames):
+                written = deepcopy(tree)
+                old = points(tree, 1.)
+                # The new grid as the editor bakes it: the original motion by time, its last pose held.
+                after = points(tree, length)
+                self.assertEqual(len(after), 61 + frames)
+                for index, point in enumerate(after):
+                    point["fov"] += index * .01
+                studio._write_camera(written, {"m_Duration": length}, shot(1., old), shot(length, after))
+                self.assertEqual(written["m_MuscleClip"]["m_StopTime"], length)
+                self.assertEqual(written["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"]["m_FrameCount"], 61 + frames)
+                again = points(written, length)
+                self.assertEqual([point["time"] for point in again], [point["time"] for point in after])
+                for got, want in zip(again, after):
+                    self.assertAlmostEqual(got["fov"], want["fov"], places=9)
+        # A length off the 60 Hz grid, or points of the old grid, are refused.
+        with self.assertRaisesRegex(ValueError, "whole frames"):
+            studio._write_camera(deepcopy(tree), {}, shot(1., points(tree, 1.)), shot(1.005, points(tree, 1.005)))
+        with self.assertRaisesRegex(ValueError, "one camera point per frame"):
+            studio._write_camera(deepcopy(tree), {}, shot(1., points(tree, 1.)), shot(70 / 60, points(tree, 1.)))
 
     def test_refusals(self):
         tree = dense_camera(61)
