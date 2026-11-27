@@ -201,6 +201,34 @@ class ReceiptTests(unittest.TestCase):
             self.assertIsNotNone(cache.open_cache(self.media))
             self.assertIsNotNone(mv_studio_actor_cache.open_cache(("gl", "android"), self.media))
 
+    def test_closed_receipt_stores_are_reported_once_per_process(self):
+        import io
+        readable = cache._module_bytes
+
+        def unreadable(spec):
+            return None if spec is not None and spec.name == "webtools.core.decode" else readable(spec)
+
+        cache._source_recipe.cache_clear()
+        self.addCleanup(cache._source_recipe.cache_clear)
+        private = self.root / "private"
+        private.mkdir(mode=0o700)
+        with patch.object(cache, "_module_bytes", side_effect=unreadable), \
+                patch.object(cache, "_CLOSED_REPORTED", False), patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                patch.dict(os.environ, {"ELICHIKA_MV_PRIVATE_CACHE": str(private.resolve())}):
+            for _ in range(3):
+                self.assertIsNone(cache.open_cache(self.media))
+                self.assertIsNone(cache.open_texture_cache(self.media))
+                cache._source_recipe.cache_clear()  # every reading of the code, not only the first
+            lines = stderr.getvalue().splitlines()
+            self.assertEqual(len(lines), 1, lines)
+            self.assertIn("MV import receipts are off", lines[0])
+            self.assertIn("webtools.core.decode", lines[0])
+        # Readable code says nothing.
+        with patch.object(cache, "_CLOSED_REPORTED", False), patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                patch.dict(os.environ, {"ELICHIKA_MV_PRIVATE_CACHE": str(private.resolve())}):
+            self.assertIsNotNone(cache.open_cache(self.media))
+            self.assertEqual(stderr.getvalue(), "")
+
     def test_recipe_holds_the_format_library_releases_and_zlib_builds(self):
         cache._source_recipe.cache_clear()
         self.addCleanup(cache._source_recipe.cache_clear)
