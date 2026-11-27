@@ -78,7 +78,10 @@ def read_material(scene, material):
         return None
     tree = scene.tree(material)
     queue = tree.get("m_CustomRenderQueue", -1)
-    if tree.get("stringTagMap") or tree.get("disabledShaderPasses") or type(queue) is not int or queue not in (-1, 3000):
+    # -1 keeps the subshader's Transparent (3000) queue; an authored queue keeps the pass in the
+    # transparent range (11060's fog uses 3010).
+    if (tree.get("stringTagMap") or tree.get("disabledShaderPasses") or type(queue) is not int
+            or queue != -1 and not 2501 <= queue <= 5000):
         return None
     shader = _shader_key(material, tree)
     # AS/SoftParticleBillboard declares no keyword, so a stale saved one (_RIMLIGHT_ON) selects
@@ -114,5 +117,5 @@ def read_material(scene, material):
             return None
         values["_LightDirection"] = light
     return {"kind": kind, "texture": texture, "uniforms": values,
-            "queue": 3000, "cull": 2, "stencil": dict(stencil), "alphaBlend": True,
+            "queue": 3000 if queue == -1 else queue, "cull": 2, "stencil": dict(stencil), "alphaBlend": True,
             "depthTest": True, "depthWrite": False}

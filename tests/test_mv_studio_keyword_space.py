@@ -84,6 +84,17 @@ class StaleKeywordReaderTests(unittest.TestCase):
             fields = soft.read_material(scene, material)
         self.assertEqual(fields["kind"], "fog")
 
+    def test_fog_keeps_an_authored_transparent_queue(self):
+        texture = SimpleNamespace(type=SimpleNamespace(name="Texture2D"))
+        for queue, expected in ((3010, 3010), (-1, 3000), (5000, 5000), (2500, None), (5001, None)):
+            material, scene = self.material("cab-b214ce933be761e55a829d7470161d63", -1880739195722111294, "_RIMLIGHT_ON",
+                                            queue=queue)
+            scene.tree(material).update(stringTagMap={}, disabledShaderPasses=[])
+            with patch.object(viewer, "_ref", side_effect=lambda owner, pointer: None if pointer.get("m_PathID") ==
+                              -1880739195722111294 else texture):
+                fields = soft.read_material(scene, material)
+            self.assertEqual(fields and fields["queue"], expected, queue)
+
 
 def _bundle(variable):
     raw = os.environ.get(variable)

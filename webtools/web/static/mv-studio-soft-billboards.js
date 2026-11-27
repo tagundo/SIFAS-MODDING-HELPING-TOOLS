@@ -171,7 +171,7 @@
     const shaderInputs = smoke
       ? normal?.itemSize === 3 && normal.count === position?.count && vector(uniforms?._LightDirection, 4)
       : fields.kind === "fog" && center?.itemSize === 3 && center.count === position?.count;
-    return shaderInputs && fields.queue === 3000 && fields.cull === 2 &&
+    return shaderInputs && Number.isInteger(fields.queue) && fields.queue >= 2501 && fields.queue <= 5000 && fields.cull === 2 &&
       fields.alphaBlend === true && fields.depthTest === true && fields.depthWrite === false &&
       stencil?.comparison === (smoke ? 6 : 8) && stencil.ref === (smoke ? 4 : 2) &&
       stencil.pass === (smoke ? 2 : 0) && stencil.zFail === 0 &&
