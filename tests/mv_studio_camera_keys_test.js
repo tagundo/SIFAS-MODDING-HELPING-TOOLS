@@ -609,9 +609,28 @@ function subCameras() {
   assert.equal(K.editedShot(ctx).event.id, 'sub3:0');
   assert(K.setChannels(ctx, 'offset', { fov: 2 }));
   assert.deepEqual(Object.keys(project.editor.camera.shots).sort(), ['sub1:0', 'sub3:0']);
-  // A timeline selection picks its camera.
+  // Keys selected in another camera's shot (a lane diamond, a box) make that camera the edited one,
+  // and a switch of camera drops a selection left in the other one.
+  K.selectKey(ctx, 'sub1:0', 30);
+  assert.equal(K.camera(ctx), `${SPLIT}/SubCamera1`, 'a key of sub camera 1 selected');
+  assert.equal(K.editedShot(ctx, 1.5).event.id, 'sub1:0');
+  assert(K.setCamera(ctx, 'main'));
+  assert.equal(K.selected(ctx), null, 'the selection stays with its camera');
+  K.selectKeys(ctx, 'sub3:0', [45]);
+  assert.equal(K.camera(ctx), `${SPLIT}/SubCamera3`, 'a box over keys of sub camera 3');
+  at(1.5);
+  assert(K.setChannels(ctx, 'offset', { y: .1 }));
+  assert.deepEqual(project.editor.camera.shots['sub3:0'].keys.map((key) => [key.frame, key.values.y, key.values.fov]), [[30, .1, 2], [45, 0, 2]], 'the field edit keys that shot');
+  assert.deepEqual(Object.keys(project.editor.camera.shots).sort(), ['sub1:0', 'sub3:0'], 'and no main camera shot');
+  // An undo with the main camera chosen selects the keys it brings back, on their camera.
+  assert(K.setCamera(ctx, 'main'));
+  history.undo();
+  assert.equal(K.camera(ctx), `${SPLIT}/SubCamera3`);
+  assert.deepEqual(K.selected(ctx).frames, [45]);
+  // A timeline selection picks its camera (and leaves the keys selected in another camera).
   plugin.selectionChanged(ctx, { track: track(project, 'cam'), event: main });
   assert.equal(K.camera(ctx), 'main');
+  assert.equal(K.selected(ctx), null);
   plugin.selectionChanged(ctx, { track: track(project, 'sub1'), event: sub });
   assert.equal(K.camera(ctx), `${SPLIT}/SubCamera1`);
   plugin.selectionChanged(ctx, { track: track(project, 'sub1-offset'), event: event(project, 'sub1-offset:0') });

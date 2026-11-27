@@ -772,6 +772,25 @@ async function subCameras(browser, url) {
   await page.waitForFunction(() => /^샷 1 \/ 2 · /.test(document.getElementById('mv-cam-shot')?.textContent || '') &&
     document.getElementById('mv-cam-align') !== null);
   for (const id of ['cam:0', 'cam:1']) assert.deepEqual(find(current.project, id), find(project, id), `${id} untouched`);
+
+  // A key diamond on the sub camera's lane, clicked while the main camera is edited: the editor
+  // switches to that camera and shot, and a field edit keys that shot.
+  await page.locator('.mv-lane[data-track="sub1"] .mv-cam-key[data-event="sub1:0"][data-frame="30"]').click();
+  await page.waitForFunction((camera) => document.getElementById('mv-cam-camera')?.value === camera, `${SPLIT}/SubCamera1`);
+  await page.waitForFunction(() => /^샷 1 \/ 2 · sub1:0 · 프레임 30 \/ 130/.test(document.getElementById('mv-cam-shot')?.textContent || ''));
+  assert.deepEqual((await page.evaluate(() => MVStudioCameraKeys.selected(window.probeCtx))).frames, [30]);
+  const pedestal = page.locator('#mv-camera-fields [data-mv-cam="offset.y"]');
+  await pedestal.fill('0.25');
+  await pedestal.press('Tab');
+  await page.waitForFunction(() => MVStudio.getState().project.editor.camera.shots['sub1:0'].keys[0].values.y === .25);
+  current = await state(page);
+  assert.deepEqual(current.project.editor.camera.shots['sub1:0'].keys.map((key) => [key.frame, key.values.y]), [[30, .25]]);
+  assert.deepEqual(Object.keys(current.project.editor.camera.shots), ['sub1:0'], 'no main camera shot was keyed');
+  // Back on the main camera, the sub camera's key is no longer selected.
+  await page.locator('#mv-cam-camera').selectOption('main');
+  await page.waitForFunction(() => document.getElementById('mv-cam-align') !== null);
+  assert.equal(await page.evaluate(() => MVStudioCameraKeys.selected(window.probeCtx)), null);
+  assert.equal(await page.locator('.mv-cam-key[aria-selected="true"]').count(), 0);
   assert.deepEqual(errors, []);
   await page.close();
 }

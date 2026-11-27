@@ -705,6 +705,8 @@
   // undo step.
   const ONE_SHOT = "Keys can be selected in one camera shot at a time.";
 
+  // The selected keys always belong to the camera being edited: selecting keys of another
+  // camera's shot (its lane's diamonds, a box, an undo bringing them back) edits that camera.
   function setSelection(ctx, eventId, frames, active) {
     const state = stateOf(ctx), previous = state.selected;
     const list = [...new Set((frames || []).filter(Number.isInteger))].sort((a, b) => a - b);
@@ -712,8 +714,29 @@
     else {
       const kept = previous && previous.event === eventId && list.includes(previous.frame) ? previous.frame : list[list.length - 1];
       state.selected = { event: eventId, frames: list, frame: list.includes(active) ? active : kept };
+      const camera = cameraOfEvent(ctx, eventId);
+      if (camera) state.camera = camera;
     }
     return state.selected;
+  }
+
+  // The camera whose shot `eventId` is, or null.
+  function cameraOfEvent(ctx, eventId) {
+    const track = cameraTracks(ctx.project()).find((item) => item.events.some((event) => event && event.id === eventId));
+    return track ? cameraOf(track) : null;
+  }
+
+  // Edit another camera ("main" or a sub camera binding): keys selected in a shot of the
+  // camera left are no longer selected.
+  function useCamera(ctx, camera) {
+    const state = stateOf(ctx);
+    if (state.camera === camera) return false;
+    state.camera = camera;
+    if (state.selected && cameraOfEvent(ctx, state.selected.event) !== camera) {
+      state.selected = null;
+      paintSelection(ctx);
+    }
+    return true;
   }
 
   function select(ctx, shot, frame) {
@@ -1563,7 +1586,7 @@
   function openPanel(ctx, track) {
     const panel = global.document && document.getElementById("mv-panel-camera");
     if (!panel || panel.hidden) return false;
-    if (cameraTrack(track)) stateOf(ctx).camera = cameraOf(track);
+    if (cameraTrack(track)) useCamera(ctx, cameraOf(track));
     panel.open = true;
     renderPanel(ctx, true);
     panel.scrollIntoView?.({ block: "nearest" });
@@ -2002,10 +2025,8 @@
 
   // Edit the shots of another camera ("main" or a sub camera binding); the panel follows.
   function setCamera(ctx, camera) {
-    const state = stateOf(ctx);
     if (camera !== "main" && !cameraTracks(ctx.project(), camera).length) return false;
-    if (state.camera === camera) return false;
-    state.camera = camera;
+    if (!useCamera(ctx, camera)) return false;
     renderPanel(ctx, true);
     return true;
   }
@@ -2563,7 +2584,7 @@
     selectionChanged(ctx, selection) {
       if (!selection || !cameraTrack(selection.track)) return;
       // The selected shot's camera becomes the edited one.
-      stateOf(ctx).camera = cameraOf(selection.track);
+      useCamera(ctx, cameraOf(selection.track));
       const panel = global.document && document.getElementById("mv-panel-camera");
       if (panel && !panel.hidden && !panel.open && shotInfo(ctx, selection.track, selection.event)?.editable) panel.open = true;
       renderPanel(ctx);
