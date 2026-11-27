@@ -30,6 +30,14 @@ assert(!/[A-Za-z]{4,}/.test(api.reasonText(streamed, 'ja')), api.reasonText(stre
 assert(api.reasonText(cull, 'ja').startsWith('ch0203_co0015_head：_CullModeは0ですが、ch0212_co0001_bodyは2です。'), api.reasonText(cull, 'ja'));
 assert(!/receiving mesh|wearer/.test(api.reasonText(cull, 'ko')), api.reasonText(cull, 'ko'));
 
+// What the graft does with a culled part on a two-sided receiver, in the page language.
+const own = '[game] Hat (_CullMode 2) keeps its culling: it becomes its own submesh drawn by Body_culled, a copy of Body (_CullMode 0) with _CullMode 2.';
+assert.strictEqual(api.reasonText(own, 'ko'), '[game] Hat(_CullMode 2) — 컬링 유지: 별도 서브메시로 나뉘어 Body(_CullMode 0)의 복사본인 Body_culled(_CullMode 2) 머티리얼로 그려집니다.');
+assert.strictEqual(api.reasonText(own, 'ja'), '[game] Hat（_CullMode 2）はカリングを保ちます。別のサブメッシュに分かれ、Body（_CullMode 0）を複製して_CullMode 2にしたBody_culledで描画されます。');
+const backFaces = '[warn] Hat (_CullMode 2) is drawn from both sides like Body (_CullMode 0); its back faces can show.';
+assert.strictEqual(api.reasonText(backFaces, 'ko'), '[warn] Hat(_CullMode 2)는 Body(_CullMode 0)처럼 앞뒷면 모두 그려지므로 뒷면이 보일 수 있습니다.');
+assert.strictEqual(api.reasonText(own, 'en'), own);
+
 const option = flag => ({ getAttribute: name => (name === 'data-head-mesh' ? flag : null) });
 assert.strictEqual(api.receivingMeshKind('', option('true')), 'body', 'the default Body entry');
 assert.strictEqual(api.receivingMeshKind('12', option('false')), 'body', 'a mesh named Hair outside a merged head');

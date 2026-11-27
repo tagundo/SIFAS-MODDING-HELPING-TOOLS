@@ -15,7 +15,8 @@ is keyed by sha256 over all of those:
 
 Any change to any of them is a different key, so a receipt can never be
 served for other inputs or other code. When the code cannot be read, no
-store opens. A receipt is a file holding its own
+store opens, and the process says so once on stderr (an app's log report
+shows it). A receipt is a file holding its own
 key, recipe and payload checksum; a hit is re-verified (checksum, key, recipe,
 and the sha256 of every media file it names) and anything that does not match
 is a miss. Payloads are stored as JSON with tuples tagged, and admitted only
@@ -45,6 +46,7 @@ import stat
 import struct
 import sys
 import tempfile
+import threading
 import zlib
 
 _MAX_ENTRIES = 96
@@ -185,6 +187,29 @@ def _compression():
     return versions
 
 
+_CLOSED_LOCK = threading.Lock()
+_CLOSED_REPORTED = False
+
+
+def _report_closed(reason):
+    """Say once per process why the import receipt stores stay closed.
+
+    Only stderr reaches an app's log report (Chaquopy sends it to logcat), so
+    an import that is slow on every run there can be told from one whose
+    receipts simply missed.
+    """
+    global _CLOSED_REPORTED
+    with _CLOSED_LOCK:
+        if _CLOSED_REPORTED:
+            return
+        _CLOSED_REPORTED = True
+    try:
+        print(f"[mv-studio] MV import receipts are off in this process: {reason}. Every import converts its "
+              "timeline, stage, effects and soundtrack again.", file=sys.stderr, flush=True)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 @lru_cache(maxsize=1)
 def _source_recipe():
     """sha256 of the code that shapes an import, read once per process; None when it cannot be read.
@@ -200,6 +225,7 @@ def _source_recipe():
     except (ImportError, ValueError):
         package = None
     if package is None or not package.submodule_search_locations:
+        _report_closed("the import system cannot find the webtools package")
         return None
     code = {}
     _package_code("webtools", package, code)
@@ -212,7 +238,9 @@ def _source_recipe():
                     code[info.name] = _module_bytes(info.module_finder.find_spec(info.name))
                 except (ImportError, OSError, ValueError, TypeError, AttributeError):
                     code[info.name] = None
-    if any(code.get(name) is None for name in _REQUIRED):
+    unreadable = [name for name in _REQUIRED if code.get(name) is None]
+    if unreadable:
+        _report_closed("the import system gives no code bytes for " + ", ".join(unreadable))
         return None
     digest = sha256(f"receipt format {RECEIPT_FORMAT}".encode())
     for name in sorted(code):

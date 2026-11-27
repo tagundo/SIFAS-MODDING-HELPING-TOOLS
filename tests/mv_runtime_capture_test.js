@@ -292,5 +292,29 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
     }
   }
 
+  // mv_frame_capture --random-seed: the page's Math.random and crypto draws repeat from run to run,
+  // and the crypto stream (particle auto seeds) does not move when Math.random is drawn more often.
+  {
+    const vm = require('node:vm');
+    const frames = require('./mv_frame_capture');
+    const page = (seed, uuids) => {
+      const context = vm.createContext({ crypto: { getRandomValues() { throw new Error('unseeded'); } }, Uint8Array, Uint32Array });
+      context.globalThis = context;
+      context.Math = Object.create(Math);
+      vm.runInContext(`(${frames.seedRandom})(${seed})`, context);
+      for (let index = 0; index < uuids; index++) context.Math.random();
+      return { random: context.Math.random(), seeds: [...context.crypto.getRandomValues(new Uint32Array(3))] };
+    };
+    const first = page(1, 0), again = page(1, 0), more = page(1, 40), other = page(2, 0);
+    assert.deepEqual(again, first);
+    assert.deepEqual(more.seeds, first.seeds, 'extra Math.random draws leave the crypto stream alone');
+    assert.notEqual(more.random, first.random);
+    assert.notDeepEqual(other.seeds, first.seeds);
+    assert.ok(first.random >= 0 && first.random < 1);
+    assert.equal(frames.randomSeed(undefined), null);
+    assert.equal(frames.randomSeed('7'), 7);
+    for (const bad of ['0', '-1', '1.5', '4294967296', 'x']) assert.throws(() => frames.randomSeed(bad), /--random-seed/);
+  }
+
   console.log('MV_RUNTIME_CAPTURE_PASS viewport, stage-scene selector and pinned suits');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

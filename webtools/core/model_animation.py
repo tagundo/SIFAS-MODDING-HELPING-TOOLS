@@ -13,6 +13,7 @@ No clip, including SIFAS's eye_900, is implicitly selected as a neutral pose.
 import bisect
 from hashlib import blake2b
 import math
+import operator
 import os
 from pathlib import Path
 import re
@@ -342,17 +343,30 @@ def _mirror(kind, values):
     return list(values)
 
 
+_KEY_TIME = operator.itemgetter(0)
+
+
 def _ascending(times):
     return all(a <= b for a, b in zip(times, times[1:]))
+
+
+def _keys_ascending(keys):
+    # Every table this module builds is ascending (streamed keys out of order are
+    # refused, dense stamps grow, editor rows are sorted); a stable sort of an
+    # ascending list is the same list, and this is cheaper than a pairwise walk.
+    stamps = list(map(_KEY_TIME, keys))
+    return stamps == sorted(stamps)
 
 
 def _sample(curve, times, deadline=None):
     """``[_evaluate(curve, stamp) for stamp in times]`` for ascending ``times``.
 
-    One forward walk over the keys replaces a bisection per stamp. The key
-    found is the same (the last key at or before the stamp, else the first),
-    and every value uses _evaluate's arithmetic in the same order, so the
-    floats are bit-identical.
+    One forward walk over ascending keys replaces a bisection per stamp. The
+    key found is the same (the last key at or before the stamp, else the
+    first), and every value uses _evaluate's arithmetic in the same order, so
+    the floats are bit-identical. bisect_right over keys that are not
+    ascending finds keys no walk would, so such a table is evaluated stamp by
+    stamp.
     """
     mode, keys = curve
     if mode == "constant":
@@ -361,6 +375,13 @@ def _sample(curve, times, deadline=None):
         return []
     if not keys:
         raise AnimationError("An animation binding has no scalar curve values.")
+    if not _keys_ascending(keys):
+        output = []
+        for sample_index, stamp in enumerate(times):
+            if sample_index % 128 == 0:
+                _check(deadline)
+            output.append(_evaluate(curve, stamp))
+        return output
     output, index, last = [], 0, len(keys) - 1
     append = output.append
     start, value = keys[0]
@@ -398,7 +419,8 @@ def _sample_array(curve, grid):
     round every intermediate like Python floats do (nothing fuses into an
     FMA), and ``where(x > 0., x, 0.)`` / ``where(x < 1., x, 1.)`` are exactly
     ``max(0., x)`` / ``min(1., x)``, including for signed zeros. Returns None
-    when a key table is not ascending; the caller then walks the keys.
+    when a key table is not ascending: searchsorted assumes sorted keys, and
+    the caller's _sample then evaluates each stamp with _evaluate's bisect.
     """
     import numpy as np
     mode, keys = curve
@@ -1263,6 +1285,8 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             if rebound:
                 warn("animation_morph_path_rebound", name, "A facial curve used its unique original morph name because its legacy transform path differs.")
         except Exception as error:
+            from .transient_failures import note_if_environmental
+            note_if_environmental(error)  # a clip lost to memory or stack may import next time
             del glb.data[checkpoint[0]:]
             del glb.doc["accessors"][checkpoint[1]:]
             del glb.doc["bufferViews"][checkpoint[2]:]

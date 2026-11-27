@@ -155,15 +155,16 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
                             for item in tree.get("m_FloatCurves", [])):
         return None
     data = animation.decode_clip(tree, deadline)
-    particles = []
-    supported_packed = {(23, 22), (137, 22)}
+    particles, dropped = [], []
+    from .mv_studio_stage_overlay import DROPPED_RENDERERS, material_channels
+    # Material curves of a renderer no preview material holds are dropped (and reported), not the clip.
+    supported_packed = {(23, 22), (137, 22), *((renderer, 22) for renderer in DROPPED_RENDERERS)}
     if world:
         supported_packed.add((198, 27))
     if (overlay or world) and data["unsupported"] and all(
             (row["typeID"], row["customType"]) in supported_packed for row in data.get("unsupportedKinds", ())):
-        from .mv_studio_stage_overlay import material_channels
         packed = animation._packed_curves(tree, deadline)
-        channels, described = material_channels(bindings, packed, animation._width, world=world)
+        channels, described = material_channels(bindings, packed, animation._width, world=world, dropped=dropped)
         particle_described = 0
         if world:
             particles, particle_described = _particle_start_colors(bindings, packed)
@@ -171,6 +172,8 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
                 and (not particles or any(channel.get("rendererClass") == 137 for channel in channels))):
             data["tracks"].extend(channels)
             data["unsupported"] = 0
+        else:
+            dropped = []
     tint = None
     if (resident_laser and data["unsupported"] == 20 and
             (data["start"], data["duration"], data["loop"]) == (0.0, _LASER_DURATION, False)):
@@ -211,6 +214,9 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
             channel["rendererClass"] = 137
         channels.append(channel)
     clip = {"start": data["start"], "duration": data["duration"], "loop": data["loop"], "channels": channels}
+    if dropped:
+        # The original also animates these material properties; the preview plays the rest.
+        clip["droppedChannels"] = dropped
     if particles:
         for target in particles:
             target_cost = _curve_cost(target["curves"])
@@ -310,13 +316,9 @@ def read(objects, mono, tracks, deadline):
         laser_track = binding == _LASER_BINDING and track["label"] == _LASER_TRACK
         parent = timeline._pointer(obj, tree.get("m_Parent"))
         setting = "stage_overlay_effect" if overlay else _quality(track["label"], parent=parent, mono=mono)
-        material_scope = None
-        if setting == "stage_overlay_effect":
-            material_scope = "overlay"
-        elif _quality(track["label"]) in {"stage_animation", "stage_control"}:
-            # Nested groups can affect the authored world pass even when the
-            # game's quality switch does not mute their AnimationTrack output.
-            material_scope = "world"
+        # An AnimationTrack animates its bound renderers' materials whatever its timeline group:
+        # the group only decides which quality switch mutes it. Layer-20 overlays keep their own scope.
+        material_scope = "overlay" if setting == "stage_overlay_effect" else "world"
         for event in track["events"]:
             _remaining(deadline)
             values = event["values"]

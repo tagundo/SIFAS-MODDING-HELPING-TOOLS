@@ -167,14 +167,15 @@ class GameAtlasTests(unittest.TestCase):
         with self.assertRaisesRegex(AtlasCompatibilityError, r"_CullMode is 1, while Body uses 2"):
             bake_game_atlas(wearer, [front])
 
-    def test_culled_donor_on_two_sided_receiver_bakes_with_a_note(self):
+    def test_culled_donor_on_two_sided_receiver_bakes(self):
         # A culled head accessory on a Body that draws both sides keeps every triangle it drew.
+        # The bake makes no claim about its back faces: the part graft splits it into its own
+        # culled material afterwards and reports that outcome (graft_game_rules).
         wearer = source("Body", [image((4, 4), "red")], floats={"_CullMode": 0})
         donor = source("Head accessory", [image((4, 4), "blue")], floats={"_CullMode": 2})
         before = copy.deepcopy(wearer.tree), copy.deepcopy(donor.tree)
         baked = bake_game_atlas(wearer, [donor])
-        self.assertIn("Head accessory (_CullMode 2) is drawn from both sides like Body (_CullMode 0); its back faces can show.",
-                      baked.diagnostics)
+        self.assertFalse([text for text in map(str, baked.diagnostics) if "_CullMode" in text], baked.diagnostics)
         self.assertEqual((wearer.tree, donor.tree), before)
 
     def test_registered_stock_character_outline_stencil_uses_wearer_state_only(self):

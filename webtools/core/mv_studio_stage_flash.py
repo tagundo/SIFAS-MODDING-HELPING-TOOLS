@@ -3,6 +3,7 @@
 import math
 
 from . import model_viewer as viewer
+from .mv_studio_shader_identity import keywords as shader_keywords
 from .mv_studio_stage_coloring import _coordinates, _path
 
 _STAGE = "/EntryPoint/Live/Stages/MainStage/Effect/"
@@ -50,14 +51,35 @@ def binding(scene, component, tree):
             or len(references) != 1 or viewer._ref(renderer, references[0]) != material):
         return None
     source = scene.tree(material)
-    if not _matches_shader(material, source):
+    if _matches_shader(material, source):
+        return viewer._key(renderer), (_STAGE + "/".join(names[1:]), material, source)
+    # LiveCoreStageFlashLight drives whatever material it holds: its mixer's PostProcess sets
+    # _TintColor (ApplyTintColor), _SelfTime and _Speed, enables the renderer for status 1 and 2
+    # and disables it for 0, and switches _FLASH_ALL_ON (ApplyFlashStatus). An
+    # AS/General/Transparent material (the position-1 flash lights) consumes only _TintColor;
+    # the other inputs select or feed nothing in it. Order-dependent blends and COLOR are left
+    # to the other stage readers.
+    from . import mv_studio_stage_overlay as overlay
+
+    transparent = overlay.read_material(scene, material, world=True, full=True)
+    if transparent is None or transparent.get("matcap") or transparent.get("alphaBlend") or transparent["vertexColor"]:
         return None
-    return viewer._key(renderer), (_STAGE + "/".join(names[1:]), material, source)
+    return viewer._key(renderer), (_STAGE + "/".join(names[1:]), material, source, transparent,
+                                   renderer_tree.get("m_Enabled") is True or renderer_tree.get("m_Enabled") == 1)
 
 
 def export(materials, binding):
+    if len(binding) == 5:
+        path, _, _, transparent, enabled = binding
+        texture = transparent["texture"]
+        fields = {key: value for key, value in transparent.items() if key not in ("texture", "depthTest")}
+        fields["texture"] = materials.texture(texture) if texture is not None else None
+        # Without a running mixer the renderer keeps its serialized enabled state and the
+        # material its own _TintColor.
+        return {"binding": path, "kind": "transparent", "enabled": enabled, "transparent": fields,
+                "queue": transparent["queue"]}
     path, material, source = binding
-    flags = set(str(source.get("m_ShaderKeywords", "")).split())
+    flags = shader_keywords(material, source)
     floats = viewer._properties(source, "m_Floats")
     length, queue = floats.get("_Length", 16), source.get("m_CustomRenderQueue", -1)
     if (flags - _KEYWORDS or (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1)) != (5, 1)

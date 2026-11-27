@@ -394,10 +394,11 @@ class RefusalTranslationTests(unittest.TestCase):
             self.assertNotIn("wearer", sentence, "the part panel calls it the receiving mesh")
 
     def test_detail_templates_translate_with_their_values_kept(self):
-        from graft_texture_atlas import CULL_MODE_DETAIL
+        from graft_texture_atlas import CULL_MODE_BOTH_SIDES, CULL_MODE_DETAIL, CULL_MODE_OWN_MATERIAL
         script = (ROOT / "webtools/web/static/viewer-transplants.js").read_text(encoding="utf-8")
         templates = (compat.HEAD_MAP_DETAIL_DENSITY, compat.HEAD_MAP_DETAIL_SIZE, compat.HEAD_DETAIL_POSITION,
-                     compat.HEAD_DETAIL_ISLAND, compat.HEAD_DETAIL_SEARCH, CULL_MODE_DETAIL)
+                     compat.HEAD_DETAIL_ISLAND, compat.HEAD_DETAIL_SEARCH, CULL_MODE_DETAIL,
+                     CULL_MODE_BOTH_SIDES, CULL_MODE_OWN_MATERIAL)
         for template in templates:
             names = set(re.findall(r"\{(\w+)\}", template))
             with self.subTest(template=template[:40]):

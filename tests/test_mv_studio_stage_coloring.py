@@ -70,6 +70,23 @@ class ColoringBindingTests(unittest.TestCase):
         # SetTexture(_MainTex, ...) leaves the material's _MainTex_ST alone.
         self.assertEqual(fields["mainUV"], [1, 2, 0, .5])
 
+    def test_coloring_variants_follow_the_shader_keywords(self):
+        # The fixture's loaded shader has no parsed passes: the verified AS/Coloring/Transparent space applies.
+        cases = (("", {}), ("_VERTEXCOLOR_OFF", {}), ("_VERTEX_COLOR_ON", {"vertexColor": True}),
+                 ("_AUTO_PLAY_ON _VERTEX_COLOR_ON", {"autoPlay": True, "vertexColor": True}),
+                 ("_SATURATE_ON _FLASH_ALL_ON", {"saturate": True}))
+        for keywords, flags in cases:
+            with self.subTest(keywords=keywords):
+                self.material.tree["m_ShaderKeywords"] = keywords
+                fields = self.binding()[1][3]
+                self.assertEqual({key: fields[key] for key in ("autoPlay", "saturate", "vertexColor") if key in fields}, flags)
+        # The _AUTO_PLAY/_VERTEX_COLOR/_SATURATE toggles only set the keywords.
+        self.material.tree["m_ShaderKeywords"] = ""
+        self.material.tree["m_SavedProperties"]["m_Floats"].append(("_AUTO_PLAY", 1))
+        self.assertNotIn("autoPlay", self.binding()[1][3])
+        self.material.tree["m_SavedProperties"]["m_Floats"].append(("_BlendDst", 10))
+        self.assertIsNone(self.binding(), "only the additive blend of every shipped coloring material")
+
     def test_an_unresolvable_light_shaft_texture_rejects_the_component(self):
         self.tree["lightShaftTextures"].append({"m_FileID": 0, "m_PathID": 99})
         self.assertIsNone(self.binding())
@@ -233,6 +250,27 @@ class ActualStageColoringTests(unittest.TestCase):
         self.assertEqual(rejected, [])
         self.assertEqual(result["litA_All"], ["tex_grs_lit_gen_04", "tex_grs_lit_gen_12"])
         self.assertEqual(result["litB_All"], ["tex_grs_lit_gen_01", "tex_grs_lit_gen_12"])
+
+
+class RealColoringVariantTests(unittest.TestCase):
+    """Set SIFAS_TEST_STAGE_EFFECT_12001 to the original Android stage_effect bundle of 12001/3."""
+
+    def test_12001_auto_play_coloring_keeps_its_vertex_colors(self):
+        path = _bundle("SIFAS_TEST_STAGE_EFFECT_12001")
+        if path is None:
+            self.skipTest("Set SIFAS_TEST_STAGE_EFFECT_12001 to the original stage_effect bundle")
+        prepared = viewer.prepare([str(path)], face_context={"enabled": False, "allow_download": False, "_mv_stage": True})
+        payload = viewer.get_model(prepared["id"])
+        doc = json.loads(payload[20:20 + struct.unpack_from("<I", payload, 12)[0]])
+        variants = [(primitive["extras"]["mvStageColoring"], primitive["attributes"]) for mesh in doc["meshes"]
+                    for primitive in mesh["primitives"] if "mvStageColoring" in primitive.get("extras", {})]
+        auto = [(fields, attributes) for fields, attributes in variants if fields.get("autoPlay")]
+        self.assertTrue(auto)
+        for fields, attributes in auto:
+            self.assertTrue(fields["vertexColor"])
+            self.assertIn("_STAGE_COLOR", attributes)
+        for fields, attributes in variants:
+            self.assertEqual("_STAGE_COLOR" in attributes, bool(fields.get("vertexColor")))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 import math
 
 from . import model_viewer as viewer
+from .mv_studio_shader_identity import keywords as shader_keywords
 
 
 _ROOT = "/EntryPoint/Live/Stages/MainStage/Effect/"
@@ -69,10 +70,12 @@ def binding(scene, component, tree):
     original = scene.tree(material)
     if not _shader(material, original):
         return None
-    keywords = set(str(original.get("m_ShaderKeywords", "")).split())
+    # Only the shader's own keywords select its program (mv_studio_shader_identity); the
+    # _AUTO_PLAY, _VERTEX_COLOR and _SATURATE toggles only set them. Every combination of
+    # _AUTO_PLAY_ON, _SATURATE_ON and _VERTEX_COLOR_ON has its own GLES3 program.
+    keywords = shader_keywords(material, original)
     floats = viewer._properties(original, "m_Floats")
-    if (keywords - {"_VERTEXCOLOR_OFF"} or any(floats.get(option) for option in ("_AUTO_PLAY", "_VERTEX_COLOR", "_SATURATE"))
-            or (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1)) != (5, 1)):
+    if (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1)) != (5, 1):
         return None
     # LiveCoreStageColoring.ApplyTextureIndex swaps _MainTex for
     # lightShaftTextures[LiveColoringClip.textureIndex] (keeping _MainTex_ST).
@@ -100,6 +103,8 @@ def binding(scene, component, tree):
         "target": _ROOT + "/".join(path[1:]), "tint": rgba, "speed": speed, "shift": shift,
         "cull": cull, "queue": 3000 if queue == -1 else queue, "mainUV": main_uv,
         "indexScale": id_uv[0], "indexOffset": id_uv[2],
+        **{field: True for field, keyword in (("autoPlay", "_AUTO_PLAY_ON"), ("saturate", "_SATURATE_ON"),
+                                             ("vertexColor", "_VERTEX_COLOR_ON")) if keyword in keywords},
     }, tuple(shafts))
 
 

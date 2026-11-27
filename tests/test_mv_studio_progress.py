@@ -12,9 +12,12 @@ import time
 import unittest
 from unittest.mock import patch
 
-from webtools.core import (cri_audio_decode, mv_studio, mv_studio_actor_cache, mv_studio_game, mv_studio_progress,
-                           mv_studio_quality)
+from webtools.core import (cri_audio_decode, model_viewer, mv_studio, mv_studio_actor_cache, mv_studio_game,
+                           mv_studio_progress, mv_studio_quality)
 from webtools.server import Handler
+
+# The real conversion entry, for tests that run it under the fixture's stand-ins.
+REAL_PREVIEW = mv_studio._preview
 
 
 class ProgressTests(unittest.TestCase):
@@ -287,6 +290,51 @@ class LoadGameProgressTests(unittest.TestCase):
             self.assertEqual((later, receipts()), ([], []))
             with self.assertRaises(TypeError):
                 self.import_game(later=())
+
+    def test_a_stage_converted_by_a_cancelled_import_is_cached_after_a_restart(self):
+        # The cancelled import converted the stage into the in-memory cache but wrote no
+        # receipt; the next import takes it from memory and must still leave the receipt.
+        from webtools.core import mv_studio_import_cache
+        directory = self.root / "receipts"
+        directory.mkdir(mode=0o700)
+        parsed = {"duration": 12.0, "tracks": [{"id": "t", "kind": "camera", "label": "camera", "events": []}]}
+
+        def open_cache(media, folder="imports", **limits):
+            return mv_studio_import_cache.ImportCache(directory, media, **limits) if folder == "imports" else None
+
+        def preview(path, **kwargs):
+            # The stage and its effects run the real conversion (model_viewer stands in below).
+            return REAL_PREVIEW(path, **kwargs) if path.read_bytes() in (b"stage", b"effect") else self.preview(path, **kwargs)
+
+        def cancel(event):
+            if event and event.get("step") == "props" and event.get("state") == "start":
+                raise mv_studio_progress.ImportCancelled()
+
+        def states(**kwargs):
+            events = []
+            self.import_game(on_progress=lambda event: event is not None and events.append(event), **kwargs)
+            return {event["step"]: event["state"] for event in events if event.get("step") in ("stage", "effect")
+                    and event.get("state") != "start"}
+
+        mv_studio._STAGE_PREVIEWS.clear()
+        self.addCleanup(mv_studio._STAGE_PREVIEWS.clear)
+        with (patch.object(mv_studio_import_cache, "open_cache", side_effect=open_cache),
+              patch.object(mv_studio, "_timeline", side_effect=lambda path, store=None, reused=None: (
+                  path.read_bytes(), deepcopy(parsed))),
+              patch.object(mv_studio, "_preview", side_effect=preview),
+              patch.object(model_viewer, "prepare", return_value={"id": "s", "warnings": []}) as prepare,
+              patch.object(model_viewer, "get_model", return_value=model_viewer._Glb().finish())):
+            later = []
+            with self.assertRaises(mv_studio_progress.ImportCancelled):
+                self.import_game(on_progress=cancel, later=later)
+            self.assertEqual((prepare.call_count, later, sorted(directory.glob("*.receipt"))), (2, [], []))
+            later = []
+            self.assertEqual(states(later=later), {"stage": "cached", "effect": "cached"}, "from memory")
+            self.assertEqual(sorted(directory.glob("*.receipt")), [], "the puts wait for the flush")
+            later[0]()
+            mv_studio._STAGE_PREVIEWS.clear()  # a restart
+            self.assertEqual(states(), {"stage": "cached", "effect": "cached"}, "from the receipts")
+            self.assertEqual(prepare.call_count, 2, "converted once, by the cancelled import")
 
     def test_a_new_import_waits_for_one_that_is_stopping(self):
         mv_studio._IMPORT.acquire()

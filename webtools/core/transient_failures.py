@@ -4,7 +4,7 @@ A conversion often recovers from a failure and still returns a result: a
 texture shown as unavailable, a particle template left out for time. When
 the failure came from the circumstances of this run (a decoder child killed,
 timed out or not started, a busy worker, a time budget, an I/O or memory
-error) that result is not a pure function of the inputs, and a later run may
+error, a recursion that ran out of stack) that result is not a pure function of the inputs, and a later run may
 do better. The places that hit such failures call note(). The receipt stores
 (mv_studio_import_cache, the actor cache) admit a result only when nothing
 was noted while it was computed (Watch).
@@ -19,7 +19,9 @@ import threading
 _LOCK = threading.Lock()
 _COUNT = 0
 # Failures of the machine rather than of the data. TimeoutError is an OSError.
-ENVIRONMENT = (OSError, MemoryError, subprocess.SubprocessError)
+# How deep a parse may recurse depends on the thread's stack and the
+# interpreter's limit, not only on the bytes, so RecursionError counts too.
+ENVIRONMENT = (OSError, MemoryError, RecursionError, subprocess.SubprocessError)
 
 
 def note():

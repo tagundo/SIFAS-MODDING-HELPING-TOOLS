@@ -204,10 +204,12 @@ def apply(project, timeline_raw, descriptors, reads, deadline, cache=None, reuse
     if result is None:
         try:
             result = resolve(project["tracks"], timeline_raw, dependencies, deadline)
-        except Exception:
+        except Exception as error:
             # Clip names are advisory. An import that does not otherwise parse
             # these packs (an actor-cache hit) must not fail on them: keep the
-            # generic warning and cast as before.
+            # generic warning and cast as before. The cast then follows the
+            # generic order, so a machine failure keeps the import's receipts out.
+            transient_failures.note_if_environmental(error)
             return {}
         if result is None:
             return {}

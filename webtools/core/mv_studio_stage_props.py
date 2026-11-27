@@ -11,7 +11,7 @@ components keep the original assets.
 
 import math
 
-from . import model_viewer as viewer
+from . import model_viewer as viewer, transient_failures
 from .mv_studio_stage_coloring import _path
 
 _NAMESPACE = ("Assembly-CSharp.dll", "LLAS.Scene.Live.Components")
@@ -60,7 +60,8 @@ def props(scene, component, tree):
             continue
         try:
             candidate = scene.tree(obj)
-        except Exception:
+        except Exception as error:
+            transient_failures.note_if_environmental(error)
             continue
         entry = binding(scene, obj, candidate)
         if entry is not None and entry[0][:len(root)] == root:

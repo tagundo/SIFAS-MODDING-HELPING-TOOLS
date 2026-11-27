@@ -201,6 +201,34 @@ class ReceiptTests(unittest.TestCase):
             self.assertIsNotNone(cache.open_cache(self.media))
             self.assertIsNotNone(mv_studio_actor_cache.open_cache(("gl", "android"), self.media))
 
+    def test_closed_receipt_stores_are_reported_once_per_process(self):
+        import io
+        readable = cache._module_bytes
+
+        def unreadable(spec):
+            return None if spec is not None and spec.name == "webtools.core.decode" else readable(spec)
+
+        cache._source_recipe.cache_clear()
+        self.addCleanup(cache._source_recipe.cache_clear)
+        private = self.root / "private"
+        private.mkdir(mode=0o700)
+        with patch.object(cache, "_module_bytes", side_effect=unreadable), \
+                patch.object(cache, "_CLOSED_REPORTED", False), patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                patch.dict(os.environ, {"ELICHIKA_MV_PRIVATE_CACHE": str(private.resolve())}):
+            for _ in range(3):
+                self.assertIsNone(cache.open_cache(self.media))
+                self.assertIsNone(cache.open_texture_cache(self.media))
+                cache._source_recipe.cache_clear()  # every reading of the code, not only the first
+            lines = stderr.getvalue().splitlines()
+            self.assertEqual(len(lines), 1, lines)
+            self.assertIn("MV import receipts are off", lines[0])
+            self.assertIn("webtools.core.decode", lines[0])
+        # Readable code says nothing.
+        with patch.object(cache, "_CLOSED_REPORTED", False), patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                patch.dict(os.environ, {"ELICHIKA_MV_PRIVATE_CACHE": str(private.resolve())}):
+            self.assertIsNotNone(cache.open_cache(self.media))
+            self.assertEqual(stderr.getvalue(), "")
+
     def test_recipe_holds_the_format_library_releases_and_zlib_builds(self):
         cache._source_recipe.cache_clear()
         self.addCleanup(cache._source_recipe.cache_clear)
@@ -291,6 +319,39 @@ class ImportStepReceiptTests(unittest.TestCase):
                 mv_studio._preview(stage, reuse=True, store=self.store)
             self.assertEqual(prepare.call_count, 4)
 
+    def test_stage_effect_receipts_keep_unsupported_display_variants(self):
+        # 12010/3 (a null bgMaterial variant) warns on every conversion; the receipt
+        # repeats the warning so import coverage still lists the clips selecting it.
+        from webtools.core import transient_failures
+        stage = self.root / "import-a" / "game-3.unity"
+        stage.parent.mkdir()
+        stage.write_bytes(b"Native stage effect with a display")
+        glb = model_viewer._Glb().finish()
+        display = [{"code": "stage_display_variant_unsupported", "name": "/Effect/dis_01/main",
+                    "message": "Some stage display variants could not be drawn.", "target": "/Effect/dis_01/main",
+                    "variants": 3, "unsupported": [[2, "the material is missing"]]}]
+        noted = [True]
+
+        def prepare(*args, **kwargs):
+            if noted[0]:
+                transient_failures.note()  # a texture decoder of the machine failed during this conversion
+            return {"id": "s", "warnings": display}
+
+        with (patch.object(model_viewer, "prepare", side_effect=prepare) as converted,
+              patch.object(model_viewer, "get_model", return_value=glb)):
+            options = dict(reuse=True, stage_bindings=["/a"], native_stage_effect=True, store=self.store)
+            mv_studio._preview(stage, **options)
+            mv_studio._STAGE_PREVIEWS.clear()
+            mv_studio._preview(stage, **options)
+            self.assertEqual(converted.call_count, 2, "a conversion with a noted failure is never kept")
+            noted[0] = False
+            first, received, reused = [], [], []
+            output = mv_studio._preview(stage, warnings=first, **options)
+            mv_studio._STAGE_PREVIEWS.clear()  # a restart
+            again = mv_studio._preview(stage, warnings=received, reused=reused, **options)
+            self.assertEqual((again, first, received, reused), (output, display, display, [True]))
+            self.assertEqual(converted.call_count, 3)
+
     def test_clip_names_are_reused_only_with_the_same_dependency_bytes(self):
         project = {"tracks": [{"id": "t", "label": "Dance", "events": [
             {"id": "e", "label": "clip", "values": {"playableClass": "AnimationPlayableAsset", "animation": "cab-1:5"}}]}],
@@ -334,20 +395,70 @@ class TransientFailureTests(unittest.TestCase):
         self.addCleanup(mv_studio._STAGE_PREVIEWS.clear)
         self.flag = self.root / "low-memory"
         # Like the Android low-memory killer: the decoder child dies with SIGKILL while the flag exists.
+        # Crunch: WIDTH HEIGHT SOURCE OUTPUT; stage blocks: --raw FORMAT WIDTH HEIGHT SOURCE OUTPUT.
         self.texture65 = _script(self.root / "texture65", f'if [ -e "{self.flag}" ]; then kill -9 $$; fi\n'
-                                 'head -c $(( $1 * $2 * 4 )) /dev/zero > "$4"\n')
+                                 'if [ "$1" = --raw ]; then head -c $(( $3 * $4 * 4 )) /dev/zero > "$6"\n'
+                                 'else head -c $(( $1 * $2 * 4 )) /dev/zero > "$4"; fi\n')
 
     def store(self):
         """A store as a fresh process opens it."""
         return cache.ImportCache(self.root / "receipts", mv_studio.media)
 
     @staticmethod
-    def crunched():
+    def crunched(format_id=65, data=b"crunched"):
         from types import SimpleNamespace
-        texture = SimpleNamespace(m_Width=4, m_Height=4, m_TextureFormat=65, m_ImageCount=1, m_TextureDimension=2,
-                                  image_data=b"crunched", m_StreamData=None, object_reader=None)
+        texture = SimpleNamespace(m_Width=4, m_Height=4, m_TextureFormat=format_id, m_ImageCount=1, m_TextureDimension=2,
+                                  image_data=data, m_StreamData=None, object_reader=None)
         texture.get_image_data = lambda: texture.image_data
         return texture
+
+    def test_a_display_texture_whose_decoder_was_killed_keeps_the_stage_receipt_out(self):
+        # A killed texture65 child makes the screen's variant "unsupported" for this run only
+        # (mv_studio_stage_display._texture); the stage receipt must not repeat it after a restart.
+        import time
+        from types import SimpleNamespace
+        from webtools.core import mv_studio_stage_display as display
+        stage = self.root / "import-a" / "game-3.unity"
+        stage.parent.mkdir()
+        stage.write_bytes(b"Native stage effect with a display")
+        glb = model_viewer._Glb().finish()
+        # Both texture65 paths: UnityCrunch ETC2A and the raw ETC_RGB4 stage blocks.
+        for name, texture in (("ETC2_RGBA8Crunched", self.crunched()), ("ETC_RGB4", self.crunched(34, bytes(8)))):
+            original = SimpleNamespace(type=SimpleNamespace(name="Texture2D"), read=lambda texture=texture: texture)
+
+            class Materials:
+                def texture(self, obj):
+                    return model_viewer._texture_png(obj.read(), time.monotonic() + 10, stage=True)
+
+            def prepare(*args, **kwargs):
+                scene = SimpleNamespace(warnings=[])
+                try:
+                    display._texture(Materials(), None, {"_MainTex": {"m_Texture": {"m_PathID": 7}}}, "_MainTex")
+                    variants = [{"background": {}, "logo": None}]
+                except display.Unsupported as error:
+                    variants = [{"unsupported": str(error)}]
+                display._report(scene, "/Effect/dis_01/main", variants)
+                return {"id": "s", "warnings": scene.warnings}
+
+            with (self.subTest(format=name), patch.dict(os.environ, {"ELICHIKA_TEXTURE65_BIN": str(self.texture65)}),
+                  patch.object(display.viewer, "_ref", return_value=original),
+                  patch.object(model_viewer, "prepare", side_effect=prepare) as converted,
+                  patch.object(model_viewer, "get_model", return_value=glb)):
+                options = dict(reuse=True, stage_bindings=[name], native_stage_effect=True)
+                self.flag.touch()
+                kept = set((self.root / "receipts").glob("*.receipt"))
+                killed = []
+                mv_studio._preview(stage, warnings=killed, store=self.store(), **options)
+                self.assertEqual([item["code"] for item in killed], ["stage_display_variant_unsupported"])
+                self.assertIn("could not be decoded", killed[0]["unsupported"][0][1])
+                self.assertEqual(set((self.root / "receipts").glob("*.receipt")), kept, "a killed decoder is never kept")
+                self.flag.unlink()
+                mv_studio._STAGE_PREVIEWS.clear()  # a restart: the display is drawn again
+                healed, again, reused = [], [], []
+                mv_studio._preview(stage, warnings=healed, store=self.store(), **options)
+                mv_studio._STAGE_PREVIEWS.clear()
+                mv_studio._preview(stage, warnings=again, reused=reused, store=self.store(), **options)
+                self.assertEqual((healed, again, reused, converted.call_count), ([], [], [True], 2))
 
     def parse(self, raw, name, **flags):
         """A timeline parse that, like the particle importer, shows a texture it cannot decode as unavailable."""
@@ -449,6 +560,45 @@ class TransientFailureTests(unittest.TestCase):
                                                mv_studio_external_clips.SharedReads(lambda descriptor: b"pack"), None,
                                                cache=self.store())
             self.assertEqual(clips.call_count, 2)
+
+
+class SwallowedFailureTests(unittest.TestCase):
+    """A broad handler on the stage, effect or timeline path that goes on without what failed
+    must note a failure of memory or stack, so the degraded result is never kept."""
+
+    cases = ((MemoryError(), True), (RecursionError("maximum recursion depth exceeded"), True),
+             (ValueError("a damaged component"), False))
+
+    def test_stage_effect_props_note_a_component_lost_to_memory_or_stack(self):
+        from types import SimpleNamespace
+        from webtools.core import mv_studio_stage_props as props, transient_failures
+        assets = object()
+        component = SimpleNamespace(type=SimpleNamespace(name="MonoBehaviour"), assets_file=assets)
+        game = SimpleNamespace(type=SimpleNamespace(name="GameObject"))
+        for error, noted in self.cases:
+            def tree(obj, error=error):
+                raise error
+            scene = SimpleNamespace(env=SimpleNamespace(objects=[component]), tree=tree)
+            with (self.subTest(error=type(error).__name__),
+                  patch.object(props, "_script", return_value=(*props._NAMESPACE, "LiveCoreStageEffect")),
+                  patch.object(props.viewer, "_ref", return_value=game),
+                  patch.object(props, "_path", return_value=("Effect",))):
+                watch = transient_failures.Watch()
+                self.assertEqual(props.props(scene, component, {}), [])
+                self.assertEqual(watch.clean, not noted)
+
+    def test_clip_names_note_a_resolve_lost_to_memory_or_stack(self):
+        from webtools.core import transient_failures
+        project = {"tracks": [{"id": "t", "label": "Dance", "events": [
+            {"id": "e", "label": "clip", "values": {"playableClass": "AnimationPlayableAsset", "animation": "cab-1:5"}}]}],
+            "warnings": []}
+        for error, noted in self.cases:
+            with self.subTest(error=type(error).__name__), patch.object(mv_studio_external_clips, "resolve", side_effect=error):
+                watch = transient_failures.Watch()
+                self.assertEqual(mv_studio_external_clips.apply(
+                    json.loads(json.dumps(project)), b"timeline", [{"asset": "dance"}],
+                    mv_studio_external_clips.SharedReads(lambda descriptor: b"pack"), None), {})
+                self.assertEqual(watch.clean, not noted)
 
 
 class TextureStoreTests(unittest.TestCase):

@@ -135,6 +135,10 @@ PROP_PREVIEW_FAILED = "The performer prop preview could not be built from the pr
 SHADOW_PREFABS_UNAVAILABLE = ("The stage's member shadow prefabs could not be exported, so no performer "
                               "shadow is drawn for the shadow index and scales.")
 PROP_NOT_ATTACHED = "No performer prop is attached to this import."
+# The stage preview's conversion warning for a display whose variants are not all drawn
+# (mv_studio_stage_display: target, variant count, [[index, reason], ...]).
+DISPLAY_VARIANTS_UNSUPPORTED = "stage_display_variant_unsupported"
+_DISPLAY_VARIANT = "Display clips selecting a variant MV Studio cannot draw ({}); the screen keeps its own material."
 _PROP_NO_CURVE = "Prop clips without a playable native opening curve."
 
 
@@ -162,6 +166,7 @@ def _prop_tracks(project, tracks, gap):
 
 _NO_PERFORMER = "No performer is loaded at its member slot."
 _REJECTED = "Clips the stage-motion reader rejects."
+_DROPPED_CURVES = "Stage-node animation without the material curves no preview material holds."
 # MVStudioStageMotion drives a stage binding only through exactly one track of each class.
 _SHARED = {"AnimationTrack": "More than one AnimationTrack on this stage binding; none is animated.",
            "ActivationTrack": "More than one accepted ActivationTrack on this stage binding; none is switched."}
@@ -201,6 +206,33 @@ def _prop_rows(native, events, prop, context):
     return _split(len(events), played, "Performer prop animation.", _PROP_NO_CURVE)
 
 
+def _display_gaps(items):
+    """Display binding -> (variant count, {index: reason}) from the stage preview's warnings."""
+    found = {}
+    for item in items or ():
+        if not isinstance(item, dict) or item.get("code") != DISPLAY_VARIANTS_UNSUPPORTED:
+            continue
+        count, missing = item.get("variants"), item.get("unsupported")
+        if not isinstance(item.get("target"), str) or type(count) is not int or count < 1 or not isinstance(missing, list):
+            continue
+        reasons = {row[0]: str(row[1]) for row in missing
+                   if isinstance(row, (list, tuple)) and len(row) == 2 and type(row[0]) is int}
+        found[item["target"]] = count, reasons
+    return found
+
+
+def _display_rows(events, gap, note):
+    # LiveDisplayMixer selects materialReferences[clamp(materialIndex, 0, count - 1)].
+    count, reasons = gap
+    grouped = {}
+    for event in events:
+        index = (event.get("values") or {}).get("materialIndex")
+        reason = reasons.get(max(0, min(count - 1, index))) if type(index) is int else None
+        key = (NOT_RENDERED, _DISPLAY_VARIANT.format(reason)) if reason is not None else (RENDERED, note)
+        grouped[key] = grouped.get(key, 0) + 1
+    return [(status, clips, text) for (status, text), clips in grouped.items()] or [(RENDERED, 0, note)]
+
+
 def _classify(track, project, context):
     """Return [(status, clips, note), ...] for one track."""
     native = track.get("nativeClass") or "UnknownTrack"
@@ -225,7 +257,13 @@ def _classify(track, project, context):
             if context["animated"].get(binding, 0) > 1:
                 return [(NOT_RENDERED, len(events), _SHARED[native])]
             mixed = sum(event.get("id") in context["mix"] for event in events)
-            return _split(len(events), mixed, "Stage-node animation.", _REJECTED)
+            # The reader drops a material curve it cannot play and keeps the clip's other channels.
+            partial = sum(event.get("id") in context["mix"] and bool((context["clips"].get(
+                (event.get("values") or {}).get("animation")) or {}).get("droppedChannels")) for event in events)
+            rows = _split(len(events) - partial, mixed - partial, "Stage-node animation.", _REJECTED)
+            if not partial:
+                return rows
+            return [*(row for row in rows if row[1]), (PARTIAL, partial, _DROPPED_CURVES)]
         else:
             status, note = NOT_RENDERED, "No preview module animates this binding."
     elif native == "ActivationTrack":
@@ -256,6 +294,8 @@ def _classify(track, project, context):
         if drawn < len(events):
             rows.append((NOT_RENDERED, len(events) - drawn, "Effect cues no stage effect reader draws."))
         return rows or [(RENDERED, 0, note)]
+    if native == "LiveDisplayTrack" and binding in context["displays"]:
+        return _display_rows(events, context["displays"][binding], note)
     if native == "LiveMemberShadowTrack" and context.get("shadow"):
         status, note = NOT_RENDERED, context["shadow"]
     if status == RENDERED and slot is not None and slot not in context["performers"]:
@@ -263,11 +303,12 @@ def _classify(track, project, context):
     return [(status, len(events), note)]
 
 
-def report(project, prop_gap=None, shadow_gap=None):
+def report(project, prop_gap=None, shadow_gap=None, display_gaps=None):
     """Return per (native class, status) counts of tracks and clips, and the reported gaps.
 
     ``prop_gap`` is load_game's reason for attaching no performer prop, ``shadow_gap``
-    its reason when the stage's member-shadow prefabs are not drawn.
+    its reason when the stage's member-shadow prefabs are not drawn, ``display_gaps`` the
+    stage preview's warnings for display variants it could not draw.
     """
     tracks = [track for track in project.get("tracks") or () if isinstance(track, dict)]
     motion = project.get("stageMotion") or {}
@@ -282,6 +323,8 @@ def report(project, prop_gap=None, shadow_gap=None):
     context = {
         "motion": set(motion.get("bindings") or ()),
         "mix": motion.get("mix") if isinstance(motion.get("mix"), dict) else {},
+        "clips": {key: clip for key, clip in (motion.get("clips") or {}).items() if isinstance(clip, dict)}
+                 if isinstance(motion.get("clips"), dict) else {},
         "activations": activations,
         "animated": animated,
         "switched": switched,
@@ -291,6 +334,7 @@ def report(project, prop_gap=None, shadow_gap=None):
         "performers": {row.get("position") for row in project.get("performers") or ()
                        if isinstance(row, dict) and (row.get("motion") or row.get("glb"))},
         "shadow": shadow_gap,
+        "displays": _display_gaps(display_gaps),
     }
     rows = {}
     for track in tracks:
@@ -325,12 +369,12 @@ def warnings(coverage):
     return notes
 
 
-def apply(project, prop_gap=None, shadow_gap=None):
+def apply(project, prop_gap=None, shadow_gap=None, display_gaps=None):
     """Attach the coverage report to a game import and add its gap warnings.
 
     Run it once ``project["assets"]`` is final, so an attached performer prop is seen.
     """
-    coverage = report(project, prop_gap, shadow_gap)
+    coverage = report(project, prop_gap, shadow_gap, display_gaps)
     project["importCoverage"] = coverage
     project["warnings"].extend(warnings(coverage))
     return coverage

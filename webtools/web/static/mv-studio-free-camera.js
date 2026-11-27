@@ -45,10 +45,9 @@
     "Follow member", "While a member is the target, the free camera moves with that member as the MV plays or the playhead moves. Preview only.",
   ]);
 
-  // Gap (px) between the bar and the preview controls, the bar's margin from the preview's edge
-  // (mv-studio-free-camera.css) and the narrowest bar placed beside the controls (a folded bar,
-  // only its toggle, goes there whenever the toggle fits).
-  const GAP = 6, EDGE = 8, MIN_BESIDE = 160;
+  // Gap (px) between the bar and the preview controls, and the bar's margin from the preview's
+  // edge (mv-studio-free-camera.css).
+  const GAP = 6, EDGE = 8;
   // The share of the preview's height the bar below the controls has to leave clear; a shorter
   // preview folds the bar.
   const MIN_CLEAR = .4;
@@ -107,6 +106,7 @@
       });
       views.append(control);
     }
+    box.views = views;
 
     box.distance = range("distance", "Distance", "Distance from the target (m). The mouse wheel also moves the camera forward and back.",
       { min: 0, max: DISTANCE.steps, step: 1 }, { min: DISTANCE.min, max: DISTANCE.max, step: "any" }, "m",
@@ -247,8 +247,9 @@
   // "Key current view" keys the lens as shown. The bar is one row at the bottom of the view,
   // below the controls. A preview it would mostly cover folds it behind its toggle (unless it
   // was opened). A preview too short for the controls and the bar gets the bar beside the
-  // controls (a phone in landscape); with no room beside them either (a phone held upright), the
-  // preview keeps the height both need while the bar shows (see holdPreview).
+  // controls when its toggle, target list and every view button fit there whole (a folded bar:
+  // its toggle); without that room (a phone, upright or in landscape) the bar stays at the
+  // bottom and the preview keeps the height both need while the bar shows (see holdPreview).
   function place() {
     placed = 0;
     if (!refs) return;
@@ -265,7 +266,8 @@
       refs.toggle.setAttribute("aria-expanded", String(!short || unfolded));
       compact(bar);
       const start = controls.offsetLeft + controls.offsetWidth + GAP;
-      if (preview.clientWidth - start - GAP < Math.min(MIN_BESIDE, bar.scrollWidth)) needed = below + bar.offsetHeight + EDGE;
+      // The bar's widest extent beside the controls (its max-width there, the CSS).
+      if (preview.clientWidth - start - EDGE < besideWidth(bar)) needed = below + bar.offsetHeight + EDGE;
       else if (bar.offsetTop < below) {
         bar.style.setProperty("--mv-freecam-top", `${controls.offsetTop}px`);
         bar.style.setProperty("--mv-freecam-start", `${start}px`);
@@ -287,6 +289,20 @@
     const next = height > own ? `${Math.ceil(height)}px` : "";
     if (next) workspace.style.setProperty("--mv-preview-min", next);
     if (next !== held) global.dispatchEvent(new global.Event("resize"));
+  }
+
+  // The width the bar needs to show its toggle, target list and every view button whole, as
+  // compact as it gets (a folded bar: its toggle). Distance, FOV and Follow member may scroll.
+  function besideWidth(bar) {
+    const added = COMPACT.filter((level) => !bar.classList.contains(level));
+    bar.classList.add(...added);
+    const last = bar.classList.contains("mv-freecam-folded") ? refs.toggle : refs.views;
+    const style = global.getComputedStyle(bar);
+    // From the bar's left edge (wherever it has scrolled) to its border past the last control.
+    const width = last.getBoundingClientRect().right - bar.getBoundingClientRect().left + bar.scrollLeft +
+      parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth);
+    bar.classList.remove(...added);
+    return Math.ceil(width);
   }
 
   function compact(bar) {
