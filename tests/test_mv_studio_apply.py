@@ -39,7 +39,7 @@ REAL_PREPARE, REAL_REWRITE = mv_studio_timeline.prepare_tracks, mv_studio_timeli
 def fake_rewrite(raw, original, revised):
     """The native rewrite's own rules (_check_values, _changes) on the JSON stand-ins."""
     mv_studio_timeline._check_values(original, revised)
-    if not mv_studio_timeline._changes(original, revised):
+    if not mv_studio_timeline._changes(original, revised) and not mv_studio_timeline._track_changes(original, revised):
         return raw
     document = json.loads(raw[8:].rstrip(b" ").decode())
     document.update(tracks=revised["tracks"], tag="rewritten")
@@ -142,10 +142,21 @@ class PlanTests(ApplyCase):
         scratch = mv_studio._blank("scratch")
         self.assertEqual(self.plan(scratch)["blocked"], [{"message": apply.NO_TARGET}])
 
+    def test_a_mute_only_project_has_edits_to_apply(self):
+        project = self.imported()
+        project["tracks"][0]["muted"] = True
+        plan = self.plan(project)
+        counts = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 1}
+        edits = plan["edits"]
+        self.assertEqual((edits["counts"], edits["unchanged"], sorted(edits["apply"]), edits["pending"]),
+                         (counts, False, ["android", "ios"], {"android": 1, "ios": 1}))
+        self.assertNotIn({"message": apply.NO_EDITS}, edits["blocked"])
+        self.assertEqual((plan["all"]["unchanged"], plan["all"]["counts"]), (False, counts))
+
     def test_edit_counts_and_a_structure_change(self):
         project = self.edited(self.imported())
         plan = self.plan(project)
-        self.assertEqual(plan["edits"]["counts"], {"cameraShots": 1, "values": 1, "timing": 0, "clips": 2})
+        self.assertEqual(plan["edits"]["counts"], {"cameraShots": 1, "values": 1, "timing": 0, "clips": 2, "tracks": 0})
         self.assertEqual(sorted(plan["edits"]["apply"]), ["android", "ios"])
         self.assertEqual(plan["all"]["unchanged"], False)
         project["tracks"].pop()
@@ -179,6 +190,26 @@ class ApplyEditsTests(ApplyCase):
                              "Each platform's edit is written on that platform's own timeline")
         # Validated against the true stock of each platform (before the stop; the store reuses it).
         self.assertEqual(sorted(self.validated), [("android", "android", 13), ("ios", "ios", 9)])
+
+    def test_a_mute_only_project_applies_its_mute_to_both_platforms(self):
+        project = self.imported()
+        project["tracks"][0]["muted"] = True
+        job, _ = self.run_apply(project, "edits")
+        result = self.result(job)
+        self.assertEqual((result["changed"], result["parts"]), (True, ["android", "ios"]))
+        self.assertEqual(job.stages(), ["check", "merge-android", "merge-ios", "validate", "stop", "write", "restart"])
+        for platform in ("android", "ios"):
+            self.assertEqual([track["muted"] for track in tracks_of(self.served(platform))], [True, False, False])
+        # The page keeps the record of this apply: the mute is agreed, nothing waits for another apply.
+        applied = self.result(job)["applied"]
+        self.assertEqual({platform: list(fields) for platform, fields in applied["platforms"].items()},
+                         {"android": ["cab-1:10"], "ios": ["cab-1:10"]})
+        project["source"]["applied"] = applied
+        plan = self.plan(project)
+        self.assertEqual((plan["edits"]["pending"], plan["edits"]["unchanged"]), ({"android": 0, "ios": 0}, True))
+        # Unmuting it again is an edit of its own.
+        project["tracks"][0]["muted"] = False
+        self.assertEqual(self.plan(project)["edits"]["pending"], {"android": 1, "ios": 1})
 
     def test_edits_on_top_of_an_earlier_apply_keep_both(self):
         first, second = self.imported(), self.imported()
@@ -364,6 +395,20 @@ class ApplyEditsTests(ApplyCase):
         expected[2]["events"][0]["start"] = 0.5
         for platform in ("android", "ios"):
             self.assertEqual(tracks_of(self.served(platform)), expected)
+
+    def test_a_mute_applied_to_one_platform_still_waits_for_the_other(self):
+        """A mute-only project applied to Android alone: iOS still needs the mute, so the plan has an
+        edit to apply ("shown" counts track mutes, not only clips)."""
+        ios = self.local.pop("tl2101i")
+        project = self.imported()
+        project["tracks"][0]["muted"] = True
+        job, _ = self.run_apply(project, "edits", platforms=("android",))
+        project["source"]["applied"] = self.result(job)["applied"]
+        self.local["tl2101i"] = ios
+        plan = self.plan(project)
+        self.assertEqual(plan["edits"]["pending"], {"android": 0, "ios": 1})
+        self.assertFalse(plan["edits"]["unchanged"])
+        self.assertNotIn({"message": apply.NO_EDITS}, plan["edits"]["blocked"])
 
     def test_an_unmanaged_server_asks_for_a_restart(self):
         project = self.edited(self.imported())

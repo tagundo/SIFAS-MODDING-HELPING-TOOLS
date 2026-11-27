@@ -431,6 +431,8 @@ class Case(unittest.TestCase):
 class NormalizeTests(unittest.TestCase):
     def test_restores_track_settings_and_preview_values_and_counts_edits(self):
         original = base_tracks()
+        # Directly in a quality category, so the game's quality settings decide its mute.
+        original[1]["label"] = "StageEffect/Expert/Post/Bloom"
         tracks = copy.deepcopy(original)
         tracks[1]["muted"] = True
         tracks[1]["editorHidden"] = True
@@ -442,7 +444,8 @@ class NormalizeTests(unittest.TestCase):
         tracks[2]["events"][0]["editableValues"] = ["clipIn"]
         tracks[0]["events"][0]["values"]["keyframes"][0]["fov"] = 40
         normalized, report = register.normalize(original, tracks)
-        self.assertEqual(report, {"trackSettings": ["StageEffect/Bloom"], "previewValues": ["StageEffect/Bloom"]})
+        self.assertEqual(report, {"trackSettings": ["StageEffect/Expert/Post/Bloom"],
+                                  "previewValues": ["StageEffect/Expert/Post/Bloom"]})
         self.assertFalse(normalized[1]["muted"])
         self.assertNotIn("editorHidden", normalized[1])
         self.assertNotIn("shaftSlot", normalized[0])
@@ -451,7 +454,7 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(normalized[1]["events"][0]["values"]["intensity"], 3.0)
         self.assertEqual(normalized[2]["events"][0]["editableValues"], ["clipIn", "color"])
         self.assertEqual(register.count_edits(original, normalized),
-                         {"cameraShots": 1, "values": 1, "timing": 1, "clips": 3})
+                         {"cameraShots": 1, "values": 1, "timing": 1, "clips": 3, "tracks": 0})
         # The exporter accepts the result as it is.
         mv_studio_timeline._changes({"duration": 4.0, "tracks": original, "warnings": []},
                                     {"duration": 4.0, "tracks": normalized, "warnings": []})
@@ -460,10 +463,11 @@ class NormalizeTests(unittest.TestCase):
         original = base_tracks()
         tracks = copy.deepcopy(original)
         tracks[1]["muted"] = True
-        with mock.patch.object(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ("muted",), create=True):
-            normalized, report = register.normalize(original, tracks)
+        normalized, report = register.normalize(original, tracks)
         self.assertTrue(normalized[1]["muted"])
         self.assertEqual(report["trackSettings"], [])
+        self.assertEqual(register.count_edits(original, normalized)["tracks"], 1)
+        self.assertTrue(register.has_edits(register.count_edits(original, normalized)))
 
     def test_structure_changes_are_refused_with_track_labels(self):
         original = base_tracks()
@@ -484,6 +488,7 @@ class NormalizeTests(unittest.TestCase):
 
     def test_fingerprint_is_stable_and_follows_exportable_content_only(self):
         tracks = base_tracks()
+        tracks[1]["label"] = "StageEffect/Expert/Post/Bloom"  # Its mute does not reach the game.
         first = register.timeline_fingerprint("android", "tl:0:4096:4:7", tracks)
         self.assertEqual(first, register.timeline_fingerprint("android", "tl:0:4096:4:7", copy.deepcopy(tracks)))
         noisy = copy.deepcopy(tracks)
@@ -524,21 +529,25 @@ class NormalizeTests(unittest.TestCase):
             self.assertNotEqual(register.timeline_fingerprint("android", identity, edited),
                                 register.timeline_fingerprint("android", identity, original))
 
+    def test_songs_registered_before_track_mutes_rebake(self):
+        # Track mutes changed what a bake writes: a song registered under an older version rebakes on
+        # its next update instead of keeping its timeline by fingerprint.
+        self.assertNotIn(register.FINGERPRINT_VERSION, ("mv-studio-register-1", "mv-studio-register-2"))
+
     def test_exportable_track_fields_are_fingerprinted(self):
         original = base_tracks()
         muted = copy.deepcopy(original)
         muted[1]["muted"] = True
         identity = "tl:0:4096:4:7"
         plain = register.timeline_fingerprint("android", identity, original)
-        self.assertEqual(plain, register.timeline_fingerprint("android", identity, muted))
-        with mock.patch.object(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ("muted",), create=True):
-            self.assertNotEqual(register.timeline_fingerprint("android", identity, original),
-                                register.timeline_fingerprint("android", identity, muted))
-            # Without an exportable field the view (and every stored fingerprint) is unchanged.
-            without = copy.deepcopy(original)
-            for track in without:
-                del track["muted"]
-            self.assertEqual(register.timeline_fingerprint("android", identity, without), plain)
+        self.assertNotEqual(plain, register.timeline_fingerprint("android", identity, muted))
+        # A mute that does not reach the game (a group, a quality category's track) is not fingerprinted.
+        for label, native in (("StageEffect/Expert/Post/Bloom", "LiveBloomTrack"), ("StageEffect/Bloom", "GroupTrack")):
+            relabelled, quiet = copy.deepcopy(original), copy.deepcopy(muted)
+            for tracks in (relabelled, quiet):
+                tracks[1].update(label=label, nativeClass=native)
+            self.assertEqual(register.timeline_fingerprint("android", identity, relabelled),
+                             register.timeline_fingerprint("android", identity, quiet), label)
 
     def test_shift_beat_moves_the_first_beat_by_the_offset(self):
         beat = {"bpm": 120.0, "startSample": 44100, "endSample": 441000}
@@ -674,7 +683,7 @@ class PlanTests(Case):
 
     def test_counts_edits_and_lists_what_does_not_reach_the_game(self):
         project = self.edited(self.project(), timing=True)
-        project["tracks"][1]["muted"] = True
+        project["tracks"][1]["editorHidden"] = True
         project["tracks"][1]["events"][0]["values"]["mixIn"] = [0, 0.2]
         project["assets"] = [{"id": "0123456789abcdef", "kind": "stage", "label": "stage.glb", "path": "stage.glb",
                               "status": "loaded"}]
@@ -684,7 +693,8 @@ class PlanTests(Case):
                               "values": {"shadow": False}}
         project["editor"] = {"version": 1, "originals": {}, "camera": {"version": 1, "shots": {}, "rigs": [{"id": "r"}]}}
         result = self.plan(project, unbaked=[{"kind": "camera", "eventId": "cab-1:10:0", "reason": "pending"}])
-        self.assertEqual(result["edits"], {"cameraShots": 1, "values": 1, "timing": 1, "clips": 3, "follow": True})
+        self.assertEqual(result["edits"], {"cameraShots": 1, "values": 1, "timing": 1, "clips": 3, "tracks": 0,
+                                           "follow": True})
         self.assertFalse(result["timeline"]["unchanged"])
         self.assertEqual(result["timeline"]["bake"], ["android", "ios"])
         self.assertEqual([note["message"] for note in result["notInGame"]],
@@ -693,6 +703,21 @@ class PlanTests(Case):
         self.assertEqual(result["notInGame"][0]["labels"], ["StageEffect/Bloom"])
         self.assertIn({"message": register.UNBAKED}, result["blocked"])
         self.assertIn({"message": register.FOLLOW_NOTE}, result["warnings"])
+
+    def test_a_mute_only_project_is_an_edit(self):
+        # Only a track mute that reaches the game (no clip edit): the original MV must not play.
+        project = self.project()
+        project["tracks"][0]["muted"] = True
+        result = self.plan(project)
+        self.assertEqual(result["edits"], {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 1,
+                                           "follow": False})
+        self.assertFalse(result["timeline"]["unchanged"])
+        self.assertEqual(result["timeline"]["bake"], ["android", "ios"])
+        self.assertEqual(result["notInGame"], [])
+        stock = {"kind": "stock", "raw": self.local["tl2101"]}
+        self.assertFalse(register._unchanged_stock(stock, project["tracks"]))
+        self.assertTrue(register._unchanged_stock(stock, base_tracks()))
+        self.assertEqual(EXPORTS, [], "The plan never bakes")
 
     def test_structural_change_blocks_with_the_track_label(self):
         project = self.project()
@@ -808,6 +833,18 @@ class RegisterJobTests(Case):
         self.assertEqual(song["platforms"], {"android": "stock", "ios": "stock"})
         self.assertEqual(song["fingerprints"], {})
         self.assertEqual(self.validated, [])
+
+    def test_a_mute_only_project_bakes_both_platforms(self):
+        project = self.project()
+        project["tracks"][0]["muted"] = True
+        job, _ = self.run_job(self.request(project))
+        song = job.song()["song"]
+        self.assertEqual(song["platforms"], {"android": "custom", "ios": "custom"})
+        self.assertEqual(sorted(song["fingerprints"]), ["android", "ios"])
+        self.assertEqual([export["base"]["platform"] for export in EXPORTS], ["android", "ios"])
+        for export in EXPORTS:
+            self.assertEqual([track["muted"] for track in export["tracks"]], [True, False, False])
+        self.assertEqual(sorted(self.validated), [("android", "android", 13), ("ios", "ios", 9)])
 
     def test_one_unchanged_platform_gets_no_override(self):
         project = self.edited(self.project())
@@ -1797,6 +1834,28 @@ class RealSampleUpdateTests(Case):
     def bloom(project):
         return next(event for track in project["tracks"] if track["nativeClass"] == "LiveBloomTrack"
                     for event in track["events"] if "intensity" in event["editableValues"])
+
+    def test_12035_a_mute_only_project_registers_the_mute_on_both_platforms(self):
+        stock = {"kind": "game", "region": "gl", "platform": "android", "liveId": 21, "assetId": 2101,
+                 "mvOnly": False, "registered": False}
+        project = self.imported(self.local["tl2101"], stock)
+        leaf = next(track for track in project["tracks"] if track["events"] and not track["muted"]
+                    and mv_studio_timeline.track_mute_refusal(track) is None)
+        leaf["muted"] = True
+        plan = register.plan(self.root, project)
+        self.assertEqual((plan["edits"]["clips"], plan["edits"]["tracks"]), (0, 1))
+        self.assertEqual((plan["timeline"]["unchanged"], plan["timeline"]["bake"], plan["blocked"]),
+                         (False, ["android", "ios"], []))
+        job, _, _ = self.job(self.request(project, title="음소거 곡"))
+        song = mv_studio_live.describe_mv_song(self.root, region="gl", live_id=job.song()["song"]["liveId"])
+        self.assertEqual(song["platforms"], {"android": "custom", "ios": "custom"})
+        self.assertEqual(len(self.exports), 2)
+        for platform, raw in register._registered_timelines(self.root, song).items():
+            with self.subTest(platform=platform):
+                tracks = {track["id"]: track for track in REAL_PARSE(raw, platform)["tracks"]}
+                self.assertIs(tracks[leaf["id"]]["muted"], True)
+                self.assertEqual(sum(track["muted"] for track in tracks.values()),
+                                 1 + sum(track["muted"] for track in REAL_PARSE(self.local["tl2101"], "a")["tracks"]))
 
     def test_12035_update_after_opening_the_registered_song_never_stops_the_server(self):
         stock = {"kind": "game", "region": "gl", "platform": "android", "liveId": 21, "assetId": 2101,

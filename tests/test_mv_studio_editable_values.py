@@ -97,8 +97,8 @@ class WhitelistTests(unittest.TestCase):
             self.assertEqual(table[native][field]["scope"], scope)
         scaling = table["LiveMemberScalingClip"]["intensity"]
         self.assertEqual((scaling["control"], scaling["min"], scaling["max"]), ("slider", 0, 1))
-        controls = {"number", "slider", "vector", "color", "enum", "enum-observed", "enum-members", "bool-int", "text",
-                    "facial-index", "readonly"}
+        controls = {"number", "slider", "vector", "color", "enum", "enum-observed", "enum-members", "member-slot",
+                    "member-colors", "bool-int", "text", "facial-index", "readonly"}
         for native, fields in table.items():
             for field, spec in fields.items():
                 self.assertIn(spec["control"], controls, f"{native}.{field}")
@@ -106,6 +106,93 @@ class WhitelistTests(unittest.TestCase):
                     self.assertIn(spec["set"], sets)
                 if field not in studio._EDITABLE_VALUES.get(native, set()):
                     self.assertEqual(spec["control"], "readonly", f"{native}.{field} is not exportable")
+
+    def test_member_positions_pick_a_member_slot_and_float_ranges_match_their_boxes(self):
+        table = descriptors()["classes"]
+        for native, field in studio._MEMBER_POSITIONS:
+            with self.subTest(native=native, field=field):
+                self.assertIn(field, studio._EDITABLE_VALUES[native])
+                self.assertEqual((table[native][field]["control"], table[native][field]["member"]), ("member-slot", True))
+        slots = {(native, field) for native, fields in table.items() for field, spec in fields.items()
+                 if spec["control"] == "member-slot"}
+        self.assertEqual(slots, set(studio._MEMBER_POSITIONS))
+        for (native, field), (low, high) in studio._FLOAT_RANGES.items():
+            spec = table[native][field]
+            with self.subTest(native=native, field=field):
+                self.assertIn(spec["control"], ("number", "slider"))
+                self.assertEqual((spec["min"], spec["max"]), (low, high))
+
+    def test_member_targets_and_ranges_are_refused_outside_them(self):
+        for native, field, good, bad in [("LiveDepthOfFieldClip", "cameraAutoDistanceMode", 2, 3),
+                                         ("LiveBaseLightClip", "ambientColorType", 1, 3),
+                                         ("LiveBaseLightClip", "rimlightColorType", 2, -1)]:
+            with self.subTest(native=native, field=field):
+                tree = {field: 0}
+                studio._set_playable_value(tree, native, field, good)
+                self.assertEqual(tree[field], good)
+                with self.assertRaisesRegex(ValueError, "outside the supported native range"):
+                    studio._set_playable_value(tree, native, field, bad)
+        for native, field in (("LiveDepthOfFieldClip", "memberPosition"), ("LiveCameraOffsetClip", "memberPosition"),
+                              ("LiveFlareClip", "memberPosition"), ("LiveBaseLightClip", "rimlightMemberPosition")):
+            with self.subTest(native=native, field=field):
+                tree = {field: 1}
+                studio._set_playable_value(tree, native, field, 12)
+                self.assertEqual(tree[field], 12)
+                for bad in (0, 13, 2.0, True):
+                    with self.assertRaisesRegex(ValueError, r"^Choose a member this MV has\.$"):
+                        studio._set_playable_value(tree, native, field, bad)
+        tree = {"focusTransitionTime": 1.0}
+        studio._set_playable_value(tree, "LiveDepthOfFieldClip", "focusTransitionTime", 2.5)
+        self.assertEqual(tree["focusTransitionTime"], 2.5)
+        for bad in (-.5, 61.0):
+            with self.assertRaisesRegex(ValueError, "invalid focusTransitionTime"):
+                studio._set_playable_value(tree, "LiveDepthOfFieldClip", "focusTransitionTime", bad)
+
+    def test_penlight_motion_ranges_and_palette(self):
+        tree = {"swingMode": 1, "basicYZMoveY": .5, "growthYZSwingBottomZ": .8, "basicYZSwingPowerZ": 4.,
+                "position": {"x": 0., "y": -.4, "z": 0.}}
+        for mode in range(5):
+            studio._set_playable_value(tree, "LivePenlightClip", "swingMode", mode)
+        self.assertEqual(tree["swingMode"], 4)
+        for bad in (5, -1, 1.0):
+            with self.assertRaisesRegex(ValueError, "outside the supported native range"):
+                studio._set_playable_value(tree, "LivePenlightClip", "swingMode", bad)
+        for field, good, bad in (("basicYZMoveY", -10, 10.5), ("growthYZSwingBottomZ", .99, 1.0),
+                                 ("growthYZSwingBottomZ", .01, 0.0), ("basicYZSwingPowerZ", 0, -.1)):
+            with self.subTest(field=field):
+                studio._set_playable_value(tree, "LivePenlightClip", field, good)
+                self.assertEqual(tree[field], good)
+                with self.assertRaisesRegex(ValueError, f"invalid {field}"):
+                    studio._set_playable_value(tree, "LivePenlightClip", field, bad)
+        studio._set_playable_value(tree, "LivePenlightClip", "position", {"x": 1., "y": 0., "z": -2.})
+        self.assertEqual(tree["position"], {"x": 1., "y": 0., "z": -2.})
+        self.assertNotIn("growthYZSwingPowerY", studio._EDITABLE_VALUES["LivePenlightClip"])
+
+        def entry(slot, kind=1, color=None):
+            return {"color": color or {"r": 1., "g": 1., "b": 1., "a": 1.}, "colorSpecifiedType": kind, "memberPosition": slot}
+
+        palette = {"memberColors": [entry(1), entry(2), entry(0, 0)]}
+        revised = [entry(2, 2), entry(2), entry(0, 0, {"r": 2., "g": .5, "b": 0., "a": 1.})]
+        studio._set_playable_value(palette, "LivePenlightClip", "memberColors", deepcopy(revised))
+        self.assertEqual(palette["memberColors"], revised)
+        for bad, message in (([entry(1)], "length and fields"), ([*revised, entry(3)], "length and fields"),
+                             ([{**entry(1), "extra": 1}, entry(2), entry(0, 0)], "length and fields"),
+                             ([entry(1, 3), entry(2), entry(0, 0)], "colorSpecifiedType"),
+                             ([entry(13), entry(2), entry(0, 0)], "Choose a member this MV has"),
+                             ([entry(1, True), entry(2), entry(0, 0)], "colorSpecifiedType"),
+                             ("x", "length and fields")):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, message):
+                studio._set_playable_value(deepcopy(palette), "LivePenlightClip", "memberColors", bad)
+        # An unchanged entry keeps its stock value (slot 0 here) as it is.
+        self.assertEqual(palette["memberColors"][2]["memberPosition"], 0)
+
+    def test_the_track_mute_note_data_is_the_export_rule(self):
+        rule = descriptors()["trackMute"]
+        self.assertEqual(rule["notes"], {"group": studio.GROUP_MUTE, "quality": studio.QUALITY_MUTE,
+                                         "facial": studio.FACIAL_MUTE})
+        self.assertEqual(set(rule["facialClasses"]), studio._FACIAL_MUTE_CLASSES)
+        self.assertEqual({root: set(names) for root, names in rule["qualityRoots"].items()},
+                         {root: set(names) for root, names in studio._QUALITY_CATEGORIES.items()})
 
     def test_colour_source_classes_are_the_ones_with_a_member_colour_preview(self):
         self.assertEqual(studio._COLOR_SOURCE_CLASSES, {
@@ -193,6 +280,91 @@ class CheckValuesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"^Member focus needs the clip's member position to be 1 to 12\.$"):
             studio._check_values(self.original, self.revise("dof:1", useMemberDistance=1))
         studio._check_values(self.original, self.revise("dof-b:0", useMemberDistance=0))
+
+    def test_a_changed_member_position_must_be_a_performer_slot(self):
+        bound = deepcopy(self.original)
+        for slot in (1, 2, 3):
+            bound["tracks"].append({"id": f"dance{slot}", "kind": "dance", "nativeClass": "AnimationTrack", "label": f"d{slot}",
+                                    "binding": f"/EntryPoint/Live/Members/Member{slot}/Model", "events": []})
+        self.assertEqual(studio.performer_slots(bound["tracks"]), {1, 2, 3})
+        self.assertEqual(studio.performer_slots([{"bindings": ["/EntryPoint/Live/Members/Member4/Model", "/x"]}, None]), {4})
+
+        def revise(event_id, **values):
+            revised = deepcopy(bound)
+            for track in revised["tracks"]:
+                for item in track["events"]:
+                    if item["id"] == event_id:
+                        item["values"].update(values)
+            return revised
+
+        studio._check_values(bound, revise("dof:0", memberPosition=3))
+        studio._check_values(bound, revise("rim:0", memberPosition=2, colorSpecifiedType=1))
+        for value in (4, 0, 2.0, None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, r"^Choose a member this MV has\.$"):
+                studio._check_values(bound, revise("dof:0", memberPosition=value))
+        # Without performer bindings no slot can be chosen; the unchanged value is never judged.
+        with self.assertRaisesRegex(ValueError, "Choose a member this MV has"):
+            studio._check_values(self.original, self.revise("dof:0", memberPosition=2))
+        studio._check_values(self.original, self.revise("dof:0", memberPosition=1))
+        # A member colour or focus follows the revised member position.
+        studio._check_values(bound, revise("rim:1", memberPosition=1, colorSpecifiedType=2))
+        studio._check_values(bound, revise("dof:1", memberPosition=2, useMemberDistance=1))
+        with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
+            studio._check_values(bound, revise("rim:2", colorSpecifiedType=1))
+
+    def test_base_light_colour_sources_follow_their_own_member_positions(self):
+        # LiveBaseLightClip has two colour sources, each with its own member position field.
+        light = {"ambientColorType": 0, "ambientMemberPosition": 0, "rimlightColorType": 0, "rimlightMemberPosition": 0}
+        original = timeline(("base", [event("base:0", "LiveBaseLightClip", light)]))
+        original["tracks"].extend({"id": f"d{slot}", "kind": "dance", "nativeClass": "AnimationTrack", "label": f"d{slot}",
+                                   "binding": f"/EntryPoint/Live/Members/Member{slot}/Model", "events": []} for slot in (1, 2, 3))
+
+        def revise(**values):
+            revised = deepcopy(original)
+            revised["tracks"][0]["events"][0]["values"].update(values)
+            return revised
+
+        for kind in (1, 2):
+            with self.subTest(kind=kind):
+                studio._check_values(original, revise(ambientColorType=kind, ambientMemberPosition=3))
+                studio._check_values(original, revise(rimlightColorType=kind, rimlightMemberPosition=2))
+                # Each source reads its own position: the other source's slot does not count.
+                with self.assertRaisesRegex(ValueError, r"^This colour source needs the clip's member position to be 1 to 12\.$"):
+                    studio._check_values(original, revise(ambientColorType=kind, rimlightMemberPosition=2))
+                with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
+                    studio._check_values(original, revise(rimlightColorType=kind, ambientMemberPosition=3))
+                with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
+                    studio._check_values(original, revise(ambientColorType=kind))
+                with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
+                    studio._check_values(original, revise(rimlightColorType=kind))
+        studio._check_values(original, revise(ambientColorType=0, rimlightColorType=0))
+        with self.assertRaisesRegex(ValueError, r"^Choose a member this MV has\.$"):
+            studio._check_values(original, revise(ambientColorType=1, ambientMemberPosition=4))
+        with self.assertRaisesRegex(ValueError, "Choose a member this MV has"):
+            studio._check_values(original, revise(rimlightColorType=1, rimlightMemberPosition=4))
+
+    def test_a_penlight_palette_entry_names_a_performer_slot(self):
+        def entry(slot, kind=1):
+            return {"color": {"r": 1., "g": 1., "b": 1., "a": 1.}, "colorSpecifiedType": kind, "memberPosition": slot}
+
+        original = timeline(("crowd", [event("crowd:0", "LivePenlightClip", {"memberColors": [entry(1), entry(2), entry(0, 0)]})]))
+        original["tracks"].extend({"id": f"d{slot}", "kind": "dance", "nativeClass": "AnimationTrack", "label": f"d{slot}",
+                                   "binding": f"/EntryPoint/Live/Members/Member{slot}/Model", "events": []} for slot in (1, 2))
+
+        def revise(*entries):
+            revised = deepcopy(original)
+            revised["tracks"][0]["events"][0]["values"]["memberColors"] = list(entries)
+            return revised
+
+        studio._check_values(original, revise(entry(2), entry(1), entry(0, 0)))
+        studio._check_values(original, revise(entry(1, 0), entry(2, 2), entry(0, 0)))
+        with self.assertRaisesRegex(ValueError, "Choose a member this MV has"):
+            studio._check_values(original, revise(entry(3), entry(2), entry(0, 0)))
+        with self.assertRaisesRegex(ValueError, "member position to be 1 to 12"):
+            studio._check_values(original, revise(entry(1), entry(2), entry(0, 1)))
+        # Malformed palettes are left to the export's own check.
+        studio._check_values(original, revise(entry(1)))
+        studio._check_values(original, revise("x", entry(2), entry(0, 0)))
 
     def test_malformed_revisions_are_left_to_the_structure_check(self):
         for revised in (None, {}, {"tracks": None}, {"tracks": [None, {"events": [None, {"id": 3}]}]}):
@@ -396,9 +568,179 @@ class ActualTimelineTests(unittest.TestCase):
                 (revised("LiveDepthOfFieldClip", kernelSize=4), "outside the supported native range"),
                 (revised("LiveFlashLightClip", status=3), "outside the supported native range"),
                 (revised("LiveRimlightClip", colorSpecifiedType=3), "outside the supported native range"),
-                (revised("LiveRimlightClip", memberPosition=2), "read-only")]:
+                (revised("LiveRimlightClip", memberPosition=2), "Choose a member this MV has"),
+                (revised("LiveDepthOfFieldClip", cameraAutoDistanceMode=3), "outside the supported native range")]:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 studio._rewrite_timeline(self.raw, self.fresh, {**self.fresh, "tracks": tracks})
+
+
+def group_sample():
+    """(path, raw, parse) of the first sample timeline with several performer slots and a DOF clip that
+    can take a member target, or None."""
+    for path in sample_timelines():
+        raw = path.read_bytes()
+        parsed = studio.parse_timeline(raw, path.name)
+        if len(studio.performer_slots(parsed["tracks"])) > 1 and any(
+                "memberPosition" in item["editableValues"] and "cameraAutoDistanceMode" in item["editableValues"]
+                for track in parsed["tracks"] for item in track["events"]):
+            return path, raw, parsed
+    return None
+
+
+class GroupMemberTests(unittest.TestCase):
+    """Member targets of a group MV on a real timeline (11054 here): export, parse back, Elichika's validator."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sample = group_sample()
+        if cls.sample is None:
+            raise unittest.SkipTest("No original group MV timeline sample")
+
+    def test_member_targets_export_parse_back_and_pass_the_install_validator(self):
+        path, raw, parsed = self.sample
+        slots = sorted(studio.performer_slots(parsed["tracks"]))
+        tracks = deepcopy(parsed["tracks"])
+        edited = {}
+        for track in tracks:
+            for item in track["events"]:
+                values, native = item["values"], item["values"].get("playableClass")
+                if native == "LiveDepthOfFieldClip" and "cameraAutoDistanceMode" in item["editableValues"] and not edited.get("dof"):
+                    values["memberPosition"] = next(slot for slot in slots if slot != values["memberPosition"])
+                    values["cameraAutoDistanceMode"] = 1
+                    edited["dof"] = item
+                elif native == "LiveCameraOffsetClip" and "memberPosition" in item["editableValues"] and not edited.get("offset"):
+                    values["memberPosition"] = slots[-1] if values["memberPosition"] != slots[-1] else slots[0]
+                    edited["offset"] = item
+                elif native in studio._COLOR_SOURCE_CLASSES and "memberPosition" in item["editableValues"] and not edited.get("colour"):
+                    values["memberPosition"] = slots[1] if values["memberPosition"] != slots[1] else slots[0]
+                    values["colorSpecifiedType"] = 1
+                    edited["colour"] = item
+        self.assertEqual(sorted(edited), ["colour", "dof", "offset"], path.name)
+        output = studio.export_timeline(raw, path.name, tracks)
+        again = studio.parse_timeline(output, path.name)["tracks"]
+        self.assertEqual(again, tracks)
+        try:
+            import UnityPy
+            import mv_studio_native_assets as native
+        except ImportError:
+            return
+        platform = int(list(UnityPy.load(raw).assets)[0].target_platform)
+        import time
+        native._validate_timeline(output, raw, platform, time.monotonic() + 120)
+
+    def test_a_project_saved_before_the_member_targets_exports_unchanged(self):
+        path, raw, parsed = self.sample
+        added = {"memberPosition", "cameraAutoDistanceMode", "focusTransitionTime", "ambientColorType", "rimlightColorType",
+                 "ambientMemberPosition", "rimlightMemberPosition"}
+        old = deepcopy(parsed["tracks"])
+        for track in old:
+            for item in track["events"]:
+                item["editableValues"] = [field for field in item["editableValues"] if field not in added]
+        self.assertNotEqual(old, parsed["tracks"])
+        self.assertTrue(any(studio.needs_editable_values_sync(track) for track in old))
+        self.assertIs(studio.export_timeline(raw, path.name, old), raw)
+
+    def test_a_member_the_mv_does_not_have_is_refused(self):
+        path, raw, parsed = self.sample
+        tracks = deepcopy(parsed["tracks"])
+        item = next(item for track in tracks for item in track["events"] if "memberPosition" in item["editableValues"])
+        item["values"]["memberPosition"] = max(studio.performer_slots(parsed["tracks"])) + 1
+        with self.assertRaisesRegex(ValueError, "Choose a member this MV has"):
+            studio.export_timeline(raw, path.name, tracks)
+
+
+class BaseLightTests(unittest.TestCase):
+    """Base light colour sources on a real timeline (12056 here): export, parse back, Elichika's validator."""
+
+    FIELDS = ("ambientColorType", "ambientMemberPosition", "rimlightColorType", "rimlightMemberPosition")
+
+    @classmethod
+    def setUpClass(cls):
+        for path in sample_timelines():
+            raw = path.read_bytes()
+            parsed = studio.parse_timeline(raw, path.name)
+            if len(studio.performer_slots(parsed["tracks"])) >= 3 and any(
+                    set(cls.FIELDS) <= set(item["editableValues"]) for track in parsed["tracks"] for item in track["events"]):
+                cls.sample = path, raw, parsed
+                return
+        raise unittest.SkipTest("No original timeline sample with an editable base light clip and three members")
+
+    def test_member_colour_sources_export_parse_back_and_pass_the_install_validator(self):
+        path, raw, parsed = self.sample
+        slots = sorted(studio.performer_slots(parsed["tracks"]))
+        tracks = deepcopy(parsed["tracks"])
+        clip = next(item for track in tracks for item in track["events"] if set(self.FIELDS) <= set(item["editableValues"]))
+        clip["values"].update(ambientColorType=2, ambientMemberPosition=slots[2], rimlightColorType=1,
+                              rimlightMemberPosition=slots[1])
+        output = studio.export_timeline(raw, path.name, tracks)
+        self.assertEqual(studio.parse_timeline(output, path.name)["tracks"], tracks)
+        try:
+            import UnityPy
+            import mv_studio_native_assets as native
+        except ImportError:
+            return
+        import time
+        platform = int(list(UnityPy.load(raw).assets)[0].target_platform)
+        native._validate_timeline(output, raw, platform, time.monotonic() + 120)
+
+
+class PenlightTests(unittest.TestCase):
+    """Penlight crowd motion on a real timeline (12035 here): export, parse back, Elichika's validator."""
+
+    @classmethod
+    def setUpClass(cls):
+        for path in sample_timelines():
+            raw = path.read_bytes()
+            parsed = studio.parse_timeline(raw, path.name)
+            if any("memberColors" in item["editableValues"] for track in parsed["tracks"] for item in track["events"]):
+                cls.sample = path, raw, parsed
+                return
+        raise unittest.SkipTest("No original timeline sample with an editable penlight clip")
+
+    def test_motion_fields_export_parse_back_and_pass_the_install_validator(self):
+        path, raw, parsed = self.sample
+        slots = sorted(studio.performer_slots(parsed["tracks"]))
+        tracks = deepcopy(parsed["tracks"])
+        clip = next(item for track in tracks for item in track["events"] if "memberColors" in item["editableValues"])
+        values = clip["values"]
+        values["swingMode"] = 4 if values["swingMode"] != 4 else 2
+        values["basicXMoveX"] = .45
+        values["growthYZSwingBottomZ"] = .6
+        values["position"] = {**values["position"], "z": values["position"]["z"] - 1.5}
+        colors = deepcopy(values["memberColors"])
+        colors[0] = {**colors[0], "color": {"r": 2., "g": .25, "b": .5, "a": 1.}, "colorSpecifiedType": 0,
+                     "memberPosition": slots[-1]}
+        values["memberColors"] = colors
+        output = studio.export_timeline(raw, path.name, tracks)
+        again = {item["id"]: item for track in studio.parse_timeline(output, path.name)["tracks"] for item in track["events"]}
+        got = again[clip["id"]]["values"]
+        self.assertEqual((got["swingMode"], got["memberColors"][0]["colorSpecifiedType"],
+                          got["memberColors"][0]["memberPosition"]), (values["swingMode"], 0, slots[-1]))
+        for field in ("basicXMoveX", "growthYZSwingBottomZ"):
+            self.assertAlmostEqual(got[field], values[field], places=6)
+        self.assertAlmostEqual(got["position"]["z"], values["position"]["z"], places=5)
+        self.assertAlmostEqual(got["memberColors"][0]["color"]["g"], .25, places=6)
+        try:
+            import UnityPy
+            import mv_studio_native_assets as native
+        except ImportError:
+            return
+        import time
+        platform = int(list(UnityPy.load(raw).assets)[0].target_platform)
+        native._validate_timeline(output, raw, platform, time.monotonic() + 120)
+
+    def test_a_project_saved_before_the_motion_fields_exports_unchanged(self):
+        path, raw, parsed = self.sample
+        added = set(studio._EDITABLE_VALUES["LivePenlightClip"]) - {
+            "tintColor", "fogIntensity", "randomBrightness", "beatLength", "beatOffset", "randomDelay", "randomUp",
+            "randomSwingIntensity"}
+        old = deepcopy(parsed["tracks"])
+        for track in old:
+            for item in track["events"]:
+                if item["values"].get("playableClass") == "LivePenlightClip":
+                    item["editableValues"] = [field for field in item["editableValues"] if field not in added]
+        self.assertNotEqual(old, parsed["tracks"])
+        self.assertIs(studio.export_timeline(raw, path.name, old), raw)
 
 
 class ServerGuardMessageTests(unittest.TestCase):
@@ -452,6 +794,41 @@ class ServerGuardMessageTests(unittest.TestCase):
         self.assertEqual(self.post("ko", ValueError(slot)), (400, {"error": "멤버에 초점을 맞추려면 클립의 멤버 위치가 1~12여야 합니다."}))
         # A message without a translation is sent as it is.
         self.assertEqual(self.post("ko", ValueError("Some other refusal.")), (400, {"error": "Some other refusal."}))
+
+    def test_every_range_refusal_has_korean_and_japanese(self):
+        from webtools import i18n
+        bounded = [(native, field, "int", bounds[1] + 1) for (native, field), bounds in studio._LIMITED_VALUES.items()]
+        bounded += [(native, field, "float", bounds[1] + 1.) for (native, field), bounds in studio._FLOAT_RANGES.items()]
+        for native, field, kind, value in bounded:
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError) as caught:  # The real guard and its exact message.
+                    studio._set_playable_value({field: 0 if kind == "int" else 0.}, native, field, value)
+                message = str(caught.exception)
+                self.assertEqual(message, f"'{field}' is outside the supported native range." if kind == "int"
+                                 else f"The timeline has an invalid {field}.")
+                for language in ("ko", "ja"):
+                    translated = i18n.tr(message, language)
+                    self.assertNotEqual(translated, message, language)
+                    self.assertIn(f"'{field}'", translated)
+
+    def test_every_vector_refusal_has_korean_and_japanese(self):
+        # A number box of a vector control can post an empty axis or one beyond ±1e6.
+        from webtools import i18n
+        vectors = {(native, key) for native, fields in descriptors()["classes"].items()
+                   for key, spec in fields.items() if spec.get("control") == "vector"}
+        self.assertIn(("LivePenlightClip", "position"), vectors)
+        for native, field in sorted(vectors):
+            for bad in ({"x": 0., "y": 0.}, {"x": 0., "y": 0., "z": 2e6}):
+                with self.subTest(field=field, bad=bad):
+                    with self.assertRaises(ValueError) as caught:  # The real guard and its exact message.
+                        studio._set_playable_value({field: {"x": 0., "y": 0., "z": 0.}}, native, field, bad)
+                    message = str(caught.exception)
+                    self.assertEqual(message, f"'{field}' is not a supported native value for this clip." if len(bad) == 2
+                                     else f"The timeline has an invalid {field}.")
+                    for language in ("ko", "ja"):
+                        translated = i18n.tr(message, language)
+                        self.assertNotEqual(translated, message, language)
+                        self.assertIn(f"'{field}'", translated)
 
 
 def sample_timelines():

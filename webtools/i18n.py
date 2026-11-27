@@ -4312,6 +4312,86 @@ for _source, (_korean, _japanese) in _MV_EDITOR_B_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
 
+# MV Studio export slots (mv_studio_timeline): track mutes that reach the game, their plan lines
+# (mv-studio-apply.js, mv-studio-register.js) and export refusals.
+_MV_EXPORT_SLOT_TRANSLATIONS = {
+    "Tracks muted or unmuted: {count}": ("음소거를 바꾼 트랙: {count}개", "ミュートを切り替えたトラック: {count}"),
+    "A group track's mute does not reach the game. Mute the tracks inside it.": (
+        "그룹 트랙의 음소거는 게임에 반영되지 않습니다. 그 안의 트랙을 음소거하세요.",
+        "グループトラックのミュートはゲームに反映されません。中のトラックをミュートしてください。"),
+    "The game's quality settings turn this track on and off, so its mute does not reach the game.": (
+        "이 트랙은 게임의 품질 설정이 켜고 끄므로 음소거가 게임에 반영되지 않습니다.",
+        "このトラックはゲームの画質設定でオン・オフが決まるため、ミュートはゲームに反映されません。"),
+    "The game turns eye and mouth tracks on and off itself, so this mute does not reach the game.": (
+        "눈과 입 트랙은 게임이 직접 켜고 끄므로 이 음소거는 게임에 반영되지 않습니다.",
+        "目と口のトラックはゲームが自分でオン・オフを決めるため、このミュートはゲームに反映されません。"),
+    "A track mute must be on or off.": ("트랙 음소거는 켜기나 끄기로만 정할 수 있습니다.", "トラックのミュートはオンかオフで指定してください。"),
+    "This native track has no mute to change.": ("이 원본 트랙에는 바꿀 수 있는 음소거가 없습니다.", "この元のトラックには変更できるミュートがありません。"),
+    # Member targets (mv-studio-event-fields.js descriptors, mv_studio_timeline.MEMBER_SLOT).
+    "Focus member": ("초점 맞출 멤버", "ピントを合わせるメンバー"),
+    "Focus target": ("초점 대상", "ピントの対象"),
+    "The chosen member": ("지정한 멤버", "指定したメンバー"),
+    "The nearest member": ("가장 가까운 멤버", "いちばん近いメンバー"),
+    "The member nearest the centre": ("화면 중앙에 가장 가까운 멤버", "画面の中央にいちばん近いメンバー"),
+    "Colour member": ("색 기준 멤버", "色の基準メンバー"),
+    "Height from member": ("높이 기준 멤버", "高さの基準メンバー"),
+    "Choose a member this MV has.": ("이 MV에 있는 멤버를 고르세요.", "このMVにいるメンバーを選んでください。"),
+    # Penlight crowd motion (LivePenlightClip descriptors and export guards).
+    "Swing motion": ("흔들기 동작", "振りの動き"),
+    "Penlight colours": ("펜라이트 색", "ペンライトの色"),
+    "Colour {n}": ("색 {n}", "色 {n}"),
+    "Still": ("멈춤", "止める"),
+    "Front-back swing": ("앞뒤 흔들기", "前後の振り"),
+    "Rising swing": ("올려 흔들기", "持ち上げる振り"),
+    "Side swing": ("좌우 흔들기", "左右の振り"),
+    "Sway": ("살랑 흔들기", "ゆらゆら揺らす"),
+    "Crowd position (m)": ("관객 위치 (m)", "観客の位置 (m)"),
+    "Front-back swing: lift (m)": ("앞뒤 흔들기: 올림 (m)", "前後の振り: 上げ幅 (m)"),
+    "Front-back swing: reach (m)": ("앞뒤 흔들기: 앞으로 뻗기 (m)", "前後の振り: 前への幅 (m)"),
+    "Front-back swing: tilt (rad)": ("앞뒤 흔들기: 기울기 (rad)", "前後の振り: 傾き (rad)"),
+    "Front-back swing: rest point": ("앞뒤 흔들기: 기준 위치", "前後の振り: 基準の位置"),
+    "Front-back swing: snap": ("앞뒤 흔들기: 끊어 치기", "前後の振り: キレ"),
+    "Rising swing: lift (m)": ("올려 흔들기: 올림 (m)", "持ち上げる振り: 上げ幅 (m)"),
+    "Rising swing: reach (m)": ("올려 흔들기: 앞으로 뻗기 (m)", "持ち上げる振り: 前への幅 (m)"),
+    "Rising swing: tilt (rad)": ("올려 흔들기: 기울기 (rad)", "持ち上げる振り: 傾き (rad)"),
+    "Rising swing: rest point": ("올려 흔들기: 기준 위치", "持ち上げる振り: 基準の位置"),
+    "Rising swing: snap": ("올려 흔들기: 끊어 치기", "持ち上げる振り: キレ"),
+    "Rising swing: turn point": ("올려 흔들기: 전환 지점", "持ち上げる振り: 切り替えの位置"),
+    "Rising swing: lift curve": ("올려 흔들기: 올림 곡선", "持ち上げる振り: 上げのカーブ"),
+    "Side swing: tilt (rad)": ("좌우 흔들기: 기울기 (rad)", "左右の振り: 傾き (rad)"),
+    "Side swing: reach (m)": ("좌우 흔들기: 옆으로 뻗기 (m)", "左右の振り: 横への幅 (m)"),
+    "Side swing: lift (m)": ("좌우 흔들기: 올림 (m)", "左右の振り: 上げ幅 (m)"),
+    "Sway: side tilt (rad)": ("살랑 흔들기: 좌우 기울기 (rad)", "ゆらゆら揺らす: 左右の傾き (rad)"),
+    "Sway: front tilt (rad)": ("살랑 흔들기: 앞뒤 기울기 (rad)", "ゆらゆら揺らす: 前後の傾き (rad)"),
+    "Keep the penlight colour list's length and fields.": (
+        "펜라이트 색 목록의 길이와 항목은 그대로 두세요.", "ペンライトの色リストの長さと項目はそのままにしてください。"),
+}
+# Range refusals of the native export for each bounded field (mv_studio_timeline._LIMITED_VALUES and
+# _FLOAT_RANGES; tests/test_mv_studio_editable_values.py pins these lists to them). The UI bounds its
+# inputs, so only a hand-edited or API project meets them.
+for _field in ("index", "target", "cheekType", "colorSpecifiedType", "kernelSize", "useMemberDistance",
+               "cameraAutoDistanceMode", "ambientColorType", "rimlightColorType", "status", "swingMode"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"'{_field}' is outside the supported native range."] = (
+        f"'{_field}' 값이 지원하는 원본 범위를 벗어났습니다.", f"'{_field}'の値が対応する元の範囲を外れています。")
+for _field in ("focusTransitionTime", "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ",
+               "basicYZSwingPowerZ", "growthYZMoveY", "growthYZMoveZ", "growthYZRotateZ", "growthYZSwingBackZ",
+               "growthYZSwingPowerZ", "growthYZSwingBottomZ", "basicXRotateX", "basicXMoveX", "basicXMoveY",
+               "simpleXZRotateX", "simpleXZRotateZ"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"The timeline has an invalid {_field}."] = (
+        f"타임라인의 '{_field}' 값이 올바르지 않습니다.", f"タイムラインの'{_field}'の値が正しくありません。")
+# Refusals of a vector value (mv_studio_timeline._replace_value): a missing or extra axis, or an axis
+# beyond ±1e6, which a typed number box can reach. These are the fields with a "vector" control in
+# mv-studio-event-fields.js (the test pins the list to the descriptor table).
+for _field in ("center", "direction", "offset", "position", "randomDelay", "randomUp", "rimlightDirection", "scale",
+               "scrollSpeed"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"'{_field}' is not a supported native value for this clip."] = (
+        f"'{_field}' 값은 이 클립에서 지원하지 않는 원본 값입니다.", f"'{_field}'の値はこのクリップで対応していない元の値です。")
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"The timeline has an invalid {_field}."] = (
+        f"타임라인의 '{_field}' 값이 올바르지 않습니다.", f"タイムラインの'{_field}'の値が正しくありません。")
+for _source, (_korean, _japanese) in _MV_EXPORT_SLOT_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
 # MV Studio layout: the stage / side panel splitter and the side panel toggle (mv-studio.js
 # setupInspectorResizer). "Hidden" is the splitter's value text while the panel is folded.
 _MV_LAYOUT_TRANSLATIONS = {

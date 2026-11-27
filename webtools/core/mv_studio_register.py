@@ -50,9 +50,10 @@ MAX_AUDIO_SECONDS = 6 * 3600
 PREVIEW_IMAGE = 512
 # Part of every fingerprint: a new bake or encode rule makes the next update rebuild that part.
 # 2: the native export grows m_MuscleClipSize of camera clips that a dense rewrite grew.
-FINGERPRINT_VERSION = "mv-studio-register-2"
-# Track fields the editor may change that the native timeline stores (editor-features adds "muted"
-# to mv_studio_timeline.EXPORTABLE_TRACK_FIELDS when it makes mute exportable).
+# 3: the native export writes a leaf track's mute; the timeline view hashes it.
+FINGERPRINT_VERSION = "mv-studio-register-3"
+# Track fields the editor may change that the native timeline stores are
+# mv_studio_timeline.exportable_track_fields of each base track (a leaf track's mute).
 _DERIVED_TRACK_FIELDS = frozenset({"shaftSlot"})
 _UNITY_PLATFORMS = {13: "android", 9: "ios"}
 _TIMING = frozenset(mv_studio_timeline._CLIP_TIMING.values())
@@ -496,8 +497,9 @@ def _editable(event):
 def normalize(original_tracks, tracks):
     """Return (tracks ready for export_timeline, report) or raise StructureError.
 
-    Every non-``events`` track field goes back to the base parse except those in
-    ``mv_studio_timeline.EXPORTABLE_TRACK_FIELDS``. A value is baked only when its key is
+    Every non-``events`` track field goes back to the base parse except those
+    ``mv_studio_timeline.exportable_track_fields`` lists for the base track (a GroupTrack's mute,
+    or that of a track the game's quality settings switch, goes back and is reported). A value is baked only when its key is
     editable both in the base parse and in the posted clip (the editor only offers the
     posted clip's keys, and ``timeline_fingerprint`` hashes exactly those); every other
     value goes back to the base, and extra keys are dropped. Added, removed or reordered
@@ -515,10 +517,10 @@ def normalize(original_tracks, tracks):
         if not changed:
             changed = [_label(base[identity]) for identity, expected in zip(order, base) if identity != expected]
         raise StructureError(sorted(dict.fromkeys(changed)))
-    exportable = frozenset(getattr(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ()))
     normalized, settings, preview = [], [], []
     for track in tracks:
         before = base[track["id"]]
+        exportable = frozenset(mv_studio_timeline.exportable_track_fields(before))
         events = track.get("events")
         if (not isinstance(events, list) or any(not isinstance(event, dict) for event in events)
                 or [event.get("id") for event in events] != [event["id"] for event in before["events"]]):
@@ -562,9 +564,12 @@ def normalize(original_tracks, tracks):
 
 
 def count_edits(original_tracks, tracks):
-    """Edits by kind between the base parse and normalized tracks."""
-    counts = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0}
+    """Edits by kind between the base parse and normalized tracks; ``tracks`` counts the tracks whose
+    exportable track fields (a mute) changed."""
+    counts = {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 0}
     for before, after in zip(original_tracks, tracks):
+        if any(field in before and after.get(field) != before[field] for field in mv_studio_timeline.EXPORTABLE_TRACK_FIELDS):
+            counts["tracks"] += 1
         for old, new in zip(before["events"], after["events"]):
             if old == new:
                 continue
@@ -578,18 +583,23 @@ def count_edits(original_tracks, tracks):
     return counts
 
 
+def has_edits(counts):
+    """True when count_edits (or an equal-shaped count) found an edited clip or track."""
+    return bool(counts.get("clips") or counts.get("tracks"))
+
+
 def _exportable_view(tracks):
     """What can reach the game from the project's tracks: clip timing, names, the values of the
-    clip's own editableValues and the track fields in EXPORTABLE_TRACK_FIELDS.
+    clip's own editableValues and the track fields exportable_track_fields lists for the track.
 
     It covers everything ``normalize`` bakes (a baked value's key is in the posted clip's
     editableValues), so an unchanged view means an unchanged bake for the same original.
     """
-    fields = tuple(getattr(mv_studio_timeline, "EXPORTABLE_TRACK_FIELDS", ()))
     view = []
     for track in tracks if isinstance(tracks, list) else ():
         if not isinstance(track, dict):
             continue
+        fields = mv_studio_timeline.exportable_track_fields(track)
         events = []
         for event in track.get("events") or ():
             if not isinstance(event, dict):
@@ -907,7 +917,7 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
     result = {"region": None, "base": None, "song": None, "targets": [], "target": "new",
               "title": project["name"].strip()[:MAX_TITLE], "credit": "", "platforms": {}, "projectPlatform": None,
               "timeline": {"native": project.get("nativeTimeline") is True, "unchanged": True, "fingerprints": {}},
-              "edits": {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "follow": _follow(project)},
+              "edits": {"cameraShots": 0, "values": 0, "timing": 0, "clips": 0, "tracks": 0, "follow": _follow(project)},
               "notInGame": [], "blocked": [], "warnings": [], "audio": {}, "jacket": {"default": "base"},
               **capabilities()}
     base = _base(repo_root, project, template, live)
@@ -1003,7 +1013,7 @@ def plan(repo_root, project, *, template=None, target=None, unbaked=(), language
                 result["notInGame"] = _not_in_game(project, report, unbaked)
                 counts = count_edits(original["tracks"], normalized)
                 result["edits"].update(counts)
-                result["timeline"]["unchanged"] = not counts["clips"] and mod_raw is None
+                result["timeline"]["unchanged"] = not has_edits(counts) and mod_raw is None
                 result["timeline"]["duration"] = original["duration"]
         except StructureError as error:
             result["blocked"].append({"message": STRUCTURE, "labels": error.labels})
@@ -1232,7 +1242,7 @@ def _unchanged_stock(blob, tracks):
     try:
         reference = _parse(blob["raw"])
         result, _ = normalize(reference["tracks"], tracks)
-        return not count_edits(reference["tracks"], result)["clips"]
+        return not has_edits(count_edits(reference["tracks"], result))
     except (StructureError, ValueError, KeyError, TypeError):
         return False
 
@@ -1313,7 +1323,7 @@ def _bake(job, progress, repo_root, project, base, facts, request, song, *, left
         reference = _parse(raw)
         result, _ = normalize(reference["tracks"], tracks)
         # Without edits the platforms not kept play the stock rows: nothing to bake or download.
-        unchanged = mod_raw is None and not count_edits(reference["tracks"], result)["clips"]
+        unchanged = mod_raw is None and not has_edits(count_edits(reference["tracks"], result))
         return result, unchanged
 
     def left_out(platform):
