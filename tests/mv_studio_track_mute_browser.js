@@ -91,6 +91,9 @@ async function run() {
     const applyPlan = await page.locator('#mv-apply-plan').textContent();
     assert.doesNotMatch(applyPlan, /수정 사항: 불러온 뒤 없음/);
     assert.doesNotMatch(applyPlan, /불러온 뒤 수정: 클립/);
+    // The edits line and the Apply all line each say what they count.
+    assert.equal(applyPlan.split('음소거를 바꾼 트랙: 1개').length - 1, 1, applyPlan);
+    assert.match(applyPlan, /전체 적용: 원본 MV와 음소거가 다른 트랙 1개/);
     await page.waitForFunction(() => !document.querySelector('#mv-apply-edits').disabled);
     const plan = posted.filter((item) => item.url.endsWith('/apply-plan')).pop();
     assert.equal(plan.body.project.tracks.find((item) => item.id === track).muted, true);

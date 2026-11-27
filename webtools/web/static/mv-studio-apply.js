@@ -646,7 +646,7 @@
       else if (all.counts && !all.counts.clips && !all.counts.tracks) item("ok", t("Apply all: the game plays the original MV again."));
       else if (all.counts) {
         if (all.counts.clips) item("ok", format("Apply all: {clips} clips differ from the original MV", { clips: all.counts.clips }));
-        if (all.counts.tracks) item("ok", format("Tracks muted or unmuted: {count}", { count: all.counts.tracks }));
+        if (all.counts.tracks) item("ok", format("Apply all: {count} track mutes differ from the original MV", { count: all.counts.tracks }));
       }
     }
     const downloads = [...new Set([...(edits && edits.download || []), ...(all && all.download || [])])];
@@ -926,6 +926,7 @@
     "Edits since loading: {clips} clips (camera {camera} · values {values} · timing {timing})",
     "These edits are not in {platform} yet.", "Apply all: the game already plays this project.", "Apply all: the game plays the original MV again.",
     "Apply all: {clips} clips differ from the original MV", "Tracks muted or unmuted: {count}",
+    "Apply all: {count} track mutes differ from the original MV",
     "Download (about {size} MB)", "No {platform} original",
     "Not in the game:", "Changed differently in the game ({count})", "{where}: loaded {loaded} → project {project}, game {game}",
     "{where}: last applied {loaded} → project {project}, game {game}",
