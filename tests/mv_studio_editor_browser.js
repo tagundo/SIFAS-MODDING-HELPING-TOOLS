@@ -442,6 +442,85 @@ async function pluginContract(browser, url) {
   await page.close();
 }
 
+/* A non-native project, whose clips can be duplicated and deleted: on a lip-sync track that
+   keeps the overlap blends, both write the recomputed blends in the same step. And a camera
+   shot that holds Ping-pong keeps it listed while the preview offers only None and Hold. */
+async function nonNativeBlends(browser, url) {
+  const page = await browser.newPage({ locale: 'ko', viewport: { width: 1280, height: 900 } });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const lip = (id, start, duration) => ({ id, label: id, start, duration, values: { weight: .5 } });
+  const lips = [lip('l1', 0, 2), lip('l2', 1.5, 2), lip('l3', 4, 2)];
+  const blends = Interact.blendTimes(lips);
+  for (const event of lips) Object.assign(event.values, blends.get(event.id));
+  const shot = (id, start, post) => ({ id, label: id, start, duration: 4, values: { playableClass: 'AnimationPlayableAsset',
+    preExtrapolationMode: 1, postExtrapolationMode: post, preExtrapolationTime: 0, postExtrapolationTime: 0, clipIn: 0, timeScale: 1 } });
+  const project = { version: 1, name: 'Blend MV', duration: 20, nativeTimeline: false, assets: [], warnings: [], quality: {},
+    performers: [{ id: 'member-1', label: 'Member 1', position: 1, transform: { position: [0, 0, 0] } }],
+    source: { kind: 'game', region: 'gl', platform: 'android', liveId: 98, assetId: 1 },
+    tracks: [
+      { id: 'camera', kind: 'camera', binding: 'MainCamera', label: 'Camera', events: [shot('cam-1', 0, 3), shot('cam-2', 8, 1)] },
+      { id: 'mouth', kind: 'mouth', binding: '/EntryPoint/Live/Members/Member1', label: 'Member1/LipSync', events: lips }] };
+  try {
+    await page.route('**/api/mv-studio/catalog?*', (route) => route.fulfill({ json: { region: 'gl', platform: 'android',
+      regions: [{ id: 'gl', label: 'GL' }], platforms: [{ id: 'android', label: 'Android' }],
+      songs: [{ id: 98, title: 'Blend MV', variants: [{ id: 1, label: 'MV' }] }] } }));
+    await page.route('**/api/mv-studio/game-stream?*', (route) => route.fulfill({ status: 404 }));
+    await page.route('**/api/mv-studio/game?*', (route) => route.fulfill({ json: project }));
+    await page.goto(url + '/#mv');
+    await page.waitForFunction(() => MVStudio.getState().visible);
+    await page.locator('#mv-import-game').click();
+    await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
+    await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled);
+    await page.locator('#mv-game-load').click();
+    await page.locator('.mv-clip[data-event=l2]').waitFor();
+    const mouth = () => page.evaluate(() => MVStudio.getState().project.tracks.find((track) => track.id === 'mouth'));
+    const stored = (track) => Object.fromEntries(track.events.map((event) => [event.id, [event.values.blendIn, event.values.blendOut]]));
+    const expected = (track) => Object.fromEntries([...Interact.blendTimes(track.events)].map(([id, value]) => [id, [value.blendIn, value.blendOut]]));
+    const steps = () => page.evaluate(() => MVStudio.getState().history.undo);
+    // Duplicate l2: the copy lands on l2's end and overlaps l3, so both get the 1.5 s blend.
+    await page.locator('.mv-clip[data-event=l2]').click();
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=blendIn]').count(), 0, 'gated: blends read only');
+    const before = await steps();
+    await page.locator('#mv-duplicate-clip').click();
+    await page.locator('.mv-clip[data-event="mouth:u1"]').waitFor();
+    let track = await mouth();
+    assert.equal(await steps(), before + 1, 'one step');
+    assert.deepEqual(stored(track), expected(track), 'duplicate: every blend follows the overlaps');
+    assert.deepEqual(stored(track)['mouth:u1'], [-1, 1.5]);
+    assert.deepEqual(stored(track).l3, [1.5, -1]);
+    // Delete l2: l1 no longer overlaps anything.
+    await page.locator('.mv-clip[data-event=l2]').click();
+    await page.locator('#mv-delete-clip').click();
+    await page.waitForFunction(() => !document.querySelector('.mv-clip[data-event=l2]'));
+    track = await mouth();
+    assert.equal(await steps(), before + 2);
+    assert.deepEqual(stored(track), expected(track), 'delete: every blend follows the overlaps');
+    assert.deepEqual(stored(track).l1, [-1, -1]);
+    await page.locator('#mv-undo').click();
+    await page.locator('#mv-undo').click();
+    assert.deepEqual((await mouth()).events, lips, 'undo restores the clips and their blends');
+    // A shot that holds Ping-pong while the preview plays only None and Hold keeps it listed.
+    const scenePlays = await page.evaluate(() => {
+      window.mvSceneLocalTime = MVStudioScene.cameraLocalTime;
+      delete MVStudioScene.cameraLocalTime;
+      return typeof window.mvSceneLocalTime === 'function';
+    });
+    await page.locator('.mv-clip[data-event=cam-1]').click();
+    const modes = (key) => page.locator(`#mv-event-fields [data-mv-field=${key}] option`).evaluateAll((options) => options.map((option) => option.value));
+    assert.deepEqual(await modes('postExtrapolationMode'), ['0', '1', '3'], 'the held mode stays listed');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=postExtrapolationMode]').inputValue(), '3', 'and selected');
+    assert.deepEqual(await modes('preExtrapolationMode'), ['0', '1']);
+    await page.locator('.mv-clip[data-event=cam-2]').click();
+    assert.deepEqual(await modes('postExtrapolationMode'), ['0', '1']);
+    await page.evaluate((plays) => { if (plays) MVStudioScene.cameraLocalTime = window.mvSceneLocalTime; delete window.mvSceneLocalTime; }, scenePlays);
+    assert.equal(await steps(), before, 'opening the shots changes nothing');
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+}
+
 /* Lane labels on a phone (390 x 844, touch). Group rows stay headings: bold, as high as their
    text lines (their 16 px marks do not raise a line), wrapping only after a "/" or a space. No
    label breaks a word that fits its width (the mute toggle and the badge sit in the text flow),
@@ -1131,6 +1210,7 @@ async function run() {
 
     assert.deepEqual(errors, []);
     await phoneLanes(browser, server.url, original);
+    await nonNativeBlends(browser, server.url);
     await pluginContract(browser, server.url);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {
