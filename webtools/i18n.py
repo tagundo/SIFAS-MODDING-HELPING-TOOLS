@@ -3485,8 +3485,14 @@ _MV_REGISTER_TRANSLATIONS = {
     "Camera point edits require an untrimmed, full native shot with unchanged sample times.": (
         "카메라 포인트를 편집하려면 잘리지 않은 원래 컷 전체와 바뀌지 않은 샘플 시간이 필요합니다.",
         "カメラポイントの編集には、切り詰めていない元のカット全体と変わっていないサンプル時刻が必要です。"),
-    "Keep the original camera point count and times.": (
-        "카메라 포인트의 원래 개수와 시간을 유지하세요.", "カメラポイントの元の数と時刻を保ってください。"),
+    "Keep one camera point per frame of the shot, at its frame times.": (
+        "샷의 프레임마다 카메라 포인트를 하나씩, 그 프레임 시간에 두세요.",
+        "ショットのフレームごとにカメラポイントを1つずつ、そのフレームの時刻に置いてください。"),
+    "Camera point edits need an untrimmed native shot: clip offset 0, speed 1 and its own camera bindings.": (
+        "카메라 포인트를 편집하려면 잘리지 않은 원래 샷이어야 합니다: 클립 오프셋 0, 속도 1, 원래 카메라 바인딩.",
+        "カメラポイントを編集するには、切り詰めていない元のショットが必要です（クリップオフセット0、速度1、元のカメラバインディング）。"),
+    "A camera shot with camera edits needs a length of whole frames (1/60 s).": (
+        "카메라를 편집한 샷의 길이는 프레임(1/60초) 단위여야 합니다.", "カメラを編集したショットの長さは、フレーム（1/60秒）単位にしてください。"),
     "The native copy changed unrelated Unity objects or resources.": (
         "게임용 사본에서 관계없는 Unity 오브젝트나 리소스가 바뀌었습니다.",
         "ゲーム用のコピーで無関係なUnityオブジェクトまたはリソースが変わりました。"),
