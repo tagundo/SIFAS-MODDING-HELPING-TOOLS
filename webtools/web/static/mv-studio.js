@@ -1761,12 +1761,13 @@
   }
 
   // Track id → whether the extrapolation port reproduces its stored times (spec §5.3), and
-  // whether the overlap port reproduces its stored blends.
+  // whether the overlap port reproduces its stored blends, now or before the project's edits.
   function computeGates(value) {
     const extrapolation = new Map(), blends = new Map();
+    const originals = value.editor && value.editor.originals;
     for (const track of value.tracks) {
       extrapolation.set(track.id, Interact.extrapolationGate(track));
-      blends.set(track.id, Interact.blendGate(track));
+      blends.set(track.id, Interact.loadedBlendGate(track, originals));
     }
     return { extrapolation, blends };
   }
@@ -1985,7 +1986,8 @@
     }
     const previous = selected;
     project = next;
-    // Gates are decided on the data as loaded, before any carried edit.
+    // Gates are decided on the data as loaded, before any carried edit (blends: or on the
+    // clips' originals, for a project saved with edits).
     ({ extrapolation: extrapolationGates, blends: blendGates } = computeGates(next));
     let reason = preserveTime ? "reload" : "load", complete = true;
     if (carry && before && before.editor) {

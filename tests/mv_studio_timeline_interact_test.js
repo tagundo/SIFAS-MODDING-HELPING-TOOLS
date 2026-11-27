@@ -255,6 +255,28 @@ function blends() {
   assert.deepEqual(write(I.blendChanges(lips, new Map([['a', { duration: 1.75 }]]))), { 'a.blendOut': .25, 'b.blendIn': .25 });
   // c dragged onto b: b blends out into c, and c blends in.
   assert.deepEqual(write(I.blendChanges(lips, new Map([['c', { start: 3 }]]))), { 'b.blendOut': .5, 'c.blendIn': .5 });
+
+  // A project saved with a move made before blends were recomputed: b moved, every blend stale.
+  const saved = { id: 'lips', events: [clip('a', 0, 2, -1, .5), clip('b', 1.75, 2, .5, -1), clip('c', 4, 1)] };
+  const originals = { b: clip('b', 1.5, 2, .5, -1) };
+  assert.equal(I.blendGate(saved), false, 'the saved clips do not follow the rule');
+  assert.deepEqual(I.originalTrack(saved, originals).events.map((event) => event.start), [0, 1.5, 4], 'the original clips');
+  assert.equal(I.loadedBlendGate(saved, originals), true, 'the original track does: gated');
+  assert.equal(I.loadedBlendGate(saved, {}), false, 'without its original, ungated');
+  assert.equal(I.loadedBlendGate(lips, originals), true, 'a track that follows the rule now is gated whatever its originals');
+  assert.equal(I.originalTrack(lips, {}), lips, 'no originals: the same track');
+  // The next edit rewrites every stale blend, not only the moved clip's.
+  const fixed = I.blendChanges(saved, new Map([['c', { start: 4.5 }]]));
+  assert.deepEqual(write(fixed), { 'a.blendOut': .25, 'b.blendIn': .25 });
+  for (const change of fixed) change.event.values[change.key] = change.value;
+  assert(I.blendGate(saved));
+  // A clip the editor added (originals: null) is left out of the original track.
+  const added = { id: 'lips', events: [...lips.events, clip('u1', 4.5, 1, .5, -1)] };
+  added.events[2] = clip('c', 4, 1, -1, .5);
+  assert.equal(I.blendGate(added), true);
+  assert.deepEqual(I.originalTrack(added, { u1: null }).events.map((event) => event.id), ['a', 'b', 'c']);
+  assert.equal(I.blendGate(I.originalTrack(added, { u1: null })), false, 'c still holds the added clip\'s blend');
+  assert.equal(I.loadedBlendGate(added, { u1: null }), true, 'gated: the saved clips follow the rule');
 }
 
 // Real timelines (optional): MV_STUDIO_TRACKS_JSON is the per-MV parse_timeline track dump

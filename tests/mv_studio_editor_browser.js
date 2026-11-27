@@ -1019,6 +1019,13 @@ async function run() {
     const flash = legacy.tracks.find((track) => track.label === flashLabel).events[0];
     legacy.editor = { version: 1, originals: { [flash.id]: JSON.parse(JSON.stringify(flash)) } };
     flash.values.postExtrapolationMode = 1;
+    // A lip-sync clip moved 5 frames before blends were recomputed: every blend of the track is
+    // as it was before the move, so the saved track does not follow the overlap rule.
+    const savedLips = legacy.tracks.find((track) => track.label === 'Member1/LipSync');
+    const movedLip = savedLips.events.find((event) => event.id === savedLips.id + ':4');
+    legacy.editor.originals[movedLip.id] = JSON.parse(JSON.stringify(movedLip));
+    movedLip.start = Math.round(movedLip.start * 60 + 5) / 60;
+    assert.equal(Interact.blendGate(savedLips), false, 'the saved blends are stale');
     // A muted group (as stock 11054 and 10120 have) shows its state and why it does not count.
     const mutedGroup = legacy.tracks.find((track) => track.label === 'StageEffect/Expert/Post');
     mutedGroup.muted = true;
@@ -1074,6 +1081,24 @@ async function run() {
     await page.locator('#mv-timeline-label').click();
     await page.keyboard.press('Control+z');
     assert(await flashBadge.evaluate((badge) => badge.classList.contains('mv-quality-off')), 'undo turns it off again');
+    // The stale lip-sync track keeps the gate its original clips pass: nothing is written on load,
+    // its blends are read only, and the next move on the track rewrites every blend.
+    const savedLipsNow = () => state(page).then((value) => findTrack(value.project, savedLips.id));
+    assert.deepEqual((await savedLipsNow()).events, savedLips.events, 'nothing written on load');
+    await page.locator('#mv-tab-mouth').click();
+    await page.locator(`.mv-clip[data-event="${movedLip.id}"]`).click();
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=blendIn]').count(), 0, 'gated: blends read only');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=blend]').count(), 1);
+    const nextLip = page.locator(`.mv-clip[data-event="${savedLips.id}:7"]`);
+    await nextLip.scrollIntoViewIfNeeded();
+    await nextLip.focus();
+    const lipUndo = (await state(page)).history.undo;
+    await page.keyboard.press('Alt+ArrowRight');
+    assert.equal((await state(page)).history.undo, lipUndo + 1);
+    assert(Interact.blendGate(await savedLipsNow()), 'every blend follows the overlaps after the next move');
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert.deepEqual((await savedLipsNow()).events, savedLips.events, 'undo puts the saved blends back');
 
     // The English UI names the same tabs.
     await page.locator('#lang-select').selectOption('en');

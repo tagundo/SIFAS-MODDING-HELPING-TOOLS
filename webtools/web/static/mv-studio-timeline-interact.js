@@ -203,6 +203,33 @@
     });
   }
 
+  /* The track as it was loaded before any edit: each edited clip as its original
+     (originals: project.editor.originals, id → original clip, or null for a clip the editor
+     added, which is left out). A clip removed without an original cannot be put back. */
+  function originalTrack(track, originals) {
+    if (!track || !Array.isArray(track.events) || !originals || typeof originals !== "object") return track;
+    let changed = false;
+    const events = [];
+    for (const event of track.events) {
+      const id = event && event.id;
+      if (!Object.prototype.hasOwnProperty.call(originals, id)) { events.push(event); continue; }
+      changed = true;
+      const original = originals[id];
+      if (original && typeof original === "object") events.push({ ...original, id });
+    }
+    return changed ? { ...track, events } : track;
+  }
+
+  /* Gate of a loaded track: its stored blends follow the port now, or did before the edits
+     the project holds (a project saved with moves made before blends were recomputed keeps
+     stale blends; the next timing edit on the track rewrites them all). Nothing is written
+     on load. */
+  function loadedBlendGate(track, originals) {
+    if (blendGate(track)) return true;
+    const original = originalTrack(track, originals);
+    return original !== track && blendGate(original);
+  }
+
   /* Writes that keep a gated track's blends equal to the port after the timing
      (start/duration) of some events changes. overrides as for extrapolationChanges. */
   function blendChanges(track, overrides) {
@@ -401,6 +428,6 @@
   global.MVStudioTimelineInteract = Object.freeze({
     FRAME_RATE, FRAME, UNBOUNDED, snapFrame, snapTime, moveRange, resizeRange, nudgeRange,
     extrapolationTimes, extrapolationGate, extrapolationChanges, storedTime, attachDrag,
-    blendTimes, blendGate, blendChanges, CLIP_CAPS, TIMING_CAPS, clipCaps, timingField,
+    blendTimes, blendGate, originalTrack, loadedBlendGate, blendChanges, CLIP_CAPS, TIMING_CAPS, clipCaps, timingField,
   });
 })(typeof window !== "undefined" ? window : globalThis);
