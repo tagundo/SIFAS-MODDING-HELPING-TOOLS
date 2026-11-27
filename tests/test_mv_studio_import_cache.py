@@ -479,6 +479,45 @@ class TransientFailureTests(unittest.TestCase):
             self.assertEqual(clips.call_count, 2)
 
 
+class SwallowedFailureTests(unittest.TestCase):
+    """A broad handler on the stage, effect or timeline path that goes on without what failed
+    must note a failure of memory or stack, so the degraded result is never kept."""
+
+    cases = ((MemoryError(), True), (RecursionError("maximum recursion depth exceeded"), True),
+             (ValueError("a damaged component"), False))
+
+    def test_stage_effect_props_note_a_component_lost_to_memory_or_stack(self):
+        from types import SimpleNamespace
+        from webtools.core import mv_studio_stage_props as props, transient_failures
+        assets = object()
+        component = SimpleNamespace(type=SimpleNamespace(name="MonoBehaviour"), assets_file=assets)
+        game = SimpleNamespace(type=SimpleNamespace(name="GameObject"))
+        for error, noted in self.cases:
+            def tree(obj, error=error):
+                raise error
+            scene = SimpleNamespace(env=SimpleNamespace(objects=[component]), tree=tree)
+            with (self.subTest(error=type(error).__name__),
+                  patch.object(props, "_script", return_value=(*props._NAMESPACE, "LiveCoreStageEffect")),
+                  patch.object(props.viewer, "_ref", return_value=game),
+                  patch.object(props, "_path", return_value=("Effect",))):
+                watch = transient_failures.Watch()
+                self.assertEqual(props.props(scene, component, {}), [])
+                self.assertEqual(watch.clean, not noted)
+
+    def test_clip_names_note_a_resolve_lost_to_memory_or_stack(self):
+        from webtools.core import transient_failures
+        project = {"tracks": [{"id": "t", "label": "Dance", "events": [
+            {"id": "e", "label": "clip", "values": {"playableClass": "AnimationPlayableAsset", "animation": "cab-1:5"}}]}],
+            "warnings": []}
+        for error, noted in self.cases:
+            with self.subTest(error=type(error).__name__), patch.object(mv_studio_external_clips, "resolve", side_effect=error):
+                watch = transient_failures.Watch()
+                self.assertEqual(mv_studio_external_clips.apply(
+                    json.loads(json.dumps(project)), b"timeline", [{"asset": "dance"}],
+                    mv_studio_external_clips.SharedReads(lambda descriptor: b"pack"), None), {})
+                self.assertEqual(watch.clean, not noted)
+
+
 class TextureStoreTests(unittest.TestCase):
     """Decoded PNGs outlive the process only through an import's texture store, under the full source key."""
 

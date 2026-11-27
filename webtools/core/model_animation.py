@@ -1285,6 +1285,8 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             if rebound:
                 warn("animation_morph_path_rebound", name, "A facial curve used its unique original morph name because its legacy transform path differs.")
         except Exception as error:
+            from .transient_failures import note_if_environmental
+            note_if_environmental(error)  # a clip lost to memory or stack may import next time
             del glb.data[checkpoint[0]:]
             del glb.doc["accessors"][checkpoint[1]:]
             del glb.doc["bufferViews"][checkpoint[2]:]
