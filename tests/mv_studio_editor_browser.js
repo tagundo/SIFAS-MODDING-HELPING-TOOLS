@@ -45,6 +45,13 @@ function timeline({ duet = false } = {}) {
   const lips = data.tracks.find((track) => track.label === 'Member1/LipSync');
   const blends = Interact.blendTimes(lips.events);
   for (const event of lips.events) Object.assign(event.values, blends.get(event.id));
+  // Playable classes for the timing-field rules: the camera shots and the flash lights.
+  for (const [label, playableClass] of [['CameraMotion/Camera1', 'AnimationPlayableAsset'],
+    ['StageEffect/Expert/Flash Light/Live Flash Light Track', 'LiveFlashLightClip']]) {
+    for (const event of data.tracks.find((track) => track.label === label).events) {
+      Object.assign(event.values, { playableClass, clipIn: 0, timeScale: 1 });
+    }
+  }
   if (duet) {
     // A second member: copies of the Member1 lip-sync and eye tracks bound to Member2.
     for (const label of ['Member1/Eye', 'Member1/LipSync']) {
@@ -651,6 +658,13 @@ async function run() {
       'recomputed extrapolation times are read-only');
     assert.equal(await page.locator('#mv-event-fields [data-mv-field=postExtrapolationTime]').count(), 0);
     assert.equal(await page.locator('#mv-event-fields .mv-field-note').filter({ hasText: '게임이 다시 계산하는 값입니다' }).count(), 1);
+    // A camera shot offers None and Hold (what the preview shows) and keeps its offset and speed.
+    assert.deepEqual(await page.locator('#mv-event-fields [data-mv-field=postExtrapolationMode] option').evaluateAll(
+      (options) => options.map((option) => option.value)), ['0', '1']);
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=clipIn]').count(), 0);
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=timeScale]').count(), 0);
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=caps]').textContent(),
+      '카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.');
     // Alt+→ nudges one frame as one more step.
     await clip.focus();
     await page.keyboard.press('Alt+ArrowRight');
@@ -838,6 +852,36 @@ async function run() {
       await page.screenshot({ path: path.join(evidence, name) });
     }
     await page.setViewportSize({ width: 1280, height: 900 });
+
+    // ---- Timing fields the game does not use for a clip type are read only --------------------
+    // A saved edit of one (made before it became read only) still loads and can be put back.
+    const flashLabel = 'StageEffect/Expert/Flash Light/Live Flash Light Track';
+    const legacy = gameProject({ name: 'Timeline 12035 legacy' });
+    const flash = legacy.tracks.find((track) => track.label === flashLabel).events[0];
+    legacy.editor = { version: 1, originals: { [flash.id]: JSON.parse(JSON.stringify(flash)) } };
+    flash.values.postExtrapolationMode = 1;
+    await importGame(legacy);
+    await page.locator('#mv-tab-lighting').click();
+    await page.locator(`.mv-clip[data-event="${flash.id}"]`).click();
+    assert.equal(await page.locator(`.mv-clip[data-event="${flash.id}"]`).getAttribute('data-edited'), 'true', 'the saved edit loads');
+    for (const key of ['preExtrapolationMode', 'postExtrapolationMode', 'clipIn', 'timeScale']) {
+      assert.equal(await page.locator(`#mv-event-fields [data-mv-field=${key}]`).count(), 0, key + ' is read only');
+    }
+    assert.equal(await page.locator('#mv-event-fields [data-mv-readonly=preExtrapolationMode]').textContent(), '없음');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-readonly=postExtrapolationMode]').textContent(), '정지');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-field=easeIn]').count(), 1, 'blending fields stay editable');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-note=caps]').textContent(), '이 클립 종류의 읽기 전용 시간 항목은 게임에서 쓰이지 않습니다.');
+    assert.deepEqual(await page.locator('#mv-event-fields [data-mv-restore]').evaluateAll((buttons) => buttons.map((item) => item.dataset.mvRestore)),
+      ['postExtrapolationMode'], 'only the edited read-only field can be put back');
+    await page.screenshot({ path: path.join(evidence, 'timing-fields-ko.png') });
+    await page.locator('#mv-event-fields [data-mv-restore=postExtrapolationMode]').click();
+    await page.waitForFunction((id) => !document.querySelector(`.mv-clip[data-event="${id}"]`)?.dataset.edited, flash.id);
+    assert.equal(findEvent((await state(page)).project, flash.id).values.postExtrapolationMode, 0);
+    assert.equal((await state(page)).history.undoLabel, 'Edit value');
+    assert.equal(await page.locator('#mv-event-fields [data-mv-restore]').count(), 0);
+    await page.locator('#mv-timeline-label').click();
+    await page.keyboard.press('Control+z');
+    assert.equal(findEvent((await state(page)).project, flash.id).values.postExtrapolationMode, 1, 'undo brings the saved edit back');
 
     // The English UI names the same tabs.
     await page.locator('#lang-select').selectOption('en');

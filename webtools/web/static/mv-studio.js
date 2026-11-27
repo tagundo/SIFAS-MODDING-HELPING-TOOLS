@@ -562,8 +562,11 @@
     return control;
   }
 
+  const EXTRAPOLATION_LABELS = ["None", "Hold", "Loop", "Ping-pong", "Continue"];
+
   // write(segments, next) records the edit; segments is the key path under event.values.
-  function eventField(object, key, path, editable, depth = 0, segments = [key], write = () => {}) {
+  // modes: the extrapolation modes the clip offers (all five when not given).
+  function eventField(object, key, path, editable, depth = 0, segments = [key], write = () => {}, modes = null) {
     const value = object[key];
     const title = eventLabels[key] || String(key);
     const data = { "data-mv-field": path };
@@ -572,7 +575,10 @@
     if (editable && finite(value)) {
       if (key === "preExtrapolationMode" || key === "postExtrapolationMode") {
         const control = make("select", null, data);
-        replaceOptions(control, ["None", "Hold", "Loop", "Ping-pong", "Continue"].map((label, id) => ({ id, label })), value);
+        // A mode the clip already holds stays listed, so opening the clip never changes it.
+        const offered = EXTRAPOLATION_LABELS.map((label, id) => ({ id, label }))
+          .filter(({ id }) => !modes || modes.includes(id) || id === value);
+        replaceOptions(control, offered, value);
         control.addEventListener("change", () => update(Number(control.value)));
         return field(title, control);
       }
@@ -600,6 +606,9 @@
         group.append(eventField(value, key, path + "." + key, editable, depth + 1, [...segments, key], write));
       }
       return group;
+    }
+    if ((key === "preExtrapolationMode" || key === "postExtrapolationMode") && Number.isInteger(value) && EXTRAPOLATION_LABELS[value]) {
+      return field(title, make("output", t(EXTRAPOLATION_LABELS[value]), { "data-mv-readonly": path }));
     }
     return field(title, make("output", typeof value === "object" ? JSON.stringify(value).slice(0, 240) : text(value)));
   }
@@ -637,18 +646,31 @@
   const derivedKey = (track, key) => (autoExtrapolation(track) && (key === "preExtrapolationTime" || key === "postExtrapolationTime")) ||
     (autoBlend(track) && (key === "blendIn" || key === "blendOut"));
 
+  // A timing field the game does not use for this clip type (its ClipCaps) is read only.
   function writableValue(track, event, key) {
     const editable = track.editable !== false && event.editable !== false;
     if (!editable || (Array.isArray(event.editableValues) && !event.editableValues.includes(key))) return false;
-    return !derivedKey(track, key);
+    return !derivedKey(track, key) && Interact.timingField(Interact.clipCaps(track, event), key);
   }
 
-  function setEventValue(track, event, segments, next) {
+  // A saved edit of a timing field this clip type does not use (made before the field
+  // became read only) can be put back to the clip's original value.
+  function restoreControl(track, event, key, original) {
+    const before = original && original.values ? original.values[key] : undefined;
+    if (before === undefined || global.MVStudioEditHistory.stable(before) === global.MVStudioEditHistory.stable(event.values[key])) return null;
+    if (track.editable === false || event.editable === false) return null;
+    // The inspector is rebuilt: the field has no edit left to put back.
+    return button(t("Restore original value"), () => setEventValue(track, event, [key], copy(before), null),
+      { class: "mv-restore-value", "data-mv-restore": key });
+  }
+
+  // quiet: see edit(); the inspector keeps its controls unless it is null.
+  function setEventValue(track, event, segments, next, quiet = "events") {
     const changes = [{ target: eventTarget(track, event), path: ["values", ...segments], after: next }];
     if (segments.length === 1 && segments[0] === "postExtrapolationMode" && finite(next)) {
       changes.push(...derivedWrites(track, new Map([[event.id, { postMode: next }]])));
     }
-    return edit({ label: "Edit value", detail: segments.join("."), changes }, "events");
+    return edit({ label: "Edit value", detail: segments.join("."), changes }, quiet);
   }
 
   // Start/duration change as one command, with the recomputed extrapolation times and blends.
@@ -733,7 +755,8 @@
     if (rules.reason && (rules.move === false || rules.resize === false)) box.append(make("p", rules.reason, { class: "mv-field-note" }));
     for (const element of callPlugins("eventHeader", { track, event })) if (element) box.append(element);
     const values = event.values || {}, original = history.originals.get(event.id);
-    let noted = false, blendNoted = false;
+    const caps = Interact.clipCaps(track, event);
+    let noted = false, blendNoted = false, capsNoted = false;
     for (const key of Object.keys(values).slice(0, 48)) {
       const writable = writableValue(track, event, key);
       const access = valueAccess(track, event, key);
@@ -741,7 +764,14 @@
         original: original && original.values ? original.values[key] : undefined, set: access.set, gesture: access.gesture };
       const control = valueControl(info);
       if (control === null) continue;
-      box.append(control !== undefined ? control : eventField(values, key, key, writable, 0, [key], (segments, next) => setEventValue(track, event, segments, next)));
+      box.append(control !== undefined ? control : eventField(values, key, key, writable, 0, [key],
+        (segments, next) => setEventValue(track, event, segments, next), caps ? caps.modes : null));
+      if (control === undefined && editable && caps && (!Interact.timingField(caps, key) ||
+          (caps.camera && (key === "preExtrapolationMode" || key === "postExtrapolationMode")))) {
+        const restore = !Interact.timingField(caps, key) && restoreControl(track, event, key, original);
+        if (restore) box.append(restore);
+        capsNoted = true;
+      }
       if (!noted && control === undefined && autoExtrapolation(track) && (key === "preExtrapolationTime" || key === "postExtrapolationTime")) {
         noted = true;
         box.append(make("p", t("Recomputed by the game"), { class: "mv-field-note" }));
@@ -750,6 +780,11 @@
         blendNoted = true;
         box.append(make("p", t("Set by the overlap with the next or previous clip"), { class: "mv-field-note", "data-mv-note": "blend" }));
       }
+    }
+    // Once, below the values: why some timing fields are read only.
+    if (capsNoted) {
+      box.append(make("p", t(caps.camera ? "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows."
+        : "The game does not use the read-only timing fields of this clip type."), { class: "mv-field-note", "data-mv-note": "caps" }));
     }
     for (const element of callPlugins("eventFooter", { track, event })) if (element) box.append(element);
     restoreFocus(box, focus);

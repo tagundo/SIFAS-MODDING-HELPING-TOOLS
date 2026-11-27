@@ -284,10 +284,60 @@ function blendsOnStockTimelines() {
   return `${gated} tracks gated, ${ungated} never blended`;
 }
 
+// Timing fields per clip type (Unity ClipCaps).
+function clipCaps() {
+  const field = (track, playableClass, key) => I.timingField(I.clipCaps(track, { values: { playableClass } }), key);
+  const timing = ['preExtrapolationMode', 'postExtrapolationMode', 'preExtrapolationTime', 'postExtrapolationTime', 'clipIn',
+    'timeScale', 'easeIn', 'easeOut', 'blendIn', 'blendOut'];
+  const open = (track, playableClass) => timing.filter((key) => field(track, playableClass, key));
+  const lane = { kind: 'dance' }, camera = { kind: 'camera' }, lights = { kind: 'lighting' };
+  assert.equal(I.clipCaps(lane, { values: {} }), null, 'no playable class: nothing restricted');
+  assert.deepEqual(open(lane, 'AnimationPlayableAsset'), timing, 'Animation clips: every field (ClipCaps.All)');
+  assert.deepEqual(open(lights, 'LiveColoringClip'), ['easeIn', 'easeOut', 'blendIn', 'blendOut'], 'game clips: blending only');
+  assert.deepEqual(open(lane, 'ActivationPlayableAsset'), [], 'ClipCaps.None');
+  assert.deepEqual(open({ kind: 'effects' }, 'CustomControlClip'), ['clipIn']);
+  assert.deepEqual(open(lane, 'LiveMemberCullerClip'), []);
+  assert.deepEqual(open(lane, 'ControlPlayableAsset'), ['clipIn', 'timeScale']);
+  // Camera shots: modes, not offset or speed; only None and Hold.
+  assert.deepEqual(open(camera, 'AnimationPlayableAsset'), timing.filter((key) => key !== 'clipIn' && key !== 'timeScale'));
+  assert.deepEqual(I.clipCaps(camera, { values: { playableClass: 'AnimationPlayableAsset' } }).modes, [0, 1]);
+  assert.deepEqual(I.clipCaps(lane, { values: { playableClass: 'AnimationPlayableAsset' } }).modes, [0, 1, 2, 3, 4]);
+  assert.deepEqual(I.clipCaps(camera, { values: { playableClass: 'LiveCameraOffsetClip' } }).modes, [], 'a camera offset clip is a game clip');
+  assert.equal(I.timingField(I.clipCaps(lights, { values: { playableClass: 'LiveColoringClip' } }), 'color'), true, 'other keys are not timing');
+}
+
+// Stock timelines (optional, as above): a read-only timing field never hides a stored value.
+function capsOnStockTimelines() {
+  const file = process.env.MV_STUDIO_TRACKS_JSON;
+  if (!file || !fs.existsSync(file)) return 'skipped';
+  const defaults = { preExtrapolationMode: 0, postExtrapolationMode: 0, preExtrapolationTime: 0, postExtrapolationTime: 0,
+    clipIn: 0, timeScale: 1, easeIn: 0, easeOut: 0 };
+  let clips = 0, locked = 0;
+  for (const tracks of Object.values(JSON.parse(fs.readFileSync(file, 'utf8')))) {
+    for (const track of tracks) {
+      for (const event of track.events) {
+        const caps = I.clipCaps(track, event);
+        if (!caps) continue;
+        clips++;
+        for (const [key, value] of Object.entries(event.values)) {
+          if (I.timingField(caps, key)) continue;
+          locked++;
+          // Blends of a clip without Blending: 0/0 (never computed).
+          const expected = key === 'blendIn' || key === 'blendOut' ? 0 : defaults[key];
+          assert.equal(value, expected, `${track.label} ${event.id} ${key}`);
+        }
+        if (caps.camera) assert(caps.modes.includes(event.values.preExtrapolationMode) && caps.modes.includes(event.values.postExtrapolationMode));
+      }
+    }
+  }
+  return `${locked} read-only fields on ${clips} clips hold their defaults`;
+}
+
 snapping();
 dragging();
 extrapolation12035();
 holdGap();
 blends();
-const stock = blendsOnStockTimelines();
-console.log('MV Studio clip interaction: snaps (frame, targets, Alt), clamps, one commit per drag, Escape, blocked resize, nudges, extrapolation port on 12035, overlap blends; stock timelines: ' + stock + '.');
+clipCaps();
+const stock = [blendsOnStockTimelines(), capsOnStockTimelines()].join('; ');
+console.log('MV Studio clip interaction: snaps (frame, targets, Alt), clamps, one commit per drag, Escape, blocked resize, nudges, extrapolation port on 12035, overlap blends, timing fields per clip type; stock timelines: ' + stock + '.');

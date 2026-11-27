@@ -218,6 +218,48 @@
     return changes;
   }
 
+  /* Which timing fields reach the game for a clip (Unity ClipCaps). TimelineClip reads
+     clipIn as 0 without ClipCaps.ClipIn, timeScale as 1 without SpeedMultiplier, both
+     extrapolation modes as None without Extrapolation, and no ease or blend without
+     Blending. The built-in classes have their Unity caps. The game's own clips are
+     measured on 13 stock timelines: none of the 647 non-Animation tracks (29 classes,
+     20,869 clips) stores an extrapolation mode or time, a clip offset or a speed, except
+     a clip offset on 35 CustomControlClips, and the editor blended every Live and Member
+     track but never a CustomControl or LiveMemberCuller one. Camera shots offer only
+     None and Hold, the modes the preview shows (activeCameraEvent), and keep their
+     offset and speed: the preview plays a shot's samples at the shot's own time.
+     → null for a clip without a playable class (nothing is restricted). */
+  const ALL = Object.freeze({ extrapolation: true, clipIn: true, timeScale: true, blending: true });
+  const CLIP_CAPS = Object.freeze({
+    AnimationPlayableAsset: ALL,
+    ActivationPlayableAsset: Object.freeze({ extrapolation: false, clipIn: false, timeScale: false, blending: false }),
+    ControlPlayableAsset: Object.freeze({ extrapolation: false, clipIn: true, timeScale: true, blending: false }),
+    AudioPlayableAsset: Object.freeze({ extrapolation: false, clipIn: true, timeScale: true, blending: true }),
+    CustomControlClip: Object.freeze({ extrapolation: false, clipIn: true, timeScale: false, blending: false }),
+    LiveMemberCullerClip: Object.freeze({ extrapolation: false, clipIn: false, timeScale: false, blending: false }),
+  });
+  const GAME_CLIP = Object.freeze({ extrapolation: false, clipIn: false, timeScale: false, blending: true });
+  const EXTRAPOLATION_MODES = Object.freeze([0, 1, 2, 3, 4]), CAMERA_MODES = Object.freeze([0, 1]);
+  const TIMING_CAPS = Object.freeze({
+    preExtrapolationMode: "extrapolation", postExtrapolationMode: "extrapolation",
+    preExtrapolationTime: "extrapolation", postExtrapolationTime: "extrapolation",
+    clipIn: "clipIn", timeScale: "timeScale", easeIn: "blending", easeOut: "blending", blendIn: "blending", blendOut: "blending",
+  });
+
+  function clipCaps(track, event) {
+    const native = event && event.values && event.values.playableClass;
+    if (typeof native !== "string" || !native) return null;
+    const caps = Object.prototype.hasOwnProperty.call(CLIP_CAPS, native) ? CLIP_CAPS[native] : GAME_CLIP;
+    const camera = native === "AnimationPlayableAsset" && !!track && track.kind === "camera";
+    if (camera) return { ...caps, clipIn: false, timeScale: false, modes: CAMERA_MODES, camera: true };
+    return { ...caps, modes: caps.extrapolation ? EXTRAPOLATION_MODES : Object.freeze([]), camera: false };
+  }
+
+  // Whether the game uses this timing field of the clip (true for any other key).
+  function timingField(caps, key) {
+    return !caps || !Object.prototype.hasOwnProperty.call(TIMING_CAPS, key) || caps[TIMING_CAPS[key]] === true;
+  }
+
   const coarse = () => !!(global.matchMedia && global.matchMedia("(pointer: coarse)").matches);
 
   /* Drag/trim on one element.
@@ -354,6 +396,6 @@
   global.MVStudioTimelineInteract = Object.freeze({
     FRAME_RATE, FRAME, UNBOUNDED, snapFrame, snapTime, moveRange, resizeRange, nudgeRange,
     extrapolationTimes, extrapolationGate, extrapolationChanges, storedTime, attachDrag,
-    blendTimes, blendGate, blendChanges,
+    blendTimes, blendGate, blendChanges, CLIP_CAPS, TIMING_CAPS, clipCaps, timingField,
   });
 })(typeof window !== "undefined" ? window : globalThis);
