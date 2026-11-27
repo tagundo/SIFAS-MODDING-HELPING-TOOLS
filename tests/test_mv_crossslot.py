@@ -349,6 +349,61 @@ def _changed_value(track, event, key, pools, slots):
     return None
 
 
+def _alternatives(track, event, key, pools, slots):
+    """The values other than its own that a clip's ``key`` may take when the export allows only a
+    closed set: an index the game resolves (the values this MV already uses for it) or a member
+    position (the MV's performer slots). None for a value the export takes from an open range."""
+    values = event["values"]
+    value, native = values.get(key), values.get("playableClass")
+    scope = getattr(mv_studio_timeline, "_OBSERVED_VALUES", {}).get((native, key))
+    if scope:
+        pool = pools.get((native, key, track["id"] if scope == "track" else None), set())
+        return pool - {json.dumps(value, sort_keys=True)}
+    if (native, key) in getattr(mv_studio_timeline, "_MEMBER_POSITIONS", ()):
+        return set(slots) - {value}
+    return None
+
+
+def no_other_value(tracks, missing):
+    """{(class, key): [clip ids]} of the missing pairs where a clip could take another value: empty when
+    every missing pair is a closed set offering each of its clips only the value it has."""
+    pools = _value_pools(tracks)
+    slots = sorted(mv_studio_timeline.performer_slots(tracks)) if hasattr(mv_studio_timeline, "performer_slots") else []
+    wrong = {}
+    for native, key in missing:
+        for track in tracks:
+            for event in track["events"]:
+                if event["values"].get("playableClass") == native and key in event["editableValues"] \
+                        and _alternatives(track, event, key, pools, slots) != set():
+                    wrong.setdefault((native, key), []).append(event["id"])
+    return wrong
+
+
+def two_member_stock(raw):
+    """A real stock timeline made a two-member MV: MemberScale/Member1 is bound to Member2's model
+    (performer slots 1 and 2) and the first spot light shaft clip draws object 1 (its track then
+    uses 0 and 1). Only the binding row and that clip change; the bundle is written as the export
+    writes one (LZ4)."""
+    import UnityPy
+    env, done = UnityPy.load(raw), set()
+    for obj in env.objects:
+        if obj.type.name != "MonoBehaviour":
+            continue
+        tree = obj.read_typetree()
+        rows = [row for row in tree.get("bindingInfos") or () if row.get("playableAssetPath") == "/MemberScale/Member1"]
+        if rows and rows[0].get("bindObjectPath") == "/EntryPoint/Live/Members/Member1/Model":
+            rows[0]["bindObjectPath"] = "/EntryPoint/Live/Members/Member2/Model"
+            obj.save_typetree(tree)
+            done.add("slot")
+        elif tree.get("drawObjectIndex") == 0 and "shaft" not in done:
+            tree["drawObjectIndex"] = 1
+            obj.save_typetree(tree)
+            done.add("shaft")
+    if done != {"slot", "shaft"}:
+        raise AssertionError(f"The sample has no {sorted({'slot', 'shaft'} - done)} to change.")
+    return env.file.save(packer="lz4")
+
+
 def every_field_changed(tracks):
     """(tracks with one clip of every (playable class, value) changed, clip timing and the exportable
     track fields too; the (class, value) pairs that had no other value to take)."""
@@ -406,26 +461,56 @@ def _exported_changes(stock_tracks, tracks):
 
 @unittest.skipUnless(SAMPLES, "Real 12035 timelines (MV_TIMELINE_SAMPLES) are not available")
 class RealSampleEveryFieldTests(unittest.TestCase):
+    def round_trip(self, stock):
+        """Every field changed at once on ``stock``, exported and checked: (parsed stock tracks, the
+        changes asked for, the (class, key) pairs left unchanged)."""
+        tracks = register._parse(stock)["tracks"]
+        changed, missing = every_field_changed(tracks)
+        normalized, _ = register.normalize(tracks, changed)
+        edited = mv_studio_timeline.export_timeline(stock, "every-field", normalized)
+        # Every change reached the export (none fell back to the stock value; a clip's camera keys may
+        # change with its timing too) ...
+        wanted = _exported_changes(tracks, normalized)
+        exported = _exported_changes(tracks, register._parse(edited)["tracks"])
+        self.assertEqual({key: exported.get(key) for key in wanted}, wanted)
+        self.assertGreater(len(wanted), 250)
+        self.assertNotEqual(edited, stock)
+        # ... a value was left alone only when it had no other value to take (an index this MV uses
+        # once on that track, a member position of a one-member MV) ...
+        self.assertEqual(no_other_value(tracks, missing), {}, missing)
+        # ... and the check confirms it, at this MV Studio's own format.
+        conversion.check_editor_bytes(edited, stock)
+        conversion.check_editor_bytes(edited, stock, pack_format=conversion.EXPORT_FORMAT)
+        return tracks, wanted, missing
+
     def test_every_field_mv_studio_exports_re_exports_byte_for_byte(self):
         for name in ("a", "i"):
             stock = (SAMPLES / f"{name}-1203503-live_timeline.unity").read_bytes()
             with self.subTest(platform=name):
-                tracks = register._parse(stock)["tracks"]
-                changed, missing = every_field_changed(tracks)
-                normalized, _ = register.normalize(tracks, changed)
-                edited = mv_studio_timeline.export_timeline(stock, "every-field", normalized)
-                # Every change reached the export (none fell back to the stock value; a clip's camera keys
-                # may change with its timing too) ...
-                wanted = _exported_changes(tracks, normalized)
-                exported = _exported_changes(tracks, register._parse(edited)["tracks"])
-                self.assertEqual({key: exported.get(key) for key in wanted}, wanted)
-                self.assertGreater(len(wanted), 250)
-                self.assertNotEqual(edited, stock)
-                # ... few values had nothing else to take (an index only one clip uses, one member) ...
-                self.assertLessEqual(len(missing), 3, missing)
-                # ... and the check confirms it, at this MV Studio's own format.
-                conversion.check_editor_bytes(edited, stock)
-                conversion.check_editor_bytes(edited, stock, pack_format=conversion.EXPORT_FORMAT)
+                self.round_trip(stock)
+
+    def test_member_targets_of_a_two_member_mv_re_export_byte_for_byte(self):
+        """12035 has one performer, so its member positions and its shaft draw object have nothing else to
+        take. Made a two-member MV (two_member_stock), every member target changes: each member position
+        the export writes moves to the other member, and a shaft clip draws the other object."""
+        for name in ("a", "i"):
+            real = (SAMPLES / f"{name}-1203503-live_timeline.unity").read_bytes()
+            stock = two_member_stock(real)
+            with self.subTest(platform=name):
+                self.assertEqual(conversion.blob_platform(stock), conversion.blob_platform(real))
+                parsed = register._parse(stock)["tracks"]
+                if hasattr(mv_studio_timeline, "performer_slots"):
+                    self.assertEqual(mv_studio_timeline.performer_slots(parsed), {1, 2})
+                tracks, wanted, missing = self.round_trip(stock)
+                self.assertEqual(missing, [])
+                member_keys = {(native, key) for native, key in getattr(mv_studio_timeline, "_MEMBER_POSITIONS", ())}
+                targets = {(event["values"].get("playableClass"), key) for track in tracks for event in track["events"]
+                           for key in event["editableValues"]
+                           if (event["values"].get("playableClass"), key) in member_keys}
+                targets.add(("LiveMemberSpotLightShaftClip", "drawObjectIndex"))
+                changed = {(tracks[t]["events"][e]["values"].get("playableClass"), field)
+                           for t, e, field in wanted if e is not None}
+                self.assertEqual(targets - changed, set())
 
 
 class ConversionMessageTests(unittest.TestCase):
