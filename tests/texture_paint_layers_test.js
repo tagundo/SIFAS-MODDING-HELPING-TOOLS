@@ -267,4 +267,35 @@ test("layer count and aggregate image budgets reject additions before changing t
   large.destroy(); tiny.destroy();
 });
 
+test("every undo step carries the host's value back on undo and redo, also after the oldest are dropped", () => {
+  const calls = [], editor = create({ maxHistoryEntries: 4,
+    onHistoryRecord: label => { calls.push(["record", label]); return { label }; },
+    onHistoryTravel: (value, redo) => calls.push([redo ? "redo" : "undo", value.label]) });
+  editor.setImage(image(2, 1, [11, 22, 33, 255]));
+  assert.deepEqual(calls, [], "opening an image is no step");
+  editor.applyImageData(image(2, 1, [11, 22, 33, 255]), { label: "Skin tone" });
+  assert.deepEqual(calls, [], "an edit that changes nothing is no step");
+  editor.applyImageData(image(2, 1, [40, 22, 33, 255]), { label: "Skin tone" });
+  editor.paintStroke([{ x: .5, y: .5 }], { size: 1, softness: 0, color: [200, 100, 50, 255] });
+  const layer = add(editor, "Paint");
+  editor.recordState("Bake blush", () => calls.push(["custom"]));
+  editor.replaceImageData(image(2, 1, [1, 2, 3, 255]), { label: "Import PNG", custom: () => calls.push(["custom"]) });
+  assert.deepEqual(calls, [["record", "Skin tone"], ["record", "Brush"], ["record", "Add layer"], ["record", "Bake blush"], ["record", "Import PNG"]]);
+  // Four steps are kept: the skin tone is dropped and never comes back.
+  calls.length = 0;
+  while (editor.undo());
+  assert.deepEqual(calls, [["undo", "Import PNG"], ["custom"], ["undo", "Bake blush"], ["custom"], ["undo", "Add layer"], ["undo", "Brush"]],
+    "each step's value comes back before its own change");
+  calls.length = 0;
+  while (editor.redo());
+  assert.deepEqual(calls, [["redo", "Brush"], ["redo", "Add layer"], ["redo", "Bake blush"], ["custom"], ["redo", "Import PNG"], ["custom"]]);
+  // A step refused before it changes anything is never recorded.
+  calls.length = 0; editor.undo(); editor.undo();
+  assert.equal(editor.getLayers().length, 2); assert.equal(active(editor), layer);
+  calls.length = 0;
+  for (let count = editor.getLayers().length; count < 8; count++) add(editor, "Layer " + count);
+  const recorded = calls.length; assert.throws(() => add(editor, "Excess")); assert.equal(calls.length, recorded);
+  editor.destroy();
+});
+
 process.stdout.write(JSON.stringify({ status: "PASS", cases: cases.length, names: cases }) + "\n");

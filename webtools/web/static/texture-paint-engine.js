@@ -32,6 +32,13 @@
  * change(false) undoes it. replaceImageData/restoreProject accept the same
  * config.custom function, run with that layer step in one undo entry.
  *
+ * onHistoryRecord(label) is called once for every new undo step, after its
+ * change is made and kept; its result stays with that step. onHistoryTravel(
+ * value, redo) gets that result back when the step is undone (redo false) or
+ * redone (redo true), before any of the step's changes or events. The host
+ * keeps state beside the pixels this way (the texture operations a Mod name
+ * lists) without any step of its own.
+ *
  * copySelection/cutSelection use a bounded in-app clipboard shared by engines.
  * pasteClipboard/startMoveSelection create pending floating pixels: getImage
  * remains committed, getDisplayImage previews movement. Enter commits one undo
@@ -255,6 +262,8 @@
         historyBytes = retainedBytes();
       }
     }
+    // The host's value for a new undo step (onHistoryRecord), kept with it.
+    function recorded(record) { if (options.onHistoryRecord) record.host = options.onHistoryRecord(record.label); return record; }
     function changeLayers(label, callback, config) {
       requireImage(); if (floating) throw new Error("Apply or cancel the floating selection first."); if (transaction) rollback();
       var before = snapshot(false), oldHistory = history.slice(), oldFuture = future.slice(); callback();
@@ -267,6 +276,7 @@
         if (retainedBytes() > Math.min(128 * 1024 * 1024, maxBytes * 2) && before.layers.reduce(function (sum, layer) { return sum + (layers.some(function (next) { return next.image.data === layer.image.data; }) ? 0 : layer.image.data.byteLength); }, 0) > Math.min(128 * 1024 * 1024, maxBytes * 2)) {
           assignProject(before); history = oldHistory; future = oldFuture; historyBytes = retainedBytes(); throw new Error("This layer operation exceeds the texture undo memory limit.");
         }
+        recorded(history[history.length - 1]);
       }
       trimHistory(); layerChanged(); redraw(dimensions(), dimensions()); notify(true, false, dimensions()); return activeLayerId;
     }
@@ -325,7 +335,7 @@
       });
       transaction = null;
       if (!record.image.length && !record.mask.length && record.activeBefore === record.activeAfter) return false;
-      future = []; history.push(record); trimHistory();
+      future = []; history.push(recorded(record)); trimHistory();
       preview = null; if (record.mask.length || record.activeBefore !== record.activeAfter) countSelection(); redraw(record.dirty, record.maskDirty || (record.activeBefore !== record.activeAfter ? dimensions() : null));
       notify(!!record.image.length, !!record.mask.length || record.activeBefore !== record.activeAfter, record.dirty);
       return true;
@@ -430,6 +440,7 @@
       if (floating) { cancelFloating(); return true; }
       if (transaction) rollback(); if (!from.length) return false;
       var record = from.pop(); // moving between undo and redo does not free its retained tiles
+      if (options.onHistoryTravel && Object.prototype.hasOwnProperty.call(record, "host")) options.onHistoryTravel(record.host, useAfter);
       if (record.stateOnly) { record.custom(useAfter); to.push(record); trimHistory(); if (options.onHistoryChange) options.onHistoryChange(getState()); return true; }
       if (record.project) {
         var oppositeProject = snapshot(false); assignProject(record.project); record.project = oppositeProject; to.push(record); trimHistory(); if (record.custom) record.custom(useAfter); layerChanged(); redraw(dimensions(), dimensions()); notify(true, false, dimensions()); return true;
@@ -493,7 +504,7 @@
     function recordState(label, change) {
       requireImage(); if (typeof change !== "function") throw new Error("A state change needs an undo function.");
       if (floating) throw new Error("Apply or cancel the floating selection first."); if (transaction) rollback();
-      future = []; history.push({ label: label || "State", custom: change, stateOnly: true, image: [], mask: [], bytes: 0, dirty: null }); trimHistory();
+      future = []; history.push(recorded({ label: label || "State", custom: change, stateOnly: true, image: [], mask: [], bytes: 0, dirty: null })); trimHistory();
       if (options.onHistoryChange) options.onHistoryChange(getState()); return true;
     }
     function selectionBounds() {

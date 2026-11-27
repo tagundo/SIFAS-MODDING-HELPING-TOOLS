@@ -197,4 +197,29 @@ test("a grid-aligned island gains exactly its one-texel ring", () => {
   for (let y = 1; y <= 4; y++) for (let x = 1; x <= 4; x++) expected.push(y * 8 + x);
   assert.deepStrictEqual(Array.from(grown, (value, index) => value ? index : -1).filter(index => index >= 0), expected);
 });
+test("each undo step names what it does to a texture's operations for the Mod name", () => {
+  const after = tools.operationsAfterStep;
+  // Colour steps add their own; any other pixel step is painting; each is listed once.
+  assert.deepStrictEqual(after([], "Skin tone"), ["skin"]);
+  assert.deepStrictEqual(after(["skin"], "OKLCH color"), ["costume", "skin"]);
+  for (const label of ["Brush", "Erase", "Fill", "line", "rectangle", "ellipse", "Cut selection", "Move selection", "Paste selection", "Image edit",
+    "Duplicate layer", "Remove layer", "Reorder layer", "Layer visibility", "Layer opacity", "Merge layer down"]) {
+    assert.deepStrictEqual(after(["skin"], label), ["skin", "paint"], label);
+  }
+  assert.deepStrictEqual(after(["skin", "paint"], "Brush"), ["skin", "paint"]);
+  // Steps that change no pixels keep what was there: a selection, an empty layer, a name, the bake, a recipe's own step.
+  for (const label of ["Selection", "Add layer", "Rename layer", "Bake blush", "Remove blush", "Restore texture"]) {
+    assert.deepStrictEqual(after(["costume", "skin"], label), ["costume", "skin"], label);
+  }
+  // Steps that replace every layer start again.
+  assert.deepStrictEqual(after(["costume", "skin", "paint"], "Restore original texture"), []);
+  assert.deepStrictEqual(after(["costume", "skin"], "Import PNG"), ["paint"]);
+  assert.deepStrictEqual(after(["skin"], "Open texture project"), ["paint"]);
+  const before = ["skin"]; after(before, "Brush"); assert.deepStrictEqual(before, ["skin"], "the earlier state is not changed");
+  // The name's order: costume colour, skin tone, baked blush, painting.
+  assert.deepStrictEqual(tools.nameOperations(["paint", "skin", "costume"], { layer: 0, k: 1 }), ["costume", "skin", "blush", "paint"]);
+  assert.deepStrictEqual(tools.nameOperations(["paint"], null), ["paint"]);
+  // A recipe row carries one kind; "blush" alone changes no pixels.
+  assert.deepStrictEqual(["costume", "skin", "paint", "blush"].map(tools.rowOperations), [["costume"], ["skin"], ["paint"], []]);
+});
 process.stdout.write("PASS " + cases + " texture controller geometry cases\n");
