@@ -18,26 +18,30 @@ exec). This module only adapts it to MV Studio:
 """
 import hashlib
 import json
+import lzma
 from pathlib import Path
 import re
 import time
+import zipfile
+import zlib
 
 from . import game_models, mv_studio, mv_studio_register as register
 
 EXTENSION = ".sifasmv"
-PACK_BYTES = 64 * 1024 * 1024
+PACK_BYTES = 64 * 1024 * 1024  # the size limit when Elichika's reader does not name its own (MAX_PACK_BYTES)
 MAX_NAME = 80
 MAX_NOTE = 500
 
 NO_PACKS = "This Elichika version cannot read or write MV timeline packs. Update the Elichika server app."
 NOT_PACK = "This file is not an MV timeline pack."
+TOO_LARGE = "The MV timeline pack is too large or has too many files."  # Elichika's own wording
 PACK_NAME = "Enter a pack name between 1 and 80 characters."
 PACK_NOTE = "Enter a note of at most 500 characters."
 PACK_PLATFORM = "The pack has no timeline this MV Studio can open."
 PACK_STALE = "The opened pack is no longer available. Open it again."
 PACK_SONG = "The game has no song that plays this pack's 3D MV."
 EXPORT_REQUEST = "The MV timeline pack request is invalid."
-MESSAGES = (NO_PACKS, NOT_PACK, PACK_NAME, PACK_NOTE, PACK_PLATFORM, PACK_STALE, PACK_SONG, EXPORT_REQUEST)
+MESSAGES = (NO_PACKS, NOT_PACK, TOO_LARGE, PACK_NAME, PACK_NOTE, PACK_PLATFORM, PACK_STALE, PACK_SONG, EXPORT_REQUEST)
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -67,8 +71,9 @@ def _files(value):
 
 
 def _normalized(result, legacy):
-    """{"manifest", "platforms": {platform: bytes}, "legacy"} from a reader result: a
-    {"manifest", "platforms"|"timelines"|"files"} dict or a (manifest, files) pair."""
+    """{"manifest", "platforms": {platform: bytes}, "legacy", "editor"} from a reader result: a
+    {"manifest", "platforms"|"timelines"|"files"} dict or a (manifest, files) pair. ``editor`` is the
+    exporting MV Studio's record a newer reader returns (mvstudio.json), else None."""
     if isinstance(result, tuple) and len(result) == 2:
         manifest, files = result
     elif isinstance(result, dict) and isinstance(result.get("manifest"), dict):
@@ -84,22 +89,40 @@ def _normalized(result, legacy):
             raise ValueError(NOT_PACK)
     if not files:
         raise ValueError(PACK_PLATFORM)
-    return {"manifest": manifest, "platforms": files, "legacy": legacy}
+    editor = result.get("editor") if isinstance(result, dict) else None
+    return {"manifest": manifest, "platforms": files, "legacy": legacy,
+            "editor": editor if isinstance(editor, dict) else None}
+
+
+# What a damaged compressed entry raises from a reader that does not turn it into its own ValueError
+# (an Elichika reader before that fix): the pack-open route then answers "not a pack", not a server error.
+_DAMAGED = (zlib.error, lzma.LZMAError, EOFError, zipfile.BadZipFile, NotImplementedError, OSError)
 
 
 def _call(function, path, data):
     try:
-        return function(data)
-    except TypeError:
-        return function(path)
+        try:
+            return function(data)
+        except TypeError:
+            return function(path)
+    except _DAMAGED as error:
+        raise ValueError(NOT_PACK) from error
+
+
+def _limit(pack):
+    """The largest pack Elichika's reader opens (its MAX_PACK_BYTES), so every pack its writer makes opens here."""
+    limit = getattr(pack, "MAX_PACK_BYTES", None)
+    return limit if type(limit) is int and limit > 0 else PACK_BYTES
 
 
 def read(path):
     """A .sifasmv pack or a legacy livetimeline zip as {"manifest", "platforms", "legacy"}."""
     pack = module()
     path = Path(path)
-    if not path.is_file() or not 0 < path.stat().st_size <= PACK_BYTES:
+    if not path.is_file() or not path.stat().st_size:
         raise ValueError(NOT_PACK)
+    if path.stat().st_size > _limit(pack):
+        raise ValueError(TOO_LARGE)
     data = path.read_bytes()
     reader = getattr(pack, "read_any", None)
     if reader is not None:
@@ -115,6 +138,24 @@ def read(path):
             return _normalized(_call(reader, path, data), True)
         except ValueError:
             raise error from None
+
+
+# ---------------------------------------------------------------- the exporting MV Studio
+
+def editor_keywords(pack, previous=None):
+    """write_pack's ``editor`` keyword, when Elichika's writer takes it (its EDITOR entry): this MV
+    Studio's timeline export format (mv_timeline_platform.EXPORT_FORMAT) and version, so a server
+    whose MV Studio tools are older can say the pack is newer. A pack rewritten from one ``previous``
+    says a newer MV Studio made keeps that newer format. An older writer gets nothing."""
+    if not getattr(pack, "EDITOR", None):
+        return {}
+    import webtools
+    from . import mv_timeline_platform
+    timeline_format = mv_timeline_platform.EXPORT_FORMAT
+    earlier = previous.get("timelineFormat") if isinstance(previous, dict) else None
+    if type(earlier) is int and earlier > timeline_format:
+        timeline_format = earlier
+    return {"editor": {"timelineFormat": timeline_format, "modtools": str(webtools.__version__)[:64]}}
 
 
 # ---------------------------------------------------------------- staging for the game import
@@ -257,6 +298,10 @@ def export_pack(repo_root, request, *, language="en"):
         raise ValueError(apply.NO_TARGET)
     if loaded["kind"] != "stock":
         raise ValueError(apply.CROSS_SONG)
+    # A slot that plays another slot's timeline: the pack would name this asset as its source while
+    # its timeline is the other asset's (the same refusal as plan and apply).
+    if apply._foreign_source(loaded) is not None:
+        raise ValueError(apply.SLOT_FROM_OTHER_JOB)
     apply._ours(project, apply._snapshot(project))  # structure check
     wanted, skipped = [], []
     blob = register._project_blob(project, loaded["base"], loaded["facts"])
@@ -271,15 +316,18 @@ def export_pack(repo_root, request, *, language="en"):
     target = request["target"] or {"assetId": loaded["assetId"], "stage": False}
     stage = None
     if target.get("stage", True) and target["assetId"] != loaded["assetId"]:
-        stage = apply.stage_fields(repo_root, loaded["region"], loaded["assetId"])
+        # The source's STOCK stage (what "Change the stage too" carries in apply), not its current row.
+        stage = apply._source_stage(live, repo_root, loaded["region"], loaded["assetId"])
     # The legacy layout (for the old "Replace Live Camera Timeline" tool) needs a complete stage: the
-    # target slot's own when this pack does not carry the source's, and the source's stock key.
-    target_stage = apply.stage_fields(repo_root, loaded["region"], target["assetId"])
+    # target slot's original one when this pack does not carry the source's (what an install without a
+    # stage puts back), and the source's stock key.
+    target_stage = apply._source_stage(live, repo_root, loaded["region"], target["assetId"])
     data = pack.write_pack(name=request["name"], note=request["note"],
                            song={"liveId": loaded["liveId"], "title": str(loaded["title"])[:160]},
                            source={"region": loaded["region"], "assetId": loaded["assetId"]},
                            target_asset_id=target["assetId"], timelines=payloads, stage=stage,
-                           target_stage=target_stage, source_timeline_key=loaded["facts"].get("timelineKey"))
+                           target_stage=target_stage, source_timeline_key=loaded["facts"].get("timelineKey"),
+                           **editor_keywords(pack))
     if not isinstance(data, (bytes, bytearray)):
         raise ValueError(NO_PACKS)
     destination = mv_studio._destination(request["name"], EXTENSION)
@@ -287,4 +335,51 @@ def export_pack(repo_root, request, *, language="en"):
     return {**mv_studio._receipt(destination), "platforms": sorted(payloads), "skipped": skipped}
 
 
-__all__ = ("open_pack", "staged", "read", "export_pack", "validate_export", "MESSAGES", "EXTENSION")
+# ---------------------------------------------------------------- rewriting a read pack
+
+def _stock_timeline_key(repo_root, region, asset_id):
+    """The TRUE stock timeline key of a 3D asset (whose dependency rows the legacy tool copies), or None."""
+    from contextlib import closing
+    import sqlite3
+    path = Path(repo_root).resolve() / "assets/db" / region / "masterdata.db"
+    try:
+        with closing(game_models._readonly(path)) as master:
+            row = master.execute("SELECT timeline FROM m_live_3d_asset WHERE id=?", (asset_id,)).fetchone()
+            return register._stock_key(master, asset_id, row[0]) if row is not None and row[0] else None
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+
+
+def rewrite_stage(repo_root, manifest, *, partial=False):
+    """write_pack's stage keywords for a new pack made from a read ``manifest`` (the platform
+    conversion adds a platform): ({"stage", "target_stage", "source_timeline_key"}, filled).
+
+    A pack may name only some stage fields; installing it fills the others from the TARGET slot's
+    original stage (Elichika's apply_mv_timeline). A writer that takes a partial stage
+    (``partial``: mv_timeline_pack.PARTIAL_STAGE) gets it as it is, so the new pack installs the
+    same stage. An older writer needs all five: the left-out fields then come from the manifest
+    target's stock (original) stage, the values the install would give them there, and are listed
+    in ``filled``. ``target_stage`` (that same stock stage) and ``source_timeline_key`` keep the
+    legacy layout in the new pack."""
+    from . import mv_studio_apply as apply
+    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+    region, asset = source.get("region"), source.get("assetId")
+    target = (manifest.get("target") or {}).get("assetId") if isinstance(manifest.get("target"), dict) else None
+    try:
+        live = register.store()
+    except ImportError:
+        live = None  # _source_stage then reads the region's masterdata
+    target_stage = apply._source_stage(live, repo_root, region, target) if target else None
+    stage, filled = manifest.get("stage"), []
+    if isinstance(stage, dict) and set(stage) != set(apply.STAGE_FIELDS) and not partial:
+        if target_stage is None:
+            from . import mv_timeline_platform
+            raise ValueError(mv_timeline_platform.NO_ASSET)
+        filled = [field for field in apply.STAGE_FIELDS if field not in stage]
+        stage = {**target_stage, **stage}
+    return {"stage": stage, "target_stage": target_stage,
+            "source_timeline_key": _stock_timeline_key(repo_root, region, asset)}, filled
+
+
+__all__ = ("open_pack", "staged", "read", "export_pack", "validate_export", "rewrite_stage", "editor_keywords",
+           "MESSAGES", "EXTENSION")

@@ -218,11 +218,24 @@ async function run() {
       target: { assetId: 2201, stage: false }, platforms: ['android', 'ios'], download: true });  // allowed above
     await shot(page, panel, 'crossslot-pack-ko.png');
 
-    // Back to the loaded slot: the usual two modes again.
+    // Back to the loaded slot: the usual two modes again. When the plan says the loaded slot plays
+    // another slot's timeline (loaded.foreignSource), the pack export is off with the note.
+    assert.equal(await page.locator('#mv-pack-export').isDisabled(), false);
+    await page.route('**/api/mv-studio/apply-plan?*', async (route) => {
+      const response = await route.fetch();
+      const json = await response.json();
+      if (json.loaded) json.loaded.foreignSource = 2201;
+      await route.fulfill({ response, json });
+    });
     await slot.selectOption('loaded');
     await checked(page, '수정 사항: 불러온 뒤 없음');
     await page.locator('#mv-apply-edits').waitFor();
     assert.equal(await page.locator('#mv-apply-stage').count(), 0);
+    await page.locator('#mv-pack-foreign').waitFor();
+    assert.equal(await page.locator('#mv-pack-export').isDisabled(), true);
+    assert.match(await page.locator('#mv-pack-foreign').textContent(), /^이 슬롯은 다른 슬롯에서 넣은 3D 2201의 타임라인을 재생합니다\./);
+    assert.equal(await page.locator('#mv-pack-form').count(), 0);
+    await page.unroute('**/api/mv-studio/apply-plan?*');
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {

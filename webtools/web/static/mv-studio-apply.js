@@ -481,9 +481,16 @@
       { id: "mv-pack-export" });
     const openButton = button("Open MV timeline pack…", openPack, { id: "mv-pack-open" });
     exportButton.disabled = openButton.disabled = !!state.job || state.packBusy;
+    // A slot that plays another slot's timeline: a pack from it would name the wrong source MV.
+    const foreign = plan.loaded && plan.loaded.foreignSource;
+    if (foreign) exportButton.disabled = true;
     row.append(exportButton, openButton);
     panel.append(row);
-    if (state.packForm) {
+    if (foreign) {
+      panel.append(make("p", format("This slot plays the timeline of 3D {source}, put here from another slot. Load 3D {source} and apply it to this slot, or restore this slot first.",
+        { source: foreign }), { class: "mv-field-note", id: "mv-pack-foreign", role: "note" }));
+    }
+    if (state.packForm && !foreign) {
       const form = make("div", null, { class: "mv-register-confirm", id: "mv-pack-form" });
       const name = make("input", null, { type: "text", id: "mv-pack-name", maxlength: "80" });
       name.value = state.packForm.name;
@@ -965,6 +972,7 @@
     "Not in the pack: {platforms} (its original is not available).",
     "Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game.",
     "Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game (about {size} MB to download). Download it and apply?",
+    "This slot plays the timeline of 3D {source}, put here from another slot. Load 3D {source} and apply it to this slot, or restore this slot first.",
   ]);
 
   global.MVStudioApply = Object.freeze({ STRINGS, platformsFor: (plan, mode) => platformsFor(plan, mode) });

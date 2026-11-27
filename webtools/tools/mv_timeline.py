@@ -61,10 +61,18 @@ def run_mv_timeline_platform(job, params):
                 f"{str(origin.get('region')).upper()})")
         files[want] = conversion.convert_timeline(files[have], have, want, origin.get("region"), origin.get("assetId"),
                                                   root=root, download=download, name=source.stem)
-        data = mv_studio_pack.module().write_pack(
+        # The pack's stage as the writer takes it, and the legacy layout's inputs.
+        writer = mv_studio_pack.module()
+        stage, filled = mv_studio_pack.rewrite_stage(root, manifest,
+                                                     partial=getattr(writer, "PARTIAL_STAGE", False) is True)
+        if filled:
+            job.log(f"This Elichika's pack writer needs the whole stage: {', '.join(filled)} taken from the "
+                    f"original stage of the target 3D {(manifest.get('target') or {}).get('assetId')}, as installing "
+                    f"there would")
+        data = writer.write_pack(
             name=manifest.get("name") or source.stem, note=manifest.get("note") or "", song=manifest.get("song"),
             source=origin, target_asset_id=(manifest.get("target") or {}).get("assetId"), timelines=files,
-            stage=manifest.get("stage"), created=manifest.get("created"))
+            created=manifest.get("created"), **stage, **mv_studio_pack.editor_keywords(writer, pack.get("editor")))
         output = Path(single_out_path(str(out_dir), str(source), "", "-android-ios"))
         output.write_bytes(bytes(data))
     else:

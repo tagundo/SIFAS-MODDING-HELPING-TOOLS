@@ -13,7 +13,9 @@ values that differ from the asset's stock where the editor does not write them) 
 instead of being converted with losses.
 
 Also here: the stage-bound track count of a timeline (tracks that address objects of the MV's
-stage), used to warn before a timeline goes into another MV slot without its stage.
+stage), used to warn before a timeline goes into another MV slot without its stage, and
+``check_editor_bytes``, the content check Elichika's pack install offers beyond its structural
+validation.
 """
 from contextlib import closing
 from pathlib import Path
@@ -21,9 +23,16 @@ import time
 
 from . import game_models as game
 from . import mv_studio_register as register
+from . import transient_failures
 
 PLATFORMS = ("android", "ios")
 REGIONS = ("gl", "jp")
+# The timeline export format of this MV Studio: what its native export writes. An exported pack
+# records it (Elichika's pack entry mvstudio.json), so a server whose MV Studio tools are older can
+# say a pack was made by a newer MV Studio. Raise it whenever the export starts writing something it
+# did not (a value in mv_studio_timeline._EDITABLE_VALUES, a track field in EXPORTABLE_TRACK_FIELDS,
+# clip timing): tests/test_mv_crossslot.py pins that surface to this number.
+EXPORT_FORMAT = 1
 
 PLATFORM = "Choose Android or iOS."
 REGION = "Select the GL or JP catalog."
@@ -37,8 +46,16 @@ TEMPLATE_DOWNLOAD = ("The original timeline of this 3D MV for the output platfor
                      "download.")
 NOT_THIS_ASSET = "The timeline does not belong to this 3D MV:"
 LOSSY = "The converted timeline would differ from the source, so nothing was converted:"
+# check_editor_bytes: a timeline it cannot confirm is not refused, it needs the user's consent.
+VALUES_UNKNOWN = ("The timeline holds data this server's MV Studio tools do not write: the pack was made by a newer MV "
+                  "Studio or changed elsewhere. Updating Elichika and its asset editing tools (modtools) lets this "
+                  "server check it.")
+VALUES_NEWER = ("The pack was made by a newer MV Studio: its timeline holds data this server's MV Studio tools do not "
+                "write. Updating Elichika and its asset editing tools (modtools) lets this server check it.")
+VALUES_UNCHECKED = ("The timeline's values could not be checked: the check ran out of time or memory, or the original "
+                    "timeline was not available.")
 MESSAGES = (PLATFORM, REGION, ASSET, SAME_PLATFORM, WRONG_PLATFORM, NOT_TIMELINE, NO_ASSET, NO_TEMPLATE,
-            TEMPLATE_DOWNLOAD, NOT_THIS_ASSET, LOSSY)
+            TEMPLATE_DOWNLOAD, NOT_THIS_ASSET, LOSSY, VALUES_UNKNOWN, VALUES_NEWER, VALUES_UNCHECKED)
 
 _STAGE_ROOT = "/EntryPoint/Live/Stages/"
 
@@ -49,6 +66,17 @@ class ConversionError(ValueError):
     def __init__(self, message, labels=()):
         super().__init__(message)
         self.labels = list(labels)
+
+
+class UncheckedValues(ValueError):
+    """check_editor_bytes could not confirm a timeline as this MV Studio's own output. ``reason``:
+    "values" (it holds data this MV Studio does not write), "newer" (the same, from a pack that says
+    a newer MV Studio made it) or "unchecked" (the check itself could not run). Not a refusal: the
+    caller asks the user before it installs such a timeline."""
+
+    def __init__(self, message, reason):
+        super().__init__(message)
+        self.reason = reason
 
 
 def stage_bound_tracks(tracks):
@@ -143,6 +171,49 @@ def convert_parsed(src_bytes, dst_template, *, name="timeline"):
     return output
 
 
+def check_editor_bytes(raw, template_bytes, *, pack_format=None):
+    """Raise UncheckedValues unless ``raw`` is exactly what this MV Studio writes for its own content.
+
+    ``template_bytes`` is the TRUE stock of the timeline's source MV for the same platform (None:
+    not available). MV Studio's every output (Apply all, another slot, a pack, a conversion) is its
+    parsed content exported onto that stock, so exporting ``raw``'s parsed content onto it again
+    gives ``raw`` byte for byte. A timeline that holds data this MV Studio does not write does not:
+    one from a newer MV Studio (a field this one does not export) or one changed elsewhere (a NaN
+    curve key, an out-of-range index inside a clip it does not model). ``pack_format`` is the
+    EXPORT_FORMAT the pack records for its MV Studio; above this one, the message says the pack
+    is newer. The check runs on a timeline that already passed Elichika's structural validation (its
+    install_pack ``check``); a mismatch is a question for the user, never a refusal.
+
+    Only a structural refusal (a timeline this MV Studio cannot read, NOT_THIS_ASSET or LOSSY,
+    StructureError) or different bytes mean "not what this MV Studio writes". A check that cannot
+    run (no template, a time limit, memory or another failure of the machine, an unreadable template
+    or an export error) raises reason "unchecked"."""
+    newer = type(pack_format) is int and pack_format > EXPORT_FORMAT
+    differs = UncheckedValues(VALUES_NEWER, "newer") if newer else UncheckedValues(VALUES_UNKNOWN, "values")
+    unchecked = UncheckedValues(VALUES_UNCHECKED, "unchecked")
+    if not isinstance(template_bytes, bytes):
+        raise unchecked
+    if not isinstance(raw, bytes) or not raw.startswith(b"UnityFS\0"):
+        raise differs
+    watch = transient_failures.Watch()  # a time budget or a machine failure noted while checking
+    try:  # the timeline itself: a bundle this MV Studio cannot read (any data error) is not one it writes
+        readable = bool(register._parse(raw, "source").get("tracks"))
+    except (*transient_failures.ENVIRONMENT, RecursionError) as error:
+        raise unchecked from error
+    except Exception as error:  # noqa: BLE001 - UnityPy's EOFError, struct.error, KeyError... on damaged data
+        raise (differs if watch.clean else unchecked) from error
+    if not readable:
+        raise differs
+    try:
+        again = convert_parsed(raw, template_bytes)
+    except (ConversionError, register.StructureError) as error:
+        raise (differs if watch.clean else unchecked) from error
+    except Exception as error:  # noqa: BLE001 - the template, the export, a time limit, memory: not checked
+        raise unchecked from error
+    if again != raw:
+        raise differs
+
+
 def convert_timeline(src_bytes, src_platform, dst_platform, region, asset_id, *, root, download=False, name="timeline",
                      deadline=None, template_bytes=None):
     """``src_bytes`` (a ``src_platform`` timeline of 3D asset ``asset_id`` in ``region``) as a
@@ -175,4 +246,5 @@ def blob_platform(raw):
 
 
 __all__ = ("convert_timeline", "convert_parsed", "template", "template_status", "template_descriptor",
-           "stage_bound_tracks", "blob_platform", "ConversionError", "MESSAGES", "PLATFORMS")
+           "stage_bound_tracks", "blob_platform", "check_editor_bytes", "ConversionError", "UncheckedValues",
+           "EXPORT_FORMAT", "MESSAGES", "PLATFORMS")

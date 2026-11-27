@@ -383,8 +383,10 @@ def plan(repo_root, project, *, unbaked=(), language="en", target=None):
         return result
     if loaded["kind"] == "stock":
         result["slots"] = _slots(repo_root, loaded, (project.get("source") or {}).get("platform"), language)
+        # ``foreignSource``: the asset whose timeline this slot plays when it was put here from
+        # another slot (the panel cannot export a pack from it), else None.
         result["loaded"] = {"assetId": loaded["assetId"], "liveId": loaded["liveId"], "region": loaded["region"],
-                            "title": loaded["title"], "stage": loaded["stage"]}
+                            "title": loaded["title"], "stage": loaded["stage"], "foreignSource": _foreign_source(loaded)}
     if cross is not None:
         return _cross_plan(repo_root, project, live, loaded, cross, result, unbaked, language)
     target = loaded
@@ -1130,14 +1132,16 @@ def _apply_cross(job, repo_root, request, language):
     progress.check()
     progress.stage("validate")
     # The payloads are the SOURCE asset's timeline: checked against its true stock in each region,
-    # whose originals are that region's own (GL and JP keep them in different packs).
+    # whose originals are that region's own (GL and JP keep them in different packs). The check is
+    # the write's own (the target slot, its source and the stage), so a stage value a region's
+    # catalogs lack is refused here, before the game server stops or the first region is written.
     checked = {region: (dict(originals) if region == own_region else
                         _region_originals(repo_root, region, source_asset, payloads, download=request["download"]))
                for region in cross["regions"]}
     for region in cross["regions"]:
         progress.check()
-        live.validate_mv_timelines(repo_root, region=region, asset_id=source_asset, timelines=payloads,
-                                   originals=checked[region] or None)
+        live.validate_mv_timelines(repo_root, region=region, asset_id=asset_id, source_asset_id=source_asset,
+                                   stage=stages[region], timelines=payloads, originals=checked[region] or None)
     # A platform left out with consent plays the source MV's original timeline (the store refuses
     # KEEP while the slot's source changes, and the slot's old timeline would not match the new stage).
     timelines = {platform: payloads.get(platform) for platform in PLATFORMS}

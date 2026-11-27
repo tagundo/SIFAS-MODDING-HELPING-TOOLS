@@ -4114,6 +4114,15 @@ _MV_CROSS_SLOT_TRANSLATIONS = {
     "The timeline does not belong to this 3D MV:": ("이 3D MV의 타임라인이 아닙니다:", "この3D MVのタイムラインではありません："),
     "The converted timeline would differ from the source, so nothing was converted:": (
         "변환 결과가 원래 타임라인과 달라지므로 변환하지 않았습니다:", "変換結果が元のタイムラインと異なるため、変換しませんでした："),
+    "The timeline holds data this server's MV Studio tools do not write: the pack was made by a newer MV Studio or changed elsewhere. Updating Elichika and its asset editing tools (modtools) lets this server check it.": (
+        "타임라인에 이 서버의 MV Studio 도구가 쓰지 않는 데이터가 있습니다. 더 새로운 MV Studio로 만들었거나 다른 곳에서 바뀐 팩입니다. Elichika와 에셋 편집툴(modtools)을 업데이트하면 이 서버에서 확인할 수 있습니다.",
+        "タイムラインに、このサーバーのMV Studioツールが書き込まないデータがあります。より新しいMV Studioで作られたか、ほかの場所で変更されたパックです。Elichikaとアセット編集ツール（modtools）を更新すると、このサーバーで確認できます。"),
+    "The pack was made by a newer MV Studio: its timeline holds data this server's MV Studio tools do not write. Updating Elichika and its asset editing tools (modtools) lets this server check it.": (
+        "더 새로운 MV Studio로 만든 팩입니다. 타임라인에 이 서버의 MV Studio 도구가 쓰지 않는 데이터가 있습니다. Elichika와 에셋 편집툴(modtools)을 업데이트하면 이 서버에서 확인할 수 있습니다.",
+        "より新しいMV Studioで作られたパックです。タイムラインに、このサーバーのMV Studioツールが書き込まないデータがあります。Elichikaとアセット編集ツール（modtools）を更新すると、このサーバーで確認できます。"),
+    "The timeline's values could not be checked: the check ran out of time or memory, or the original timeline was not available.": (
+        "타임라인 값을 확인하지 못했습니다. 확인 시간이나 메모리가 부족했거나 원래 타임라인을 쓸 수 없었습니다.",
+        "タイムラインの値を確認できませんでした。確認の時間かメモリが足りなかったか、元のタイムラインを使えませんでした。"),
     "Choose the conversion direction.": ("변환 방향을 선택하세요.", "変換の方向を選んでください。"),
     "Choose a native MV timeline (.unity) or an MV timeline pack (.sifasmv).": (
         "MV 타임라인(.unity)이나 MV 타임라인 팩(.sifasmv)을 선택하세요.", "MVタイムライン（.unity）かMVタイムラインパック（.sifasmv）を選んでください。"),
