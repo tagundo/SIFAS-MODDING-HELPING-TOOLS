@@ -367,20 +367,70 @@ class TransientFailureTests(unittest.TestCase):
         self.addCleanup(mv_studio._STAGE_PREVIEWS.clear)
         self.flag = self.root / "low-memory"
         # Like the Android low-memory killer: the decoder child dies with SIGKILL while the flag exists.
+        # Crunch: WIDTH HEIGHT SOURCE OUTPUT; stage blocks: --raw FORMAT WIDTH HEIGHT SOURCE OUTPUT.
         self.texture65 = _script(self.root / "texture65", f'if [ -e "{self.flag}" ]; then kill -9 $$; fi\n'
-                                 'head -c $(( $1 * $2 * 4 )) /dev/zero > "$4"\n')
+                                 'if [ "$1" = --raw ]; then head -c $(( $3 * $4 * 4 )) /dev/zero > "$6"\n'
+                                 'else head -c $(( $1 * $2 * 4 )) /dev/zero > "$4"; fi\n')
 
     def store(self):
         """A store as a fresh process opens it."""
         return cache.ImportCache(self.root / "receipts", mv_studio.media)
 
     @staticmethod
-    def crunched():
+    def crunched(format_id=65, data=b"crunched"):
         from types import SimpleNamespace
-        texture = SimpleNamespace(m_Width=4, m_Height=4, m_TextureFormat=65, m_ImageCount=1, m_TextureDimension=2,
-                                  image_data=b"crunched", m_StreamData=None, object_reader=None)
+        texture = SimpleNamespace(m_Width=4, m_Height=4, m_TextureFormat=format_id, m_ImageCount=1, m_TextureDimension=2,
+                                  image_data=data, m_StreamData=None, object_reader=None)
         texture.get_image_data = lambda: texture.image_data
         return texture
+
+    def test_a_display_texture_whose_decoder_was_killed_keeps_the_stage_receipt_out(self):
+        # A killed texture65 child makes the screen's variant "unsupported" for this run only
+        # (mv_studio_stage_display._texture); the stage receipt must not repeat it after a restart.
+        import time
+        from types import SimpleNamespace
+        from webtools.core import mv_studio_stage_display as display
+        stage = self.root / "import-a" / "game-3.unity"
+        stage.parent.mkdir()
+        stage.write_bytes(b"Native stage effect with a display")
+        glb = model_viewer._Glb().finish()
+        # Both texture65 paths: UnityCrunch ETC2A and the raw ETC_RGB4 stage blocks.
+        for name, texture in (("ETC2_RGBA8Crunched", self.crunched()), ("ETC_RGB4", self.crunched(34, bytes(8)))):
+            original = SimpleNamespace(type=SimpleNamespace(name="Texture2D"), read=lambda texture=texture: texture)
+
+            class Materials:
+                def texture(self, obj):
+                    return model_viewer._texture_png(obj.read(), time.monotonic() + 10, stage=True)
+
+            def prepare(*args, **kwargs):
+                scene = SimpleNamespace(warnings=[])
+                try:
+                    display._texture(Materials(), None, {"_MainTex": {"m_Texture": {"m_PathID": 7}}}, "_MainTex")
+                    variants = [{"background": {}, "logo": None}]
+                except display.Unsupported as error:
+                    variants = [{"unsupported": str(error)}]
+                display._report(scene, "/Effect/dis_01/main", variants)
+                return {"id": "s", "warnings": scene.warnings}
+
+            with (self.subTest(format=name), patch.dict(os.environ, {"ELICHIKA_TEXTURE65_BIN": str(self.texture65)}),
+                  patch.object(display.viewer, "_ref", return_value=original),
+                  patch.object(model_viewer, "prepare", side_effect=prepare) as converted,
+                  patch.object(model_viewer, "get_model", return_value=glb)):
+                options = dict(reuse=True, stage_bindings=[name], native_stage_effect=True)
+                self.flag.touch()
+                kept = set((self.root / "receipts").glob("*.receipt"))
+                killed = []
+                mv_studio._preview(stage, warnings=killed, store=self.store(), **options)
+                self.assertEqual([item["code"] for item in killed], ["stage_display_variant_unsupported"])
+                self.assertIn("could not be decoded", killed[0]["unsupported"][0][1])
+                self.assertEqual(set((self.root / "receipts").glob("*.receipt")), kept, "a killed decoder is never kept")
+                self.flag.unlink()
+                mv_studio._STAGE_PREVIEWS.clear()  # a restart: the display is drawn again
+                healed, again, reused = [], [], []
+                mv_studio._preview(stage, warnings=healed, store=self.store(), **options)
+                mv_studio._STAGE_PREVIEWS.clear()
+                mv_studio._preview(stage, warnings=again, reused=reused, store=self.store(), **options)
+                self.assertEqual((healed, again, reused, converted.call_count), ([], [], [True], 2))
 
     def parse(self, raw, name, **flags):
         """A timeline parse that, like the particle importer, shows a texture it cannot decode as unavailable."""
