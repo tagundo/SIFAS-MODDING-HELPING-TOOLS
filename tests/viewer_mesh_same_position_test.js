@@ -101,8 +101,9 @@ for (let round = 0; round < 40; round++) {
 }
 
 // 4. The spatial hash equals a brute-force comparison, including values on
-// both sides of a cell edge (cells are a power of two, 2^-15 by default).
-const CELL = 1 / 32768;
+// both sides of a cell edge (cells are a power of two, 2^-19 by default,
+// doubled until wider than the tolerance).
+const CELL = 1 / 524288, cellFor = tolerance => { let cell = CELL; while (cell <= tolerance) cell *= 2; return cell; };
 for (const sign of [1, -1]) {
   const edge = sign * 9830 * CELL;
   for (const [a, b] of [[-1e-7, 1e-7], [-4.9e-7, 0], [0, 4.99e-7], [-3e-7, 3e-7], [-2.6e-7, 2.6e-7], [-1e-12, 0]]) {
@@ -136,60 +137,96 @@ for (const tolerance of [0, 1e-7, T, 4e-6, 5e-5, 1.5e-4]) {
       if (positions.length && random() < 0.55) { const from = positions[Math.floor(random() * positions.length)]; positions.push(from.map(x => random() < 0.3 ? x : x + (random() - 0.5) * 3 * tolerance)); }
       else positions.push([0, 0, 0].map(() => Math.fround((random() - 0.5) * (random() < 0.3 ? 0.001 : 3))));
       // Some values right at cell edges.
-      if (random() < 0.1) positions[positions.length - 1][0] = Math.round(positions[positions.length - 1][0] / CELL) * CELL + (random() - 0.5) * 2 * tolerance;
+      if (random() < 0.1) positions[positions.length - 1][0] = Math.round(positions[positions.length - 1][0] / cellFor(tolerance)) * cellFor(tolerance) + (random() - 0.5) * 2 * tolerance;
     }
     assert.deepStrictEqual(groupsOf(positions, tolerance), brute(positions, tolerance), 'spatial hash = brute force, tolerance ' + tolerance + ' round ' + round);
   }
 }
 
 // 4b. Degenerate meshes stay linear: many copies at one point, dense clusters
-// of near copies (a collapsed or shrunken part) and a cluster beside other
-// vertices of its cell. A vertex compares with one member of each bucket (one
-// bucket per component per hash) instead of the whole cell; the earlier chain
-// scan took 2.3 s for 4,000 copies at one point and 56 s for a 7,555-vertex
-// mesh plus 20,000 vertices collapsed onto the origin.
-const work = (positions, tolerance) => build(positions.length, v => positions[v], tolerance).compares;
+// of near copies (a collapsed or shrunken part), a big group beside separate
+// vertices of its cell, and separate components packed as tightly as the
+// tolerance allows. Bounds are on counted work, not on time: `visits` counts
+// bucket visits (a cell holds at most 4^3 buckets: their first vertices are
+// more than the tolerance apart), `compares` member tests (only in buckets
+// whose box is within the tolerance, stopping at the first match). The chain
+// scan before cb3d612 took 2.3 s for 4,000 copies at one point and 56 s for a
+// 7,555-vertex mesh plus 20,000 vertices collapsed onto the origin; cb3d612
+// made 3.5 M compares for 3,000 copies beside 1,000 separate vertices and
+// 12.5 M visits for 2,500 seam pairs on a 6e-7 lattice.
+const cost = (positions, tolerance) => { const index = build(positions.length, v => positions[v], tolerance); return { compares: index.compares, visits: index.visits }; };
+function bounded(positions, compares, visits, why, tolerance) {
+  const n = positions.length, work = cost(positions, tolerance);
+  assert(work.compares <= compares * n, why + ': ' + work.compares + ' compares for ' + n + ' vertices');
+  assert(work.visits <= visits * n, why + ': ' + work.visits + ' bucket visits for ' + n + ' vertices');
+}
 const onePoint = Array.from({ length: 4000 }, () => [0.25, 1.5, -0.125]);
-assert(work(onePoint) < 4000 && work(onePoint, 0) < 4000, '4000 copies at one point: one comparison each, ' + work(onePoint));
+bounded(onePoint, 1, 1, '4000 copies at one point: one comparison and one bucket visit each'); bounded(onePoint, 1, 1, 'also with the exact rule', 0);
+assert.deepStrictEqual(cost(onePoint), { compares: 3999, visits: 3999 }, 'every copy after the first visits the one bucket and matches its newest member');
 assert.deepStrictEqual(groupsOf(onePoint).map(group => group.length), [4000]);
 const line = Array.from({ length: 4000 }, (_, i) => [i * 1e-9, 0, 0]);
-assert(work(line) < 4000, 'distinct vertices 1e-9 apart in vertex order: ' + work(line));
+bounded(line, 1, 3, 'distinct vertices 1e-9 apart in vertex order');
 assert.deepStrictEqual(groupsOf(line).map(group => group.length), [4000], 'one chain');
-const shuffled = line.slice().sort(() => random() - 0.5);
-assert(work(shuffled) < 8 * 4000, 'the same vertices shuffled: ' + work(shuffled));
-const blob = Array.from({ length: 4000 }, () => [0.1 + random() * 1e-6, 0.2 + random() * 1e-6, 0.3 + random() * 1e-6]);
-assert(work(blob) < 8 * 4000, '4000 vertices in a 1e-6 cube: ' + work(blob));
+bounded(line.slice().sort(() => random() - 0.5), 8, 8, 'the same vertices shuffled');
+bounded(Array.from({ length: 4000 }, () => [0.1 + random() * 1e-6, 0.2 + random() * 1e-6, 0.3 + random() * 1e-6]), 8, 8, '4000 vertices in a 1e-6 cube');
 {
   const mesh = Array.from({ length: 7555 }, () => [random() - 0.5, random() * 1.7, random() - 0.5].map(Math.fround));
   const collapsed = mesh.concat(Array.from({ length: 20000 }, () => [0, 0, 0])), started = Date.now();
   const index = build(collapsed.length, v => collapsed[v]);
-  assert(index.compares < 2 * collapsed.length, 'a mesh plus 20,000 vertices collapsed onto the origin: ' + index.compares);
+  assert(index.compares < 2 * collapsed.length && index.visits < 3 * collapsed.length, 'a mesh plus 20,000 vertices collapsed onto the origin: ' + [index.compares, index.visits]);
   assert.equal(index.groups.find(group => group.length === 20000)[0], 7555); assert(Date.now() - started < 2000);
 }
+// A big group of copies beside separate vertices of its cell (grids 1e-6 and
+// 1.2e-6 apart, more than the tolerance): the bucket's box keeps the separate
+// vertices from walking its members, in either insertion order.
+const grid = (n, side, spacing, origin) => Array.from({ length: n }, (_, i) => [origin[0] + spacing * (1 + (i % side)), origin[1] + spacing * (1 + Math.floor(i / side) % side), origin[2] + spacing * (1 + Math.floor(i / side / side))]);
+{
+  const copies = Array.from({ length: 3000 }, () => [0.5, 0.5, 0.5]), separate = grid(1000, 10, 1e-6, [0.5, 0.5, 0.5]);
+  bounded(copies.concat(separate), 1, 16, '3000 copies, then 1000 separate vertices beside them');
+  bounded(separate.concat(copies), 1, 16, '1000 separate vertices, then 3000 copies');
+  assert.deepStrictEqual(groupsOf(copies.concat(separate)).map(group => group.length), [3000], 'the separate vertices stay apart');
+  const big = Array.from({ length: 20000 }, () => [1e-7, 1e-7, 1e-7]).concat(grid(8000, 20, 1.2e-6, [0, 0, 0]));
+  bounded(big, 1, 16, '20,000 copies beside 8,000 separate vertices');
+}
+// Separate components packed as tightly as the tolerance allows: seam pairs on
+// a 6e-7 lattice, the lattice alone, and a 20^3 grid 5.2e-7 apart (up to 4^3
+// components per 2^-19 cell). At most 8 cells of 64 buckets per vertex: 512.
+{
+  const lattice = []; for (let x = 0; x < 50; x++) for (let y = 0; y < 50; y++) { lattice.push([x * 6e-7, y * 6e-7, 0.25]); lattice.push([x * 6e-7, y * 6e-7, 0.25]); }
+  bounded(lattice, 1, 32, '2,500 seam pairs on a 6e-7 lattice');
+  assert.equal(groupsOf(lattice).length, 2500, 'one group per lattice point');
+  bounded(lattice.filter((_, i) => i % 2 === 0), 1, 32, '2,500 separate vertices 6e-7 apart');
+  const packed = grid(8000, 20, 5.2e-7, [0.125, 0.25, 0.375]);
+  bounded(packed, 1, 512, '8,000 separate vertices 5.2e-7 apart'); assert.deepStrictEqual(groupsOf(packed), []);
+}
 // Brute force on small degenerate sets. Clusters sit in two cells whose hashes
-// collide (cells (-60,-1,59) and (-60,1,-59) of 2^-15), so their buckets share
-// one list; exact copies, chains, cluster-joining vertices and outliers mix.
+// collide (cells (-60,-1,59) and (-60,1,-59)), so their buckets share one
+// list; exact copies, chains, cluster-joining vertices, outliers and cell
+// edges mix. The cell is the base 2^-19, doubled until wider than the tolerance.
 const hashOf = (x, y, z) => Math.imul(x | 0, 73856093) ^ Math.imul(y | 0, 19349663) ^ Math.imul(z | 0, 83492791);
 assert.equal(hashOf(-60, -1, 59), hashOf(-60, 1, -59), 'the two cells share a hash');
-const inCell = (c, offset) => c.map((k, axis) => (k + 0.5) * CELL + offset[axis]);
+const inCell = (c, offset, cell) => c.map((k, axis) => (k + 0.5) * cell + offset[axis]);
 for (let round = 0; round < 30; round++) {
-  const tolerance = [T, 0, 4e-6][round % 3], spread = Math.max(tolerance, 1e-7), positions = [];
-  const centres = [inCell([-60, -1, 59], [0, 0, 0]), inCell([-60, 1, -59], [0, 0, 0]), inCell([-60, -1, 59], [3 * spread, -2 * spread, 0]), [0.5, 0.5, 0.5]];
+  const tolerance = [T, 0, 4e-6][round % 3], cell = cellFor(tolerance), spread = Math.max(tolerance, 1e-7), positions = [];
+  const centres = [inCell([-60, -1, 59], [0, 0, 0], cell), inCell([-60, 1, -59], [0, 0, 0], cell), inCell([-60, -1, 59], [0.3 * cell, -0.25 * cell, 0], cell), [0.5, 0.5, 0.5]];
   for (let i = 0; i < 220; i++) {
     const centre = centres[Math.floor(random() * centres.length)], kind = random();
     if (kind < 0.35) positions.push(centre.slice());
     else if (kind < 0.7) positions.push(centre.map(x => x + (random() - 0.5) * 2.4 * spread));
     else if (kind < 0.9 && positions.length) { const from = positions[Math.floor(random() * positions.length)]; positions.push(from.map(x => x + (random() - 0.5) * 1.9 * spread)); }
-    else positions.push(centre.map(x => x + (random() - 0.5) * 12 * CELL / 32));
+    else positions.push(centre.map(x => x + (random() - 0.5) * 0.9 * cell));
   }
   assert.deepStrictEqual(groupsOf(positions, tolerance), brute(positions, tolerance), 'degenerate clusters = brute force, round ' + round);
 }
 {
-  // Bucket merging: u1 and u2 are 1.8 tolerances apart (two buckets), w is
-  // another vertex of the cell inserted between them, c joins u1 and u2 (one
-  // bucket from then on), and later vertices near u1, u2 or w only.
-  const at = inCell([-60, -1, 59], [0, 0, 0]), shift = (dx) => [at[0] + dx * T, at[1], at[2]];
-  const positions = [shift(0), [at[0], at[1] + 5 * T, at[2]], shift(1.8), shift(0.9), shift(-0.6), shift(2.5), [at[0], at[1] + 5.5 * T, at[2]], inCell([-60, 1, -59], [0, 0, 0]), shift(3.3)];
+  // Bucket merging in one 2^-19 cell (3.8 tolerances wide): u1 and u2 are 1.8
+  // tolerances apart (two buckets), w is another bucket of the cell inserted
+  // between them, c joins u1 and u2 (one bucket whose box spans both from then
+  // on), and later vertices near u1, u2 or w only: -0.6 reaches the merged
+  // box only through u1's part of it.
+  const corner = [-60, -1, 59].map(k => k * CELL), x = dx => corner[0] + (0.65 + dx) * T, y = corner[1] + 1.9 * T, z = corner[2] + 1.9 * T;
+  const positions = [[x(0), y, z], [x(0), y - 1.8 * T, z], [x(1.8), y, z], [x(0.9), y, z], [x(-0.6), y, z], [x(2.5), y, z], [x(0), y - 1.3 * T, z], inCell([-60, 1, -59], [0, 0, 0], CELL), [x(3), y, z]];
+  positions.forEach((p, v) => { if (v !== 7) assert.deepStrictEqual(p.map(value => Math.floor(value / CELL)), [-60, -1, 59], 'vertex ' + v + ' is in the cell'); });
   assert.deepStrictEqual(groupsOf(positions), brute(positions, T));
   assert.deepStrictEqual(groupsOf(positions), [[0, 2, 3, 4, 5, 8], [1, 6]]);
 }

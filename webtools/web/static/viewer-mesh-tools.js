@@ -169,7 +169,7 @@
   // group and spans at most 4.9e-7 on one axis. The closest distinct
   // vertices (two corners of one triangle) are 1.2e-6 apart on their widest
   // axis. Every pair within four float32 steps below 2 is within 5e-7.
-  var SAME_POSITION_TOLERANCE = 5e-7, SAME_POSITION_CELL = 1 / 32768;
+  var SAME_POSITION_TOLERANCE = 5e-7, SAME_POSITION_CELL = 1 / 524288;
   function buildPositionGroups(count, positionAt, tolerance) {
     tolerance = tolerance === undefined ? SAME_POSITION_TOLERANCE : Math.max(0, +tolerance || 0);
     // Spatial hash over power-of-two cells wider than the tolerance, hashed to
@@ -182,36 +182,56 @@
     // member within the tolerance: one match joins the whole bucket. So many
     // copies at one point, or a dense cluster of near copies (a collapsed or
     // shrunken part), cost one comparison each instead of the whole cell.
+    // Each bucket keeps the box of its members; a vertex farther than the
+    // tolerance from the box on any axis skips the bucket (no member can
+    // match: rounded differences are monotonic), so a big bucket of copies
+    // costs nothing to the separate vertices beside it.
+    // A vertex opens a new bucket in its cell only when it matched none of
+    // the cell's vertices, so the first vertices of a cell's buckets are
+    // pairwise more than the tolerance apart: a 2^-19 cell (3.8 tolerances
+    // wide) holds at most 4^3 buckets, and a vertex visits at most 8 cells of
+    // them (plus hash collisions), however many separate components crowd a
+    // small region. `visits` counts bucket visits in scans, `compares` member
+    // tests.
     var cell = SAME_POSITION_CELL; while (cell <= tolerance) cell *= 2;
-    var parent = new Int32Array(count), coords = new Float64Array(count * 3), next = new Int32Array(count), heads = new Map(), joined = false, compares = 0;
-    var bucketCount = 0, bucketRep = new Int32Array(count), bucketHead = new Int32Array(count), bucketTail = new Int32Array(count), bucketNext = new Int32Array(count);
+    var parent = new Int32Array(count), coords = new Float64Array(count * 3), next = new Int32Array(count), heads = new Map(), joined = false, compares = 0, visits = 0;
+    var bucketCount = 0, bucketRep = new Int32Array(count), bucketHead = new Int32Array(count), bucketTail = new Int32Array(count), bucketNext = new Int32Array(count), box = new Float64Array(count * 6);
     function root(v) { while (parent[v] !== v) { parent[v] = parent[parent[v]]; v = parent[v]; } return v; }
     function join(a, b) { a = root(a); b = root(b); if (a !== b) { if (b < a) { var swap = a; a = b; b = swap; } parent[b] = a; joined = true; } }
     function hash(x, y, z) { return Math.imul(x | 0, 73856093) ^ Math.imul(y | 0, 19349663) ^ Math.imul(z | 0, 83492791); }
     function scan(v, x, y, z) {
       var first = heads.get(hash(x, y, z)), vx = coords[v * 3], vy = coords[v * 3 + 1], vz = coords[v * 3 + 2];
       for (var bucket = first === undefined ? -1 : first; bucket >= 0; bucket = bucketNext[bucket]) {
+        visits++; var b = bucket * 6;
         if (root(bucketRep[bucket]) === root(v)) continue;
+        if (box[b] - vx > tolerance || vx - box[b + 3] > tolerance || box[b + 1] - vy > tolerance || vy - box[b + 4] > tolerance || box[b + 2] - vz > tolerance || vz - box[b + 5] > tolerance) continue;
         for (var other = bucketHead[bucket]; other >= 0; other = next[other]) {
           compares++;
           if (Math.abs(coords[other * 3] - vx) <= tolerance && Math.abs(coords[other * 3 + 1] - vy) <= tolerance && Math.abs(coords[other * 3 + 2] - vz) <= tolerance) { join(other, v); break; }
         }
       }
     }
+    // Widens bucket target's box by another box (low corner at low, high at high, in values).
+    function grow(target, values, low, high) { for (var axis = 0; axis < 3; axis++) { var t = target * 6 + axis; if (values[low + axis] < box[t]) box[t] = values[low + axis]; if (values[high + axis] > box[t + 3]) box[t + 3] = values[high + axis]; } }
     // Adds v to its hash, newest first, in its component's bucket; buckets
-    // that v's matches merged into one component become one bucket.
+    // that v's matches merged into one component become one bucket. (It walks
+    // the list v's scan of its own cell just walked, so it adds no visits.)
     function insert(v, key) {
       var first = heads.get(key), rv = root(v), target = -1, previous = -1;
       for (var bucket = first === undefined ? -1 : first; bucket >= 0;) {
         var following = bucketNext[bucket];
         if (root(bucketRep[bucket]) === rv) {
           if (target < 0) target = bucket;
-          else { next[bucketTail[target]] = bucketHead[bucket]; bucketTail[target] = bucketTail[bucket]; bucketNext[previous] = following; bucket = following; continue; }
+          else {
+            next[bucketTail[target]] = bucketHead[bucket]; bucketTail[target] = bucketTail[bucket]; bucketNext[previous] = following;
+            grow(target, box, bucket * 6, bucket * 6 + 3); bucket = following; continue;
+          }
         }
         previous = bucket; bucket = following;
       }
-      if (target >= 0) { next[v] = bucketHead[target]; bucketHead[target] = v; return; }
+      if (target >= 0) { next[v] = bucketHead[target]; bucketHead[target] = v; grow(target, coords, v * 3, v * 3); return; }
       target = bucketCount++; bucketRep[target] = v; bucketHead[target] = v; bucketTail[target] = v; next[v] = -1;
+      for (var axis = 0; axis < 3; axis++) box[target * 6 + axis] = box[target * 6 + 3 + axis] = coords[v * 3 + axis];
       bucketNext[target] = first === undefined ? -1 : first; heads.set(key, target);
     }
     for (var v = 0; v < count; v++) {
@@ -233,7 +253,7 @@
       for (var vertex = 0; vertex < count; vertex++) { var r = root(vertex), members = byRoot.get(r); if (members) members.push(vertex); else byRoot.set(r, [vertex]); }
       byRoot.forEach(function (list) { if (list.length > 1) { list.forEach(function (member) { groupOf[member] = groups.length; }); groups.push(list); } });
     }
-    return { count: count, tolerance: tolerance, groupOf: groupOf, groups: groups, compares: compares };
+    return { count: count, tolerance: tolerance, groupOf: groupOf, groups: groups, compares: compares, visits: visits };
   }
   // The vertices that move with `vertices` (the chosen ones): every other
   // member of their groups. `groups` lists each touched group with its chosen
