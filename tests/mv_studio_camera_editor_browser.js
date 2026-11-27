@@ -154,6 +154,8 @@ async function curveViewCache(page) {
       const shows = (model, width = 400) => picture(view.element) === fresh(model, width);
       const m0 = { ...real, playhead: last * .25 };
       view.update(m0);
+      // Drawn at the panel's width first, then at its own box's width before the next paint.
+      await frames(2);
       checks.first = shows(m0);
       let before = nodes(view);
       const m1 = { ...m0, playhead: last * .75 };
@@ -193,10 +195,37 @@ async function curveViewCache(page) {
       plain.update(m6);
       checks.plainWidth = picture(plain.element) === fresh(m6, 300);
       plainBox.remove();
+      // A new view (the panel rebuilds it for each shot) reads no layout while it is updated: it
+      // draws at the width the last view's container had (300 here) and keeps that drawing when
+      // its own box has that width; another width is redrawn before the paint.
+      const reads = (element) => {
+        let count = 0;
+        const own = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
+        Object.defineProperty(element, 'clientWidth', { configurable: true, get() { count++; return own.get.call(this); } });
+        return () => count;
+      };
+      const seen = box(300), seenView = C.create(seen, saved.handlers);
+      seenView.update(m6);
+      await frames(2);
+      seen.remove();
+      const sameBox = box(300), sameReads = reads(sameBox), same300 = C.create(sameBox, saved.handlers);
+      same300.update(m6);
+      checks.noLayoutRead = sameReads() === 0;
+      const kept = nodes(same300);
+      await frames(2);
+      checks.keptDrawing = same(kept, nodes(same300)) && picture(same300.element) === fresh(m6, 300);
+      sameBox.remove();
+      const wideBox = box(420), wideReads = reads(wideBox), wide = C.create(wideBox, saved.handlers);
+      wide.update(m6);
+      const early = wideReads();
+      await frames(2);
+      checks.redrawnWidth = early === 0 && picture(wide.element) === fresh(m6, 420);
+      wideBox.remove();
     } finally { window.curveProbe = saved; }
     return checks;
   });
-  assert.deepEqual(result, { first: true, playhead: true, keys: true, dense: true, selected: true, equalCopies: true, resize: true, plainWidth: true });
+  assert.deepEqual(result, { first: true, playhead: true, keys: true, dense: true, selected: true, equalCopies: true, resize: true, plainWidth: true,
+    noLayoutRead: true, keptDrawing: true, redrawnWidth: true });
 }
 
 async function newPage(browser, errors, options = {}) {
@@ -219,15 +248,18 @@ async function newPage(browser, errors, options = {}) {
     } });
     // What a curve view shows, and the same model drawn by a new view at a given width (a full draw).
     window.curvePicture = (svg) => [svg.getAttribute('width'), svg.getAttribute('viewBox'), svg.innerHTML].join('\n');
+    // The reference view reads its box's width at once (no ResizeObserver): a new view with one
+    // first draws at the width the last view's container had and redraws before the paint.
     window.curveFresh = (model, width) => {
-      const saved = window.curveProbe, box = document.createElement('div');
+      const saved = window.curveProbe, box = document.createElement('div'), Observer = window.ResizeObserver;
       box.style.cssText = `position: fixed; left: 0; top: 0; visibility: hidden; width: ${width}px`;
       document.body.append(box);
+      window.ResizeObserver = undefined;
       try {
         const view = curves.create(box, saved.handlers);
         view.update(model);
         return window.curvePicture(view.element);
-      } finally { box.remove(); window.curveProbe = saved; }
+      } finally { window.ResizeObserver = Observer; box.remove(); window.curveProbe = saved; }
     };
   });
   return page;
