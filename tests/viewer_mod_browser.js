@@ -119,6 +119,10 @@ async function downloads(page, modPath, locale) {
   assert.deepStrictEqual(items.map(item => item.path).sort(), saved.outputPaths.slice().sort(), 'Every output path remains available');
   assert(items.some(item => item.path === saved.recipePath && item.label.startsWith(locale === 'ko' ? '편집 기록 · ' : '編集レシピ · ')));
   assert(items.some(item => saved.previewPaths.includes(item.path) && item.label.startsWith(locale === 'ko' ? '편집한 미리보기 사본 · ' : '編集したプレビュー用コピー · ')));
+  // The Mod ZIP row names its folder, since phones have no Finder button.
+  const folders = await page.locator('#viewer-save-output-list .viewer-save-folder').allInnerTexts();
+  assert.deepStrictEqual(folders, [(locale === 'ko' ? '저장 폴더' : '保存フォルダー') + ': ' + path.dirname(modPath)]);
+  assert.equal(await page.locator('#viewer-save-output-list li').first().locator('.viewer-save-folder').count(), 1);
   return items;
 }
 (async () => {
@@ -193,6 +197,9 @@ async function downloads(page, modPath, locale) {
       assert.equal(saved.status, 'done', saved.error); assert.equal(packages.length, 1); assert.equal(installs.length, 0); assert.equal(raw.length, 0);
       const inspected = inspectPackage(saved.modPackage.packagePath);
       const savedDownloads = await downloads(page, saved.modPackage.packagePath, profile.locale);
+      // Every Mod ZIP sits in <library>/modded/viewer/mods/saved under a date-first name.
+      assert.equal(path.dirname(saved.modPackage.packagePath), path.join(fs.realpathSync(library), 'modded/viewer/mods/saved'));
+      assert(/^\d{4}-\d{2}-\d{2}_\d{4}_Rina_Named_/.test(path.basename(saved.modPackage.packagePath)), saved.modPackage.packagePath);
       assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getState().camera), initial.camera, 'Packaging leaves the current camera unchanged');
       assert.equal(inspected.config.costume_name_en, 'Named ' + profile.variant); assert.equal(inspected.config.chara_id, 209);
       assert.equal(inspected.notes, 'Keep this companion exactly.');
@@ -237,6 +244,11 @@ async function downloads(page, modPath, locale) {
         const installedModels = inspectPackage(receipt.installed_package_path);
         assert.equal(installedModels.config.costume_name_en, 'Named ' + profile.variant);
         for (const role of ['primary', 'unmasked']) assert(Math.abs(installedModels.models[role].scales.BreastSize[0] - addFactor) < 1e-6, 'Both actually installed Rina variants use the fresh edit');
+        // The added ZIP moved from mods/saved to mods/added and the page follows it.
+        assert.equal(path.basename(path.dirname(receipt.installed_package_path)), 'added');
+        assert.equal(added.modPackage.packagePath, receipt.installed_package_path);
+        assert(!fs.existsSync(path.join(path.dirname(path.dirname(receipt.installed_package_path)), 'saved', path.basename(receipt.installed_package_path))));
+        await downloads(page, receipt.installed_package_path, profile.locale);
         installedEvidence = { packagePath: receipt.installed_package_path, sha256: sha(installedBytes), bytes: installedBytes.length,
           models: installedModels.models, displayName: receipt.mod_package.display_name };
       }

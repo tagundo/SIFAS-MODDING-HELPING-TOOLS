@@ -2347,6 +2347,9 @@ _VIEWER_TRANSLATIONS.update({
     "Mod ZIP": ["모드 ZIP", "MOD ZIP"],
     "Edited preview copy": ["편집한 미리보기 사본", "編集したプレビュー用コピー"],
     "Edit recipe": ["편집 기록", "編集レシピ"],
+    "Saved in folder": ["저장 폴더", "保存フォルダー"],
+    "The Mod ZIP folder cannot be a symbolic link.": ["모드 ZIP 폴더는 심볼릭 링크일 수 없습니다.", "MOD ZIPフォルダーはシンボリックリンクにできません。"],
+    "The Mod ZIP folder has too many files with this name. Rename the mod and try again.": ["모드 ZIP 폴더에 같은 이름의 파일이 너무 많습니다. 모드 이름을 바꾼 뒤 다시 시도하세요.", "MOD ZIPフォルダーに同じ名前のファイルが多すぎます。MOD名を変えてもう一度試してください。"],
     "Add to game": ["게임에 추가", "ゲームに追加"],
     "Add to game saves your current body edits as a mod and installs it. Rina's board and unmasked models receive the same body edits.": [
         "게임에 추가를 누르면 현재 체형 편집을 모드로 저장하고 설치합니다. 리나는 보드·보드 없음 모델에 같은 체형 편집을 적용합니다.",

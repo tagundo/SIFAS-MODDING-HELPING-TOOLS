@@ -4,6 +4,7 @@
   var MAX_RECIPE_BYTES = 64 * 1024 * 1024;
   function element(id) { return document.getElementById(id); }
   function basename(path) { return String(path).replace(/\\/g, "/").split("/").pop(); }
+  function dirname(path) { var parts = String(path).replace(/\\/g, "/").split("/"); parts.pop(); return parts.join("/") || "/"; }
   function paths(value) { return Array.isArray(value) ? value.filter(function (path) { return typeof path === "string" && path && path.length < 4096; }) : []; }
   function samePaths(left, right) { return JSON.stringify(left || []) === JSON.stringify(right || []); }
   function editCount(state) { return (state.edits || []).length + (state.physics || []).length + (state.outlines || []).length + (state.textures || []).length + (state.accessoryUnclip ? 1 : 0); }
@@ -331,6 +332,13 @@
         link.textContent = (label ? translate(label) + " · " : "") + basename(path);
         link.href = "/api/download?path=" + encodeURIComponent(path); link.setAttribute("download", basename(path));
         item.appendChild(link);
+        if (path === modPath) {
+          // Phones have no Finder button: name the folder that holds the ZIP.
+          var folder = document.createElement("div");
+          folder.className = "viewer-save-folder";
+          folder.textContent = translate("Saved in folder") + ": " + dirname(path);
+          item.appendChild(folder);
+        }
         if (global.ElichikaPlatform && global.ElichikaPlatform.supports("reveal")) {
           var reveal = document.createElement("button");
           reveal.type = "button"; reveal.className = "viewer-reveal"; reveal.textContent = translate("Show in Finder");
@@ -501,6 +509,15 @@
         if (disposed) return;
         if (installed.installed !== true) throw new Error("The mod could not be added to game.");
         installedFingerprint = binding;
+        // The server moves an added ZIP from mods/saved to mods/added.
+        var moved = installed.mod_package && installed.mod_package.package_path, before = packaged.package_path;
+        if (typeof moved === "string" && moved && moved.length < 4096 && moved !== before) {
+          packaged.package_path = moved;
+          if (result === data) {
+            outputPaths = outputPaths.map(function (path) { return path === before ? moved : path; });
+            if (!disposed) renderOutputs();
+          }
+        }
         say(stillCurrent(snapshot) ? "Added to game. Select the new costume in game." : "Added the saved mod to game. The current preview was not changed.", "done");
       } catch (failure) {
         if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failure.message || "The mod could not be saved.", "error");

@@ -409,24 +409,110 @@ class ViewerModFlowTests(unittest.TestCase):
         public = self.package()["mod_package"]
         controller = Mock()
         controller.is_running.return_value = True
+        saved = Path(public["package_path"])
+        added = self.output / "mods/added" / saved.name
         def runner(job, source_path, expected_sha256, *, restart_server=False):
             self.assertTrue(restart_server)
             self.assertEqual(expected_sha256, public["sha256"])
-            copied = Path(source_path)
-            self.assertEqual(copied.parent, self.library / "suit")
-            self.assertTrue(copied.is_absolute())
-            self.assertEqual(hashlib.sha256(copied.read_bytes()).hexdigest(), public["sha256"])
+            handed = Path(source_path)
+            self.assertEqual(handed, added)
+            self.assertTrue(handed.is_absolute())
+            self.assertFalse(saved.exists())
+            self.assertEqual(hashlib.sha256(handed.read_bytes()).hexdigest(), public["sha256"])
             return "Mock runner hand-off only; no installer executed"
         with patch("adminui.serverctl._controller", controller), patch("adminui.tools.installers.run_costume_file", side_effect=runner) as called:
             installed = self.install(public["token"])
             self.assertIs(installed["installed"], True)
             self.assertTrue(installed["was_running"])
-            self.assertEqual(installed["mod_package"], public)
+            # The saved ZIP itself moved to mods/added; nothing else changed.
+            self.assertEqual(installed["mod_package"], {**public, "package_path": str(added)})
+            self.assertEqual(installed["installed_package_path"], str(added))
+            self.assertEqual(sorted(path.name for path in self.output.rglob("*.zip")), [saved.name])
+            self.assertFalse((self.library / "suit").exists())
             with self.assertRaisesRegex(ValueError, "already being added|installed"):
                 self.install(public["token"])
             called.assert_called_once()
         with self.assertRaises(ValueError):
             flow.validate_install(public["token"])
+
+    def test_mod_zip_lands_in_mods_saved_with_a_readable_date_first_name(self):
+        result = self.package()
+        package = Path(result["mod_package"]["package_path"])
+        self.assertEqual(package.parent, (self.output / "mods/saved").resolve())
+        self.assertRegex(package.name, r"^\d{4}-\d{2}-\d{2}_\d{4}_Maki_Neutral_edited_costume_(android|ios)\.zip$")
+        self.assertIn(str(package), result["output_paths"])
+        # The edit folder keeps its work files but no second copy of the ZIP.
+        edit = Path(result["recipe_path"]).parent
+        self.assertFalse((edit / "mod").exists())
+        self.assertEqual(list(self.output.rglob("*.zip")), [package])
+        with patch.object(flow, "mod_zip_stem", return_value="same-name"):
+            first = Path(self.package()["mod_package"]["package_path"])
+            (self.output / "mods/added").mkdir(parents=True, exist_ok=True)
+            (self.output / "mods/added/same-name_2.zip").write_bytes(b"added earlier")
+            second = Path(self.package()["mod_package"]["package_path"])
+        self.assertEqual((first.name, second.name), ("same-name.zip", "same-name_3.zip"))
+        self.assertEqual((self.output / "mods/added/same-name_2.zip").read_bytes(), b"added earlier")
+
+    def test_publication_check_failure_leaves_no_zip_in_mods_saved(self):
+        move = flow._move_mod_zip
+        def damaged(*args, **kwargs):
+            target = move(*args, **kwargs)
+            with target.open("ab") as output:
+                output.write(b"damaged in transit")
+            return target
+        with patch.object(flow, "_move_mod_zip", side_effect=damaged):
+            with self.assertRaisesRegex(ValueError, "completed-output check"):
+                self.package()
+        self.assertEqual(list(self.output.rglob("*.zip")), [])
+        self.assertEqual(len(flow._PACKAGES), 0)
+
+    def test_mod_zip_names(self):
+        from datetime import datetime
+        when = datetime(2026, 11, 27, 14, 5)
+        self.assertEqual(flow.mod_zip_stem("Knit reform", 208, "android", when=when),
+                         "2026-11-27_1405_Emma_Knit_reform_android")
+        self.assertEqual(flow.mod_zip_stem("Emma knit", 208, "android+ios", when=when),
+                         "2026-11-27_1405_Emma_knit_android-ios")
+        self.assertEqual(flow.mod_zip_stem("리나 보드 / 교복", 209, "ios", scene=True, when=when),
+                         "2026-11-27_1405_Rina_리나_보드_교복_ios_scene")
+        self.assertEqual(flow.mod_zip_stem("..", None, None, when=when), "2026-11-27_1405_costume")
+        self.assertEqual(flow.mod_zip_stem("../../x", 999, "android", when=when), "2026-11-27_1405_x_android")
+
+    @unittest.skipUnless(PARENT_INSTALLERS, "Parent installer adapters are needed for mocked hand-off unit checks")
+    def test_failed_installer_hand_off_returns_the_zip_to_mods_saved(self):
+        self.runtime_gates()
+        public = self.package()["mod_package"]
+        saved = Path(public["package_path"])
+        def runner(job, source_path, expected_sha256, *, restart_server=False):
+            self.assertFalse(saved.exists())
+            self.assertEqual(Path(source_path).parent, self.output / "mods/added")
+            raise RuntimeError("QA installer failure")
+        with patch("adminui.serverctl._controller", None), patch("adminui.tools.installers.run_costume_file", side_effect=runner):
+            with self.assertRaisesRegex(RuntimeError, "QA installer failure"):
+                self.install(public["token"])
+        self.assertEqual(hashlib.sha256(saved.read_bytes()).hexdigest(), public["sha256"])
+        self.assertEqual(list((self.output / "mods/added").iterdir()), [])
+        receipt = flow._PACKAGES[public["token"]]
+        self.assertEqual((receipt["status"], receipt["public"]["package_path"]), ("failed", str(saved)))
+
+    @unittest.skipUnless(PARENT_INSTALLERS, "Parent installer adapters are needed for mocked hand-off unit checks")
+    def test_added_name_never_replaces_a_file_in_the_installer_drop_folders(self):
+        self.runtime_gates()
+        public = self.package()["mod_package"]
+        saved = Path(public["package_path"])
+        drops = [self.library / "suit" / saved.name, self.runtime / "assets/package/suit" / (saved.stem + "_2.zip")]
+        for path in drops:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"user drop")
+        handed = []
+        def runner(job, source_path, expected_sha256, *, restart_server=False):
+            handed.append(Path(source_path))
+            return "Mock runner hand-off only"
+        with patch("adminui.serverctl._controller", None), patch("adminui.tools.installers.run_costume_file", side_effect=runner):
+            installed = self.install(public["token"])
+        self.assertEqual(handed, [self.output / "mods/added" / (saved.stem + "_3.zip")])
+        self.assertEqual(installed["mod_package"]["package_path"], str(handed[0]))
+        self.assertEqual([path.read_bytes() for path in drops], [b"user drop", b"user drop"])
 
     @unittest.skipUnless(PARENT_INSTALLERS, "Parent installer adapters are needed for mocked hand-off unit checks")
     def test_installer_unit_double_install_is_blocked_while_first_runner_is_active(self):
