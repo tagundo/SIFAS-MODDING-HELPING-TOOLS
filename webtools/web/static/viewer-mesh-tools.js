@@ -47,6 +47,9 @@
     'Move step': ['이동 간격', '移動量'], 'Centre (local XYZ)': ['중심 (로컬 XYZ)', '中心（ローカルXYZ）'],
     'Drag an axis arrow, or use the step buttons. Axis values use the source mesh coordinates.': ['축 화살표를 드래그하거나 간격 버튼으로 이동합니다. 축 값은 원본 메시 좌표를 사용합니다.', '軸の矢印をドラッグするか、移動量ボタンで動かします。軸は元メッシュの座標です。'],
     'Enter a positive move distance.': ['0보다 큰 이동 간격을 입력하세요.', '0より大きい移動量を入力してください。'],
+    'Move vertices at the same position together': ['같은 위치 정점 함께 이동', '同じ位置の頂点も一緒に移動'],
+    '(+{count} at the same position)': ['(같은 위치 정점 +{count})', '(同じ位置の頂点 +{count})'],
+    'UV seams and material borders split one point into several vertices. Moving one also moves the others, so the surface stays closed. Selection and weights are unchanged.': ['UV 경계나 머티리얼 경계에서는 한 점이 여러 정점으로 나뉩니다. 하나를 옮기면 나머지도 함께 옮겨 표면이 벌어지지 않습니다. 선택과 웨이트는 바뀌지 않습니다.', 'UV境界やマテリアル境界では1つの点が複数の頂点に分かれます。1つを動かすと残りも一緒に動き、面が開きません。選択とウェイトは変わりません。'],
     'Show selection on model': ['모델에 선택 영역 표시', 'モデルに選択範囲を表示'], 'Show vertex targets': ['정점 선택점 표시', '頂点の選択点を表示'],
     'Delete selected faces': ['선택한 면 삭제', '選択面を削除'], 'Save mesh copy': ['메시 사본 저장', 'メッシュコピーを保存'],
     'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.': ['저장한 사본은 해당 버전을 유지합니다. 실행 취소로 화면의 메시를 복구한 후 다시 저장하면 복구한 사본이 만들어집니다.', '保存コピーはそのバージョンを保持します。元に戻すと表示中のメッシュが復元され、再保存で復元コピーを作成できます。'],
@@ -239,6 +242,7 @@
     style.textContent += '.viewer-mesh-tools .mesh-transform-tools{min-width:0;border:1px solid var(--line,#667085);border-radius:6px;padding:5px;display:flex;flex-direction:column;gap:4px}.viewer-mesh-tools .mesh-transform-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0}.viewer-mesh-tools .mesh-transform-tools button{margin:0;min-width:32px;min-height:32px;padding:4px 7px;white-space:nowrap;font-size:12px;line-height:1.2}.viewer-mesh-tools .mesh-transform-tools button[aria-pressed=true]{border-color:var(--accent,#315fbc);box-shadow:inset 0 0 0 1px var(--accent,#315fbc)}.viewer-mesh-tools .mesh-transform-tools label{min-width:0;display:inline-flex;flex-wrap:nowrap;font-size:12px;gap:4px}.viewer-mesh-tools .mesh-transform-tools select{max-width:124px;min-height:32px;margin:0;padding:4px}.viewer-mesh-tools .mesh-transform-tools input{width:82px;min-width:0;min-height:32px;margin:0;padding:4px}.viewer-mesh-tools .mesh-transform-note{font-size:11px;line-height:1.3;margin:0;overflow-wrap:anywhere}.viewer-mesh-tools .mesh-transform-row[hidden]{display:none}.viewer-mesh-tools .mesh-transform-axis-x{color:#c53247}.viewer-mesh-tools .mesh-transform-axis-y{color:#147b4d}.viewer-mesh-tools .mesh-transform-axis-z{color:#255fc7}@media(pointer:coarse){.viewer-mesh-tools .mesh-transform-tools button,.viewer-mesh-tools .mesh-transform-tools select,.viewer-mesh-tools .mesh-transform-tools input{min-height:44px}.viewer-mesh-tools .mesh-transform-tools button{min-width:44px}}';
     style.textContent += '.viewer-mesh-tools.texture-pane-expanded .mesh-transform-tools,.viewer-mesh-tools .mesh-transform-tools [hidden]{display:none!important}.viewer-mesh-tools .mesh-transform-axis-label>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}';
     style.textContent += '.viewer-mesh-tools .mesh-transform-tools select{width:104px;max-width:104px;font-size:12px}.viewer-mesh-tools .mesh-transform-tools input{width:64px;font-size:12px}';
+    style.textContent += '.viewer-mesh-tools .mesh-transform-tools .mesh-together-label{display:flex;align-items:center;gap:6px;min-height:32px;max-width:100%;flex-wrap:nowrap;cursor:pointer}.viewer-mesh-tools .mesh-transform-tools input[type=checkbox]{width:16px;height:16px;min-width:16px;min-height:16px;margin:0;padding:0;flex:none}.viewer-mesh-tools .mesh-together-label>span{min-width:0;overflow-wrap:anywhere}@media(pointer:coarse){.viewer-mesh-tools .mesh-together-label,.viewer-mesh-tools .mesh-transform-tools .mesh-together-label{min-height:44px}.viewer-mesh-tools .mesh-together-label>input[type=checkbox]{width:22px;height:22px;min-width:22px;min-height:22px}}';
     style.textContent += '.viewer-mesh-tools .uv-short-workspace .uv-edit-toolbar>.mesh-reset{width:auto;min-width:0;flex:0 1 auto;font-size:12px;white-space:normal}#viewer-mesh-deleter .uv-short-rail .uv-edit-toolbar{grid-template-columns:repeat(4,minmax(0,1fr))}.viewer-mesh-tools .uv-short-rail .uv-edit-toolbar>.mesh-reset{grid-column:1/-1;width:100%}';
     async function api(route, payload) {
       var response = await fetch('/api/viewer/mesh/' + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -249,6 +253,29 @@
     function snapshot() { var out = {}; Object.keys(cache).forEach(function (k) { var m = cache[k]; out[k] = { deleted: Array.from(m.deleted), marked: Array.from(m.marked || []), selected: Array.from(m.selected), positions: clone(m.positions), weights: clone(m.weights) }; }); return out; }
     function remember(value) { value = typeof value === 'string' ? value : JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; while (history.length > 24 || historyBytes > 8 * 1024 * 1024) historyBytes -= history.shift().length; future = []; }
     function geometryChanged(m) { m.geometryRevision = (m.geometryRevision || 0) + 1; }
+    // Same-position groups follow the current positions. The index is rebuilt
+    // once per geometry revision; a drag freezes the groups it started with.
+    var groupStats = { builds: 0, lastBuildMs: 0, lastBuildVertices: 0 };
+    function currentPosition(m, vertex) { return m.positions[vertex] || m.data.positions[vertex]; }
+    function positionIndex(m) {
+      if (!m.positionGroups || m.positionGroups.revision !== m.geometryRevision) {
+        var started = performance.now(), index = buildPositionGroups(m.data.positions.length, function (vertex) { return currentPosition(m, vertex); });
+        groupStats.builds++; groupStats.lastBuildMs = performance.now() - started; groupStats.lastBuildVertices = index.count;
+        m.positionGroups = { revision: m.geometryRevision, index: index };
+      }
+      return m.positionGroups.index;
+    }
+    function movesTogether(panel) { return !!(panel && panel.modify && panel.moveTogether); }
+    function samePosition(panel, m) {
+      if (!m || !movesTogether(panel) || !m.selected.size) return null;
+      if (runtimeGesture && runtimeGesture.together && runtimeGesture.together.mesh === m) return runtimeGesture.together.value;
+      return samePositionPartners(positionIndex(m), m.selected);
+    }
+    // Selected vertices first, then their partners: the set a position edit writes.
+    function movingVertices(panel, m) {
+      var vertices = Array.from(m.selected), together = samePosition(panel, m);
+      return together ? vertices.concat(together.partners) : vertices;
+    }
     function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = new Set(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); panels.forEach(function (p) { p.positionDraft = false; }); changed(); }
     function undo() { if (busy || runtimeGesture || !interactive() || !history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
     function redo() { if (busy || runtimeGesture || !interactive() || !future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
@@ -410,11 +437,16 @@
     function visibleVertices(panel, m) {
       var result = new Set(); m.data.triangles.forEach(function (face, index) { if (visibleFace(panel, m, index)) face.forEach(function (v) { result.add(v); }); }); return result;
     }
+    function visibleVertexCache(panel, m) {
+      var cached = panel.visibleVertexCache, submesh = panel.submesh.value;
+      if (!cached || cached.mesh !== m || cached.submesh !== submesh) cached = panel.visibleVertexCache = { mesh: m, submesh: submesh, vertices: visibleVertices(panel, m) };
+      return cached.vertices;
+    }
     function fillSubmeshes(panel) {
       var m = current(panel); panel.submesh.textContent = '';
       (m ? m.data.submeshes || [{ index: 0, name: 'Material 1' }] : []).forEach(function (entry) { var option = el('option', panel.submesh); option.value = entry.index; option.textContent = entry.name + ' [' + entry.index + ']'; });
     }
-    function draw(panel) {
+    function draw(panel, together) {
       var m = current(panel), canvas = panel.canvas, rect = canvas.getBoundingClientRect();
       var target = rect.width > 0 ? Math.max(128, Math.min(2048, Math.round(rect.width * Math.min(2, window.devicePixelRatio || 1)))) : canvas.width;
       if (canvas.width !== target || canvas.height !== target) { canvas.width = target; canvas.height = target; panel.baseKey = ''; }
@@ -443,6 +475,13 @@
       ctx.save(); ctx.setTransform(view.zoom, 0, 0, view.zoom, view.x * size, view.y * size);
       m.deleted.forEach(function (index) { if (!visibleFace(panel, m, index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(0,0,0,.8)'; ctx.fill(); });
       m.marked.forEach(function (index) { if (!visibleFace(panel, m, index) || m.deleted.has(index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(255,50,80,.65)'; ctx.fill(); });
+      // Partners that move with the selection: a pink dot with a dark ring,
+      // drawn under the yellow selected dots and only in the shown material.
+      if (together === undefined) together = panel.modify ? samePosition(panel, m) : null;
+      if (together && together.partners.length) {
+        var shown = m.data.submeshes && m.data.submeshes.length > 1 ? visibleVertexCache(panel, m) : null;
+        together.partners.forEach(function (v) { if (shown && !shown.has(v)) return; var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3.4 * density / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ff6fd8'; ctx.fill(); ctx.lineWidth = 1.2 * density / view.zoom; ctx.strokeStyle = '#17202b'; ctx.stroke(); });
+      }
       if (panel.modify) m.selected.forEach(function (v) { var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3 * density / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ffe05c'; ctx.fill(); });
       ctx.restore();
     }
@@ -459,7 +498,8 @@
         p.undo.disabled = busy || !!runtimeGesture || !history.length; p.redo.disabled = busy || !!runtimeGesture || !future.length;
         if (p.deleteFaces) p.deleteFaces.disabled = busy || !m || !m.marked.size || !interactive();
         p.canvas.style.opacity = busy ? '.5' : '1';
-        p.count.textContent = p.modify ? t('Selected vertices') + ': ' + (m ? m.selected.size : 0) + ' · ' + t('Position and weight edits') + ': ' + (m ? Object.keys(m.positions).length + Object.keys(m.weights).length : 0) : t('Selected faces') + ': ' + (m ? m.marked.size : 0) + ' · ' + t('Deleted faces') + ': ' + (m ? m.deleted.size : 0);
+        var together = p.modify ? samePosition(p, m) : null, partnerText = together && together.partners.length ? ' ' + t('(+{count} at the same position)').replace('{count}', together.partners.length) : '';
+        p.count.textContent = p.modify ? t('Selected vertices') + ': ' + (m ? m.selected.size : 0) + partnerText + ' · ' + t('Position and weight edits') + ': ' + (m ? Object.keys(m.positions).length + Object.keys(m.weights).length : 0) : t('Selected faces') + ': ' + (m ? m.marked.size : 0) + ' · ' + t('Deleted faces') + ': ' + (m ? m.deleted.size : 0);
         p.actions.forEach(function (b) { b.disabled = busy || !m || !interactive(); });
         if (p.connected) p.connected.disabled = busy || !m || !(p.modify ? m.selected.size : m.marked.size) || !interactive();
         if (p.zoom) { p.zoom.value = p.view.zoom; p.zoomText.textContent = Math.round(p.view.zoom * 100) + '%'; p.zoom.disabled = busy || !m || !m.data.uv; }
@@ -480,7 +520,7 @@
           });
           syncMovementTools(p, m);
         }
-        draw(p);
+        draw(p, together);
       });
       if (skipRuntime !== true) syncRuntime();
     }
@@ -533,7 +573,7 @@
       if (!m || !m.data.positionWritable || !m.selected.size || busy || runtimeGesture || !interactive()) return;
       if (!panel.moveStep.value.trim() || !panel.moveStep.checkValidity() || !Number.isFinite(amount) || amount <= 0) return status(panel, t('Enter a positive move distance.'), true);
       var updates = {}, valid = true;
-      m.selected.forEach(function (vertex) {
+      movingVertices(panel, m).forEach(function (vertex) {
         var value = (m.positions[vertex] || m.data.positions[vertex]).slice(); value[axis] += amount * sign;
         if (value.some(function (part) { return !Number.isFinite(part) || Math.abs(part) > 1000000; })) valid = false;
         updates[vertex] = value;
@@ -542,9 +582,24 @@
       activePanel = panel; panel.positionDraft = false; remember();
       Object.keys(updates).forEach(function (vertex) { m.positions[vertex] = updates[vertex]; }); geometryChanged(m); changed();
     }
+    function togetherBox(panel, parent, id) {
+      var label = el('label', parent), input = el('input', label); label.className = 'mesh-together-label'; input.type = 'checkbox'; input.id = id; input.checked = panel.moveTogether;
+      el('span', label, 'Move vertices at the same position together');
+      label.title = t('UV seams and material borders split one point into several vertices. Moving one also moves the others, so the surface stays closed. Selection and weights are unchanged.');
+      on(input, 'change', function () { setMoveTogether(panel, input.checked); }); return input;
+    }
+    // A movement setting, not an edit: it changes no history and no save state.
+    function setMoveTogether(panel, value) {
+      if (busy || runtimeGesture || !interactive()) { [panel.samePosition, panel.samePositionSettings].forEach(function (box) { if (box) box.checked = panel.moveTogether; }); return; }
+      panel.moveTogether = !!value; activePanel = panel;
+      [panel.samePosition, panel.samePositionSettings].forEach(function (box) { if (box && box.checked !== panel.moveTogether) box.checked = panel.moveTogether; });
+      redraw(); if (options.onChange) options.onChange();
+    }
     function syncMovementTools(panel, m) {
       if (!panel.moveTools) return;
       var locked = busy || !!runtimeGesture || !interactive(), count = m ? m.selected.size : 0;
+      if (panel.samePosition.disabled !== locked) panel.samePosition.disabled = locked;
+      if (panel.samePositionSettings && panel.samePositionSettings.disabled !== locked) panel.samePositionSettings.disabled = locked;
       panel.moveModeButtons.forEach(function (button) {
         var disabled = locked || !m || panel.sceneMode.disabled, pressed = String(panel.sceneMode.value === button.dataset.meshSceneMode);
         if (button.disabled !== disabled) button.disabled = disabled; if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed);
@@ -554,6 +609,7 @@
       var moving = panel.sceneMode.value === 'drag';
       if (panel.moveAxis.parentElement.hidden !== !moving) panel.moveAxis.parentElement.hidden = !moving;
       if (panel.moveNudges.hidden !== !(moving && count)) panel.moveNudges.hidden = !(moving && count);
+      if (panel.moveTogetherRow.hidden !== !moving) panel.moveTogetherRow.hidden = !moving;
       var invalidStep = !panel.moveStep.value.trim() || !panel.moveStep.checkValidity() || !Number.isFinite(+panel.moveStep.value) || +panel.moveStep.value <= 0;
       var axis = 'xyz'.indexOf(panel.moveAxis.value), name = axis < 0 ? '' : 'XYZ'[axis];
       panel.moveNudgeButtons.forEach(function (button) {
@@ -658,7 +714,9 @@
       if (absolute && m.selected.size !== 1) return status(panel, t('Choose one vertex for an absolute position.'), true);
       var fields = absolute ? panel.xyz : panel.delta, value = fields.map(function (i) { return +i.value; });
       if (fields.some(function (i) { return !i.checkValidity() || !i.value.trim(); }) || value.some(function (v) { return !Number.isFinite(v); })) return;
-      remember(); panel.positionDraft = false; m.selected.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); geometryChanged(m); changed();
+      // Partners of the one absolutely placed vertex take the same value.
+      var vertices = movingVertices(panel, m);
+      remember(); panel.positionDraft = false; vertices.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); geometryChanged(m); changed();
     }
     function applyWeights(panel) {
       var m = current(panel); if (!m || !m.data.skinWritable || !m.selected.size) return;
@@ -713,6 +771,8 @@
           var quick = button(p.moveNudges, sign < 0 ? '−' : '+', function () { var axis = 'xyz'.indexOf(p.moveAxis.value); if (axis >= 0) nudgeSelection(p, axis, sign); });
           quick.id = p.root.id + '-nudge-' + (sign < 0 ? 'minus' : 'plus'); quick.dataset.meshNudgeSign = String(sign); p.moveNudgeButtons.push(quick);
         });
+        p.moveTogetherRow = el('div', p.moveTools); p.moveTogetherRow.className = 'mesh-transform-row mesh-transform-together'; p.moveTogetherRow.hidden = true;
+        p.samePosition = togetherBox(p, p.moveTogetherRow, p.root.id + '-same-position');
         p.moveTools.title = t('Drag an axis arrow, or use the step buttons. Axis values use the source mesh coordinates.');
       }
       var tools = el('div', main); tools.className = 'uv-edit-toolbar'; tools.setAttribute('role', 'toolbar'); tools.setAttribute('aria-label', t('Texture interaction'));
@@ -758,7 +818,7 @@
       var box = el('details', holder); box.id = modify ? 'viewer-mesh-modify' : 'viewer-mesh-deleter'; box.className = 'viewer-adjustments viewer-mesh-tools';
       el('summary', box, modify ? 'Mesh modify' : 'Mesh deleter');
       el('p', box, modify ? 'Paint to select vertices, then edit positions or normalized weights.' : 'Paint selects faces. Delete selected faces removes them from the model. Ctrl/Cmd+Z restores the mesh.').className = 'viewer-render-note';
-      var p = { root: box, modify: modify, actions: [], view: { zoom: 1, x: 0, y: 0 }, viewButtons: [] }, row = el('div', box); row.className = 'mesh-row';
+      var p = { root: box, modify: modify, moveTogether: modify, actions: [], view: { zoom: 1, x: 0, y: 0 }, viewButtons: [] }, row = el('div', box); row.className = 'mesh-row';
       p.load = button(row, 'Load meshes', function () { inspectMeshes(p); }); p.mesh = select(row, 'Mesh', [['', 'Choose a mesh']]); on(p.mesh, 'change', function () { chooseMesh(p); });
       p.submesh = select(box, 'Material / submesh'); on(p.submesh, 'change', function () { activePanel = p; var m = current(p); if (m && p.modify) m.selected.clear(); p.baseKey = ''; changed(); });
       row = el('div', box); row.className = 'mesh-row'; p.mode = select(row, 'Paint', [['paint', 'Paint'], ['erase', 'Erase']]); p.radius = numeric(row, 'Brush radius', 30, 2, 200, 1);
@@ -805,6 +865,7 @@
         p.positionSet = button(position, 'Set vertex position', function () { changePosition(p, true); });
         row = el('div', position); row.className = 'mesh-row'; p.delta = ['X', 'Y', 'Z'].map(function (axis) { return numeric(row, 'Δ ' + axis, 0, -1000000, 1000000, .001); });
         p.translate = button(position, 'Translate selected vertices', function () { changePosition(p, false); });
+        p.samePositionSettings = togetherBox(p, position, box.id + '-same-position-settings');
         var weight = el('fieldset', box); el('legend', weight, 'Weight'); row = el('div', weight); row.className = 'mesh-row'; p.bone = select(row, 'Bone'); p.sourceBone = select(row, 'Source bone'); on(p.bone, 'change', redraw);
         row = el('div', weight); row.className = 'mesh-row'; p.weightMode = select(row, 'Weight mode', [['set', 'Set'], ['add', 'Add'], ['subtract', 'Subtract'], ['smooth', 'Smooth'], ['transfer', 'Transfer from bone']]); p.weight = numeric(row, 'Weight', .5, 0, 1, .01);
         p.weightApply = button(weight, 'Apply weights to selection', function () { applyWeights(p); });
@@ -832,6 +893,8 @@
       var p = activePanel, m = p && current(p); if (!p || !m || p.root.hidden) return null;
       return { mesh: m, modify: p.modify, mode: p.sceneMode.value, submesh: +p.submesh.value || 0,
         dragAxis: p.moveAxis ? p.moveAxis.value : 'screen',
+        // Called once when a drag starts; the drag keeps these groups to its end.
+        moveGroups: function () { var value = samePosition(p, m); if (value && runtimeGesture) runtimeGesture.together = { mesh: m, value: value }; return value; },
         radius: +p.radius.value || 20, erase: p.mode.value === 'erase', showSelection: p.show3d.checked,
         showVertices: p.modify && p.showVertices.checked, interactive: interactive() && !busy && (!options.isSceneInteractive || options.isSceneInteractive()) };
     }
@@ -891,7 +954,10 @@
     initializeRuntime(); initializeShortcuts(); refresh();
     return { refresh: refresh, getStatus: quickStatus, canClearSelection: canClearSelection, clearSelection: clearSelection, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.updateLanguage(); }); redraw(); },
       getEdits: function () { return clone(operationState()); }, getEditRevision: function () { return editRevision; }, restoreEdits: restoreEdits,
-      getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, hasUnappliedSelection: summary.hasUnappliedSelection, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved }; },
+      getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, hasUnappliedSelection: summary.hasUnappliedSelection, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved,
+        samePosition: (function () { var p = panels.filter(function (panel) { return panel.modify; })[0], m = activePanel && activePanel.modify ? current(activePanel) : null, together = m ? samePosition(activePanel, m) : null;
+          return { enabled: !!(p && p.moveTogether), partners: together ? together.partners.slice().sort(function (a, b) { return a - b; }) : [], groups: together ? together.groups.length : 0,
+            builds: groupStats.builds, lastBuildMs: groupStats.lastBuildMs, lastBuildVertices: groupStats.lastBuildVertices, tolerance: SAME_POSITION_ULPS }; })() }; },
       dispose: function () { disposed = true; request++; runtimeGesture = null; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.dispose(); p.root.remove(); }); style.remove(); cache = {}; } };
   }
   window.ViewerMeshTools = { create: create, normalizeInfluences: normalize, redistributeInfluence: redistributeInfluence, circleIntersectsTriangle: intersects,

@@ -537,10 +537,16 @@
     }
     function startDrag(event, context, pick) {
       var axis = pick.axis || context.dragAxis;
+      // Vertices at a selected vertex's position (seam copies), read once per
+      // drag: null when the option is off, so the drag is the original one.
+      var together = context.moveGroups ? context.moveGroups() : null;
+      function current(vertex) { return (context.mesh.positions[vertex] || context.mesh.data.positions[vertex]).slice(); }
       if (['x', 'y', 'z'].indexOf(axis) >= 0) {
         var frame = selectedFrame(context, pick.binding), axisIndex = ['x', 'y', 'z'].indexOf(axis); if (!frame) return;
         var vector = frame.vectors[axisIndex], magnitude = vector.length(); if (magnitude < 1e-12) return;
         var source = {}; context.mesh.selected.forEach(function (vertex) { source[vertex] = (context.mesh.positions[vertex] || context.mesh.data.positions[vertex]).slice(); });
+        // One source-local axis delta for all: partners stay on their seed.
+        if (together) together.partners.forEach(function (vertex) { source[vertex] = current(vertex); });
         var origin = pointerRay(event), depth = Math.max(runtime.camera.near, viewDepth(frame.centre)), worldPixel = 2 * (runtime.camera.isOrthographicCamera ? 1 : depth) / Math.max(1e-12, origin.rect.height * Math.abs(runtime.camera.projectionMatrix.elements[5]));
         var from = screenPoint(frame.centre, origin.rect), to = screenPoint(frame.centre.clone().addScaledVector(vector, worldPixel * 60 / magnitude), origin.rect);
         var screenX = to.x - from.x, screenY = to.y - from.y, screenLength = Math.hypot(screenX, screenY);
@@ -552,6 +558,10 @@
       var ray = pointerRay(event).ray, normal = runtime.camera.getWorldDirection(new T.Vector3()), plane = new T.Plane().setFromNormalAndCoplanarPoint(normal, pick.point), anchor = ray.intersectPlane(plane, new T.Vector3());
       if (!anchor) return;
       var sourcePositions = {}, inverse = {}, list = activeBindings(context), binding = pick.binding;
+      if (together) {
+        var plan = planeDragPlan(context.mesh.selected, together, pick.vertex, current, function (vertex) { return sourceLinear(binding, vertex); });
+        stroke.drag = { plane: plane, anchor: anchor, positions: plan.positions, inverse: plan.inverse, follow: plan.follow }; return;
+      }
       context.mesh.selected.forEach(function (vertex) {
         sourcePositions[vertex] = (context.mesh.positions[vertex] || context.mesh.data.positions[vertex]).slice();
         var linear = sourceLinear(binding, vertex); if (Math.abs(linear.determinant()) < 1e-12) return;
@@ -600,7 +610,8 @@
             if (Number.isFinite(delta) && (drag.moved || Math.abs(delta) > 1e-12)) { drag.moved = true; Object.keys(drag.positions).forEach(function (vertex) { var position = drag.positions[vertex].slice(); position[drag.axis] += delta; values[vertex] = position; }); }
           } else {
             var point = pointerRay(event).ray.intersectPlane(drag.plane, new T.Vector3());
-            if (point) { var deltaWorld = point.sub(drag.anchor); Object.keys(drag.inverse).forEach(function (vertex) { var local = deltaWorld.clone().applyMatrix3(drag.inverse[vertex]); values[vertex] = drag.positions[vertex].map(function (value, axis) { return value + local.getComponent(axis); }); }); }
+            if (point && drag.follow) values = planeDragValues(drag, point.sub(drag.anchor));
+            else if (point) { var deltaWorld = point.sub(drag.anchor); Object.keys(drag.inverse).forEach(function (vertex) { var local = deltaWorld.clone().applyMatrix3(drag.inverse[vertex]); values[vertex] = drag.positions[vertex].map(function (value, axis) { return value + local.getComponent(axis); }); }); }
           }
           if (Object.keys(values).length && options.onDrag) options.onDrag(values);
         } else if (context.mode === 'paint') {
