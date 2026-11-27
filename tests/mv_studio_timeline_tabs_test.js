@@ -193,14 +193,28 @@ function qualityMutes() {
     'emissive', 'flashlight', 'overlayeffect', 'post']);
   assert(Object.values(Tabs.STAGE_QUALITY).every((key) => Tabs.QUALITY_LABELS[key]));
 
-  // Badges: the category group and its direct children, except an ActivationTrack (the flag
-  // never mutes one: ApplyMuteToTrack skips it when muting).
-  const badged = tracks.filter(Tabs.qualityBadge).map((track) => track.label);
+  // Badges: the direct children of a category, except an ActivationTrack (the flag never mutes
+  // one: ApplyMuteToTrack skips it when muting), and a category group with such a child.
+  const badged = tracks.filter((track) => Tabs.qualityBadge(track, tracks)).map((track) => track.label);
   assert(badged.includes('StageEffect/Expert/Coloring') && badged.includes('StageEffect/Expert/Coloring/LED_panel_01'));
   assert(!badged.includes('StageEffect/Expert/Display/main_01_act'), 'an ActivationTrack keeps playing');
   assert(badged.includes('StageEffect/Expert/Display/main_01'));
   assert(!badged.some((label) => !label.startsWith('StageEffect/')), 'StageEffect only');
   assert(!badged.includes('StageEffect/Expert'), 'not the difficulty group');
+  assert.equal(Tabs.qualityBadge(leaf('StageEffect/Expert/Coloring')), null, 'a group needs the tracks to look at');
+  // A category whose direct children are only sub-groups and ActivationTracks has no track the
+  // flag mutes, so its heading gets no badge either (12023 StageEffect/Expert/Animation, Coloring).
+  const group = (label) => ({ id: label, label, kind: 'group', nativeClass: 'GroupTrack', events: [] });
+  const track = (label, nativeClass) => ({ id: label, label, kind: 'stage', nativeClass, events: [] });
+  const animation = [group('StageEffect/Expert/Animation'), group('StageEffect/Expert/Animation/Sub'),
+    track('StageEffect/Expert/Animation/Sub/x', 'AnimationTrack'), track('StageEffect/Expert/Animation/act', 'ActivationTrack')];
+  assert.equal(Tabs.qualityBadge(animation[0], animation), null);
+  assert.equal(Tabs.qualityBadge(animation[2], animation), null, 'one group deeper: no badge');
+  assert.equal(Tabs.qualityBadge(animation[3], animation), null);
+  animation.push(track('StageEffect/Expert/Animation/anim', 'AnimationTrack'));
+  assert.equal(Tabs.qualityBadge(animation[0], animation), 'stage_animation', 'one direct leaf child is enough');
+  assert.equal(Tabs.qualityBadge(animation[0], [animation[0], track('StageEffect/Expert/AnimationX/y', 'AnimationTrack')]), null,
+    'a category whose name only starts the same');
 
   // A mute edit lists its track first in the Edit tab, like an edited clip.
   const lips = leaf('Member1/LipSync');
@@ -237,12 +251,29 @@ function exportMuteRule() {
   return `export mute rule: ${tracks.length} tracks agree`;
 }
 
+// Every stock MV (MV_STUDIO_TRACKS_JSON): a badged group always has a badged direct child, and
+// every category group with one is badged.
+function stockBadges() {
+  const file = process.env.MV_STUDIO_TRACKS_JSON;
+  if (!file || !fs.existsSync(file)) return 'stock badges: skipped (no MV_STUDIO_TRACKS_JSON)';
+  let groups = 0, withoutChild = 0;
+  for (const tracks of Object.values(JSON.parse(fs.readFileSync(file, 'utf8')))) {
+    for (const track of tracks.filter((item) => Tabs.isGroup(item) && Tabs.qualityOption(item))) {
+      const prefix = track.label + '/';
+      const child = tracks.some((item) => !Tabs.isGroup(item) && item.label.startsWith(prefix) && Tabs.qualityBadge(item));
+      assert.equal(Tabs.qualityBadge(track, tracks), child ? Tabs.qualityOption(track) : null, track.label);
+      if (child) groups++; else withoutChild++;
+    }
+  }
+  return `stock badges: ${groups} category groups badged, ${withoutChild} without a muted track left plain`;
+}
+
 counts12035();
 synthetic();
 keyboard();
 plans();
 members();
 qualityMutes();
-const muteRule = exportMuteRule();
+const muteRule = exportMuteRule(), stock = stockBadges();
 console.log('MV Studio timeline tabs: 12035 counts, synthetic classes, member slots, lane plans per tab and filter, roving keys, quality-set mutes; ' +
-  muteRule + '.');
+  muteRule + '; ' + stock + '.');

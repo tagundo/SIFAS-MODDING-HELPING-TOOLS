@@ -157,11 +157,16 @@
       ? STAGE_QUALITY[found.name] : null;
   }
 
-  // The flag a quality badge names on a lane: a StageEffect category group, or a direct child
-  // the flag mutes when off (an ActivationTrack keeps its own mute then), or null.
-  function qualityBadge(track) {
+  // The flag a quality badge names on a lane, or null: a direct child of a StageEffect category
+  // that the flag mutes when off (not an ActivationTrack, which keeps its own mute then), or a
+  // category group with at least one such child among `tracks` (the project's tracks).
+  function qualityBadge(track, tracks) {
     const option = qualityOption(track);
-    return option && track.nativeClass !== "ActivationTrack" ? option : null;
+    if (!option) return null;
+    if (!isGroup(track)) return track.nativeClass !== "ActivationTrack" ? option : null;
+    const prefix = text(track.label) + "/";
+    return Array.isArray(tracks) && tracks.some((child) => child && !isGroup(child) && text(child.label).startsWith(prefix) &&
+      qualityBadge(child) === option) ? option : null;
   }
 
   // Whether the game sets this (leaf) track's mute from a quality flag when the MV starts.

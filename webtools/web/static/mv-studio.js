@@ -1387,7 +1387,7 @@
   }
 
   function qualityBadge(track) {
-    const option = Tabs.qualityBadge(track);
+    const option = Tabs.qualityBadge(track, project ? project.tracks : []);
     if (!option) return null;
     const badge = make("button", null, { type: "button", class: "mv-lane-quality", "data-quality": option, "data-track": text(track.id) });
     badge.append(gaugeIcon());
