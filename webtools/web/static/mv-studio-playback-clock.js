@@ -19,6 +19,8 @@
      A reading that falls behind the soundtrack's course is taken for a late one and used
      only when `confirm` + 1 readings in a row agree (it still shows that the soundtrack's
      clock is running, so it does not count toward a stall);
+   - a seek to another time that left the soundtrack where it was asks the host to move the
+     soundtrack to the picture on the next frame of playback;
    - after start() or seek(), and whenever the soundtrack stops or resumes (seeking,
      buffering, a stall, a long frame gap), the clock holds and waits for the soundtrack to
      advance, then locks onto it with no confirmation;
@@ -55,6 +57,7 @@
     let mode = "wait"; // "wait": hold for the soundtrack; "sync": follow it; "free": frames only
     let rate = 1, error = 0, holding = false, realigned = false, ignored = false;
     let locked = false; // the soundtrack has advanced since start()
+    let stale = false; // a seek left the soundtrack at another time
     let audio = NaN, seen = NaN; // the reading followed (s) and when it was first seen (ms)
     let read = NaN, alive = NaN; // the latest distinct reading, used or not, and when it came (ms)
     let since = NaN; // when waiting began (ms)
@@ -89,11 +92,15 @@
     }
 
     // The playhead moved to `value`, or the soundtrack was moved (`moved`): resynchronise.
-    // A seek to the time already shown that leaves the soundtrack alone changes nothing.
+    // A seek to the time already shown that leaves the soundtrack alone changes nothing. A seek
+    // to another time that leaves the soundtrack where it was (a plugin's {audio: false} seek)
+    // asks the host, on the next frame of playback, to move the soundtrack to the new time, so
+    // the seek holds whichever way it went.
     function seek(value, moved = true) {
       const next = finite(value) ? value : 0;
       if (!moved && Math.abs(next - time) <= 1e-9) return;
       start(next, last);
+      stale = !moved;
     }
 
     function result(realign = false) {
@@ -158,6 +165,10 @@
         error = 0;
         time += dt;
         return result();
+      }
+      if (stale) {
+        stale = false;
+        return realignTo(now);
       }
       let fresh = false, advanced = false;
       if (ready && media !== read) {

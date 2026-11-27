@@ -309,11 +309,45 @@ const report = {};
   const edit = run({ seconds: 3, events: { 120: (audio, clock) => clock.seek(clock.state().time, false) } });
   evenSteps(after(edit.rows, 1000), 'an edit while playing');
   assert(edit.rows.every((row, i) => i < 5 || row.mode === 'sync'), 'stays locked');
-  // A seek to another time with the soundtrack left alone starts over from that time.
-  const plugin = run({ seconds: 3, events: { 120: (audio, clock) => clock.seek(clock.state().time + 0.3, false) } });
-  const jumped = plugin.rows.find((row) => row.k === 120), before = plugin.rows.find((row) => row.k === 119);
-  assert.equal(jumped.mode, 'wait', 'waits for the soundtrack');
-  assert(Math.abs(jumped.time - (before.time + 0.3)) < 1e-9, 'shows the sought time');
+  // A seek to another time with the soundtrack left alone (a plugin's {audio: false} seek while
+  // playing): the next frame shows the sought time and asks the host to move the soundtrack
+  // there, forward and backward alike; the picture then goes on from the sought time.
+  for (const by of [0.03, 0.3, 2, -0.3, -2]) {
+    const plugin = run({ seconds: 4, events: { 120: (audio, clock, t, host) => { host.sought = clock.state().time + by; clock.seek(host.sought, false); } } });
+    const label = `plugin seek by ${by} s while playing`;
+    const index = plugin.rows.findIndex((row) => row.k === 120), jumped = plugin.rows[index];
+    assert.equal(jumped.mode, 'wait', `${label}: waits for the soundtrack`);
+    assert.equal(jumped.realign, true, `${label}: asks the host to move the soundtrack`);
+    assert.equal(plugin.audio.seeks, 1, `${label}: the soundtrack is moved once`);
+    const sought = jumped.time;
+    assert(Math.abs(sought - (plugin.rows[index - 1].time + by)) < 1e-9, `${label}: shows the sought time`);
+    monotonic(plugin.rows.slice(index), label);
+    assert.equal(plugin.state.holds, 0, `${label}: no hold`);
+    const relocked = plugin.rows.slice(index).find((row) => row.mode === 'sync');
+    assert(relocked.time - sought <= 0.05 + 1e-9, `${label}: goes on from the sought time`);
+    assert(maxAbs(offsets(plugin.rows.slice(index + 30))) <= 0.030, `${label}: in sync afterwards`);
+  }
+  // The same seek while paused: the soundtrack is moved when playback starts again.
+  let pausedAt = NaN;
+  const pausedSeek = run({ seconds: 4, events: {
+    100: (audio, clock, t, host) => { audio.pause(t); host.playing = false; pausedAt = clock.state().time + 1; clock.seek(pausedAt, false); },
+    130: (audio, clock, t, host) => { host.playing = true; audio.play(audio.base, t); clock.start(pausedAt, t); },
+  } });
+  const replay = pausedSeek.rows.find((row) => row.k === 130);
+  assert(replay.realign && replay.time === pausedAt, 'paused plugin seek: the soundtrack is moved to the sought time at play');
+  assert.equal(pausedSeek.audio.seeks, 1);
+  assert(maxAbs(offsets(pausedSeek.rows.filter((row) => row.k >= 160))) <= 0.030, 'paused plugin seek: in sync after play');
+  // A later seek that moves the soundtrack itself cancels the request.
+  const cancelled = run({ seconds: 3, events: { 120: (audio, clock, t) => {
+    clock.seek(clock.state().time + 1, false);
+    audio.seek(20, t);
+    clock.seek(20, true);
+  } } });
+  assert(!cancelled.rows.some((row) => row.realign), 'a seek that moved the soundtrack: no request');
+  assert.equal(cancelled.audio.seeks, 1);
+  // Without a soundtrack there is nothing to move.
+  const silentSeek = run({ seconds: 2, soundtrack: false, events: { 60: (audio, clock) => clock.seek(30, false) } });
+  assert(!silentSeek.rows.some((row) => row.realign), 'no soundtrack: no request');
   // Moving the soundtrack (an offset change: seek(time, true)) resynchronises.
   const offset = run({ seconds: 3, events: { 120: (audio, clock, t) => { const now = clock.state().time; audio.seek(now, t); clock.seek(now, true); } } });
   monotonic(offset.rows, 'offset change');
