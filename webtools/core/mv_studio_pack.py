@@ -25,19 +25,20 @@ import time
 from . import game_models, mv_studio, mv_studio_register as register
 
 EXTENSION = ".sifasmv"
-PACK_BYTES = 64 * 1024 * 1024
+PACK_BYTES = 64 * 1024 * 1024  # the size limit when Elichika's reader does not name its own (MAX_PACK_BYTES)
 MAX_NAME = 80
 MAX_NOTE = 500
 
 NO_PACKS = "This Elichika version cannot read or write MV timeline packs. Update the Elichika server app."
 NOT_PACK = "This file is not an MV timeline pack."
+TOO_LARGE = "The MV timeline pack is too large or has too many files."  # Elichika's own wording
 PACK_NAME = "Enter a pack name between 1 and 80 characters."
 PACK_NOTE = "Enter a note of at most 500 characters."
 PACK_PLATFORM = "The pack has no timeline this MV Studio can open."
 PACK_STALE = "The opened pack is no longer available. Open it again."
 PACK_SONG = "The game has no song that plays this pack's 3D MV."
 EXPORT_REQUEST = "The MV timeline pack request is invalid."
-MESSAGES = (NO_PACKS, NOT_PACK, PACK_NAME, PACK_NOTE, PACK_PLATFORM, PACK_STALE, PACK_SONG, EXPORT_REQUEST)
+MESSAGES = (NO_PACKS, NOT_PACK, TOO_LARGE, PACK_NAME, PACK_NOTE, PACK_PLATFORM, PACK_STALE, PACK_SONG, EXPORT_REQUEST)
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -94,12 +95,20 @@ def _call(function, path, data):
         return function(path)
 
 
+def _limit(pack):
+    """The largest pack Elichika's reader opens (its MAX_PACK_BYTES), so every pack its writer makes opens here."""
+    limit = getattr(pack, "MAX_PACK_BYTES", None)
+    return limit if type(limit) is int and limit > 0 else PACK_BYTES
+
+
 def read(path):
     """A .sifasmv pack or a legacy livetimeline zip as {"manifest", "platforms", "legacy"}."""
     pack = module()
     path = Path(path)
-    if not path.is_file() or not 0 < path.stat().st_size <= PACK_BYTES:
+    if not path.is_file() or not path.stat().st_size:
         raise ValueError(NOT_PACK)
+    if path.stat().st_size > _limit(pack):
+        raise ValueError(TOO_LARGE)
     data = path.read_bytes()
     reader = getattr(pack, "read_any", None)
     if reader is not None:

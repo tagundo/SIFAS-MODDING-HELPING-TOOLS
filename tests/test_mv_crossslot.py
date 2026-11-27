@@ -571,6 +571,26 @@ class PackTests(reg_tests.Case):
         with self.assertRaisesRegex(ValueError, mv_studio_pack.PACK_STALE):
             mv_studio_pack.staged("../" + "0" * 61, "ios")
 
+    def test_the_size_limit_is_the_readers_own(self):
+        """MV Studio opens every pack Elichika's reader opens (its MAX_PACK_BYTES) and names a larger one
+        too large, not "not a pack"; a reader without the constant keeps MV Studio's own limit."""
+        path = self.library / "modded" / "big.sifasmv"
+        path.write_bytes(b"x" * 32)
+        module = sys.modules["mv_timeline_pack"]
+        with mock.patch.object(mv_studio_pack, "PACK_BYTES", 16):
+            with self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(mv_studio_pack.TOO_LARGE) + "$"):
+                mv_studio_pack.read(path)  # no MAX_PACK_BYTES: MV Studio's own 16 bytes
+            module.MAX_PACK_BYTES = 64
+            self.addCleanup(delattr, module, "MAX_PACK_BYTES")
+            with self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(mv_studio_pack.NOT_PACK) + "$"):
+                mv_studio_pack.read(path)  # within the reader's 64 bytes: the reader decides (not a pack)
+            path.write_bytes(b"x" * 65)
+            with self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(mv_studio_pack.TOO_LARGE) + "$"):
+                mv_studio_pack.read(path)
+            path.write_bytes(b"")
+            with self.assertRaisesRegex(ValueError, "^" + __import__("re").escape(mv_studio_pack.NOT_PACK) + "$"):
+                mv_studio_pack.read(path)
+
     def test_the_pack_carries_the_source_stock_stage(self):
         """A source slot whose stage MV Studio changed (its own timeline, another stage) exports its STOCK
         stage, as "Change the stage too" does in apply, not the masterdata row it has now."""
