@@ -291,6 +291,39 @@ class ImportStepReceiptTests(unittest.TestCase):
                 mv_studio._preview(stage, reuse=True, store=self.store)
             self.assertEqual(prepare.call_count, 4)
 
+    def test_stage_effect_receipts_keep_unsupported_display_variants(self):
+        # 12010/3 (a null bgMaterial variant) warns on every conversion; the receipt
+        # repeats the warning so import coverage still lists the clips selecting it.
+        from webtools.core import transient_failures
+        stage = self.root / "import-a" / "game-3.unity"
+        stage.parent.mkdir()
+        stage.write_bytes(b"Native stage effect with a display")
+        glb = model_viewer._Glb().finish()
+        display = [{"code": "stage_display_variant_unsupported", "name": "/Effect/dis_01/main",
+                    "message": "Some stage display variants could not be drawn.", "target": "/Effect/dis_01/main",
+                    "variants": 3, "unsupported": [[2, "the material is missing"]]}]
+        noted = [True]
+
+        def prepare(*args, **kwargs):
+            if noted[0]:
+                transient_failures.note()  # a texture decoder of the machine failed during this conversion
+            return {"id": "s", "warnings": display}
+
+        with (patch.object(model_viewer, "prepare", side_effect=prepare) as converted,
+              patch.object(model_viewer, "get_model", return_value=glb)):
+            options = dict(reuse=True, stage_bindings=["/a"], native_stage_effect=True, store=self.store)
+            mv_studio._preview(stage, **options)
+            mv_studio._STAGE_PREVIEWS.clear()
+            mv_studio._preview(stage, **options)
+            self.assertEqual(converted.call_count, 2, "a conversion with a noted failure is never kept")
+            noted[0] = False
+            first, received, reused = [], [], []
+            output = mv_studio._preview(stage, warnings=first, **options)
+            mv_studio._STAGE_PREVIEWS.clear()  # a restart
+            again = mv_studio._preview(stage, warnings=received, reused=reused, **options)
+            self.assertEqual((again, first, received, reused), (output, display, display, [True]))
+            self.assertEqual(converted.call_count, 3)
+
     def test_clip_names_are_reused_only_with_the_same_dependency_bytes(self):
         project = {"tracks": [{"id": "t", "label": "Dance", "events": [
             {"id": "e", "label": "clip", "values": {"playableClass": "AnimationPlayableAsset", "animation": "cab-1:5"}}]}],

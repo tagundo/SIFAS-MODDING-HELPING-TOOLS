@@ -47,7 +47,10 @@ _ACTOR_PREVIEW_ENTRIES = 24
 _ACTOR_PREVIEW_METADATA_BYTES = 4 * 1024 * 1024
 # Conversion warnings that follow from the bundle's own content (never from a
 # decoder timeout or a busy worker), so a restart-safe receipt may repeat them.
-_STRUCTURAL_WARNINGS = {"linked_mesh_missing", "linked_texture_missing", "stage_hidden_transform"}
+# A display variant is unsupported for its material, shader or texture format;
+# a decoder failure of the machine is noted and keeps the receipt out.
+_STRUCTURAL_WARNINGS = {"linked_mesh_missing", "linked_texture_missing", "stage_hidden_transform",
+                        "stage_display_variant_unsupported"}
 
 
 def _root():
