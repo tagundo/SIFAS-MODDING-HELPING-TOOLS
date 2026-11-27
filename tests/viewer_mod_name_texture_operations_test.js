@@ -112,6 +112,27 @@ const KO = { "Costume colour": "의상 컬러", "Skin tone": "스킨톤", "Textu
     assert.equal(await page.evaluate(() => document.getElementById("viewer-mod-name").value), "ch0001_co0001");
     assert.equal(await page.evaluate(() => document.getElementById("viewer-mod-name-auto").disabled), true, "the suggestion is shown");
     cases.push("a typed name stays through reviewing the saved copy and re-editing its original, not onto another model");
+    // With the product's CSS in a side-panel-wide column the field shows the whole
+    // multi-label name (it wraps and grows) instead of hiding its end.
+    await page.addStyleTag({ path: path.join(product, "webtools/web/static/style.css") });
+    await page.evaluate(() => { const column = document.createElement("div"); column.id = "name-column"; column.style.cssText = "width:270px;font-size:14px"; document.body.prepend(column); column.appendChild(document.querySelector(".viewer-mod-form")); });
+    const full = await name([head, body], [["blush", "paint"], ["costume", "skin"]]);
+    assert.equal(full, "ch0001_co0001 · 의상 컬러 · 스킨톤 · 홍조 굽기 · 텍스쳐 페인팅");
+    const shown = await page.evaluate(() => { const field = document.getElementById("viewer-mod-name"), auto = document.getElementById("viewer-mod-name-auto"), f = field.getBoundingClientRect(), a = auto.getBoundingClientRect();
+      return { tag: field.tagName, width: f.width, scroll: field.scrollHeight, client: field.clientHeight, lineHeight: parseFloat(getComputedStyle(field).lineHeight), autoBelow: a.top >= f.bottom - 0.5, disabled: field.disabled }; });
+    assert.equal(shown.tag, "TEXTAREA");
+    assert(shown.width >= 268, "the name takes the whole row: " + shown.width);
+    assert(shown.scroll <= shown.client + 1, "no part of the name is hidden: " + JSON.stringify(shown));
+    assert(shown.client >= 2 * shown.lineHeight, "the long name wraps onto a second line: " + JSON.stringify(shown));
+    assert(shown.autoBelow, "Automatic name sits below the field");
+    cases.push("the whole multi-label name is visible in a 270 px column");
+    // One line in the ZIP and the game: Enter adds nothing, a pasted line break becomes a space.
+    assert.equal(shown.disabled, false, "the field is editable while authoring");
+    await page.focus("#viewer-mod-name"); await page.keyboard.press("End"); await page.keyboard.press("Enter");
+    assert.equal(await page.evaluate(() => document.getElementById("viewer-mod-name").value), full, "Enter inserts no line break");
+    await page.evaluate(() => { const field = document.getElementById("viewer-mod-name"); field.value = "내\n의상\r\n모드"; field.setSelectionRange(3, 3); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    assert.deepEqual(await page.evaluate(() => { const field = document.getElementById("viewer-mod-name"); return [field.value, field.selectionStart]; }), ["내 의상 모드", 3]); // a textarea stores \r\n as \n
+    cases.push("the name stays on one line: Enter is ignored and pasted line breaks become spaces");
     assert.deepEqual(pageErrors, []); await page.close();
   } finally { await browser.close(); }
   process.stdout.write(JSON.stringify({ status: "PASS", cases }) + "\n");

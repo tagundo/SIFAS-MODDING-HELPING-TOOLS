@@ -39,6 +39,18 @@
       var target = element(id); if (!target) return;
       target.addEventListener(name, fn); events.push(function () { target.removeEventListener(name, fn); });
     }
+    // A multi-line name field grows to show the whole suggested name (up to its
+    // CSS max-height). Only when the text or the width changed, and only while
+    // shown: a hidden field keeps its rows-based height.
+    var fittedName = "";
+    function fitModName(field) {
+      if (!field || field.tagName !== "TEXTAREA") return;
+      var width = field.clientWidth, key = width + "\n" + field.value;
+      if (!width || key === fittedName) return;
+      fittedName = key; field.style.height = "auto";
+      var style = global.getComputedStyle ? global.getComputedStyle(field) : null, border = style ? (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0) : 2;
+      if (field.scrollHeight) field.style.height = Math.ceil(field.scrollHeight + border) + "px";
+    }
     // Sentences are joined with a space, except after a full-width stop (ja).
     function joinSentences(parts) { return parts.reduce(function (text, part) { return !part ? text : !text ? part : text + (/[。！？]$/.test(text) ? "" : " ") + part; }, ""); }
     function statusText(key, detail) { return joinSentences([translate(key), detail && detail !== key ? translate(detail) : ""].concat(statusNotes.map(function (note) { return translate(note); }))); }
@@ -266,6 +278,7 @@
       }
       // The whole name, also where the field is narrower than it.
       if (name.title !== name.value) name.title = name.value;
+      fitModName(name);
       var choices = metadata.characters || [], choicesKey = JSON.stringify([choices, metadata.characterId, translate("Automatic")]);
       var characters = element("viewer-mod-character");
       if (choicesKey !== modCharacters) {
@@ -629,7 +642,13 @@
     listen("viewer-save", "click", save);
     listen("viewer-save-mod", "click", function () { saveMod(false); });
     listen("viewer-add-to-game", "click", function () { saveMod(true); });
-    listen("viewer-mod-name", "input", function () { manualModName = true; modChanged(); });
+    // The name is one line in the ZIP and in the game: Enter does not break
+    // it, and pasted line breaks become spaces (one for one, so the caret stays).
+    listen("viewer-mod-name", "keydown", function (event) { if (event.key === "Enter" && !event.isComposing && event.keyCode !== 229) event.preventDefault(); });
+    listen("viewer-mod-name", "input", function () {
+      if (/[\r\n]/.test(this.value)) { var start = this.selectionStart, end = this.selectionEnd; this.value = this.value.replace(/[\r\n]/g, " "); this.setSelectionRange(start, end); }
+      manualModName = true; modChanged();
+    });
     listen("viewer-mod-name-auto", "click", function () { manualModName = false; modChanged(); });
     ["viewer-mod-character", "viewer-mod-variant", "viewer-mod-include-face"].forEach(function (id) { listen(id, "change", modChanged); });
     var thumbnailChoice = element("viewer-mod-thumbnail-mode");
