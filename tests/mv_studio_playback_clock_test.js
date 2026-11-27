@@ -112,6 +112,13 @@ function steps(rows) {
   return list;
 }
 
+// Frames only: every frame advances by exactly its interval (no repeated times).
+function evenFrames(rows, label) {
+  for (const step of steps(rows)) {
+    assert(Math.abs(step.advance - step.interval) < 1e-9, `${label}: frame ${step.k} advances ${step.advance} for ${step.interval}`);
+  }
+}
+
 const after = (rows, ms) => rows.filter((row) => row.t >= rows[0].t + ms);
 const offsets = (rows) => rows.map((row) => row.time - row.truth);
 const maxAbs = (values) => Math.max(...values.map(Math.abs));
@@ -337,6 +344,7 @@ const report = {};
     assert.equal(stuck.state.realigns, 1);
     assert.equal(stuck.state.ignored, true, 'plugin seek not followed: the soundtrack is ignored');
     assert(stuck.rows.slice(-60).every((row) => row.mode === 'free'), 'plugin seek not followed: frames only');
+    evenFrames(stuck.rows.slice(-60), 'plugin seek not followed');
   }
   // The same seek while paused: the soundtrack is moved when playback starts again.
   let pausedAt = NaN;
@@ -431,6 +439,7 @@ const report = {};
   assert.equal(second.state.realigns, 2);
   assert.equal(second.state.ignored, true, 'the soundtrack that did not follow the second realignment is ignored');
   assert(second.rows.slice(-60).every((row) => row.mode === 'free'), 'frames only after it');
+  evenFrames(second.rows.slice(-60), 'second realignment not followed');
 
   // A slow seek (a soundtrack over the network on a phone): the clock waits for the seeking
   // soundtrack however long the seek takes, and does not give up on it.
@@ -508,6 +517,21 @@ const report = {};
   assert.equal(stuck.state.realigns, 1);
   assert.equal(stuck.state.ignored, true, 'the lagging soundtrack is ignored');
   assert(stuck.rows.slice(-60).every((row) => row.mode === 'free'), 'frames only');
+  evenFrames(stuck.rows.slice(-60), 'unseekable');
+  // A new start gets a new realignment: the soundtrack is moved again before it is ignored.
+  const again = { 120: (audio, clock, t) => audio.stall(t), 300: (audio, clock, t) => audio.resume(t) };
+  let restartAt = null;
+  for (let k = 301; k < 420; k++) {
+    again[k] = (audio, clock, t) => {
+      if (restartAt === null && audio.seeks === 1) { restartAt = k; clock.start(clock.state().time, t); }
+    };
+  }
+  const startedAgain = run({ seconds: 8, audio: { seekable: false }, events: again });
+  monotonic(startedAgain.rows, 'unseekable, started again');
+  assert(restartAt !== null, 'unseekable, started again: the first realignment happened');
+  assert.equal(startedAgain.audio.seeks, 2, 'a start after a realignment may move the soundtrack once more');
+  assert.equal(startedAgain.state.ignored, true, 'still lagging after the second move: ignored');
+  evenFrames(startedAgain.rows.slice(-60), 'unseekable, started again');
   const restarted = run({ seconds: 8, audio: { seekable: false }, events: { 120: (audio, clock, t) => audio.stall(t),
     300: (audio, clock, t) => audio.resume(t), 420: (audio, clock, t) => clock.start(audio.truth(t), t) } });
   assert.equal(restarted.rows.find((row) => row.k === 419).mode, 'free');
@@ -519,6 +543,12 @@ const report = {};
   const freeFrom = broken.rows.find((row) => row.mode === 'free');
   assert(Math.abs(freeFrom.t - 1000 - GIVE_UP * 1000) <= 17, 'gives up after 1 s');
   for (const step of steps(broken.rows.filter((row) => row.mode === 'free'))) assert(Math.abs(step.advance - step.interval) < 1e-9);
+  // Frames only: a frame longer than maxGap still advances by its full interval.
+  const brokenGap = run({ seconds: 3, frames: (k) => (k === 150 ? 600 : 1000 / 60),
+    events: { 1: (audio, clock, t, host) => { host.reading = () => 0; } } });
+  assert.equal(brokenGap.rows.find((row) => row.k === 149).mode, 'free');
+  const gapStep = steps(brokenGap.rows).find((step) => step.k === 150);
+  assert(Math.abs(gapStep.advance - 0.6) < 1e-9, `frames only: a 600 ms frame advances by ${gapStep.advance}`);
 
   // The browser pauses the soundtrack (an interruption) and resumes it where it stopped.
   const interrupted = run({ seconds: 6, events: {
