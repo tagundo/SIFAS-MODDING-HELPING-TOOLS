@@ -22,8 +22,9 @@
    - after start() or seek(), and whenever the soundtrack stops or resumes (seeking,
      buffering, a stall, a long frame gap), the clock holds and waits for the soundtrack to
      advance, then locks onto it with no confirmation;
-   - with no soundtrack, one the browser paused or ended, or one not advancing for `giveUp`,
-     the time advances with the frames, as it does without a soundtrack;
+   - with no soundtrack, one the browser paused or ended, or one not advancing for `giveUp`
+     (not counting the time it spends seeking), the time advances with the frames, as it does
+     without a soundtrack;
    - during playback the time it returns is never below the last one.
 
    Pure state: mv-studio.js feeds it one reading per animation frame. Frame captures step
@@ -175,6 +176,9 @@
       if (mode === "sync" && (!ready || (now - alive) / 1000 > stallLimit())) wait(now, ready ? alive : now);
       if (mode !== "sync") {
         if (advanced) return lock(media, now);
+        // A seeking soundtrack (a seek over the network can take seconds) is waited for: the
+        // time towards giveUp counts from when it stopped seeking.
+        if (mode === "wait" && !ready) since = now;
         if (mode === "wait" && (now - since) / 1000 > o.giveUp) mode = "free";
         if (mode === "free") time += dt;
         return result();

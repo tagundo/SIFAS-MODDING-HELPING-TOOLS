@@ -36,8 +36,10 @@ function rng(seed) {
 }
 
 // A soundtrack whose media clock is read in coarse steps. Times in ms (wall), positions in s.
-function soundtrack(random, { steps = [0.02, 0.05], jitter = 0, drift = 0, latency = 0.03, seekable = true } = {}) {
-  const s = { playing: false, stalled: false, paused: true, ended: false, base: 0, anchor: 0, reported: 0, next: Infinity, seeks: 0, seekable };
+// A seek takes `seekTime` (s): until then the element is seeking and reads the sought position.
+function soundtrack(random, { steps = [0.02, 0.05], jitter = 0, drift = 0, latency = 0.03, seekable = true, seekTime = 0 } = {}) {
+  const s = { playing: false, stalled: false, paused: true, ended: false, base: 0, anchor: 0, reported: 0, next: Infinity, seeks: 0, seekable,
+    seekTime, seekingUntil: -Infinity };
   const step = () => (steps[0] + (steps[1] - steps[0]) * random()) * 1000;
   s.truth = (t) => s.playing && !s.stalled ? s.base + Math.max(0, t - s.anchor) / 1000 * (1 + drift) : s.base;
   s.play = (position, t) => {
@@ -48,9 +50,11 @@ function soundtrack(random, { steps = [0.02, 0.05], jitter = 0, drift = 0, laten
   s.seek = (position, t) => {
     s.seeks++;
     if (!s.seekable) return;
-    Object.assign(s, { base: position, anchor: t + latency * 1000, reported: position });
-    s.next = t + step();
+    s.seekingUntil = t + s.seekTime * 1000;
+    Object.assign(s, { base: position, anchor: s.seekingUntil + latency * 1000, reported: position });
+    s.next = s.seekingUntil + step();
   };
+  s.seeking = (t) => t < s.seekingUntil;
   s.stall = (t) => { s.base = s.truth(t); s.stalled = true; };
   s.resume = (t) => { s.anchor = t; s.stalled = false; };
   // The soundtrack's position itself jumps (a skip): readings follow from the next update.
@@ -84,9 +88,10 @@ function run({ seed = 1, seconds = 5, fps = 60, frameJitter = 0, events = {}, fr
     if (!host.playing) continue;
     let reading = NaN;
     if (present && !audio.paused && !audio.ended) reading = host.reading ? host.reading(audio, t) : audio.read(t);
-    const out = clock.next(t, reading, host.ready);
+    const out = clock.next(t, reading, host.ready && !audio.seeking(t));
     if (out.realign) audio.seek(out.time, t);
-    rows.push({ k, t, time: out.time, truth: audio.truth(t), reading, mode: out.mode, holding: out.holding, rate: out.rate, realign: out.realign });
+    rows.push({ k, t, time: out.time, truth: audio.truth(t), reading, mode: out.mode, holding: out.holding, rate: out.rate, realign: out.realign,
+      seeking: audio.seeking(t) });
   }
   return { rows, clock, audio, state: clock.state() };
 }
@@ -339,6 +344,26 @@ const report = {};
   assert.equal(second.state.realigns, 2);
   assert.equal(second.state.ignored, true, 'the soundtrack that did not follow the second realignment is ignored');
   assert(second.rows.slice(-60).every((row) => row.mode === 'free'), 'frames only after it');
+
+  // A slow seek (a soundtrack over the network on a phone): the clock waits for the seeking
+  // soundtrack however long the seek takes, and does not give up on it.
+  const slow = run({ seconds: 6, audio: { seekTime: 1.5 }, events: { 120: (audio, clock, t) => { audio.seek(30, t); clock.seek(30, true); } } });
+  monotonic(slow.rows, 'slow seek');
+  const seeking = slow.rows.filter((row) => row.k >= 120 && row.seeking);
+  assert(seeking.length > 80, 'frames while the soundtrack seeks');
+  assert(seeking.every((row) => row.mode === 'wait' && row.time === 30), 'held at the sought time while the soundtrack seeks');
+  assert.equal(slow.state.realigns, 0, 'slow seek: no realignment');
+  assert(maxAbs(offsets(slow.rows.filter((row) => row.k >= 240))) <= 0.030, 'after the slow seek: within 30 ms');
+  // A long stall whose realignment seek is slow: still in sync afterwards.
+  const slowRealign = run({ seconds: 9, audio: { seekTime: 1.6 }, events: { 120: stop, 300: go } });
+  monotonic(slowRealign.rows, 'slow realignment seek');
+  assert.equal(slowRealign.state.realigns, 1);
+  assert.equal(slowRealign.state.ignored, false, 'slow realignment seek: the soundtrack is still used');
+  const realignedAt = slowRealign.rows.find((row) => row.realign);
+  assert(slowRealign.rows.filter((row) => row.seeking && row.t > realignedAt.t).every((row) => row.mode === 'wait' && row.time === realignedAt.time),
+    'held at the realigned time while the soundtrack seeks');
+  assert(slowRealign.rows.slice(-60).every((row) => row.mode === 'sync'), 'following the soundtrack at the end');
+  assert(maxAbs(offsets(slowRealign.rows.slice(-120))) <= 0.030, 'after the slow realignment seek: within 30 ms');
 
   // A soundtrack that does not follow the realignment is ignored until the next start or seek.
   const stuck = run({ seconds: 7, audio: { seekable: false }, events: { 120: (audio, clock, t) => audio.stall(t), 300: (audio, clock, t) => audio.resume(t) } });
