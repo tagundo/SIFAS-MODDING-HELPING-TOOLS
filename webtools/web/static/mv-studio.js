@@ -728,6 +728,7 @@
     const header = make("div", null, { class: "mv-event-header", id: "mv-event-header" });
     renderEventHeader(header, track, event);
     box.append(header);
+    if (track.muted) box.append(make("p", t("This track is muted. The preview skips it."), { class: "mv-field-note", "data-mv-note": "muted" }));
     if (editable) {
       const name = make("input", null, { type: "text", maxlength: 240, "data-mv-field": "label" });
       name.value = text(event.label);
@@ -1164,6 +1165,7 @@
       lane.append(clip);
     }
     lane.style.setProperty("--mv-lane-rows", Math.max(rows.length, 1));
+    if (track.muted) lane.classList.add("mv-lane-muted");
     lane.mvLayout = laneLayout(rowOf);
     return lane;
   }
@@ -1204,12 +1206,113 @@
     const label = timelineLabels.get(track.id);
     if (!label) return;
     const edited = history.editedEvents();
-    label.classList.toggle("mv-lane-edited", track.events.some((event) => edited.has(event.id)));
+    label.classList.toggle("mv-lane-edited", editedTracks().has(track.id) || track.events.some((event) => edited.has(event.id)));
+    label.classList.toggle("mv-lane-muted", !!track.muted);
+    timelineLanes.get(track.id)?.classList.toggle("mv-lane-muted", !!track.muted);
+    const control = label.querySelector(".mv-lane-mute");
+    if (control) syncMuteButton(control, track);
+  }
+
+  // ---- Track mute ------------------------------------------------------------------------
+  // The project field "muted" of a leaf track (what the preview and the export read). Its
+  // value before the first change is kept in project.editor.tracks[trackId].muted, written in
+  // the same history step: a track whose mute differs from it counts as edited.
+  function trackRecord(track) {
+    const records = project && project.editor && project.editor.tracks;
+    const record = records && typeof records === "object" && Object.prototype.hasOwnProperty.call(records, track.id) ? records[track.id] : null;
+    return record && typeof record.muted === "boolean" ? record : null;
+  }
+
+  let trackEdits = null;
+  function editedTracks() {
+    if (!history || !project) return new Set();
+    if (trackEdits && trackEdits.version === history.version && trackEdits.project === project) return trackEdits.ids;
+    const ids = new Set();
+    for (const track of project.tracks) {
+      const record = trackRecord(track);
+      if (record && record.muted !== !!track.muted) ids.add(track.id);
+    }
+    trackEdits = { version: history.version, project, ids };
+    return ids;
+  }
+
+  function qualityName(option) {
+    const entry = project && project.quality && Array.isArray(project.quality.options) &&
+      project.quality.options.find((item) => item && item.key === option && item.label);
+    return entry ? text(entry.label) : t(Tabs.QUALITY_LABELS[option] || option);
+  }
+
+  // Why the mute of this track cannot reach the game, or "" when it can. A track that holds a
+  // mute edit can always be switched back.
+  function muteLock(track) {
+    if (Tabs.isGroup(track)) return t("A group's mute does not reach the game: the game plays each track in it by its own mute.");
+    if (!Tabs.qualityMuted(track) || editedTracks().has(track.id)) return "";
+    const option = Tabs.qualityOption(track);
+    return option ? format("The game sets this track's mute from the {option} quality setting when the MV starts.", { option: qualityName(option) })
+      : t("The game sets this track's mute from the MV quality settings when the MV starts.");
+  }
+
+  function toggleMute(trackId) {
+    const track = project && project.tracks.find((item) => item.id === trackId);
+    if (!track || ctx.locked()) return;
+    const reason = muteLock(track);
+    if (reason) { report(reason); return; }
+    const next = !track.muted, changes = [];
+    if (!trackRecord(track)) changes.push({ target: { kind: "editor" }, path: ["tracks", track.id, "muted"], after: !!track.muted });
+    changes.push({ target: { kind: "track", track: track.id }, path: ["muted"], after: next });
+    edit({ label: next ? "Mute track" : "Unmute track", detail: text(track.label), changes });
+  }
+
+  const SVG = "http://www.w3.org/2000/svg";
+  function speakerIcon() {
+    const icon = document.createElementNS(SVG, "svg");
+    icon.setAttribute("viewBox", "0 0 16 16");
+    icon.setAttribute("aria-hidden", "true");
+    icon.setAttribute("class", "mv-mute-icon");
+    for (const [d, part] of [["M2 6h3l4-3v10l-4-3H2z", ""], ["M11 5.5a3.5 3.5 0 0 1 0 5", "mv-mute-off"], ["M11 6l4 4m0-4-4 4", "mv-mute-on"]]) {
+      const path = document.createElementNS(SVG, "path");
+      path.setAttribute("d", d);
+      if (part) path.setAttribute("class", part);
+      icon.append(path);
+    }
+    return icon;
+  }
+
+  // The mute toggle of a lane label (a group row shows its state and why it does not count).
+  function muteButton(track) {
+    const control = make("button", null, { type: "button", class: "mv-lane-mute", "data-track": text(track.id) });
+    control.append(speakerIcon());
+    control.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const current = project && project.tracks.find((item) => item.id === track.id);
+      if (!current) return;
+      const reason = muteLock(current);
+      if (reason) report(reason);
+      else toggleMute(current.id);
+    });
+    syncMuteButton(control, track);
+    return control;
+  }
+
+  function syncMuteButton(control, track) {
+    const muted = !!track.muted, reason = muteLock(track), group = Tabs.isGroup(track);
+    control.classList.toggle("mv-muted", muted);
+    control.setAttribute("aria-label", t(group ? (muted ? "Muted group" : "Group mute") : "Mute track"));
+    if (reason) {
+      control.setAttribute("aria-disabled", "true");
+      control.removeAttribute("aria-pressed");
+      control.title = (muted ? t("Muted") + " · " : "") + reason;
+    } else {
+      control.removeAttribute("aria-disabled");
+      control.setAttribute("aria-pressed", String(muted));
+      control.title = t(muted ? "Unmute track" : "Mute track");
+    }
   }
 
   function laneLabel(track) {
     const full = text(track.label || kinds[track.kind] || track.kind);
     const label = make("p", null, { class: "mv-lane-label", title: text(track.binding || track.label), "data-track": text(track.id) });
+    label.append(muteButton(track));
     const cut = full.lastIndexOf("/"), body = make("span", null, { class: "mv-lane-text" });
     if (cut > 0) {
       // The group path is muted and may wrap after each "/" (<wbr> adds no text).
@@ -1227,15 +1330,20 @@
     return count;
   }
 
+  // Edited clips, track settings (mutes) and plugin edits.
   function editCount() {
-    return (project ? history.editedEvents().size : 0) + pluginEditCount();
+    return (project ? history.editedEvents().size + editedTracks().size : 0) + pluginEditCount();
+  }
+
+  function editedTrackIds() {
+    if (!project) return [];
+    const edited = history.editedEvents(), settings = editedTracks();
+    return project.tracks.filter((track) => settings.has(track.id) || track.events.some((event) => edited.has(event.id))).map((track) => track.id);
   }
 
   function tabCounts() {
     const counts = Tabs.census(project ? project.tracks : []);
-    const edited = project ? history.editedEvents() : new Set();
-    counts.edit = { tracks: project ? project.tracks.filter((track) => track.events.some((event) => edited.has(event.id))).length : 0,
-      events: editCount() };
+    counts.edit = { tracks: editedTrackIds().length, events: editCount() };
     return counts;
   }
 
@@ -1301,8 +1409,7 @@
   let lastEditSignature = "";
   function editSignature() {
     if (!project) return "";
-    const edited = history.editedEvents();
-    const ids = project.tracks.filter((track) => track.events.some((event) => edited.has(event.id))).map((track) => track.id);
+    const ids = editedTrackIds();
     return ids.join("\n") + "|" + (activeTab === "edit" ? extraLanes("edit").map((lane) => lane.id).join("\n") + "|" + (pluginEditCount() > 0) : "");
   }
 
@@ -1325,6 +1432,7 @@
     const active = document.activeElement;
     const focused = active && active !== grid && grid.contains(active) && active.classList.contains("mv-clip")
       ? { track: active.dataset.track, event: active.dataset.event, follow: inView(active, scroll) } : null;
+    const muteFocus = active && grid.contains(active) && active.classList.contains("mv-lane-mute") ? active.dataset.track : null;
     grid.replaceChildren();
     timelineLanes.clear();
     timelineLabels.clear();
@@ -1356,7 +1464,8 @@
     // A remembered member that this MV does not have is ignored (and kept for the next MV).
     const member = Tabs.memberChoices(project).some((choice) => choice.slot === preferredMember) ? preferredMember : null;
     const plan = Tabs.plan(project.tracks, { tab: activeTab, member, search: searchText,
-      editableOnly: activeTab !== "edit" && editableOnly, group: groupFilter, edited: history.editedEvents(), extra: extraLanes(activeTab),
+      editableOnly: activeTab !== "edit" && editableOnly, group: groupFilter, edited: history.editedEvents(), editedTracks: editedTracks(),
+      extra: extraLanes(activeTab),
       pluginEdits: activeTab === "edit" ? pluginEditCount() : 0 });
     lastPlan = plan;
     lastEditSignature = editSignature();
@@ -1371,8 +1480,10 @@
         syncLaneLabel(row.track);
         decorate.push([row.track, lane]);
       } else if (row.type === "group") {
-        grid.append(make("p", text(row.track.label), { class: "mv-lane-label mv-lane-group", title: text(row.track.label), "data-track": text(row.track.id) }),
-          make("div", null, { class: "mv-lane-group-lane", "aria-hidden": "true" }));
+        const label = make("p", null, { class: "mv-lane-label mv-lane-group", title: text(row.track.label), "data-track": text(row.track.id) });
+        label.append(muteButton(row.track), make("span", text(row.track.label), { class: "mv-lane-text" }));
+        label.classList.toggle("mv-lane-muted", !!row.track.muted);
+        grid.append(label, make("div", null, { class: "mv-lane-group-lane", "aria-hidden": "true" }));
       } else if (row.type === "extra") {
         const label = make("p", text(row.lane.label), { class: "mv-lane-label mv-lane-extra-label", title: text(row.lane.title || row.lane.label) });
         const lane = make("div", null, { class: "mv-lane mv-lane-extra", "data-extra": text(row.lane.id) });
@@ -1397,6 +1508,8 @@
     syncPosition();
     const clip = focused && grid.querySelector(`.mv-clip[data-track="${CSS.escape(focused.track)}"][data-event="${CSS.escape(focused.event)}"]`);
     if (clip) focusClip(clip, focused.follow);
+    const toggle = muteFocus !== null && grid.querySelector(`.mv-lane-mute[data-track="${CSS.escape(muteFocus)}"]`);
+    if (toggle) toggle.focus({ preventScroll: true });
   }
 
   function renderPreviewStatus() {
@@ -1509,7 +1622,9 @@
       const target = change.target;
       kinds.add(target.kind);
       if (target.kind === "event" || target.kind === "track") tracks.add(target.track);
-      if (target.kind === "track") { structure = true; timing.add(target.track); }
+      // Added or removed clips redraw the timeline; a track setting (mute) only its label.
+      if (target.kind === "track" && change.path[0] === "events") { structure = true; timing.add(target.track); }
+      if (target.kind === "track" && selected && selected.track === target.track) selectedTouched = true;
       if (target.kind !== "event") continue;
       const key = change.path[0];
       // Timing and the clip name redraw the lane; value edits only toggle its marks.
@@ -1592,6 +1707,15 @@
       if ("label" in current) fresh.label = current.label;
       else delete fresh.label;
       fresh.values = copy(current.values);
+    }
+    // Track mutes: the same track (by id) takes the mute the edited project had.
+    const records = editor.tracks && typeof editor.tracks === "object" ? editor.tracks : {};
+    for (const id of Object.keys(records)) {
+      const current = previous.tracks.find((track) => track.id === id), fresh = next.tracks.find((track) => track.id === id);
+      if (!current) continue;
+      if (!fresh || Tabs.isGroup(fresh)) { complete = false; continue; }
+      if ("muted" in current) fresh.muted = current.muted;
+      else delete fresh.muted;
     }
     next.editor = copy(editor);
     return complete;

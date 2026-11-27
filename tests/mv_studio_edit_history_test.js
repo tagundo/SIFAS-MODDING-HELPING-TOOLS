@@ -259,10 +259,43 @@ function views() {
   assert.equal(project.tracks[0].events[0].values.fov, 30);
 }
 
+// The host's track mute command (mv-studio.js toggleMute): the project's own mute is kept in
+// editor.tracks in the same step, and undo takes both back.
+function trackMute() {
+  const project = sample();
+  project.tracks[1].muted = false;
+  const input = JSON.parse(JSON.stringify(project));
+  const history = create({ getProject: () => project });
+  const mute = (after, record) => ({ label: after ? 'Mute track' : 'Unmute track', detail: 'mouth', changes: [
+    ...(record ? [{ target: { kind: 'editor' }, path: ['tracks', 'mouth', 'muted'], after: false }] : []),
+    { target: { kind: 'track', track: 'mouth' }, path: ['muted'], after }] });
+  assert(history.apply(mute(true, true)));
+  assert.equal(project.tracks[1].muted, true);
+  assert.deepEqual(project.editor, { version: 1, originals: {}, tracks: { mouth: { muted: false } } });
+  assert.deepEqual([...history.editedEvents()], [], 'a mute edits no clip');
+  assert(history.apply(mute(false, false)), 'unmute: the record stays');
+  assert.equal(project.tracks[1].muted, false);
+  assert.equal(project.editor.tracks.mouth.muted, false);
+  history.undo();
+  assert.equal(project.tracks[1].muted, true);
+  history.undo();
+  assert.deepEqual(project.tracks, input.tracks, 'undo puts the mute back');
+  assert.deepEqual(project.editor, { version: 1, originals: {} }, 'and removes the record with its empty container');
+  history.redo();
+  assert.deepEqual(project.editor.tracks, { mouth: { muted: false } });
+  assert.equal(project.tracks[1].muted, true);
+  // A track without a mute field (a non-native project): undo removes the field again.
+  delete project.tracks[0].muted;
+  history.apply({ label: 'Mute track', changes: [{ target: { kind: 'track', track: 'camera' }, path: ['muted'], after: true }] });
+  history.undo();
+  assert.equal('muted' in project.tracks[0], false);
+}
+
 basics();
 gestures();
 limit();
 structure();
 inert();
 views();
-console.log('MV Studio edit history: apply/undo/redo, gestures and coalescing, limit 200, originals once, edited, insert/remove, editor containers, inert entries.');
+trackMute();
+console.log('MV Studio edit history: apply/undo/redo, gestures and coalescing, limit 200, originals once, edited, insert/remove, editor containers, inert entries, track mutes.');

@@ -89,6 +89,35 @@
 .mv-lane-name { font-weight: 600; }
 .mv-lane-label.mv-lane-edited { box-shadow: inset 3px 0 0 #f2b84b; }
 .mv-lane-extra { background-color: color-mix(in srgb, var(--accent) 7%, transparent); }
+
+/* Track mute: a speaker toggle before the lane name. A group row, or a track whose mute the
+   game sets from a quality option, shows its state only (aria-disabled; a press tells why). */
+#tab-mv .mv-lane-mute {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  margin-inline-end: 4px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+#tab-mv .mv-lane-mute:hover { border-color: var(--line); color: var(--text); }
+#tab-mv .mv-lane-mute[aria-pressed=true] { border-color: #f2b84b; background: #f2b84b33; color: var(--text); }
+#tab-mv .mv-lane-mute[aria-disabled=true] { cursor: help; opacity: .45; }
+#tab-mv .mv-lane-mute.mv-muted[aria-disabled=true] { opacity: .85; }
+.mv-mute-icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.mv-mute-icon > path:first-child { fill: currentColor; }
+.mv-lane-mute .mv-mute-on, .mv-lane-mute.mv-muted .mv-mute-off { display: none; }
+.mv-lane-mute.mv-muted .mv-mute-on { display: inline; }
+.mv-lane-label.mv-lane-muted .mv-lane-text { opacity: .55; }
+#tab-mv .mv-lane.mv-lane-muted .mv-clip { opacity: .45; }
+@media (pointer: coarse) {
+  #tab-mv .mv-lane-mute { width: 28px; height: 28px; }
+}
 .mv-lane-extra-label { font-style: italic; }
 
 /* Clips: edited dot, right-edge trim zone, drag feedback. */

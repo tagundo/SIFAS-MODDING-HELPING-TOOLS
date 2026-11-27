@@ -157,9 +157,40 @@ function members() {
     { slot: 1, name: '', color: null }, { slot: 2, name: '나카스 카스미', color: [1, .8, 0] }, { slot: 3, name: '', color: null }]);
 }
 
+// Tracks whose mute the game sets from a quality flag (LiveQualityOperator.MuteTracks).
+function qualityMutes() {
+  const { tracks } = fixture();
+  const leaf = (label) => tracks.find((track) => track.label === label);
+  const driven = tracks.filter(Tabs.qualityMuted).map((track) => track.label);
+  // 12035: every direct child of a StageEffect category, and of the MemberEffect and PropEffect categories.
+  assert(driven.includes('StageEffect/Expert/Coloring/LED_panel_01'));
+  assert(driven.includes('StageEffect/Expert/Flash Light/Live Flash Light Track'), 'spaces are removed from the category');
+  assert(driven.includes('MemberEffect/Expert/MemberRimlight/Member1 (1)'));
+  assert(!driven.includes('Member1/LipSync') && !driven.includes('CameraMotion/Camera1'), 'other tracks keep their own mute');
+  assert(!driven.some((label) => label.split('/').length !== 4), 'only direct children');
+  assert(tracks.filter(Tabs.isGroup).every((track) => !Tabs.qualityMuted(track)), 'groups never');
+  assert.equal(Tabs.qualityOption(leaf('StageEffect/Expert/Flash Light/Live Flash Light Track')), 'stage_flash_light');
+  assert.equal(Tabs.qualityOption(leaf('StageEffect/Expert/Coloring')), 'stage_coloring', 'the category group itself');
+  assert.equal(Tabs.qualityOption(leaf('MemberEffect/Expert/MemberRimlight/Member1 (1)')), null, 'member flags are not named');
+  assert.equal(Tabs.qualityOption({ label: 'StageEffect/Expert/Coloring/LightShaft/Live Coloring Track', kind: 'display' }), null,
+    'a track in a sub-group keeps its own mute (12023)');
+  assert.equal(Tabs.qualityOption({ label: 'StageEffect/Expert/Overlay/x', kind: 'effects' }), null, 'an unknown category');
+  assert.equal(Tabs.qualityMuted({ label: 'PropEffect/Expert/PropAnimation/x', kind: 'props' }), false);
+  assert.deepEqual(Object.keys(Tabs.STAGE_QUALITY).sort(), ['ambient', 'animation', 'audience', 'coloring', 'control', 'display',
+    'emissive', 'flashlight', 'overlayeffect', 'post']);
+  assert(Object.values(Tabs.STAGE_QUALITY).every((key) => Tabs.QUALITY_LABELS[key]));
+
+  // A mute edit lists its track first in the Edit tab, like an edited clip.
+  const lips = leaf('Member1/LipSync');
+  const plan = Tabs.plan(tracks, { tab: 'edit', editedTracks: new Set([lips.id]) });
+  assert.deepEqual(plan.rows.slice(0, 2).map((row) => row.type + ':' + (row.track ? row.track.label : '')), ['track:Member1/LipSync', 'separator:']);
+  assert.equal(plan.rows.filter((row) => row.type === 'hint').length, 0, 'no hint once a track is edited');
+}
+
 counts12035();
 synthetic();
 keyboard();
 plans();
 members();
-console.log('MV Studio timeline tabs: 12035 counts, synthetic classes, member slots, lane plans per tab and filter, roving keys.');
+qualityMutes();
+console.log('MV Studio timeline tabs: 12035 counts, synthetic classes, member slots, lane plans per tab and filter, roving keys, quality-set mutes.');

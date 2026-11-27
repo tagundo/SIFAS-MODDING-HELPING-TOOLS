@@ -3176,6 +3176,33 @@ _MV_EDITOR_E2_TRANSLATIONS = {
         "카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.",
         "カメラショットはオフセットと速度を変えられず、プレビューに出る「なし」と「保持」だけを選べます。"),
     "Restore original value": ("원래 값으로 되돌리기", "元の値に戻す"),
+    "Mute track": ("트랙 음소거", "トラックをミュート"),
+    "Unmute track": ("트랙 음소거 해제", "トラックのミュートを解除"),
+    "Muted": ("음소거됨", "ミュート中"),
+    "Muted group": ("음소거된 그룹", "ミュート中のグループ"),
+    "Group mute": ("그룹 음소거", "グループのミュート"),
+    "This track is muted. The preview skips it.": (
+        "이 트랙은 음소거되어 미리보기에서 재생되지 않습니다.", "このトラックはミュート中で、プレビューでは再生されません。"),
+    "A group's mute does not reach the game: the game plays each track in it by its own mute.": (
+        "그룹 음소거는 게임에 반영되지 않습니다. 게임은 그룹 안의 각 트랙을 그 트랙의 음소거 설정대로 재생합니다.",
+        "グループのミュートはゲームに反映されません。ゲームはグループ内の各トラックを、そのトラック自身のミュート設定で再生します。"),
+    "The game sets this track's mute from the {option} quality setting when the MV starts.": (
+        "이 트랙의 음소거는 MV가 시작될 때 게임이 '{option}' 그래픽 설정에 따라 정합니다.",
+        "このトラックのミュートは、MVの開始時にゲームが「{option}」のグラフィック設定に合わせて決めます。"),
+    "The game sets this track's mute from the MV quality settings when the MV starts.": (
+        "이 트랙의 음소거는 MV가 시작될 때 게임이 MV 그래픽 설정에 따라 정합니다.",
+        "このトラックのミュートは、MVの開始時にゲームがMVのグラフィック設定に合わせて決めます。"),
+    # English names of the stage quality flags (core/mv_studio_quality._FIELDS) for a project without options.
+    "Stage ambient lighting": ("무대 환경광", "ステージ環境光"),
+    "Stage animation": ("무대 애니메이션", "ステージアニメーション"),
+    "Stage coloring": ("무대 색상 연출", "ステージの色演出"),
+    "Stage controls": ("무대 제어", "ステージ制御"),
+    "Stage overlay effects": ("무대 오버레이 효과", "ステージのオーバーレイ効果"),
+    "Stage flash lighting": ("무대 점멸 조명", "ステージの点滅照明"),
+    "Stage displays": ("무대 화면", "ステージのスクリーン"),
+    "Post-processing effects": ("후처리 효과", "ポストエフェクト"),
+    "Stage emissive surfaces": ("무대 발광 표면", "ステージの発光面"),
+    # "Audience" (관객/観客) comes from the editor lane B table.
 }
 for _source, (_korean, _japanese) in _MV_EDITOR_E2_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
