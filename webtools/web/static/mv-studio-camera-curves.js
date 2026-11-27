@@ -21,6 +21,8 @@
   const COLORS = Object.freeze({ x: "#ef5350", y: "#66bb6a", z: "#42a5f5", pan: "#ffb74d", tilt: "#ba68c8", roll: "#26c6da", fov: "#f06292" });
   const HEIGHT = 150, LEFT = 44, RIGHT = 8, TOP = 8, BOTTOM = 18;
   const finite = Number.isFinite;
+  // The width a curve view's container last had, by any view's ResizeObserver.
+  let observedWidth = null;
 
   function node(tag, attrs = {}) {
     const element = document.createElementNS(SVG, tag);
@@ -46,9 +48,11 @@
     const resizing = global.ResizeObserver ? new global.ResizeObserver(() => {
       if (!container.isConnected) return;
       const next = container.clientWidth;
+      observedWidth = next;
       if (next === width) return;
       width = next;
-      if (model) draw();
+      // A graph already drawn at this width stays (a redraw would give the same drawing).
+      if (model && !(layout && graphWidth() === layout.width)) draw();
     }) : null;
     resizing?.observe(container);
 
@@ -68,8 +72,14 @@
       return { low: low - pad, high: high + pad };
     }
 
+    // A new view (the panel is rebuilt for every other shot) draws first at the width the
+    // last view's container had: reading clientWidth there forced a style and layout pass of
+    // the whole page in the middle of a click (about 57 ms with a nine-member timeline). Its
+    // observer's first callback, after this frame's layout and before it is painted, redraws
+    // it at the container's own width, as it already did after the first draw.
     function graphWidth() {
-      return Math.max(160, Math.round((resizing && width !== null ? width : container.clientWidth) || 320));
+      const known = resizing ? width ?? observedWidth : null;
+      return Math.max(160, Math.round((known ?? container.clientWidth) || 320));
     }
 
     function geometry(current) {

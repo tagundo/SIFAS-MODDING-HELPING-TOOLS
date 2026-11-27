@@ -1,13 +1,14 @@
 """Read a selected 3D MV from the game's regional master and asset indexes."""
 
 from collections import deque
-from contextlib import closing
+from contextlib import closing, contextmanager
 import html
 import os
 from pathlib import Path
 import re
 import sqlite3
 import stat
+import threading
 import time
 from urllib.error import HTTPError
 
@@ -29,6 +30,9 @@ MAX_ASSET_BYTES = 64 * 1024 * 1024
 MAX_PACK_BYTES = 2 * 1024 * 1024 * 1024
 _ID = re.compile(r"[1-9][0-9]{0,11}\Z")
 _PACK = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
+# Downloaded packs an import keeps for its other sections (shared_downloads).
+_SHARED_PACK_BYTES = 192 * 1024 * 1024
+_SHARED = threading.local()
 
 
 def _identity(value):
@@ -586,6 +590,36 @@ def _check_deadline(deadline):
         raise ValueError("Reading the selected MV assets took too long. Try again.")
 
 
+@contextmanager
+def shared_downloads():
+    """Within this block, on this thread, a missing pack is downloaded once.
+
+    Several sections of one import often live in the same pack (a group MV
+    downloaded 50 packs, 32 of them distinct: 107 MB instead of 44 MB). The
+    whole pack is kept for the block's other sections, up to _SHARED_PACK_BYTES.
+    """
+    previous = getattr(_SHARED, "packs", None)
+    if previous is None:
+        _SHARED.packs = {}
+    try:
+        yield
+    finally:
+        if previous is None:
+            _SHARED.packs = None
+
+
+def _remote_pack(descriptor, extractor, deadline):
+    held = getattr(_SHARED, "packs", None)
+    meta = descriptor.get("metapack")
+    key = (descriptor["pack_name"], descriptor.get("pack_size"), meta and (meta["name"], meta["offset"], meta.get("size")))
+    if held is not None and key in held:
+        return held[key]
+    pack = game._remote_pack(descriptor, extractor, _ReadJob(), deadline)
+    if held is not None and isinstance(pack, bytes) and sum(map(len, held.values())) + len(pack) <= _SHARED_PACK_BYTES:
+        held[key] = pack
+    return pack
+
+
 def load_asset(repo_root, descriptor, *, download=False, deadline=None):
     """Read one bounded section by catalog identity. Missing local assets return None."""
     if descriptor is None or isinstance(descriptor, dict) and descriptor.get("available") is False:
@@ -608,7 +642,7 @@ def load_asset(repo_root, descriptor, *, download=False, deadline=None):
     payload = _local_section(extractor, Path(repo_root).resolve(), descriptor, deadline)
     if payload is None and download:
         try:
-            pack = game._remote_pack(descriptor, extractor, _ReadJob(), deadline)
+            pack = _remote_pack(descriptor, extractor, deadline)
         except HTTPError as error:
             if error.code in (404, 410):
                 return None
