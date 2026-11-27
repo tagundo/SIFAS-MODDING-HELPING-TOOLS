@@ -1950,6 +1950,10 @@
   const PARTIAL_FRAME = "This shot's length is not whole frames (1/60 s): its camera edits cannot be exported until it is.";
   const PARTIAL_FRAME_EXPORT = "Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.";
   const HIDDEN_KEYS = "Keys past the end of this shot: {count}. They are hidden but still shape its motion, and come back if the shot is made longer.";
+  // Continue plays a clip's source on past the shot. The preview has the shot's samples only, so it
+  // holds the end pose; the game plays on where the source is longer (some split-screen sub
+  // cameras). Once the shot has camera edits the writer ends the source with the shot.
+  const CONTINUE_NOTE = "Continue: the preview holds this shot's end pose. In the game it may play on if the camera clip is longer than the shot.";
   const MODES = [["original", "Original motion"], ["offset", "Offset keys"], ["keys", "Keyframes (replace)"]];
   const LABELS = { x: "X", y: "Y", z: "Z", pan: "Pan", tilt: "Tilt", roll: "Roll", fov: "FOV" };
   const VIEW_LABELS = { x: "Truck", y: "Pedestal", z: "Dolly" };
@@ -2456,6 +2460,8 @@
       if (layers.length && affecting(ctx, shot).length) notes.push(t(ctx, "A camera rig also moves this shot."));
       if (shot.partialFrame) notes.push(t(ctx, PARTIAL_FRAME));
       if (record && record.beyond.length) notes.push(format(ctx, HIDDEN_KEYS, { count: record.beyond.length }));
+      const values = shot.event.values || {};
+      if (shot.native && (values.preExtrapolationMode === 4 || values.postExtrapolationMode === 4) && !differs(ctx, shot.event)) notes.push(t(ctx, CONTINUE_NOTE));
       setText(refs.note, notes.join(" "));
     }
   }
@@ -2655,7 +2661,7 @@
     "Shot {index} / {count}", "Frame {frame} / {last}", "No camera shot at the playhead.", "New camera shot at playhead",
     "Camera shot", "Camera (editor)", "This camera shot cannot be edited.", "The camera samples of this shot cannot be exported.",
     "Switch the preview camera to Free camera to key the view.", "A camera rig also moves this shot.",
-    PARTIAL_FRAME, PARTIAL_FRAME_EXPORT, HIDDEN_KEYS, "The camera could not be baked.",
+    PARTIAL_FRAME, PARTIAL_FRAME_EXPORT, HIDDEN_KEYS, CONTINUE_NOTE, "The camera could not be baked.",
     "Edit camera key", "Move camera key", "Delete camera key", "Duplicate camera key", "Edit camera handle", "Change interpolation",
     "Change handle type", "Apply ease preset", "Change camera mode", "Change offset space", "New camera shot", "Add camera key",
     // Multi-key editing.

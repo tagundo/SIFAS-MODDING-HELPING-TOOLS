@@ -902,6 +902,24 @@ async function extrapolation(browser, url) {
   await setMode(0);
   const none = await pose(4.5);
   assert.notEqual(none.shot && none.shot.event, 'cam:0', 'None: the shot does not extrapolate');
+  // A native shot set to Continue says that the preview holds its end pose, until it has camera
+  // edits (the writer then ends its source with the shot, as the preview does).
+  await page.evaluate(() => { window.probeCtx.project().nativeTimeline = true; });
+  await page.locator('.mv-clip[data-event="cam:0"]').click();
+  await seek(page, 1);
+  const note = () => page.locator('.mv-cam-note').textContent();
+  const continueNote = '계속: 미리보기는 이 샷의 마지막 포즈를 유지합니다. 카메라 클립이 샷보다 길면 게임에서는 이어서 재생될 수 있습니다.';
+  await setMode(4);
+  await page.waitForFunction((text) => document.querySelector('.mv-cam-note')?.textContent === text, continueNote);
+  await setMode(1);
+  await page.waitForFunction(() => document.querySelector('.mv-cam-note')?.textContent === '');
+  await setMode(4);
+  const dolly = page.locator('#mv-camera-fields [data-mv-cam="offset.z"]');
+  await dolly.fill('1');
+  await dolly.press('Tab');
+  await page.waitForFunction(() => !!MVStudio.getState().project.editor?.camera?.shots?.['cam:0']);
+  await page.waitForFunction(() => document.querySelector('.mv-cam-note')?.textContent === '');
+  assert.equal(await note(), '', 'an edited shot ends with its source');
   assert.deepEqual(errors, []);
   await page.close();
 }

@@ -2645,6 +2645,9 @@ _MV_EDITOR_C_TRANSLATIONS = {
     "Keys past the end of this shot: {count}. They are hidden but still shape its motion, and come back if the shot is made longer.": (
         "이 샷의 끝 뒤에 있는 키: {count}개. 숨겨져 있지만 움직임에는 계속 반영되며, 샷을 늘리면 다시 나타납니다.",
         "このショットの終わりより後のキー：{count} 個。非表示ですが動きには反映され、ショットを長くすると戻ります。"),
+    "Continue: the preview holds this shot's end pose. In the game it may play on if the camera clip is longer than the shot.": (
+        "계속: 미리보기는 이 샷의 마지막 포즈를 유지합니다. 카메라 클립이 샷보다 길면 게임에서는 이어서 재생될 수 있습니다.",
+        "続ける：プレビューはこのショットの最後のポーズを保ちます。カメラクリップがショットより長いと、ゲームでは再生が続くことがあります。"),
     "The camera could not be baked.": ("카메라를 굽지 못했습니다.", "カメラを焼き込めませんでした。"),
     "Edit camera key": ("카메라 키 편집", "カメラキーを編集"),
     "Add camera key": ("카메라 키 추가", "カメラキーを追加"),
