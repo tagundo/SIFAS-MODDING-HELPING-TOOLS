@@ -407,6 +407,66 @@ def _character_choices(repo_root):
     return [{"value": row["value"], "label": row["labels"]["en"], "labels": row["labels"]} for row in rows]
 
 
+def ships_own_face(context):
+    """Whether the opened costume ZIP ships its own runtime face to the game.
+
+    A reopened Rina scene, and the originals copy saved with its scene, always
+    declare the face they keep for authoring (the original the face edits are
+    made from). Only the scene's own record says whether its Mod ZIP shipped a
+    face (manifest ``dependencies``); without one the costume uses the game's
+    face. Any other costume ZIP ships the face its manifest declares.
+    """
+    from . import viewer_scene_roles
+    scene = viewer_scene_roles.session_metadata(context.get("model_id")) if context.get("model_id") else None
+    if scene is not None:
+        return scene.get("face_included") is True
+    return bool(_manifest_metadata(context, "en").get("has_face"))
+
+
+MAX_CATALOG_FACE_FILES = 2048
+_CATALOG_FACE = re.compile(r"ch\d{4}_[0-9a-f]{24}\.unity\Z")
+
+
+def catalog_face_cabs(context, face_cache_root):
+    """CAB names of the faces an opened scene keeps only for authoring that the
+    game provides itself.
+
+    Leaving such a face out of a Mod ZIP leaves its body depending on the
+    game's own face. A face counts only when the costume ships no runtime face
+    (``ships_own_face``: any other costume ZIP that declares a face ships it)
+    and its bytes are exactly a catalog original this server decrypted into
+    its face cache (model_faces names those files after their catalog
+    descriptor and records their SHA beside them). Any other face, a missing
+    cache, or a changed cached copy proves nothing.
+    """
+    from . import viewer_scene_roles
+    if face_cache_root is None or ships_own_face(context):
+        return frozenset()
+    from . import bundle_identity, model_faces
+    declared, proven = {}, set()
+    try:
+        for container in context["containers"]:
+            if zipfile.is_zipfile(io.BytesIO(container["raw"])):
+                for raw in viewer_scene_roles._literal_faces(container["raw"]).values():
+                    declared[hashlib.sha256(raw).hexdigest()] = raw
+        directory = Path(face_cache_root) / "models"
+        if not declared or directory.is_symlink() or not directory.is_dir():
+            return frozenset()
+        with os.scandir(directory) as entries:
+            for entry in islice(entries, MAX_CATALOG_FACE_FILES):
+                if not _CATALOG_FACE.fullmatch(entry.name) or not entry.is_file(follow_symlinks=False):
+                    continue
+                if (model_faces._meta(entry.path) or {}).get("sha256") not in declared:
+                    continue
+                data = model_faces._cached(entry.path)
+                if data is not None:
+                    proven.add(hashlib.sha256(data).hexdigest())
+        return frozenset(name.lower() for digest in proven & set(declared)
+                         for name in bundle_identity._cab_names(declared[digest]))
+    except (OSError, ValueError, KeyError, SyntaxError, zipfile.BadZipFile):
+        return frozenset()
+
+
 def metadata(context, *, repo_root, cache_root, language="en"):
     """Small UI hints; all packaging identities are verified again on Save."""
     from webtools.core.charinfo import NAMES
@@ -420,9 +480,10 @@ def metadata(context, *, repo_root, cache_root, language="en"):
               "characters": _character_choices(repo_root)}
     manifest = _manifest_metadata(context, language)
     result["hasFaceCompanions"] = result["hasFaceCompanions"] or bool(manifest.get("has_face"))
-    # The opened costume ZIP declares its own face (a reopened Mod ZIP or
-    # scene): Save mod ZIP keeps it unless the person leaves it out.
-    result["faceIncluded"] = bool(manifest.get("has_face"))
+    # The opened costume ZIP ships its own face (a reopened Mod ZIP, or a
+    # scene whose Mod ZIP included it): Save mod ZIP keeps it unless the
+    # person leaves it out. A scene saved without its face keeps that choice.
+    result["faceIncluded"] = ships_own_face(context)
     if manifest.get("name"):
         result["nameBase"] = manifest["name"][:120]
     declared = ({code: manifest["names"].get(code) or result["nameBase"] for code in model_labels.LANGUAGES}
@@ -846,7 +907,7 @@ def _source_costume(metadata):
 
 def create_package(token, state, *, output_root, repo_root, cache_root, display_name,
                    character_id=None, counterpart_path=None, selected_variant=None, thumbnail_token="", mesh_state=None,
-                   include_face_edits=None, name_parts=None, language="en", job):
+                   include_face_edits=None, name_parts=None, language="en", face_cache_root=None, job):
     from webtools.core import model_edits, viewer_mod_package, viewer_mod_sources, viewer_mod_pair_edits, viewer_scene_roles
     name = validate_options(display_name, character_id, counterpart_path, selected_variant)
     name_parts = validate_name_parts(name_parts)
@@ -920,6 +981,8 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
                  else name_bases(result.get("metadata"), owner, repo_root=repo_root))
         names = localized_mod_names(name, name_parts, bases, language)
         source_costume = _source_costume(result.get("metadata"))
+        # Leaving out a face the game itself provides leaves nothing dangling.
+        stock_faces = catalog_face_cabs(context, face_cache_root) if include_face_edits is False else frozenset()
         packed = viewer_mod_package.package_saved_export(package_result, Path(result["recipe_path"]).parent / "mod",
             display_name=name, chara_id=owner, pair=pair,
             log=job.log, should_stop=job.should_stop,
@@ -927,6 +990,7 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
             **({"source_costume": source_costume} if source_costume else {}),
             **({"face_companions": faces} if include_face_edits and faces else {}),
             **({"include_face_edits": include_face_edits} if include_face_edits is not None else {}),
+            **({"catalog_face_cabs": stock_faces} if stock_faces else {}),
             **({"thumbnail": thumbnail} if thumbnail is not None else {}))
         result["face_identity"] = packed.get("face_identity", [])
         if viewer_scene_roles.should_package(context, normalized, packed, token):

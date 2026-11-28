@@ -12,9 +12,12 @@
  *
  * With ELICHIKA_ROOT (an Elichika tree with assets/db and static), the real
  * cases import member suits from Game assets (no download) and drive Save ->
- * Re-edit from original -> Save mod ZIP, and package Rina 302092002's Normal
- * face view as a scene, reopen it in the board view and Save mod ZIP with the
- * face option as it opens, with nothing replaced.
+ * Re-edit from original -> Save mod ZIP, then reopen that Mod ZIP (the face
+ * option off), include the face and reopen it again (on, and refused when
+ * left out). Rina 302092002's Normal face view is packaged as a scene without
+ * and with its face; each board view starts with the option as that Mod ZIP
+ * was saved, the one without a face also after Save and Re-edit from
+ * original, and Save mod ZIP works as it opens, with nothing replaced.
  * Run with VIEWER_PYTHON selecting a Python with the product dependencies. */
 'use strict';
 const assert = require('assert'), fs = require('fs'), net = require('net'), os = require('os'), path = require('path');
@@ -263,6 +266,80 @@ async function fixtureCases(browser) {
   } finally { await stopServer(server); }
 }
 
+// Whether a saved Mod ZIP makes the game load a face of its own ('none' or 'face').
+function shippedFace(packagePath) {
+  const code = ['import ast, sys, zipfile', 'from webtools.core import viewer_scene_format as fmt', 'path = sys.argv[1]',
+    'if fmt.is_scene_package(path):',
+    '    faces = [row["facedynamic"] for row in fmt.read_package(path)["manifest"]["dependencies"].values()]',
+    'else:',
+    '    with zipfile.ZipFile(path) as archive:',
+    '        text = archive.read(next(n for n in archive.namelist() if n.endswith("modinstall.txt"))).decode("utf-8-sig")',
+    '    values = {node.targets[0].id: ast.literal_eval(node.value) for node in ast.parse(text).body}',
+    '    faces = [values.get("costume_facedynamic_file"), values.get("costume_facedynamic_file_ios")]',
+    'print("face" if any(faces) else "none")'].join('\n');
+  const out = spawnSync(python, ['-c', code, packagePath], { cwd: product, encoding: 'utf8', env: { ...process.env, PYTHONPATH: product } });
+  assert.equal(out.status, 0, out.stderr);
+  return out.stdout.trim();
+}
+
+async function saveModZip(page) {
+  await (await show(page, '#viewer-save-mod')).click();
+  await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && ['done', 'error'].includes(ModelViewer.getState().persistence.status));
+  return persistence(page);
+}
+
+async function editRinaMouth(page, done) {
+  await openModel(page, done.output_paths);
+  const mouth = (await page.evaluate(() => ModelViewer.getEditingMetadata().outlines)).meshes.find(row => row.name === 'Mouth');
+  await page.locator('#viewer-outline-card').evaluate(node => { node.open = true; });
+  await (await show(page, '#viewer-outline-mesh')).selectOption(mouth.id);
+  await (await show(page, '#viewer-outline-number')).fill('140'); await page.locator('#viewer-outline-number').dispatchEvent('input');
+  assert.equal(await page.locator('#viewer-mod-include-face').isChecked(), false, 'An automatic face starts off');
+}
+
+async function realRinaSceneWithoutFace(page, strings, done) {
+  // Normal face view: a Mouth outline edit saved with the face option off ships no face.
+  await editRinaMouth(page, done);
+  const first = await saveModZip(page);
+  assert(!first.error && /-scene\.zip$/.test(first.modPackage.packagePath), 'Scene Mod ZIP without the face: ' + first.error);
+  assert.equal(shippedFace(first.modPackage.packagePath), 'none');
+  // Its board view keeps that choice: the option starts off and says the game's face is used.
+  await openModel(page, [first.modPackage.packagePath]);
+  await page.waitForFunction(() => !document.getElementById('viewer-save-held-note').hidden);
+  const option = await show(page, '#viewer-mod-include-face');
+  assert.equal(await option.isChecked(), false, 'A scene saved without its face reopens with the option off');
+  assert.equal(await option.isDisabled(), false, 'The face can still be included on request');
+  const gameFace = strings["Face and mouth edits will not be applied in game. This costume uses the game's original face."];
+  assert(/[가-힣]/.test(gameFace));
+  assert.equal((await page.locator('#viewer-mod-face-help').innerText()).trim(), gameFace);
+  await page.screenshot({ path: path.join(evidence, 'rina-board-without-face-ko.png') });
+  // Save mod ZIP as it opens ships no face; ticked, it ships the edited face; unticked again is not refused.
+  const board = await saveModZip(page);
+  assert(!board.error && /-scene\.zip$/.test(board.modPackage.packagePath), 'Board view Save mod ZIP as it opens: ' + board.error);
+  assert.equal(shippedFace(board.modPackage.packagePath), 'none', 'The default Save mod ZIP ships no face');
+  await option.check();
+  assert.equal((await page.locator('#viewer-mod-face-help').innerText()).trim(),
+    strings["Only this costume uses the included face. Other costumes and the character's shared face stay unchanged."]);
+  const ticked = await saveModZip(page);
+  assert(!ticked.error, 'Board view Save mod ZIP with the face: ' + ticked.error);
+  assert.equal(shippedFace(ticked.modPackage.packagePath), 'face');
+  await option.uncheck();
+  const unticked = await saveModZip(page);
+  assert(!unticked.error, 'Leaving out the game\'s own face is not refused: ' + unticked.error);
+  assert.equal(shippedFace(unticked.modPackage.packagePath), 'none');
+  // Save, then Re-edit from original: the saved scene keeps the choice.
+  await clickSave(page);
+  await (await show(page, '#viewer-reedit-original')).click();
+  await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && ['restored', 'error'].includes(ModelViewer.getState().persistence.status));
+  assert(!(await persistence(page)).error, (await persistence(page)).error);
+  assert.equal(await page.locator('#viewer-mod-include-face').isChecked(), false, 'Re-edit from original keeps the face option off');
+  const reedit = await saveModZip(page);
+  assert(!reedit.error && /-scene\.zip$/.test(reedit.modPackage.packagePath), 'Re-edit Save mod ZIP: ' + reedit.error);
+  assert.equal(shippedFace(reedit.modPackage.packagePath), 'none');
+  report.cases.push({ name: 'real Rina scene saved without its face (ko)', help: gameFace,
+    packages: [board, ticked, unticked, reedit].map(item => [path.basename(item.modPackage.packagePath), shippedFace(item.modPackage.packagePath)]) });
+}
+
 async function realRinaBoard(browser, server) {
   // Normal face view of Rina 302092002: a Mouth outline edit, packaged as a scene with its face.
   const job = await (await fetch(server.url + '/api/viewer/game/import?lang=ko', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: server.url },
@@ -271,17 +348,14 @@ async function realRinaBoard(browser, server) {
   const done = events.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).find(item => item.type === 'done');
   assert(done && done.status === 'done' && done.output_paths.length === 1, 'Rina import: ' + JSON.stringify(done));
   const { page, context, errors, strings } = await openPage(browser, server.url, true);
-  await openModel(page, done.output_paths);
-  const mouth = (await page.evaluate(() => ModelViewer.getEditingMetadata().outlines)).meshes.find(row => row.name === 'Mouth');
-  await page.locator('#viewer-outline-card').evaluate(node => { node.open = true; });
-  await (await show(page, '#viewer-outline-mesh')).selectOption(mouth.id);
-  await (await show(page, '#viewer-outline-number')).fill('140'); await page.locator('#viewer-outline-number').dispatchEvent('input');
-  assert.equal(await page.locator('#viewer-mod-include-face').isChecked(), false, 'An automatic face starts off');
+  await realRinaSceneWithoutFace(page, strings, done);
+  await editRinaMouth(page, done);
   await (await show(page, '#viewer-mod-include-face')).check();
   await (await show(page, '#viewer-save-mod')).click();
   await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && (ModelViewer.getState().persistence.modPackage || ModelViewer.getState().persistence.error));
   const first = await persistence(page);
   assert(!first.error && /-scene\.zip$/.test(first.modPackage.packagePath), 'Normal face scene Mod ZIP: ' + first.error);
+  assert.equal(shippedFace(first.modPackage.packagePath), 'face');
   // Its board view: the face edits are held, the face option starts on, and Save mod ZIP works as it opens.
   await openModel(page, [first.modPackage.packagePath]);
   await page.waitForFunction(() => !document.getElementById('viewer-save-held-note').hidden);
@@ -319,7 +393,7 @@ async function realCases(browser, root) {
       const events = await (await fetch(server.url + '/api/jobs/' + job.job_id + '/events')).text();
       const done = events.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).find(item => item.type === 'done');
       assert(done && done.status === 'done' && done.output_paths.length === 1, 'Game asset import: ' + JSON.stringify(done));
-      const { page, context, errors } = await openPage(browser, server.url, true);
+      const { page, context, errors, strings } = await openPage(browser, server.url, true);
       await openModel(page, done.output_paths);
       const opened = await page.evaluate(() => ({ faces: ModelViewer.getState().faces, outlines: ModelViewer.getEditingMetadata().outlines }));
       assert.equal(opened.faces.status, 'added', 'The body opens with its automatic face');
@@ -345,6 +419,27 @@ async function realCases(browser, root) {
       assert(packaged.modPackage && fs.existsSync(packaged.modPackage.packagePath));
       await page.screenshot({ path: path.join(evidence, 'reedit-mod-zip-' + suit + '.png') });
       report.cases.push({ name: 'real re-edit Mod ZIP', suit, prepared, package: path.basename(packaged.modPackage.packagePath), status: await statusText(page) });
+      // Reopened Mod ZIPs keep the face option of their own save: off without a face of
+      // their own; on with one, which is private to the costume and cannot be left out.
+      assert.equal(shippedFace(packaged.modPackage.packagePath), 'none', 'An automatic face stays out by default');
+      await openModel(page, [packaged.modPackage.packagePath]);
+      const option = await show(page, '#viewer-mod-include-face');
+      assert.equal(await option.isChecked(), false, 'A Mod ZIP saved without a face reopens with the option off');
+      await option.check();
+      const withFace = await saveModZip(page);
+      assert(!withFace.error, 'Save mod ZIP with the face: ' + withFace.error);
+      assert.equal(shippedFace(withFace.modPackage.packagePath), 'face');
+      await openModel(page, [withFace.modPackage.packagePath]);
+      const own = await show(page, '#viewer-mod-include-face');
+      assert.equal(await own.isChecked(), true, 'A Mod ZIP with its own face reopens with the option on');
+      assert.equal((await page.locator('#viewer-mod-face-help').innerText()).trim(),
+        strings["This costume ZIP includes its own face, so it is included by default. Only this costume uses it; other costumes and the character's shared face stay unchanged."]);
+      await own.uncheck();
+      const refused = await saveModZip(page);
+      assert(refused.error, 'Leaving out a Mod ZIP\'s own face is refused');
+      assert.equal(await statusText(page), strings["This costume's body uses the face its ZIP includes, so that face cannot be left out. Tick 'Include face and mouth edits for this costume' to keep it; no Mod ZIP was created."]);
+      report.cases.push({ name: 'real reopened member Mod ZIPs keep their face option (ko)', suit,
+        packages: [path.basename(packaged.modPackage.packagePath), path.basename(withFace.modPackage.packagePath)] });
       assert.deepStrictEqual(errors, []);
       await context.close();
     }

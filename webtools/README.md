@@ -592,12 +592,17 @@ repacking is unnecessary and the source files remain unchanged.
   its own face rows replace them and the status says how many were released
   and which kind of rows did it. An outline edit of only the face keeps both
   board and unmasked bodies original.
-  A costume ZIP that already includes its face (a reopened Mod ZIP or Rina
-  scene costume, or its **Re-edit from original**) has **Include face and
-  mouth edits for this costume** on by default, so **Save mod ZIP** keeps that
-  face. When its body uses that face, turning the option off is refused with a
-  note to tick it again. A face the preview completed automatically stays off
-  by default, as before.
+  A costume ZIP that ships its own face (a reopened Mod ZIP saved with
+  **Include face and mouth edits for this costume**, or a Rina scene costume
+  whose Mod ZIP included the face, and their **Re-edit from original**) has the
+  option on by default, so **Save mod ZIP** keeps that face. A Rina scene
+  saved with the option off keeps its face only to author face edits and
+  reopens, also after **Save** and **Re-edit from original**, with the option
+  off: its Mod ZIP uses the game's face unless you tick it. Turning the option
+  off is refused, with a note to tick it again, only where the body uses a
+  face the game does not have: a face the ZIP ships, or one whose bytes are
+  not the game's original as the face cache holds it. A face the preview
+  completed automatically stays off by default, as before.
   Previously installed Rina mods are not rewritten automatically. Reopen the
   original ZIP or saved edited source, choose **Save mod ZIP** or **Add to game**,
   then select the newly installed costume. Old app versions cannot install

@@ -451,7 +451,11 @@ def expand_scene(path, directory, variant=None, *, platform=None):
             "recipe": recipe, "face_recipes": face_recipes, "other_recipes": other_recipes,
             "metadata": {**{key: copy.deepcopy(manifest[key]) for key in ("display_name", "source_suit_id", "source_provenance")},
                          "target_member_id": manifest.get("target_member_id", 209),
-                         "default_variant": manifest.get("default_variant", "primary")}}
+                         "default_variant": manifest.get("default_variant", "primary"),
+                         # The originals ZIP above always declares the face kept
+                         # for authoring; only these dependencies say whether
+                         # the scene's Mod ZIP ships a face to the game.
+                         "face_included": any(row["facedynamic"] is not None for row in manifest["dependencies"].values())}}
 
 
 def counterpart_face_proof(session, index):
@@ -610,9 +614,15 @@ def remember_saved_originals(token, context, paths):
 
 
 def _binding_metadata(metadata, platforms):
-    """The scene metadata a binding may carry, checked as a scene manifest's."""
+    """The scene metadata a binding may carry, checked as a scene manifest's.
+
+    ``face_included`` (whether the scene's Mod ZIP shipped a runtime face) is
+    absent from bindings written before it existed; those count as no face.
+    """
     keys = {"display_name", "source_suit_id", "source_provenance", "target_member_id", "default_variant"}
-    if type(metadata) is not dict or set(metadata) != keys:
+    if type(metadata) is not dict or set(metadata) not in (keys, keys | {"face_included"}):
+        return None
+    if "face_included" in metadata and type(metadata["face_included"]) is not bool:
         return None
     name, source, provenance = metadata["display_name"], metadata["source_suit_id"], metadata["source_provenance"]
     target, default = metadata["target_member_id"], metadata["default_variant"]

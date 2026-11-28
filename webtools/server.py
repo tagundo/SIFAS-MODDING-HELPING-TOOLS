@@ -886,11 +886,14 @@ class Handler(BaseHTTPRequestHandler):
                                 result["editing"]["allowEmptySceneReset"] = True
                                 # A scene package names its own target member
                                 # (Rina's board shared with another member).
+                                # The scene keeps its face for authoring; it is
+                                # included by default only if its Mod ZIP shipped it.
                                 scene_names = viewer_mod_flow.scene_name_bases(Path.cwd(), expanded.scene_context["metadata"])
                                 result["editing"]["modPackaging"].update(
                                     nameBase=scene_names.get(self._lang(), scene_names["en"]),
                                     nameBases=scene_names, nameTexts=None, nameOwner=None,
-                                    characterId=209, requiresCounterpart=False, sceneRoles=True)
+                                    characterId=209, requiresCounterpart=False, sceneRoles=True,
+                                    faceIncluded=viewer_mod_flow.ships_own_face(editing_context))
                             else:
                                 # Re-edit from original: the saved copy of a
                                 # reopened scene's canonical originals.
@@ -903,7 +906,8 @@ class Handler(BaseHTTPRequestHandler):
                                     result["editing"]["modPackaging"].update(
                                         nameBase=scene_names.get(self._lang(), scene_names["en"]),
                                         nameBases=scene_names, nameTexts=None, nameOwner=None,
-                                        characterId=209, requiresCounterpart=False, sceneRoles=True)
+                                        characterId=209, requiresCounterpart=False, sceneRoles=True,
+                                        faceIncluded=viewer_mod_flow.ships_own_face(editing_context))
                     except (ValueError, OSError) as exc:
                         if getattr(expanded, "scene_context", None):
                             raise
@@ -1420,6 +1424,8 @@ class Handler(BaseHTTPRequestHandler):
             if not filebrowser.is_within_allowed(output_root) or not filebrowser.is_within_allowed(cache_root):
                 raise PermissionError("The Mod ZIP output folder is outside the allowed folders.")
             runtime_root = Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve()
+            # The face cache prepare completes faces into (catalog originals).
+            face_cache_root = os.path.join(os.path.realpath(default_sukusta_dir("")), ".viewer-cache")
             job = MANAGER.create("viewer_body_mod")
 
             def package(current):
@@ -1429,7 +1435,8 @@ class Handler(BaseHTTPRequestHandler):
                     display_name=params["display_name"], character_id=params["character_id"],
                     counterpart_path=counterpart, selected_variant=params["selected_variant"],
                     thumbnail_token=thumbnail_token, mesh_state=mesh_state,
-                    include_face_edits=include_face_edits, name_parts=name_parts, language=language, job=current)
+                    include_face_edits=include_face_edits, name_parts=name_parts, language=language,
+                    face_cache_root=face_cache_root, job=current)
                 current._viewer_edit_result = result
                 for path in result["output_paths"]:
                     current.add_output(path)
