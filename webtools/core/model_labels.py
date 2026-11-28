@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 import threading
+from types import MappingProxyType
 import zipfile
 
 LANGUAGES = ("en", "ko", "ja")
@@ -286,6 +287,11 @@ def record_label(root, record, *, names=None, operations=(), costume=None):
         owner = _record_owner(names, region, suit_id, record.get("owner"))
         member = member_names(root, owner, region=region, names=names) if owner is not None else None
         named_costume = costume_names(root, region, suit_id, names=names)
+        # An added costume installed from an older Mod ZIP: its code-like
+        # name reads as the game costume it names.
+        hint = declared_hint(root, named_costume, owner, names=names) if named_costume else None
+        if hint and all(_clean(value) for value in hint["text"].values()):
+            named_costume = {language: _clean(value) for language, value in hint["text"].items()}
     finally:
         if own:
             names.close()
@@ -362,8 +368,92 @@ def member_choices(root, owners, *, region="gl", names=None):
             names.close()
 
 
+# An older Mod ZIP's name carries the cache file's code
+# ("ch0004_suit100041001_primary · 외곽선"); platform conversion reads the
+# same code as a candidate (costume_platform_source).
+DISPLAY_HINT = re.compile(r"(?<![a-z0-9])ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?=$|[^a-z0-9])", re.I)
+# The automatic Mod name's edit labels (viewer-persistence.js); a code-named
+# name was installed with them in one language for every language.
+_NAME_LABELS = ("Costume transplant", "Costume part transplant", "Lower body replacement", "Mesh editing",
+                "Mesh deletion", "Vertex positions", "Skin weights", "Costume colour", "Skin tone", "Baked blush",
+                "Texture painting", "Outlines", "Physics", "Accessory Un-clip")
+_BODY_LABELS = ("Breast size", "Hip size", "Thigh thickness", "Waist thickness", "Skirt", "Left thigh", "Right thigh")
+
+
+def _relabel(segment, language):
+    """One edit label of an older name in ``language``; anything else as it is."""
+    for key in _NAME_LABELS:
+        if segment in {_tr(key, code) for code in LANGUAGES}:
+            return _tr(key, language)
+    for key in _BODY_LABELS:
+        for code in LANGUAGES:
+            known = _tr(key, code)
+            if segment.startswith(known + " "):
+                return _tr(key, language) + segment[len(known):]
+    return segment
+
+
+def declared_hint(root, text, owner, *, names=None):
+    """Read an older Mod ZIP's code-like name, or None.
+
+    ``text`` is the declared name per language. Only a code of this same
+    member (its native ``chNNNN``) whose costume number is that member's game
+    costume in the GL or JP masterdata counts, and only one such costume.
+    Returns ``{"text": per language, "counterpart": record}``: the name with
+    the code read as the game's costume name, without the member (``titled``
+    puts it back) and with its edit labels in each language, and the costume
+    record the code names (a conversion candidate it verifies again; it names
+    every region whose masterdata has it, as the code itself did).
+    """
+    from .member_identity import member_from_native
+    if type(owner) is not int or not isinstance(text, dict):
+        return None
+    found = set()
+    for value in text.values():
+        for hint in DISPLAY_HINT.finditer(value if isinstance(value, str) else ""):
+            if member_from_native(int(hint.group(1))) == owner:
+                found.add((int(hint.group(2)), hint.group(3).lower()))
+    if len(found) != 1:
+        return None
+    suit, variant = found.pop()
+    own = names is None
+    names = names or _Names(root)
+    try:
+        regions = [region for region in ("gl", "jp") if _record_owner(names, region, suit, None) == owner]
+        costume = next((named for named in (costume_names(root, region, suit, names=names) for region in regions)
+                        if named), None)
+        member = member_names(root, owner, names=names) if regions else None
+    finally:
+        if own:
+            names.close()
+    if costume is None or member is None:
+        return None
+    aliases = _aliases(owner, member)
+    read = {}
+    for language in LANGUAGES:
+        value = text.get(language) if isinstance(text.get(language), str) else text.get("en")
+        value = untitled(owner, member[language], value, aliases) if isinstance(value, str) else ""
+        shown = untitled(owner, member[language], costume[language], aliases)
+
+        def replace(hint):
+            same = member_from_native(int(hint.group(1))) == owner and int(hint.group(2)) == suit
+            return shown if same else hint.group(0)
+        segments = []
+        for segment in DISPLAY_HINT.sub(replace, value).split(" · "):
+            segment = _relabel(segment, language)
+            if segment and segment not in segments:
+                segments.append(segment)
+        read[language] = " · ".join(segments)
+    return {"text": read, "counterpart": {"region": regions[0], "suitId": suit, "variant": variant, "owner": owner,
+                                          **({"regions": regions} if len(regions) > 1 else {})}}
+
+
 def text_label(root, text, owner=None, *, names=None):
-    """Display parts for a name a Mod ZIP or scene package declares."""
+    """Display parts for a name a Mod ZIP or scene package declares.
+
+    An older Mod ZIP's code-like name is read as its game costume
+    (:func:`declared_hint`); ``hint`` is then the costume record it names.
+    """
     if isinstance(text, str):
         text = {language: text for language in LANGUAGES}
     if not isinstance(text, dict):
@@ -371,10 +461,19 @@ def text_label(root, text, owner=None, *, names=None):
     values = {language: _clean(text.get(language)) or _clean(text.get("en")) for language in LANGUAGES}
     if not all(values.values()):
         return None
+    hint = declared_hint(root, values, owner, names=names)
+    if hint and all(_clean(value) for value in hint["text"].values()):
+        values = {language: _clean(value) for language, value in hint["text"].items()}
+    else:
+        hint = None
     member = member_names(root, owner, names=names) if type(owner) is int else None
     base = _titled_names(owner, member, values)
-    return {"label": base, "member": member, "costume": values, "view": None, "named": True,
-            "nameBase": dict(base), "nameText": _untitled_names(owner, member, base), "owner": owner if member else None}
+    parts = {"label": base, "member": member, "costume": values, "view": None, "named": True,
+             "nameBase": dict(base), "nameText": _untitled_names(owner, member, base), "owner": owner if member else None}
+    if hint:
+        counterpart = hint["counterpart"]
+        parts.update(hint=counterpart, region=counterpart["region"], suitId=counterpart["suitId"])
+    return parts
 
 
 _FACE_FILE = re.compile(r"ch([0-9]{4})_[0-9a-f]{24}\.unity\Z")
@@ -459,47 +558,136 @@ def _row_operations(row):
     return [value for value in listed if value in TRANSPLANTS] if isinstance(listed, list) else []
 
 
-def trace(path, digest, cache_root):
-    """Follow verified receipts from these bytes to the game record they are.
+def _parent_proof(parent):
+    """A receipt's parent as a proof to follow: a whole file or one ZIP member."""
+    if (not isinstance(parent, dict) or not isinstance(parent.get("path"), str) or not parent["path"]
+            or not isinstance(parent.get("sha256"), str) or not isinstance(parent.get("containerSha256"), str)):
+        return None
+    member = parent.get("member")
+    if member is None:
+        if parent["containerSha256"] != parent["sha256"]:
+            return None
+    elif not isinstance(member, str) or not 0 < len(member) <= 4096:
+        return None
+    return {"path": str(Path(parent["path"]).resolve()), "containerSha256": parent["containerSha256"],
+            "member": member, "sha256": parent["sha256"]}
 
+
+def trace(start, cache_root):
+    """Follow verified receipts from the bytes ``start`` names to their wearer.
+
+    ``start`` is a source proof: a whole file, or one model member of a ZIP
+    (a transplant onto a Mod ZIP wearer, or an edit of one, writes a ZIP).
     An edited preview copy, a mesh save and a transplant result each carry a
     derived receipt naming the bytes they came from. The first parent is the
     wearer and is followed to the original game record: the bytes'
-    container, which platform conversion matches too. A donor is never
-    followed for that record; the newest costume transplant on the way only
-    notes its donor (``donor``), whose costume the result wears.
+    container, which platform conversion matches too. A wearer inside a ZIP
+    is followed to the ZIP member no receipt describes: a Mod ZIP, whose own
+    declared names describe the wearer (``record`` None). A donor is never
+    followed for that; the newest costume transplant on the way only notes
+    its donor (``donor``), whose costume the result wears.
 
     Returns ``{"record", "derived", "operations", "donor"}`` or None;
     ``operations`` are the transplants, oldest first; ``donor`` is None or
     ``{"proof": <donor proof or None>}``.
     """
     from . import viewer_physics_runtime
-    proof = {"path": str(path), "containerSha256": digest, "member": None, "sha256": digest}
-    done, donor = [], None
+    proof, done, donor = dict(start), [], None
+
+    def traced(record, depth):
+        operations = list(dict.fromkeys(value for chunk in reversed(done) for value in chunk))
+        return {"record": record, "derived": depth > 0, "operations": operations, "donor": donor}
     for depth in range(viewer_physics_runtime._MAX_DERIVED_DEPTH):
-        record = _bound_record(proof["path"], proof["sha256"], cache_root)
-        if record is not None:
-            operations = list(dict.fromkeys(value for chunk in reversed(done) for value in chunk))
-            return {"record": record, "derived": depth > 0, "operations": operations, "donor": donor}
+        if proof["member"] is None:
+            record = _bound_record(proof["path"], proof["sha256"], cache_root)
+            if record is not None:
+                return traced(record, depth)
         try:
             row = viewer_physics_runtime._read_receipt(cache_root, proof)
         except (OSError, ValueError, TypeError, KeyError):
             return None
-        parents = row.get("parents") if row else None
+        if row is None:
+            # A Mod ZIP member that nothing derived: that ZIP was the wearer.
+            return traced(None, depth) if proof["member"] is not None and depth > 0 else None
+        parents = row.get("parents")
         if not isinstance(parents, list) or not 1 <= len(parents) <= 2:
             return None
-        parent = parents[0]
-        # A wearer inside a ZIP is not one file this server imported.
-        if (not isinstance(parent, dict) or parent.get("member") is not None
-                or not isinstance(parent.get("path"), str) or not isinstance(parent.get("sha256"), str)
-                or parent.get("containerSha256") != parent.get("sha256")):
+        parent = _parent_proof(parents[0])
+        if parent is None:
             return None
         done.append(_row_operations(row))
         if donor is None and pair_operation(row) == "costume":
             donor = {"proof": parents[1] if isinstance(parents[1], dict) else None}
-        proof = {"path": str(Path(parent["path"]).resolve()), "containerSha256": parent["sha256"],
-                 "member": None, "sha256": parent["sha256"]}
+        proof = parent
     return None
+
+
+# A traced result that cannot be named: never the costume it replaced.
+UNNAMED = MappingProxyType({})
+
+
+def _remember(key, compute):
+    with _DIGEST_LOCK:
+        if key in _DIGESTS:
+            _DIGESTS.move_to_end(key)
+            return _DIGESTS[key]
+    value = compute()
+    with _DIGEST_LOCK:
+        _DIGESTS[key] = value
+        while len(_DIGESTS) > 256:
+            _DIGESTS.popitem(last=False)
+    return value
+
+
+def _member_digest(archive, member, key):
+    """SHA-256 of one bounded ZIP member (remembered per container digest), or None."""
+    try:
+        info = archive.getinfo(member)
+    except KeyError:
+        return None
+    if info.is_dir() or not 0 < info.file_size <= MAX_FILE_BYTES:
+        return None
+
+    def compute():
+        with archive.open(info) as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+    return _remember(("member",) + key + (member,), compute)
+
+
+def _receipt_members(cache_root, path, digest, source=None):
+    """Proofs for the members of the ZIP at ``path`` its derived receipt names.
+
+    A transplant onto a Mod ZIP wearer (or an edit of one) writes a ZIP whose
+    receipt names the model member inside it; that member's bytes must still
+    be the ones it names. ``source`` holds the ZIP's bytes when the caller
+    already read them.
+    """
+    from . import viewer_physics_runtime
+    receipt = viewer_physics_runtime._receipt_path(cache_root, path)
+    if receipt.is_symlink() or not receipt.is_file() or receipt.stat().st_size > viewer_physics_runtime._MAX_DERIVED_BYTES:
+        return []
+    data = json.loads(receipt.read_text(encoding="utf-8"))
+    rows = data.get("sources") if isinstance(data, dict) and data.get("path") == str(path) and data.get("sha256") == digest else None
+    if not isinstance(rows, list) or len(rows) > 8:
+        return []
+    members = dict.fromkeys(row["member"] for row in rows if isinstance(row, dict) and isinstance(row.get("member"), str)
+                            and 0 < len(row["member"]) <= 4096)
+    proofs = []
+    with zipfile.ZipFile(source if source is not None else path) as archive:
+        for member in members:
+            proof = {"path": str(path), "containerSha256": digest, "member": member,
+                     "sha256": _member_digest(archive, member, (str(path), digest))}
+            if proof["sha256"] and viewer_physics_runtime._read_receipt(cache_root, proof):
+                proofs.append(proof)
+    return proofs
+
+
+def _donor_text(parts):
+    """A donor's costume per language without its member, or None."""
+    if not parts or parts is UNNAMED or not parts.get("costume"):
+        return None
+    text = _compose(parts.get("owner"), parts.get("member"), parts["costume"])["nameText"]
+    return text if all(text.values()) else None
 
 
 def _donor_costume(root, proof, cache_root, names, hops):
@@ -507,7 +695,8 @@ def _donor_costume(root, proof, cache_root, names, hops):
 
     The donor file must still be the exact bytes the receipt names. A game
     import (or its edited copy) gives its game costume, a Mod ZIP the names
-    it declares. None when nothing names it.
+    it declares, a donor that is itself a transplant result what it wears.
+    None when nothing names it.
     """
     if hops <= 0 or not isinstance(proof, dict) or not isinstance(proof.get("path"), str):
         return None
@@ -518,38 +707,123 @@ def _donor_costume(root, proof, cache_root, names, hops):
     digest = _digest(path)
     if digest != proof.get("containerSha256"):
         return None
-    if proof.get("member") is None:
+    member = proof.get("member")
+    if member is None:
         if proof.get("sha256") != digest:
             return None
-        parts = _traced_parts(root, path, digest, cache_root, names, hops - 1)
-        if not parts:
+        parts = _proof_parts(root, {"path": str(path), "containerSha256": digest, "member": None, "sha256": digest},
+                             cache_root, names, hops - 1)
+    else:
+        if not isinstance(member, str) or not isinstance(proof.get("sha256"), str):
             return None
-        text = _compose(parts["owner"], parts["member"], parts["costume"])["nameText"] if parts["costume"] else None
-        return {"text": text, "region": parts.get("region"), "suitId": parts.get("suitId")}
-    declared = archive_names(path) if zipfile.is_zipfile(path) else None
-    parts = text_label(root, declared["names"], declared["owner"], names=names) if declared else None
-    return {"text": parts["nameText"] if parts and all(parts["nameText"].values()) else None}
+        parts = _proof_parts(root, {"path": str(path), "containerSha256": digest, "member": member, "sha256": proof["sha256"]},
+                             cache_root, names, hops - 1, archive=path)
+        if parts is None:
+            # A Mod ZIP nothing derived: the names it declares.
+            declared = archive_names(path) if zipfile.is_zipfile(path) else None
+            parts = text_label(root, declared["names"], declared["owner"], names=names) if declared else None
+    if parts is None or parts is UNNAMED:
+        return None
+    return {"text": _donor_text(parts), "region": parts.get("region"), "suitId": parts.get("suitId")}
 
 
-def _traced_parts(root, path, digest, cache_root, names, hops=4):
-    traced = trace(path, digest, cache_root)
+def _archive_label(root, archive, names, operations, costume):
+    """A Mod ZIP's (or scene package's) wearer after transplants: its member
+    and declared costume (or a costume transplant's donor costume) and what
+    was done to it."""
+    declared = archive_names(archive)
+    if not declared:
+        return None
+    owner = declared["owner"]
+    member = member_names(root, owner, names=names) if type(owner) is int else None
+    region = suit = None
+    plain = text_label(root, declared["names"], owner, names=names)
+    if costume is not None:
+        shown, region, suit = costume.get("text"), costume.get("region"), costume.get("suitId")
+    elif plain is None:
+        return None
+    else:
+        shown = plain["nameText"] if all(plain["nameText"].values()) else None
+    if member is None and shown is None:
+        return None
+    parts = {**_compose(owner, member, shown, None, operations), "member": member, "costume": shown, "view": None,
+             "named": shown is not None, "owner": owner if member else None}
+    if region in ("gl", "jp") and type(suit) is int:
+        parts.update(region=region, suitId=suit)
+    if operations:
+        parts["operations"] = list(operations)
+    # The wearer's game costume container: the record the ZIP carries, or
+    # the one its older code-like name names.
+    kept = None if declared["scene"] else kept_record(archive) or (plain or {}).get("hint")
+    if kept:
+        parts["counterpart"] = kept
+    return parts
+
+
+def kept_record(archive):
+    """A viewer Mod ZIP's inert source record as a label counterpart, or None."""
+    from . import viewer_mod_package
+    if hasattr(archive, "seek"):
+        archive.seek(0)
+    with zipfile.ZipFile(archive) as handle:
+        kept = viewer_mod_package.read_source_costume(handle)
+    if not kept:
+        return None
+    return {"region": kept["region"], "suitId": kept["suit_id"], "variant": kept["variant"], "owner": kept["member"],
+            **({"regions": kept["regions"]} if kept.get("regions") else {})}
+
+
+def _proof_parts(root, start, cache_root, names, hops, archive=None):
+    """Label parts for the bytes ``start`` names through their receipts.
+
+    None when no receipt describes them; :data:`UNNAMED` when a costume
+    transplant made them but neither the member nor the donor's costume can
+    be named (the replaced costume is never shown).
+    """
+    traced = trace(start, cache_root)
     if traced is None:
         return None
     costume = None
     if traced["donor"] is not None:
         costume = _donor_costume(root, traced["donor"]["proof"], cache_root, names, hops) or {"text": None}
-    parts = record_label(root, traced["record"], names=names, operations=traced["operations"], costume=costume)
-    if parts:
-        parts["source"] = "derived" if traced["derived"] else "game"
+    if traced["record"] is not None:
+        parts = record_label(root, traced["record"], names=names, operations=traced["operations"], costume=costume)
+    elif archive is not None and start["member"] is not None:
+        parts = _archive_label(root, archive, names, traced["operations"], costume)
+    else:
+        parts = None
+    if not parts:
+        return UNNAMED if costume is not None else None
+    parts["source"] = "derived" if traced["derived"] else "game"
     return parts
 
 
-def bytes_label(path, digest, *, repo_root, cache_root, names=None):
-    """Label parts for exact bytes the server's receipts describe, or None."""
+def _traced_parts(root, path, digest, cache_root, names, hops=4, proofs=None, source=None):
+    archive = source if source is not None else path
+    if proofs is None:
+        if source is not None:
+            source.seek(0)
+        proofs = (_receipt_members(cache_root, path, digest, source) if zipfile.is_zipfile(archive)
+                  else [{"path": str(path), "containerSha256": digest, "member": None, "sha256": digest}])
+    for start in proofs:
+        parts = _proof_parts(root, start, cache_root, names, hops, archive=archive if start["member"] is not None else None)
+        if parts is not None:
+            return parts
+    return None
+
+
+def bytes_label(path, digest, *, repo_root, cache_root, names=None, proofs=None, source=None):
+    """Label parts for exact bytes the server's receipts describe.
+
+    ``proofs`` are the ZIP members to start from (else those its receipt
+    names) and ``source`` the ZIP's bytes when the caller holds them. None
+    when no receipt describes the bytes, :data:`UNNAMED` when one does but
+    nothing can name them.
+    """
     own = names is None
     names = names or _Names(repo_root)
     try:
-        return _traced_parts(repo_root, Path(path), digest, cache_root, names)
+        return _traced_parts(repo_root, Path(path), digest, cache_root, names, proofs=proofs, source=source)
     finally:
         if own:
             names.close()
@@ -622,6 +896,8 @@ def describe(path, *, repo_root, cache_root, names=None):
     names = names or _Names(repo_root)
     try:
         parts = _traced_parts(repo_root, path, digest, cache_root, names)
+        if parts is UNNAMED:
+            return result
         if parts:
             return {**result, **parts}
         if zipfile.is_zipfile(path):

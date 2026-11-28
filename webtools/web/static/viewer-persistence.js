@@ -164,6 +164,8 @@
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
     }
     function modContextKey(c) { return JSON.stringify([c.modelId || "", (c.editing || {}).token || "", c.loadedPaths || []]); }
+    // The most automatic name labels sent with a save (viewer_mod_flow.NAME_PART_LIMIT).
+    var NAME_PART_LIMIT = 64;
     // The texture operations applied now, each once across all textures, in
     // the name's order. The texture tools know several per texture and follow
     // Undo/Redo; a texture row alone names its saved operations (an older row
@@ -566,7 +568,10 @@
       if (snapshot.meshState) body.mesh_state = snapshot.meshState;
       // An untouched automatic name is installed in each game language; the
       // server rebuilds it from these labels and checks it equals this name.
-      if (!manualModName && suggestedParts && name === suggestedName.trim()) body.name_parts = JSON.parse(JSON.stringify(suggestedParts));
+      // A 120-character name holds fewer labels than this; the rest are never
+      // sent (viewer_mod_flow.NAME_PART_LIMIT), so many edited bones cannot
+      // turn the labels into a refused save.
+      if (!manualModName && suggestedParts && name === suggestedName.trim()) body.name_parts = JSON.parse(JSON.stringify(suggestedParts.slice(0, NAME_PART_LIMIT)));
       delete body.thumbnail_mode;
       delete body.thumbnail_fit_full;
       requestController = new global.AbortController(); var signal = requestController.signal;

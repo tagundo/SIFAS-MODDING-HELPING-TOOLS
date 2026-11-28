@@ -171,6 +171,12 @@ def catalog(root, *, language="en", region="", character="", search=""):
                     # named only some languages) uses another language's
                     # name, never the raw dictionary key.
                     name = lookups.localized(region, "m_suit", suit, code) or model_labels._tr("Costume #{id}", code).replace("{id}", str(suit))
+                if model_labels.DISPLAY_HINT.search(name):
+                    # Installed from an older Mod ZIP with a code-like name:
+                    # the game costume that code names, in the page language.
+                    hint = model_labels.declared_hint(root, {language: name for language in model_labels.LANGUAGES}, owner,
+                                                      names=lookups)
+                    name = hint["text"][code] if hint and hint["text"][code] else name
                 label = titled(owner, name)
                 if query and all(query not in text.casefold() for text in (label, member_name(owner)[0], names.get(owner, ""))):
                     continue

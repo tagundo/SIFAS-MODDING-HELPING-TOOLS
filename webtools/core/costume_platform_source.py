@@ -14,6 +14,10 @@ from webtools import filebrowser
 from . import costume_pack_sources, game_models as game, viewer_mod_flow
 from . import viewer_archive, viewer_mod_package, viewer_mod_sources, viewer_physics_runtime
 from .member_identity import member_from_native
+# Anywhere in a display name: a readable name puts the member first
+# ("004 Umi Sonoda · ch0004_suit…_primary · Outlines" for an older Mod ZIP).
+# The viewer's labels read the same code (model_labels.declared_hint).
+from .model_labels import DISPLAY_HINT as _DISPLAY_HINT
 from .viewer_cache import game_models_dir
 
 DIRECTIONS = {"android_to_ios": ("android", "ios"), "ios_to_android": ("ios", "android")}
@@ -22,9 +26,6 @@ AMBIGUOUS = "More than one original costume matches this bundle. Choose the cost
 WRONG_REGION = "The edited bundle's source belongs to a different game region. Select that region or choose the original manually."
 _PREFAB = re.compile(r"assets/llas/resources/characters/models/ch(\d{4})/ch\1_[a-z0-9_]{1,96}_member\.prefab")
 _FILENAME_HINT = re.compile(r"ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?:_[a-z0-9_-]{1,60})?\.unity(?:3d)?", re.I)
-# Anywhere in a display name: a readable name puts the member first
-# ("004 Umi Sonoda · ch0004_suit…_primary · Outlines" for an older Mod ZIP).
-_DISPLAY_HINT = re.compile(r"(?<![a-z0-9])ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?=$|[^a-z0-9])", re.I)
 _NATIVE_PLATFORMS = {"android": 13, "ios": 9}
 _CAB = re.compile(r"cab-[0-9a-f]{32}")
 _PACK_WRAPPERS = ("", "files", "files/files", "static")
@@ -400,8 +401,11 @@ def _archive_selection(member, names, env, *, repo_root, region, language, platf
         candidates.update((int(hint.group(2)), hint.group(3).lower()) for hint in hints
                           if hint and int(hint.group(1)) == owner)
         # A viewer Mod ZIP's source record names its game costume; it is only
-        # a candidate for this region and this body's member, verified below.
-        if source and source["region"] == region and member_from_native(owner) == source["member"]:
+        # a candidate for its region (a record read from an older code-like
+        # name: each region that code named) and this body's member,
+        # verified below.
+        if (source and region in source.get("regions", (source["region"],))
+                and member_from_native(owner) == source["member"]):
             candidates.add((source["suit_id"], source["variant"]))
         matched = set()
         for suit_id, variant in sorted(candidates):

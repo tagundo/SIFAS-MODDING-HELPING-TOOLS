@@ -309,29 +309,46 @@ def read_source_costume(archive, infos=None):
     if (not isinstance(value, dict) or value.get("format") != SOURCE_COSTUME_FORMAT
             or value.get("version") != 1 or value.get("region") not in ("gl", "jp")
             or type(value.get("suit_id")) is not int or not 0 < value["suit_id"] < 10 ** 12
-            or value.get("variant") not in ("primary", "unmasked") or type(value.get("member")) is not int):
+            or value.get("variant") not in ("primary", "unmasked") or type(value.get("member")) is not int
+            or "regions" in value and not _regions(value["regions"], value["region"])):
         return None
-    return {key: value[key] for key in ("region", "suit_id", "variant", "member")}
+    return {key: value[key] for key in ("region", "suit_id", "variant", "member", "regions") if key in value}
+
+
+def _regions(value, region):
+    """Optional ``regions``: every game region the costume was read for (a
+    record from an older code-like name, which named no region)."""
+    return (isinstance(value, list) and value in (["gl", "jp"], ["jp", "gl"]) and region in value)
 
 
 def _source_costume_record(value):
     if value is None:
         return None
-    _require(isinstance(value, dict) and set(value) == {"region", "suit_id", "variant", "member"}
+    _require(isinstance(value, dict) and {"region", "suit_id", "variant", "member"} <= set(value)
+             <= {"region", "suit_id", "variant", "member", "regions"}
              and value["region"] in ("gl", "jp") and type(value["suit_id"]) is int and 0 < value["suit_id"] < 10 ** 12
-             and value["variant"] in ("primary", "unmasked") and type(value["member"]) is int,
+             and value["variant"] in ("primary", "unmasked") and type(value["member"]) is int
+             and ("regions" not in value or _regions(value["regions"], value["region"])),
              "The source costume record is invalid.")
     return {"format": SOURCE_COSTUME_FORMAT, "version": 1, **value}
 
 
 def _namespace_assets(target, temporary, display_name, should_stop, source_manifest=None, source_costume=None):
-    """Emit one canonical executable config; preserve other text/ZIPs inertly."""
+    """Emit one canonical executable config; preserve other text/ZIPs inertly.
+
+    A new ``source_costume`` record replaces the one a re-saved viewer Mod
+    ZIP carried, so a conversion always reads this save's record; without a
+    new record the carried one stays, byte for byte.
+    """
     normalized = temporary / "namespaced.zip"
     with zipfile.ZipFile(target) as incoming:
         infos = incoming.infolist()
         _require(len(infos) <= viewer_archive.MAX_ENTRIES and
                  sum(info.file_size for info in infos) <= viewer_archive.MAX_UNPACKED_BYTES,
                  "The completed installer ZIP exceeds the packaging limit.")
+        if source_costume is not None:
+            infos = [info for info in infos if info.is_dir() or
+                     PurePosixPath(info.filename.replace("\\", "/")).name.casefold() != SOURCE_COSTUME_MEMBER]
         exact = {str(viewer_archive._entry_path(info)): info for info in infos if not info.is_dir()}
         manifests = [info for info in infos if not info.is_dir() and
                      PurePosixPath(info.filename.replace("\\", "/")).name.lower() == "modinstall.txt"]

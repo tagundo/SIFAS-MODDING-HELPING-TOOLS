@@ -275,6 +275,23 @@ def _manifest_metadata(context, language):
                             for key in ("costume_facedynamic_file", "costume_facedynamic_file_ios"))}
 
 
+def _declared_label(repo_root, raw, names):
+    """A Mod ZIP or scene package named by its own manifest."""
+    from . import model_labels
+    declared = model_labels.archive_names(io.BytesIO(raw))
+    parts = model_labels.text_label(repo_root, declared["names"], declared["owner"], names=names) if declared else None
+    if not parts:
+        return None
+    parts["source"] = "scene" if declared["scene"] else "manifest"
+    # A re-saved viewer Mod ZIP keeps its inert source record for platform
+    # conversion; an older one names its costume in a code-like name the
+    # label read (model_labels.declared_hint).
+    kept = None if declared["scene"] else model_labels.kept_record(io.BytesIO(raw))
+    if kept or parts.get("hint"):
+        parts["counterpart"] = kept or parts["hint"]
+    return parts
+
+
 def _source_labels(context, bindings, *, repo_root, cache_root):
     """Readable names of each opened source, per language; never identity.
 
@@ -297,19 +314,22 @@ def _source_labels(context, bindings, *, repo_root, cache_root):
                 else:
                     raw = container.get("raw")
                     if isinstance(raw, bytes) and zipfile.is_zipfile(io.BytesIO(raw)):
-                        declared = model_labels.archive_names(io.BytesIO(raw))
-                        if declared:
-                            parts = model_labels.text_label(repo_root, declared["names"], declared["owner"], names=names)
-                            if parts:
-                                parts["source"] = "scene" if declared["scene"] else "manifest"
-                                # A re-saved viewer Mod ZIP keeps its inert
-                                # source record for platform conversion.
-                                from . import viewer_mod_package
-                                with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                                    kept = viewer_mod_package.read_source_costume(archive)
-                                if kept and not declared["scene"]:
-                                    parts["counterpart"] = {"region": kept["region"], "suitId": kept["suit_id"],
-                                                            "variant": kept["variant"], "owner": kept["member"]}
+                        # A transplant onto a Mod ZIP wearer (or an edit of
+                        # one) is named through its receipt first: the names
+                        # its manifest copied are the wearer's, never the
+                        # costume a costume transplant put on it.
+                        proofs = [{"path": str(Path(container["path"]).resolve()), "containerSha256": container["sha256"],
+                                   "member": source["member"], "sha256": source["sha256"]}
+                                  for position, source in enumerate(context["sources"])
+                                  if source.get("container") == index and position not in automatic
+                                  and isinstance(source.get("member"), str) and isinstance(source.get("sha256"), str)]
+                        parts = (model_labels.bytes_label(Path(container["path"]).resolve(), container["sha256"],
+                                                          repo_root=repo_root, cache_root=cache_root, names=names,
+                                                          proofs=proofs, source=io.BytesIO(raw)) if proofs else None)
+                        if parts is model_labels.UNNAMED:
+                            parts = None
+                        elif parts is None:
+                            parts = _declared_label(repo_root, raw, names)
                     else:
                         parts = model_labels.bytes_label(Path(container["path"]).resolve(), container["sha256"],
                                                          repo_root=repo_root, cache_root=cache_root, names=names)
@@ -501,20 +521,34 @@ def compose_mod_name(base, parts, language):
     return name
 
 
+# A 120-unit name holds at most 29 labels (one character and " · " each);
+# the page sends at most this many (viewer-persistence.js NAME_PART_LIMIT).
+NAME_PART_LIMIT = 64
+
+
 def validate_name_parts(parts):
-    """Bounded page-built automatic name labels: literal text or i18n keys."""
-    if parts is None:
-        return None
+    """Bounded page-built automatic name labels: literal text or i18n keys.
+
+    Optional display text, never a reason to refuse a save: only the labels
+    before the first malformed one, and at most :data:`NAME_PART_LIMIT`, are
+    kept. A label past those never fits in the page's name either; if the
+    page's name differs from what the kept labels compose,
+    :func:`localized_mod_names` installs the page's name for every language.
+    Anything but a list is None (the page's name for every language).
+    """
     def token(value):
         if isinstance(value, str):
             return len(value) <= 120 and not any(ord(char) < 32 or ord(char) == 127 for char in value)
         return (isinstance(value, dict) and set(value) == {"k"} and isinstance(value["k"], str)
                 and 0 < len(value["k"]) <= 200 and not any(ord(char) < 32 for char in value["k"]))
-    if (not isinstance(parts, list) or len(parts) > 64
-            or any(not isinstance(part, list) or not 1 <= len(part) <= 24 or not all(token(item) for item in part)
-                   for part in parts)):
-        raise ValueError("The automatic Mod name parts are invalid.")
-    return copy.deepcopy(parts)
+    if not isinstance(parts, list):
+        return None
+    kept = []
+    for part in parts[:NAME_PART_LIMIT]:
+        if not isinstance(part, list) or not 1 <= len(part) <= 24 or not all(token(item) for item in part):
+            break
+        kept.append(copy.deepcopy(part))
+    return kept
 
 
 def localized_mod_names(display_name, parts, bases, language):
@@ -735,8 +769,10 @@ def _source_costume(metadata):
     A game import and its edited or transplanted copies name the wearer's
     game record (the same counterpart _receipt_selection follows for a loose
     file, also after a costume transplant, whose label shows the donor's
-    costume); a reopened viewer Mod ZIP carries its own record on. It is a
-    conversion candidate only, verified against the game body there.
+    costume); a reopened viewer Mod ZIP carries its own record on, and an
+    older one without a record the costume its code-like name names
+    (model_labels.declared_hint). It is a conversion candidate only,
+    verified against the game body there.
     """
     for row in (metadata or {}).get("sources") or []:
         if row.get("kind") != "body":
@@ -748,7 +784,9 @@ def _source_costume(metadata):
         if (region not in ("gl", "jp") or type(suit) is not int or not 0 < suit < 10 ** 12
                 or variant not in ("primary", "unmasked") or type(owner) is not int):
             return None
-        return {"region": region, "suit_id": suit, "variant": variant, "member": owner}
+        regions = counterpart.get("regions")
+        return {"region": region, "suit_id": suit, "variant": variant, "member": owner,
+                **({"regions": list(regions)} if isinstance(regions, list) and len(regions) > 1 else {})}
     return None
 
 

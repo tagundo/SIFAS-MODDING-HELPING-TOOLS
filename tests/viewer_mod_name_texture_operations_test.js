@@ -156,6 +156,25 @@ const KO = { "Costume colour": "의상 컬러", "Skin tone": "스킨톤", "Textu
     assert(sent.url.endsWith("?lang=ko"), sent.url);
     assert.equal(sent.body.display_name, "004 소노다 우미 · 동복 · 스킨톤 · 의상 컬러");
     assert.deepEqual(sent.body.name_parts, [[{ k: "Costume colour" }], [{ k: "Skin tone" }]]);
+    // Seventy edited bones: the name holds a few labels and the save sends at
+    // most 64 (the server's bound), never a list it would have to refuse.
+    await page.evaluate(() => {
+      const nodes = [], edits = [];
+      for (let i = 1; i <= 70; i++) { nodes.push({ node: 1000 + i, name: "Bone_" + i, baseline: { scale: [1, 1, 1] } }); edits.push({ node: 1000 + i, method: "node", scale: [1.1, 1.1, 1.1] }); }
+      window.savedRig = context.rig.getAuthoringState;
+      context.editing = Object.assign({}, context.editing, { nodes });
+      context.rig.getAuthoringState = () => ({ version: 1, edits, savedSettingsEnabled: true, unsupported: [] });
+    });
+    const many = await name([], []);
+    assert.equal((many.match(/Bone_/g) || []).length, 7, many);
+    assert(many.length <= 120, many);
+    sent = await request();
+    assert.equal(sent.body.display_name, many);
+    assert.equal(sent.body.name_parts.length, 64);
+    assert.deepEqual(sent.body.name_parts[63], [{ k: "Bone_64" }, " ", "1.1×"]);
+    await page.evaluate(() => { context.rig.getAuthoringState = window.savedRig; context.editing = Object.assign({}, context.editing, { nodes: [] }); });
+    assert.equal(await name([body], [["costume", "skin"]]), "004 소노다 우미 · 동복 · 스킨톤 · 의상 컬러");
+    cases.push("seventy edited bones send at most 64 name labels");
     await page.evaluate(() => { const field = document.getElementById("viewer-mod-name"); field.value = "내 의상"; field.dispatchEvent(new Event("input", { bubbles: true })); });
     sent = await request();
     assert.equal(sent.body.display_name, "내 의상"); assert.equal("name_parts" in sent.body, false);

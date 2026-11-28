@@ -89,6 +89,18 @@ async function rows(page) {
     assert.deepStrictEqual(await page.evaluate(() => [...document.querySelectorAll('#viewer-model-file-name > *')].map(node => [node.className, node.textContent])),
       [['viewer-chip-member', '004 소노다 우미'], ['viewer-chip-costume', '오토노키자카 고교 교복(동복)']]);
     cases.push('title chip: 004 소노다 우미 on a small first line, the costume on its own line');
+    // The costume wraps instead of being cut: its season stays visible at the
+    // desktop column and at a phone width.
+    const costumeShown = () => page.evaluate(() => { const costume = document.querySelector('.viewer-chip-costume');
+      return { whole: costume.scrollHeight <= costume.clientHeight + 1 && costume.scrollWidth <= costume.clientWidth + 1, width: costume.clientWidth }; });
+    let shown = await costumeShown();
+    assert(shown.whole, 'desktop chip shows the whole costume: ' + JSON.stringify(shown));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => document.querySelector('.viewer-chip-costume').clientWidth < 130);
+    shown = await costumeShown();
+    assert(shown.whole, 'phone chip shows the whole costume: ' + JSON.stringify(shown));
+    await page.setViewportSize({ width: 1360, height: 900 });
+    cases.push('the chip costume line wraps: (동복) stays visible at 1360 px and at a 390 px phone width');
 
     // The title chip and the Files rows read as the costume; the code stays in the title and details.
     const summary = await page.locator('#viewer-model-files > summary').getAttribute('title');
@@ -156,8 +168,10 @@ async function rows(page) {
     assert.deepStrictEqual(listed.map(row => [row.title, row.code]), [[JA, 'ファイル: ' + CODE + ' · GL 衣装ID 100041001']]);
     textures = await page.locator('#viewer-texture-select option').evaluateAll(options => options.slice(1).map(option => option.textContent));
     assert(textures.every(text => text.endsWith(' · ' + JA)), textures.join(' | '));
+    const jaMeshes = await page.locator('#viewer-mesh-modify-select option').evaluateAll(options => options.slice(1).map(option => option.textContent));
+    assert(jaMeshes.length && jaMeshes.every(text => text.includes(' · ' + JA + ' (')), jaMeshes.join(' | '));
     assert.equal(labelRequests.length, asked, 'labels hold every language');
-    cases.push('ja: chip, rows, Mod name and texture picker switch to 004 園田 海未 · 音ノ木坂学院制服（冬服） with no new label request');
+    cases.push('ja: chip, rows, Mod name, texture and mesh pickers switch to 004 園田 海未 · 音ノ木坂学院制服（冬服） with no new label request');
 
     // Save: the edited preview copy keeps its code name on disk and in the download, and reads as the costume.
     const node = await page.evaluate(() => ModelViewer.getEditingMetadata().nodes.find(n => n.name === 'LeftUpLeg').node);

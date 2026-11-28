@@ -4520,6 +4520,16 @@ _MODEL_LABEL_TRANSLATIONS = {
     "Mesh editing": ("메시 편집", "メッシュ編集"),
     "Mesh deletion": ("메시 삭제", "メッシュ削除"),
     "Physics": ("물리", "物理"),
+    # Refusals of the labels route and the Mod ZIP's name/record checks.
+    "Choose between one and sixteen model files.": ("모델 파일을 1~16개 선택해주세요.", "モデルファイルを1～16個選んでください。"),
+    "The model file is empty or too large to label.": (
+        "모델 파일이 비어 있거나 너무 커서 이름을 표시할 수 없습니다.", "モデルファイルが空か大きすぎるため、名前を表示できません。"),
+    "The model file changed while it was labelled.": (
+        "이름을 읽는 동안 모델 파일이 바뀌었습니다.", "名前を読み取っている間にモデルファイルが変わりました。"),
+    "The per-language costume names are incomplete.": (
+        "언어별 의상 이름이 일부 빠져 있습니다.", "言語ごとの衣装名が一部足りません。"),
+    "The source costume record is invalid.": ("원본 의상 기록이 올바르지 않습니다.", "元の衣装の記録が無効です。"),
+    "The source costume record changed.": ("원본 의상 기록이 바뀌었습니다.", "元の衣装の記録が変わりました。"),
 }
 for _source, (_korean, _japanese) in _MODEL_LABEL_TRANSLATIONS.items():
     _TABLES["ko"].setdefault(_source, _korean)
