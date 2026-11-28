@@ -722,5 +722,198 @@ class ViewerModPreservedProvenanceTests(unittest.TestCase):
         self.assertEqual(preserved.read_bytes(), imported.read_bytes())
 
 
+@unittest.skipUnless(AVAILABLE, "Real UnityPy/numpy and the paired-edit module are required")
+class ViewerModGameFaceTests(unittest.TestCase):
+    """The face option and Save mod ZIP follow whether a body's completed face is the game's own."""
+
+    MEMBER = 6
+
+    @classmethod
+    def setUpClass(cls):
+        from test_viewer_transplants import costume_fixture
+
+        def bundle(names, mouth=None):
+            environment = UnityPy.load(costume_fixture())
+            for obj in environment.objects:
+                if obj.type.name == "Texture2D":
+                    tree = obj.read_typetree(); tree["m_Name"] = names; obj.save_typetree(tree)
+                if obj.type.name == "AssetBundle" and mouth:
+                    tree = obj.read_typetree()
+                    tree["m_Name"] = tree["m_AssetBundleName"] = "ch0006_facedynamic.prefab.unity3d"
+                    obj.save_typetree(tree)
+                if obj.type.name == "Mesh" and mouth:
+                    tree = obj.read_typetree(); tree["m_Name"] = mouth; obj.save_typetree(tree)
+            return environment.file.save()
+        cls.body_raw = bundle("ch0006_co0001_body")
+        # The member's shared catalog face, and an installed costume's own face.
+        cls.stock = bundle("ch0006_face", "Mouth")
+        cls.private = bundle("ch0006_face_installed_private", "Mouth")
+        assert cls.stock != cls.private
+
+    def setUp(self):
+        import catalog_face_fixture
+        self.catalog = catalog_face_fixture
+        self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.runtime, self.cache = self.root / "runtime", self.root / "face-cache"
+        self.runtime.mkdir()
+        self.output, self.game_cache = self.root / "exports", self.root / "game-cache"
+        receipts = patch.object(flow, "_PACKAGES", OrderedDict())
+        receipts.start(); self.addCleanup(receipts.stop)
+        # Only the extractor's entry is replaced: restoring all of sys.modules
+        # would drop modules first imported during a test.
+        self.addCleanup(catalog_face_fixture.install_extractor(self.root))
+        from webtools.core import model_faces
+        self.faces = model_faces
+        self.context = {"repo_root": str(self.runtime), "cache_dir": str(self.cache)}
+
+    def session(self, face_raw, face_path):
+        """A body with an automatic face companion at ``face_path``, as prepare registers it."""
+        body = self.root / "costume.unity"
+        body.write_bytes(self.body_raw)
+        face_path = Path(face_path); face_path.parent.mkdir(parents=True, exist_ok=True)
+        if face_path.parent.name == "models":
+            self.faces._save(face_path, face_raw, self.MEMBER)
+        else:
+            face_path.write_bytes(face_raw)
+        rig = model_viewer.prepare([str(body), str(face_path)], rigged=True,
+                                   face_context={"enabled": False, "allow_download": False})["rig"]
+        token = secrets.token_hex(16)
+        proof = {"path": str(face_path), "sha256": hashlib.sha256(face_raw).hexdigest(), "sourceIndex": 1}
+        model_edits.register_session(token, [str(body)], rig, companions=[proof])
+        return token
+
+    def package(self, token, include, allow_download=False):
+        return flow.create_package(token, {"version": 1, "savedSettingsEnabled": True, "edits": []},
+            output_root=self.output, repo_root=self.runtime, cache_root=self.game_cache, display_name="Face option",
+            character_id=self.MEMBER, include_face_edits=include, face_cache_root=self.cache,
+            face_context=dict(self.context, allow_download=allow_download), job=Job())
+
+    def option(self, token, **options):
+        return flow.face_option(model_edits.mod_source_context(token), repo_root=self.runtime,
+                                face_cache_root=self.cache, face_context=self.context, **options)
+
+    def shipped_face(self, result):
+        with zipfile.ZipFile(result["mod_package"]["package_path"]) as archive:
+            fields = {node.targets[0].id: ast.literal_eval(node.value)
+                      for node in ast.parse(archive.read("modinstall.txt").decode()).body}
+            return archive.read(fields["costume_facedynamic_file"]) if fields["costume_facedynamic_file"] else None
+
+    def test_the_catalog_original_is_read_as_automatic_faces_are_read(self):
+        descriptors = self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", self.stock)})
+        name = self.faces._cache_name(self.MEMBER, descriptors["face6"])
+        other, smaller = self.stock[:-1] + bytes([self.stock[-1] ^ 1]), self.stock[:-7]
+        faces = {"stock": self.stock, "other": other, "smaller": smaller}
+        with patch.object(self.faces, "_download_with_deadline", side_effect=AssertionError("A local pack is read first")) as never:
+            found = self.faces.catalog_originals(self.MEMBER, faces, self.context, platform=13, download=True)
+        never.assert_not_called()
+        self.assertEqual(found, {"listed": True, "proven": {"stock"}, "unread": set(), "names": {name}})
+        # The local pack's section was decrypted into the face cache under the
+        # catalog name automatic faces use, as a local (not downloaded) copy.
+        cached = self.cache / "models" / name
+        self.assertEqual(self.faces._cached(cached), self.stock)
+        self.assertFalse(self.faces._downloaded(cached))
+        # Without the cache copy and the pack, an original of a face's size is unread...
+        (self.runtime / "static" / "packface6").unlink(); cached.unlink(); Path(str(cached) + ".json").unlink()
+        # ...the asset server is asked only when downloads are allowed...
+        with patch.object(self.faces, "_download_with_deadline", side_effect=AssertionError("Downloads are off")) as never:
+            found = self.faces.catalog_originals(self.MEMBER, faces, self.context, platform=13)
+            refused = self.faces.catalog_originals(self.MEMBER, faces, dict(self.context, allow_download=False),
+                                                   platform=13, download=True)
+        never.assert_not_called()
+        self.assertEqual((found["proven"], found["unread"]), (set(), {"stock", "other"}))
+        self.assertEqual(refused["unread"], {"stock", "other"})
+        # ...and a copy fetched only to compare keeps a download's place.
+        with patch.object(self.faces, "_download_with_deadline", return_value=self.stock) as download:
+            found = self.faces.catalog_originals(self.MEMBER, faces, self.context, platform=13, download=True)
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual((found["proven"], found["unread"]), ({"stock"}, set()))
+        self.assertTrue(self.faces._downloaded(cached) and self.faces._compared(cached))
+        self.assertTrue(self.faces._compared(self.cache / "packs" / "packface6"))
+        # No catalog at all lists nothing; a listing that fails leaves every face unread.
+        self.assertEqual(self.faces.catalog_originals(self.MEMBER, faces, dict(self.context, repo_root=str(self.root / "none")))["listed"], False)
+        with patch.object(self.faces._CatalogFaces, "_descriptor_iter", side_effect=RuntimeError("catalog")):
+            self.assertEqual(self.faces.catalog_originals(self.MEMBER, faces, self.context)["unread"], set(faces))
+        # The default body itself is never a face original.
+        self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", self.stock)})
+        with sqlite3.connect(self.runtime / "assets/db/gl/asset_a_en.db") as db:
+            db.execute("INSERT INTO member_model VALUES('body-default','packbody',0,?,1,2)", (len(self.private),))
+            db.execute("INSERT INTO m_asset_package_mapping VALUES('packbody',?)", (len(self.private),))
+        (self.runtime / "static" / "packbody").write_bytes(self.private)
+        found = self.faces.catalog_originals(self.MEMBER, {"private": self.private}, self.context, platform=13)
+        self.assertEqual((found["proven"], found["unread"]), (set(), set()))
+        self.assertEqual(found["names"], {name})
+
+    def test_an_installed_costumes_own_face_is_included_and_cannot_be_left_out(self):
+        from webtools.core import viewer_mod_package
+        from webtools import i18n
+        self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", self.stock)})
+        # An official costume completes the member's catalog face: off, as before.
+        official = self.session(self.stock, self.root / "library" / "ch0006_facedynamic.unity")
+        self.assertEqual(self.option(official), {"faceIncluded": False})
+        self.assertIsNone(self.shipped_face(self.package(official, False)))
+        # An installed costume completes its own private face (a cache copy of
+        # its own catalog asset): it is the costume's own face.
+        installed = self.session(self.private, self.cache / "models" / ("ch0006_" + "a" * 24 + ".unity"))
+        context = model_edits.mod_source_context(installed)
+        self.assertEqual(flow.private_automatic_faces(context, repo_root=self.runtime, face_cache_root=self.cache,
+                                                      face_context=self.context), [1])
+        self.assertEqual(self.option(installed), {"faceIncluded": True})
+        saved = self.output / flow.MODS_FOLDER / flow.SAVED_FOLDER
+        before = sorted(saved.iterdir())
+        with self.assertRaises(viewer_mod_package.ModPackageError) as refused:
+            self.package(installed, False)
+        self.assertEqual(str(refused.exception), viewer_mod_package.FACE_EXCLUSION_REFUSED)
+        for language in ("ko", "ja"):
+            self.assertNotEqual(i18n.tr(str(refused.exception), language), str(refused.exception))
+        self.assertEqual(sorted(saved.iterdir()), before, "No Mod ZIP was created")
+        self.assertIsNotNone(self.shipped_face(self.package(installed, True)), "Ticked, the own face ships")
+
+    def test_a_face_whose_original_cannot_be_read_counts_only_as_another_catalog_copy(self):
+        # The member's original has this face's size, but neither its cache copy
+        # nor its pack is here and nothing may be downloaded.
+        self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", b"x" * len(self.private))}, local=False)
+        cached = self.session(self.private, self.cache / "models" / ("ch0006_" + "b" * 24 + ".unity"))
+        self.assertEqual(self.option(cached), {"faceIncluded": True}, "A cache copy of another catalog asset is the costume's own")
+        # A changed cache copy, or a library file, proves nothing either way: as before.
+        changed = self.cache / "models" / ("ch0006_" + "b" * 24 + ".unity.json")
+        record = json.loads(changed.read_text()); changed.write_text(json.dumps(dict(record, sha256="0" * 64)))
+        self.assertEqual(self.option(cached), {"faceIncluded": False})
+        library = self.session(self.private, self.root / "library" / "ch0006_facedynamic.unity")
+        self.assertEqual(self.option(library), {"faceIncluded": False})
+        self.assertIsNone(self.shipped_face(self.package(library, False)))
+        # A standalone viewer without a game catalog keeps the earlier behaviour.
+        import shutil
+        shutil.rmtree(self.runtime / "assets")
+        installed = self.session(self.private, self.cache / "models" / ("ch0006_" + "c" * 24 + ".unity"))
+        self.assertEqual(self.option(installed), {"faceIncluded": False})
+        self.assertIsNone(self.shipped_face(self.package(installed, False)))
+
+    def test_the_face_option_downloads_only_when_the_open_allows_it(self):
+        descriptors = self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", self.stock)}, local=False)
+        official = self.session(self.stock, self.root / "library" / "ch0006_facedynamic.unity")
+        # The face context alone does not allow it: the open's own choice does.
+        with patch.object(self.faces, "_download_with_deadline", side_effect=AssertionError("No download without permission")) as never:
+            self.assertEqual(self.option(official), {"faceIncluded": False}, "Unread: as before")
+            self.assertEqual(flow.face_option(model_edits.mod_source_context(official), repo_root=self.runtime,
+                                              face_cache_root=self.cache, face_context=dict(self.context, allow_download=False),
+                                              download=True), {"faceIncluded": False})
+            # Save mod ZIP never downloads, even where the face context would allow it.
+            self.assertIsNone(self.shipped_face(self.package(official, False, allow_download=True)))
+        never.assert_not_called()
+        with patch.object(self.faces, "_download_with_deadline", return_value=self.stock) as download:
+            self.assertEqual(self.option(official, download=True), {"faceIncluded": False})
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual(self.faces._cached(self.cache / "models" / self.faces._cache_name(self.MEMBER, descriptors["face6"])), self.stock)
+        # Save mod ZIP checks again from that cache copy, without the network.
+        with patch.object(self.faces, "_download_with_deadline", side_effect=AssertionError("Saving never downloads")) as never:
+            installed = self.session(self.private, self.root / "library2" / "ch0006_facedynamic.unity")
+            self.assertEqual(self.option(installed), {"faceIncluded": True}, "Its original was read: another face")
+            with self.assertRaisesRegex(ValueError, "cannot be left out"):
+                self.package(installed, False)
+        never.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

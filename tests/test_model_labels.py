@@ -1149,6 +1149,65 @@ class LabelRouteTests(unittest.TestCase):
         self.assertEqual(self.post({"paths": [str(self.bound)]}, **{"Sec-Fetch-Site": "cross-site"})[0], 403)
 
 
+class DictionaryEntityTests(unittest.TestCase):
+    """The game's dictionaries escape quotes as HTML entities; names read as the game shows them."""
+
+    KOKORO = 100101
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        build_root(self.root)
+        # The game's own rows for member 101's KOKORO Magic "A to Z" (GL en/ko escaped, JP plain).
+        names = {"en": "KOKORO Magic &quot;A to Z&quot; Chika Takami", "ko": "KOKORO Magic &quot;A to Z&quot; 타카미 치카",
+                 "zh": "KOKORO Magic “A to Z” 高海千歌", "ja": "KOKORO Magic “A to Z” 高海千歌"}
+        for region, languages in (("gl", ("en", "ko", "zh")), ("jp", ("ja",))):
+            with sqlite3.connect(self.root / "assets/db" / region / "masterdata.db") as db:
+                db.execute("INSERT INTO m_suit VALUES(?,101,?,'x',99)", (self.KOKORO, f"k.suit_name_{self.KOKORO}"))
+            for language in languages:
+                with sqlite3.connect(self.root / "assets/db" / region / f"dictionary_{language}_k.db") as db:
+                    db.execute("INSERT INTO m_dictionary VALUES(?,?)", (f"suit_name_{self.KOKORO}", names[language]))
+
+    def test_labels_and_name_parts_decode_entities_but_identities_stay_codes(self):
+        parts = labels.record_label(self.root, {"region": "gl", "suit_id": self.KOKORO, "variant": "primary", "owner": 101})
+        self.assertEqual(parts["label"], {"en": '101 Chika Takami · KOKORO Magic "A to Z" Chika Takami',
+                                          "ko": '101 타카미 치카 · KOKORO Magic "A to Z" 타카미 치카',
+                                          "ja": "101 高海 千歌 · KOKORO Magic “A to Z” 高海千歌"})
+        self.assertEqual(parts["nameBase"], parts["label"])
+        self.assertEqual(parts["nameText"]["ko"], 'KOKORO Magic "A to Z" 타카미 치카')
+        self.assertNotIn("&quot;", json.dumps(parts, ensure_ascii=False))
+        self.assertEqual(parts["counterpart"], {"region": "gl", "suitId": self.KOKORO, "variant": "primary", "owner": 101})
+        with labels._Names(self.root) as names:
+            self.assertEqual(names.key("gl", "m_suit", self.KOKORO), f"k.suit_name_{self.KOKORO}")
+        # Any entity reads as its character; text without one is unchanged.
+        self.assertEqual(labels.dictionary_text("A &amp; B &lt;C&gt; &#39;D&#39;"), "A & B <C> 'D'")
+        self.assertEqual(labels.dictionary_text("A & B"), "A & B")
+        self.assertIsNone(labels.dictionary_text(None))
+        # The saved ZIP's name keeps only safe characters (no quotes on Windows).
+        stem = flow.mod_zip_stem(parts["nameBase"]["en"], 101, "android")
+        self.assertRegex(stem, r"\A\d{4}-\d{2}-\d{2}_\d{4}_101_Chika_Takami_KOKORO_Magic_A_to_Z_Chika_Takami_android\Z")
+        self.assertFalse(set(stem) & set('"<>:|?*\\/'))
+
+    def test_the_game_assets_list_and_conversion_hint_decode_entities(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from webtools.core import costume_platform_source, game_models
+        from webtools.core.charinfo import NAMES
+
+        def real_costume_name(dictionary, key):
+            row = dictionary.execute("SELECT message FROM m_dictionary WHERE id=?", (key[2:],)).fetchone() if dictionary else None
+            return row[0] if row and row[0] else key
+        stub = SimpleNamespace(real_costume_name=real_costume_name, CHARACTERS=NAMES)
+        with patch.object(game_models, "_extractor", return_value=stub):
+            listed = {row["value"]: row["label"] for row in game_models.catalog(self.root, language="ko", character="101")["costumes"]}
+            self.assertEqual(listed[f"suit:{self.KOKORO}"], 'KOKORO Magic "A to Z" 타카미 치카')
+            found = {row["value"]: row["label"] for row in game_models.catalog(self.root, language="en", search='"A to Z"')["costumes"]}
+            self.assertEqual(found, {f"suit:{self.KOKORO}": '101 Chika Takami · KOKORO Magic "A to Z" Chika Takami'})
+            self.assertEqual(costume_platform_source._label(self.root, "gl", self.KOKORO, 101, "ko"),
+                             '101 타카미 치카 · KOKORO Magic "A to Z" 타카미 치카')
+
+
 class ModNameTests(unittest.TestCase):
     def test_automatic_name_per_language_and_no_repeated_labels(self):
         bases = {"en": "004 Umi Sonoda · Otonokizaka High Uniform (Winter)", "ko": "004 소노다 우미 · 오토노키자카 고교 교복(동복)",

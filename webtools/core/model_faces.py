@@ -619,6 +619,12 @@ def _save(path, data, owner=None, downloaded=False, compared=False):
     _atomic(str(path) + ".json", json.dumps(meta).encode())
 
 
+def _cache_name(owner, descriptor):
+    """The face cache file of one catalog asset: ``chNNNN_<descriptor identity>.unity``."""
+    identity = hashlib.sha256(json.dumps(descriptor, sort_keys=True).encode()).hexdigest()[:24]
+    return f"ch{native_from_member(owner):04}_{identity}.unity"
+
+
 def _meta(path):
     """The cache metadata saved beside ``path``, or None."""
     try:
@@ -1437,8 +1443,7 @@ class FacePlan:
         if not isinstance(head, int) or not isinstance(size, int) or head < 0 or not 0 < size <= MAX_PACK_BYTES \
                 or (pack_size is not None and not head + size <= pack_size <= MAX_PACK_BYTES):
             raise FaceUnavailable("The original face exceeds the mobile download limit.")
-        identity = hashlib.sha256(json.dumps(descriptor, sort_keys=True).encode()).hexdigest()[:24]
-        output = _managed_dir(root, "models") / f"ch{native_from_member(self.owner):04}_{identity}.unity"
+        output = _managed_dir(root, "models") / _cache_name(self.owner, descriptor)
         plain = _cached(output, size)
         if plain is not None:
             _preflight_bundle(plain)
@@ -2277,3 +2282,99 @@ class FacePlan:
             self.status = "partial" if self.added else "unavailable"
         elif self.required_roles:
             self.status = "added"
+
+
+class _CatalogFaces(FacePlan):
+    """A face plan without a body: only its catalog listing and reading.
+
+    ``_descriptor_iter`` lists the member's default costume (its suit, views
+    and their dependencies) and ``_resource`` reads one listed asset, both
+    unchanged; nothing is chosen for a body.
+    """
+
+    def __init__(self, owner, context, deadline, platform=None, board=False):
+        self.context = dict(context or {})
+        self.enabled = True
+        self.deadline = deadline
+        self.paths, self.auto_paths, self.warnings = [], [], []
+        self.owner = owner
+        self.face_mode = "board" if board else "normal"
+        self._body_platforms = {platform} if platform is not None else set()
+        self._suit_models, self.database_paths, self._requested = set(), set(), set()
+        self.transferred, self._stopping, self._measured, self._fetched = 0, None, False, {}
+
+
+def catalog_originals(owner, faces, context, *, platform=None, board=False, download=False, seconds=FACE_SECONDS):
+    """Which of ``faces`` are byte for byte a catalog original of the member's own face.
+
+    ``faces`` maps keys to face bundle bytes of member ``owner`` (native
+    ``platform``, 13 or 9, when known). The originals are the assets the
+    member's default costume depends on (its suit and views, as the face plan
+    lists them; the default body itself is not a face), in every catalog of
+    that platform. Every official costume of a member shares that face; an
+    installed costume with its own face depends on another asset instead.
+    Only originals whose section has a face's size are read: from the face
+    cache, a local pack, or (``download``) the original asset server, as
+    automatic faces are read (``FacePlan._resource``). A copy downloaded here
+    keeps a download's place in later face choices (see ``_waits``).
+
+    Returns ``{"listed", "proven", "unread", "names"}``: whether the catalogs
+    list the default costume at all, the keys whose bytes equal an original,
+    the other keys an original of their size could not be read for, and the
+    face cache file names of all listed originals (a cached face with another
+    catalog name is a copy of another catalog asset).
+    """
+    result = {"listed": False, "proven": set(), "unread": set(), "names": set()}
+    context = context or {}
+    if type(owner) is not int or not faces or not context.get("repo_root") or not context.get("cache_dir"):
+        return result
+    digests = {key: hashlib.sha256(raw).hexdigest() for key, raw in faces.items()}
+    sizes = {len(raw) for raw in faces.values()}
+    plan = _CatalogFaces(owner, {**context, "allow_download": bool(download) and context.get("allow_download", True)},
+                         time.monotonic() + seconds, platform, board)
+    candidates, listed = [], True
+    try:
+        for descriptor in plan._descriptor_iter():
+            result["listed"] = True
+            if plan._suit_model(descriptor):
+                continue
+            result["names"].add(_cache_name(owner, descriptor))
+            if descriptor.get("size") in sizes:
+                candidates.append(descriptor)
+    except Exception:
+        # No catalog (a standalone viewer), or the listing stopped: what it
+        # did not list may still be an original of any face's size.
+        listed = False
+    def compare(path):
+        data = _cached(path)
+        if data is not None:
+            digest = hashlib.sha256(data).hexdigest()
+            result["proven"].update(key for key, value in digests.items() if value == digest)
+    def open_keys(descriptor):
+        return [key for key in faces if key not in result["proven"] and len(faces[key]) == descriptor.get("size")]
+    # The cache and local packs first, then the asset server.
+    pending = []
+    for descriptor in candidates:
+        if not open_keys(descriptor):
+            continue
+        try:
+            compare(plan._resource(descriptor, download=False))
+        except Exception:
+            pending.append(descriptor)
+    for descriptor in pending:
+        keys = open_keys(descriptor)
+        if not keys:
+            continue
+        try:
+            if not plan.context["allow_download"]:
+                raise FaceUnavailable("Original face downloads are disabled.")
+            path = plan._resource(descriptor)
+            # Fetched only to compare: no body uses it yet.
+            plan._compared_now(path)
+            compare(path)
+        except Exception:
+            result["unread"].update(keys)
+    if not listed:
+        result["unread"].update(faces)
+    result["unread"] -= result["proven"]
+    return result

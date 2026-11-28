@@ -989,5 +989,80 @@ class SceneRolesTests(unittest.TestCase):
             self.assertEqual(decoded["files"][original["member"]], face)
         self.assertEqual(calls, [cabs, None, None])
 
+    def test_a_scene_face_without_a_cached_original_is_checked_as_automatic_faces_are_read(self):
+        import catalog_face_fixture
+        from webtools.core import bundle_identity, model_faces, viewer_mod_package
+        self.addCleanup(catalog_face_fixture.install_extractor(self.root))
+        path, face = self.face_scene(False)
+        token, _, state = self.prepare(path, "unmasked")
+        context = edits.mod_source_context(token)
+        cache, cabs = self.root / "face-cache", frozenset(name.lower() for name in bundle_identity._cab_names(face))
+        # The game's catalog lists Rina's face; this device has it in a local pack only.
+        descriptors = catalog_face_fixture.write_catalog(self.root, 209, {"face209": ("packface209", face)})
+        cached = cache / "models" / model_faces._cache_name(209, descriptors["face209"])
+        self.assertEqual(flow.catalog_face_cabs(context, cache), frozenset(), "The face cache alone proves nothing yet")
+        with patch.object(model_faces, "_download_with_deadline", side_effect=AssertionError("The local pack comes first")) as never:
+            self.assertEqual(flow.scene_face_proof(context, cache, repo_root=self.root, download=True),
+                             {"cabs": cabs, "unchecked": False})
+        never.assert_not_called()
+        self.assertEqual(model_faces._cached(cached), face, "Read into the face cache as automatic faces are")
+        self.assertEqual(flow.face_option(context, repo_root=self.root, face_cache_root=cache), {"faceIncluded": False})
+        self.assertEqual(flow.catalog_face_cabs(context, cache), cabs, "Later checks need only the cache")
+        # Neither a cache copy nor a pack: it cannot be checked here...
+        cached.unlink(); Path(str(cached) + ".json").unlink(); (self.root / "static" / "packface209").unlink()
+        self.assertEqual(flow.scene_face_proof(context, cache, repo_root=self.root), {"cabs": frozenset(), "unchecked": True})
+        self.assertEqual(flow.face_option(context, repo_root=self.root, face_cache_root=cache),
+                         {"faceIncluded": False, "faceCheck": "unchecked"})
+        # A check that fails, or a catalog that does not list the member's
+        # costume, proves nothing either.
+        with patch.object(flow, "_catalog_proof", side_effect=RuntimeError("The catalog could not be read")):
+            self.assertEqual(flow.scene_face_proof(context, cache, repo_root=self.root), {"cabs": frozenset(), "unchecked": True})
+        import sqlite3
+        with sqlite3.connect(self.root / "assets" / "db" / "gl" / "masterdata.db") as db:
+            db.execute("DELETE FROM m_member_init WHERE member_m_id=209")
+            db.execute("DELETE FROM m_suit WHERE member_m_id=209")
+        self.assertEqual(flow.scene_face_proof(context, cache, repo_root=self.root), {"cabs": frozenset(), "unchecked": True})
+        catalog_face_fixture.write_catalog(self.root, 209, {"face209": ("packface209", face)}, local=False)
+        # ...unless the open may download it, and then it keeps a download's place.
+        with patch.object(model_faces, "_download_with_deadline", return_value=face) as download:
+            self.assertEqual(flow.face_option(context, repo_root=self.root, face_cache_root=cache, download=True),
+                             {"faceIncluded": False})
+        self.assertEqual(download.call_count, 1)
+        self.assertTrue(model_faces._compared(cached))
+        # Another face of the original's size is not the game's own: no proof, but checked.
+        catalog_face_fixture.write_catalog(self.root, 209, {"face209": ("packface209", face[:-1] + bytes([face[-1] ^ 1]))})
+        cached.unlink(); Path(str(cached) + ".json").unlink()
+        self.assertEqual(flow.scene_face_proof(context, cache, repo_root=self.root), {"cabs": frozenset(), "unchecked": False})
+        # A scene that ships its face, or no face cache, is never checked.
+        shipped, _ = self.face_scene(True)
+        other, _, _ = self.prepare(shipped, "unmasked")
+        self.assertEqual(flow.scene_face_proof(edits.mod_source_context(other), cache, repo_root=self.root),
+                         {"cabs": frozenset(), "unchecked": False})
+        self.assertEqual(flow.scene_face_proof(context, None, repo_root=self.root), {"cabs": frozenset(), "unchecked": False})
+        # Save mod ZIP: a refusal over a face that could not be checked says so.
+        for stale in (self.root / "static" / "packface209", cached, cache / "packs" / "packface209"):
+            stale.unlink(missing_ok=True); Path(str(stale) + ".json").unlink(missing_ok=True)
+        def refuse(*args, **kwargs):
+            raise viewer_mod_package.ModPackageError(viewer_mod_package.FACE_EXCLUSION_REFUSED)
+        for pack, message in ((None, flow.STOCK_FACE_UNCHECKED), (face[:-1] + bytes([face[-1] ^ 1]), viewer_mod_package.FACE_EXCLUSION_REFUSED)):
+            if pack is not None:
+                catalog_face_fixture.write_catalog(self.root, 209, {"face209": ("packface209", pack)})
+            # Saving never downloads, even where the face context would allow it.
+            with self.subTest(message=message[:30]), patch.object(viewer_mod_package, "package_saved_export", side_effect=refuse), \
+                    patch.object(model_faces, "_download_with_deadline", side_effect=AssertionError("Saving never downloads")) as never:
+                with self.assertRaises(viewer_mod_package.ModPackageError) as refused:
+                    flow.create_package(token, state, output_root=self.root / "exports", repo_root=self.root,
+                        cache_root=self.root / "game-cache", display_name="Face scene", character_id=209,
+                        include_face_edits=False, face_cache_root=cache,
+                        face_context={"repo_root": str(self.root), "cache_dir": str(cache), "allow_download": True},
+                        job=Job("face", "viewer_body_mod"))
+                self.assertEqual(str(refused.exception), message)
+                never.assert_not_called()
+        from webtools import i18n
+        for language, option in (("ko", "이 코스튬의 얼굴·입 편집 포함"), ("ja", "この衣装の顔・口の編集を含める")):
+            translated = i18n.tr(flow.STOCK_FACE_UNCHECKED, language)
+            self.assertIn(option, translated)
+            self.assertIn(i18n.tr("Load from game assets", language), translated)
+
 
 if __name__ == "__main__": unittest.main()

@@ -16,6 +16,7 @@ names. A file nothing describes keeps its file name.
 from collections import OrderedDict
 import ast
 import hashlib
+import html
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -42,6 +43,16 @@ def _tr(text, language):
 
 def _readonly(path):
     return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+
+
+def dictionary_text(message):
+    """A game dictionary message as people read it.
+
+    The game's dictionaries escape some characters as HTML entities
+    (``KOKORO Magic &quot;A to Z&quot;``); names shown and composed from them
+    read ``KOKORO Magic "A to Z"``. Keys and identities are never decoded.
+    """
+    return html.unescape(message) if isinstance(message, str) else message
 
 
 def _clean(message, key=None):
@@ -103,7 +114,7 @@ class _Names:
             row = database.execute("SELECT message FROM m_dictionary WHERE id=?", (clean,)).fetchone()
         except sqlite3.Error:
             return None
-        return _clean(row[0] if row else None, key)
+        return _clean(dictionary_text(row[0]) if row else None, key)
 
     def localized(self, region, table, row_id, language):
         """The UI language first, also from the other region's dictionary when

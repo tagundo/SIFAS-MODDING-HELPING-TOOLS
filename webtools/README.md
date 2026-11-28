@@ -540,7 +540,11 @@ repacking is unnecessary and the source files remain unchanged.
   operation (never the costume it replaced). A part or lower-body transplant is
   named after the wearer's costume and that operation; an added costume uses
   the name it was installed with. Choosing another **Costume character** puts
-  that member's number and name first instead (`101 타카미 치카 · …`). You can
+  that member's number and name first instead (`101 타카미 치카 · …`). Names
+  read from the game's dictionaries are shown as the game shows them: their
+  HTML entities are decoded (`KOKORO Magic "A to Z"`, never `&quot;`), in the
+  Game assets list, the title chip, the Mod name and the installed names; the
+  saved ZIP's file name keeps only letters, digits, `.`, `-` and `_`. You can
   change it; **Automatic name** restores the suggestion. An untouched
   automatic name is installed in English, Korean and Japanese (Chinese uses
   English); a typed name is installed as typed. A Rina board scene package is
@@ -601,8 +605,21 @@ repacking is unnecessary and the source files remain unchanged.
   off: its Mod ZIP uses the game's face unless you tick it. Turning the option
   off is refused, with a note to tick it again, only where the body uses a
   face the game does not have: a face the ZIP ships, or one whose bytes are
-  not the game's original as the face cache holds it. A face the preview
-  completed automatically stays off by default, as before.
+  not the game's original. The original is the face cache's copy, or, when
+  the cache has none, the catalog copy read as automatic faces are read (local
+  packs first, then a download when the costume opens with downloads allowed).
+  When it still cannot be read, the option's note and the refusal say that the
+  game's original face could not be checked on this device: opening the
+  costume once with **Load from game assets** lets it be checked, and ticking
+  the option includes the face edits.
+  A face the preview completed automatically stays off by default when it is
+  the game's catalog original (every official costume of a member shares it).
+  An installed costume that was added with its own face (**Add to game** with
+  the option ticked) depends on that private face; reopened from **Load from
+  game assets** it completes that face, whose bytes differ from the game's
+  original, so it counts as the costume's own face: the option starts on with
+  the own-face note and turning it off is refused, since the new costume would
+  otherwise lose those face edits and point at a face it does not have.
   Previously installed Rina mods are not rewritten automatically. Reopen the
   original ZIP or saved edited source, choose **Save mod ZIP** or **Add to game**,
   then select the newly installed costume. Old app versions cannot install

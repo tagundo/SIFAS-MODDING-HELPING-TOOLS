@@ -165,7 +165,7 @@ def catalog(root, *, language="en", region="", character="", search=""):
         try:
             query = search.strip().casefold()
             for suit, owner, key in rows:
-                name = model_labels._clean(extractor.real_costume_name(dictionary, key), key)
+                name = model_labels._clean(model_labels.dictionary_text(extractor.real_costume_name(dictionary, key)), key)
                 if name is None:
                     # An empty or missing row (an added costume whose Mod ZIP
                     # named only some languages) uses another language's

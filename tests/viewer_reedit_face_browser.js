@@ -8,7 +8,9 @@
  * fixture has no Rina face), one restore response gains a release notice,
  * export jobs fail with a pair refusal, one save result gains an automatic
  * face original, one Mod ZIP result gains a kept-parts note and one install
- * job fails with the Elichika installer's own summary.
+ * job fails with the Elichika installer's own summary. A kept face whose game
+ * original could not be checked shows that note and refusal (injected check
+ * and package refusal).
  *
  * With ELICHIKA_ROOT (an Elichika tree with assets/db and static), the real
  * cases import member suits from Game assets (no download) and drive Save ->
@@ -263,7 +265,50 @@ async function fixtureCases(browser) {
     report.cases.push({ name: 'held note list separator (ja)', note: jaNote });
     assert.deepStrictEqual(ja.errors, []);
     await ja.context.close();
+    await uncheckedGameFace(browser, server, fixtures);
   } finally { await stopServer(server); }
+}
+
+// A kept face whose game original could not be checked on this device: the
+// option's note and the Save mod ZIP refusal say so, in Korean. Injected: the
+// prepare response's face check, and the package job's refusal summary.
+async function uncheckedGameFace(browser, server, fixtures) {
+  const { page, context, errors, strings } = await openPage(browser, server.url, false);
+  await page.route('**/api/viewer/prepare', async route => {
+    const response = await route.fetch(), json = await response.json();
+    if (json.editing) Object.assign(json.editing.modPackaging, { hasFaceCompanions: true, faceIncluded: false, faceCheck: 'unchecked' });
+    await route.fulfill({ response, json });
+  });
+  await openModel(page, [fixtures.raw]);
+  await page.unroute('**/api/viewer/prepare');
+  const option = await show(page, '#viewer-mod-include-face');
+  assert.equal(await option.isChecked(), false, 'The face kept only for authoring stays out by default');
+  const help = async () => (await page.locator('#viewer-mod-face-help').innerText()).trim();
+  const note = strings["The game's original face could not be checked on this device. Open the costume once with 'Load from game assets' so it can be checked, or tick this option to include the face and mouth edits."];
+  assert(/[가-힣]/.test(note) && note.includes(strings['Load from game assets']), 'A Korean note naming the Game assets button: ' + note);
+  assert.equal(await help(), note);
+  assert.notEqual(note, strings["Face and mouth edits will not be applied in game. This costume uses the game's original face."]);
+  await option.check();
+  assert.equal(await help(), strings["Only this costume uses the included face. Other costumes and the character's shared face stay unchanged."]);
+  await option.uncheck();
+  assert.equal(await help(), note);
+  await page.screenshot({ path: path.join(evidence, 'unchecked-face-note-ko.png') });
+  const refusal = "The game's original face could not be checked on this device, so this costume's face cannot be left out yet. Open the costume once with 'Load from game assets' so its face can be checked, or tick 'Include face and mouth edits for this costume' to include the face edits; no Mod ZIP was created.";
+  const bodies = [];
+  await page.route(url => url.pathname === '/api/viewer/edit/package', route => { bodies.push(JSON.parse(route.request().postData())); return route.fulfill({ json: { job_id: 'abcdef0000cc' } }); });
+  await page.route('**/api/jobs/abcdef0000cc/events', route => route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' },
+    body: 'data: ' + JSON.stringify({ type: 'done', status: 'error', summary: refusal }) + '\n\n' }));
+  await setScale(page, [1.1, 1, 1]);
+  await (await show(page, '#viewer-save-mod')).click();
+  await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && !!ModelViewer.getState().persistence.error);
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0].include_face_edits, false);
+  assert(/[가-힣]/.test(strings[refusal]) && strings[refusal].includes(strings['Include face and mouth edits for this costume']) && strings[refusal].includes(strings['Load from game assets']));
+  assert.equal(await statusText(page), strings[refusal]);
+  await page.screenshot({ path: path.join(evidence, 'unchecked-face-refusal-ko.png') });
+  report.cases.push({ name: 'unchecked game face note and refusal (ko)', note, refusal: strings[refusal] });
+  assert.deepStrictEqual(errors, []);
+  await context.close();
 }
 
 // Whether a saved Mod ZIP makes the game load a face of its own ('none' or 'face').
@@ -301,7 +346,7 @@ async function realRinaSceneWithoutFace(page, strings, done) {
   // Normal face view: a Mouth outline edit saved with the face option off ships no face.
   await editRinaMouth(page, done);
   const first = await saveModZip(page);
-  assert(!first.error && /-scene\.zip$/.test(first.modPackage.packagePath), 'Scene Mod ZIP without the face: ' + first.error);
+  assert(!first.error && /_scene(?:_\d+)?\.zip$/.test(first.modPackage.packagePath), 'Scene Mod ZIP without the face: ' + first.error);
   assert.equal(shippedFace(first.modPackage.packagePath), 'none');
   // Its board view keeps that choice: the option starts off and says the game's face is used.
   await openModel(page, [first.modPackage.packagePath]);
@@ -315,7 +360,7 @@ async function realRinaSceneWithoutFace(page, strings, done) {
   await page.screenshot({ path: path.join(evidence, 'rina-board-without-face-ko.png') });
   // Save mod ZIP as it opens ships no face; ticked, it ships the edited face; unticked again is not refused.
   const board = await saveModZip(page);
-  assert(!board.error && /-scene\.zip$/.test(board.modPackage.packagePath), 'Board view Save mod ZIP as it opens: ' + board.error);
+  assert(!board.error && /_scene(?:_\d+)?\.zip$/.test(board.modPackage.packagePath), 'Board view Save mod ZIP as it opens: ' + board.error);
   assert.equal(shippedFace(board.modPackage.packagePath), 'none', 'The default Save mod ZIP ships no face');
   await option.check();
   assert.equal((await page.locator('#viewer-mod-face-help').innerText()).trim(),
@@ -334,7 +379,7 @@ async function realRinaSceneWithoutFace(page, strings, done) {
   assert(!(await persistence(page)).error, (await persistence(page)).error);
   assert.equal(await page.locator('#viewer-mod-include-face').isChecked(), false, 'Re-edit from original keeps the face option off');
   const reedit = await saveModZip(page);
-  assert(!reedit.error && /-scene\.zip$/.test(reedit.modPackage.packagePath), 'Re-edit Save mod ZIP: ' + reedit.error);
+  assert(!reedit.error && /_scene(?:_\d+)?\.zip$/.test(reedit.modPackage.packagePath), 'Re-edit Save mod ZIP: ' + reedit.error);
   assert.equal(shippedFace(reedit.modPackage.packagePath), 'none');
   report.cases.push({ name: 'real Rina scene saved without its face (ko)', help: gameFace,
     packages: [board, ticked, unticked, reedit].map(item => [path.basename(item.modPackage.packagePath), shippedFace(item.modPackage.packagePath)]) });
@@ -354,7 +399,7 @@ async function realRinaBoard(browser, server) {
   await (await show(page, '#viewer-save-mod')).click();
   await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && (ModelViewer.getState().persistence.modPackage || ModelViewer.getState().persistence.error));
   const first = await persistence(page);
-  assert(!first.error && /-scene\.zip$/.test(first.modPackage.packagePath), 'Normal face scene Mod ZIP: ' + first.error);
+  assert(!first.error && /_scene(?:_\d+)?\.zip$/.test(first.modPackage.packagePath), 'Normal face scene Mod ZIP: ' + first.error);
   assert.equal(shippedFace(first.modPackage.packagePath), 'face');
   // Its board view: the face edits are held, the face option starts on, and Save mod ZIP works as it opens.
   await openModel(page, [first.modPackage.packagePath]);
@@ -367,7 +412,7 @@ async function realRinaBoard(browser, server) {
   await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && (ModelViewer.getState().persistence.status === 'done' || ModelViewer.getState().persistence.error));
   const board = await persistence(page);
   assert(!board.error, 'Board view Save mod ZIP with the default face option: ' + board.error);
-  assert(/-scene\.zip$/.test(board.modPackage.packagePath) && board.modPackage.packagePath !== first.modPackage.packagePath);
+  assert(/_scene(?:_\d+)?\.zip$/.test(board.modPackage.packagePath) && board.modPackage.packagePath !== first.modPackage.packagePath);
   await page.screenshot({ path: path.join(evidence, 'rina-board-mod-zip-default-ko.png') });
   // Turning the option off is refused with the translated sentence that says to tick it.
   await option.uncheck();

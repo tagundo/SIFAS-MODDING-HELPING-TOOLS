@@ -892,8 +892,7 @@ class Handler(BaseHTTPRequestHandler):
                                 result["editing"]["modPackaging"].update(
                                     nameBase=scene_names.get(self._lang(), scene_names["en"]),
                                     nameBases=scene_names, nameTexts=None, nameOwner=None,
-                                    characterId=209, requiresCounterpart=False, sceneRoles=True,
-                                    faceIncluded=viewer_mod_flow.ships_own_face(editing_context))
+                                    characterId=209, requiresCounterpart=False, sceneRoles=True)
                             else:
                                 # Re-edit from original: the saved copy of a
                                 # reopened scene's canonical originals.
@@ -906,8 +905,15 @@ class Handler(BaseHTTPRequestHandler):
                                     result["editing"]["modPackaging"].update(
                                         nameBase=scene_names.get(self._lang(), scene_names["en"]),
                                         nameBases=scene_names, nameTexts=None, nameOwner=None,
-                                        characterId=209, requiresCounterpart=False, sceneRoles=True,
-                                        faceIncluded=viewer_mod_flow.ships_own_face(editing_context))
+                                        characterId=209, requiresCounterpart=False, sceneRoles=True)
+                            # The face option as the costume opens (its scene
+                            # registered above): on for a face of its own, and
+                            # whether a kept face could be checked against the
+                            # game's original, read as automatic faces are.
+                            result["editing"]["modPackaging"].update(viewer_mod_flow.face_option(
+                                editing_context, repo_root=Path.cwd(), face_cache_root=cache_dir, face_context=context,
+                                download=bool(context.get("allow_download")),
+                                owner_hint=result["editing"]["modPackaging"].get("characterId")))
                     except (ValueError, OSError) as exc:
                         if getattr(expanded, "scene_context", None):
                             raise
@@ -1426,6 +1432,12 @@ class Handler(BaseHTTPRequestHandler):
             runtime_root = Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve()
             # The face cache prepare completes faces into (catalog originals).
             face_cache_root = os.path.join(os.path.realpath(default_sukusta_dir("")), ".viewer-cache")
+            # Whether the game provides a face left out is checked again from
+            # that cache and the local packs; opening the costume tried the
+            # asset server already.
+            face_context = {"repo_root": str(runtime_root), "cache_dir": face_cache_root, "allow_download": False,
+                            "library_roots": list(dict.fromkeys(
+                                os.path.realpath(root) for root in filebrowser.allowed_roots().values()))}
             job = MANAGER.create("viewer_body_mod")
 
             def package(current):
@@ -1436,7 +1448,7 @@ class Handler(BaseHTTPRequestHandler):
                     counterpart_path=counterpart, selected_variant=params["selected_variant"],
                     thumbnail_token=thumbnail_token, mesh_state=mesh_state,
                     include_face_edits=include_face_edits, name_parts=name_parts, language=language,
-                    face_cache_root=face_cache_root, job=current)
+                    face_cache_root=face_cache_root, face_context=face_context, job=current)
                 current._viewer_edit_result = result
                 for path in result["output_paths"]:
                     current.add_output(path)

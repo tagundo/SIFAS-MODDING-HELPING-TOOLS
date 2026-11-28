@@ -68,7 +68,7 @@
     "Whole lower body": ["하체 전체", "下半身全体"],
     "Preview height": ["미리보기 높이", "プレビューの高さ"],
     "Click a part on the donor model to select its bone subtree.": ["Donor 모델의 이식할 부분을 클릭하면 해당 부분의 본 묶음을 선택합니다.", "ドナーモデルの移植する部分をクリックしてボーン群を選択します。"],
-    "Highlighted donor faces are inserted. Wearer faces crossing either cut are retained to prevent gaps.": ["강조된 Donor 면을 이식합니다. 절단면에 걸친 착용자 면은 틈이 생기지 않도록 유지합니다.", "強調されたドナー面を移植します。切断面をまたぐ着用者の面は隙間を防ぐため残します。"],
+    "Highlighted donor faces are inserted. Wearer faces crossing either cut are retained to prevent gaps.": ["강조된 도너 면을 이식합니다. 절단면에 걸친 착용자 면은 틈이 생기지 않도록 유지합니다.", "強調されたドナー面を移植します。切断面をまたぐ着用者の面は隙間を防ぐため残します。"],
     "No selectable costume part at this point.": ["이 지점에서 선택할 수 있는 의상 부분이 없습니다.", "この位置に選択可能な衣装パーツがありません。"]
   });
   Object.assign(TEXT, {

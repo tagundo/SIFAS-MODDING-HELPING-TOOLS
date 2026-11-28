@@ -369,6 +369,53 @@ class ViewerEditRouteTests(unittest.TestCase):
         cache = os.path.join(os.path.realpath(str(self.library)), ".viewer-cache")
         self.assertEqual({call["face_cache_root"] for call in calls}, {cache})
 
+    def test_prepare_reports_the_face_option_as_the_costume_opens(self):
+        from contextlib import contextmanager
+        from webtools.core import viewer_archive, viewer_mod_flow
+        expanded = SimpleNamespace(paths=[str(self.source)], manifest_paths=[], origins={}, source_names=[self.source.name],
+                                   variants=[], archive_members={}, editing_originals=None, editing_variants=None,
+                                   scene_context=None)
+
+        @contextmanager
+        def expand(*args, **kwargs):
+            yield expanded
+        cache = os.path.join(os.path.realpath(str(self.library)), ".viewer-cache")
+        for auto_face in (True, False):
+            option = Mock(return_value={"faceIncluded": True, "faceCheck": "unchecked"})
+            with self.subTest(auto_face=auto_face), patch.object(viewer_archive, "expand_inputs", expand), \
+                    patch.object(viewer_mod_flow, "face_option", option):
+                status, result = self.request("/api/viewer/prepare", {"paths": [str(self.source)], "rigged": True,
+                                                                      "auto_face": auto_face})
+                self.assertEqual(status, 200, result)
+                packaging = result["editing"]["modPackaging"]
+                self.assertEqual((packaging["faceIncluded"], packaging["faceCheck"]), (True, "unchecked"))
+                (context,), options = option.call_args
+                self.assertEqual(context, self.backend.mod_source_context.return_value)
+                # The game's original is read as the open reads automatic faces:
+                # the same face cache, and the asset server only when it may.
+                self.assertEqual(options["face_cache_root"], cache)
+                self.assertEqual((options["download"], options["face_context"]["allow_download"]), (auto_face, auto_face))
+                self.assertEqual(options["face_context"]["cache_dir"], cache)
+                self.assertEqual(options["repo_root"], Path.cwd())
+
+    def test_save_mod_zip_checks_game_faces_from_local_copies_only(self):
+        from webtools.core import viewer_mod_flow
+        calls = []
+
+        def create(token, state, **options):
+            calls.append(options)
+            return {"output_paths": [], "mod_package": {}}
+        with patch.object(viewer_mod_flow, "create_package", side_effect=create):
+            status, response = self.request("/api/viewer/edit/package", {
+                "token": self.token, "state": self.state, "display_name": "Scene", "character_id": None,
+                "counterpart_path": None, "selected_variant": None, "include_face_edits": False})
+            self.assertEqual(status, 200, response)
+            self.assertEqual(self.finish(response["job_id"]).status, "done")
+        context = calls[0]["face_context"]
+        self.assertEqual((context["cache_dir"], context["allow_download"]), (calls[0]["face_cache_root"], False))
+        self.assertEqual(context["repo_root"], str(calls[0]["repo_root"]))
+        self.assertIn(os.path.realpath(str(self.library)), context["library_roots"])
+
     def test_failed_background_job_has_no_success_result(self):
         self.backend.export.side_effect = ValueError("Unsupported source geometry.")
         status, response = self.export_request()

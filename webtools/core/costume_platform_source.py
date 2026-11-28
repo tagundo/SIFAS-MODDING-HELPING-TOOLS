@@ -430,12 +430,12 @@ def _label(repo_root, region, suit_id, owner, language):
     with closing(game._readonly(Path(repo_root) / "assets/db" / region / "masterdata.db")) as db:
         key = db.execute("SELECT name FROM m_suit WHERE id=?", (suit_id,)).fetchone()[0]
     dictionary = game._dictionary(repo_root, region, language)
+    from . import model_labels
     try:
-        costume = extractor.real_costume_name(dictionary, key) or str(suit_id)
+        costume = model_labels.dictionary_text(extractor.real_costume_name(dictionary, key)) or str(suit_id)
     finally:
         if dictionary:
             dictionary.close()
-    from . import model_labels
     try:
         member = model_labels.member_names(repo_root, owner, region=region)
     except (OSError, ValueError, TypeError, sqlite3.Error):

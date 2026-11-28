@@ -6,6 +6,8 @@
  * the Mod character list; the code file name stays in the title and on a small
  * details line. Its edited preview copy keeps the code file name on disk and in
  * the download and reads as the same costume. An unbound file keeps its name.
+ * A dictionary name the game escapes (KOKORO Magic &quot;A to Z&quot;) reads
+ * with its quotes.
  * The runtime root is a tiny fixture with the game's member/costume dictionary
  * keys (tests/test_model_labels.py build_root). Temporary folders are removed.
  */
@@ -42,7 +44,23 @@ jp.write_bytes(jp_raw)
 receipt = {"model": "jp-100041001-labels/" + jp.name, "sha256": hashlib.sha256(jp_raw).hexdigest(),
            "selection_record": {"region": "jp", "suit_id": 100041001, "variant": "primary", "owner": 4}}
 (cache / (".selection-" + "2" * 32 + ".json")).write_text(json.dumps(receipt))
-print(json.dumps({"bound": str(bound.resolve()), "other": str(other.resolve()), "jp": str(jp.resolve())}))
+# Member 101's KOKORO Magic "A to Z": the game's GL dictionaries escape its quotes.
+import sqlite3
+for region, languages in (("gl", ("en", "ko", "zh")), ("jp", ("ja",))):
+    with sqlite3.connect(runtime / "assets/db" / region / "masterdata.db") as db:
+        db.execute("INSERT INTO m_suit VALUES(100101,101,'k.suit_name_100101','x',99)")
+    for language in languages:
+        with sqlite3.connect(runtime / "assets/db" / region / ("dictionary_" + language + "_k.db")) as db:
+            db.execute("INSERT INTO m_dictionary VALUES('suit_name_100101',?)", ({"en": "KOKORO Magic &quot;A to Z&quot; Chika Takami",
+                "ko": "KOKORO Magic &quot;A to Z&quot; 타카미 치카"}.get(language, "KOKORO Magic \u201cA to Z\u201d 高海千歌"),))
+kokoro = cache / "gl-100101-labels" / "ch0101_suit100101_primary.unity"
+kokoro.parent.mkdir(parents=True)
+kokoro_raw = Path("tests/fixtures/viewer_rig.unity").read_bytes()
+kokoro.write_bytes(kokoro_raw)
+receipt = {"model": "gl-100101-labels/" + kokoro.name, "sha256": hashlib.sha256(kokoro_raw).hexdigest(),
+           "selection_record": {"region": "gl", "suit_id": 100101, "variant": "primary", "owner": 101}}
+(cache / (".selection-" + "3" * 32 + ".json")).write_text(json.dumps(receipt))
+print(json.dumps({"bound": str(bound.resolve()), "other": str(other.resolve()), "jp": str(jp.resolve()), "kokoro": str(kokoro.resolve())}))
 `, runtime, library], { cwd: product, env, encoding: 'utf8' }));
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const KO = '004 소노다 우미 · 오토노키자카 고교 교복(동복)', JA = '004 園田 海未 · 音ノ木坂学院制服（冬服）';
@@ -212,6 +230,22 @@ async function rows(page) {
     assert.deepStrictEqual(listed.map(row => [row.title, row.code, row.remove]), [[JA, 'ファイル: ' + CODE + ' · GL 衣装ID 100041001', '削除 ' + JA],
       ['other_costume.unity', null, '削除 other_costume.unity']]);
     cases.push('an unbound file keeps its file name and has no details line');
+
+    // The game's dictionaries escape quotes as HTML entities: names read as the game shows them.
+    await page.locator('#lang-select').selectOption('ko');
+    await page.waitForFunction(() => document.documentElement.lang === 'ko');
+    await page.evaluate(files => ModelViewer.open(files), [fixture.kokoro]);
+    await page.waitForFunction(path => !ModelViewer.getState().loading && ModelViewer.getState().loadedPaths.length === 1 && ModelViewer.getState().loadedPaths[0] === path, fixture.kokoro);
+    const KOKORO = '101 타카미 치카 · KOKORO Magic "A to Z" 타카미 치카';
+    await chipIs(page, KOKORO);
+    listed = await rows(page);
+    assert.deepStrictEqual(listed.map(row => [row.title, row.remove]), [[KOKORO, '삭제 ' + KOKORO]]);
+    await page.waitForFunction(label => document.getElementById('viewer-mod-name').value === label, KOKORO);
+    const shownNames = await page.evaluate(() => document.getElementById('viewer-model-files').innerText + document.getElementById('viewer-mod-name').value);
+    assert(!/&(quot|amp|#\d+);/.test(shownNames), 'no HTML entity is shown: ' + shownNames);
+    await page.locator('#lang-select').selectOption('ja');
+    await chipIs(page, '101 高海 千歌 · KOKORO Magic \u201cA to Z\u201d 高海千歌');
+    cases.push('KOKORO Magic "A to Z": the escaped GL dictionary name reads with quotes in the chip, Files row and Mod name');
     assert.deepStrictEqual(errors, []);
   } catch (error) {
     if (server) console.error(server.log.join('').slice(-4000));

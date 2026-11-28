@@ -427,21 +427,117 @@ MAX_CATALOG_FACE_FILES = 2048
 _CATALOG_FACE = re.compile(r"ch\d{4}_[0-9a-f]{24}\.unity\Z")
 
 
-def catalog_face_cabs(context, face_cache_root):
+def catalog_face_cabs(context, face_cache_root, *, repo_root=None, face_context=None, download=False):
     """CAB names of the faces an opened scene keeps only for authoring that the
-    game provides itself.
+    game provides itself (see :func:`scene_face_proof`)."""
+    return scene_face_proof(context, face_cache_root, repo_root=repo_root, face_context=face_context,
+                            download=download)["cabs"]
+
+
+# Saving without the face is refused when the game's own face could not be
+# checked: the body may depend on a face the game does not have.
+STOCK_FACE_UNCHECKED = ("The game's original face could not be checked on this device, so this costume's face "
+                        "cannot be left out yet. Open the costume once with 'Load from game assets' so its face "
+                        "can be checked, or tick 'Include face and mouth edits for this costume' to include the "
+                        "face edits; no Mod ZIP was created.")
+
+
+def _face_owner(raw, path, hint=None):
+    """A face bundle's member and native platform (13 Android, 9 iOS)."""
+    from . import viewer_mod_sources
+    from .member_identity import member_from_native
+    facts = viewer_mod_sources._model_facts(raw)
+    platform = {"android": 13, "ios": 9}.get(facts["platform"])
+    owner = member_from_native(facts["owner"]) if facts["owner"] is not None else None
+    if owner is None:
+        # model_faces' cache names a face after its member: chNNNN_<descriptor>.
+        match = re.match(r"ch(\d{4})_", Path(path).name) if path else None
+        owner = member_from_native(int(match.group(1))) if match else hint
+    return owner, platform
+
+
+def _catalog_context(repo_root, face_cache_root, face_context):
+    context = dict(face_context or {})
+    if repo_root is not None:
+        context.setdefault("repo_root", str(repo_root))
+    if face_cache_root is not None:
+        context.setdefault("cache_dir", str(face_cache_root))
+    return context
+
+
+def _catalog_proof(faces, *, repo_root, face_cache_root, face_context, download, owner_hint=None, paths=None):
+    """model_faces.catalog_originals for each member/platform group of ``faces``.
+
+    Returns ``(proven, unchecked)``: the keys whose bytes are a catalog
+    original of their member's face, and the other keys that could not be
+    checked (no catalog listing, or an original of their size unread).
+    """
+    from . import model_faces
+    context = _catalog_context(repo_root, face_cache_root, face_context)
+    groups, unchecked = {}, set()
+    for key, raw in faces.items():
+        try:
+            owner, platform = _face_owner(raw, (paths or {}).get(key), owner_hint)
+        except Exception:
+            owner, platform = owner_hint, None
+        if type(owner) is not int:
+            unchecked.add(key)
+            continue
+        groups.setdefault((owner, platform), {})[key] = raw
+    proven = set()
+    for (owner, platform), group in groups.items():
+        found = model_faces.catalog_originals(owner, group, context, platform=platform, board=owner == 209,
+                                              download=download)
+        proven |= found["proven"]
+        if not found["listed"]:
+            unchecked |= set(group) - found["proven"]
+            continue
+        unchecked |= {key for key in found["unread"]
+                      if not _other_catalog_copy((paths or {}).get(key), group[key], found["names"], face_cache_root)}
+    return proven, unchecked - proven
+
+
+def _other_catalog_copy(path, raw, names, face_cache_root):
+    """Whether ``path`` is the face cache's copy of a catalog asset other than the member's face.
+
+    model_faces names each decrypted catalog asset after its descriptor
+    (``chNNNN_<identity>.unity``) and records its SHA beside it. A copy whose
+    name is none of the original faces' names is another asset, such as the
+    private face an installed costume depends on, without reading anything.
+    """
+    from . import model_faces
+    if not path or face_cache_root is None or not _CATALOG_FACE.fullmatch(Path(path).name) or Path(path).name in names:
+        return False
+    try:
+        models = (Path(face_cache_root) / "models").resolve()
+        return (Path(path).resolve().parent == models
+                and (model_faces._meta(path) or {}).get("sha256") == hashlib.sha256(raw).hexdigest())
+    except OSError:
+        return False
+
+
+def scene_face_proof(context, face_cache_root, *, repo_root=None, face_context=None, download=False):
+    """Whether the faces an opened scene keeps only for authoring are the game's own.
 
     Leaving such a face out of a Mod ZIP leaves its body depending on the
     game's own face. A face counts only when the costume ships no runtime face
     (``ships_own_face``: any other costume ZIP that declares a face ships it)
-    and its bytes are exactly a catalog original this server decrypted into
-    its face cache (model_faces names those files after their catalog
-    descriptor and records their SHA beside them). Any other face, a missing
-    cache, or a changed cached copy proves nothing.
+    and its bytes are exactly a catalog original: one this server decrypted
+    into its face cache (model_faces names those files after their catalog
+    descriptor and records their SHA beside them), or, with ``repo_root``, the
+    original the catalogs list for the member's face, read as automatic faces
+    are read (local packs first, the asset server with ``download``; see
+    model_faces.catalog_originals). Any other face, a missing cache, or a
+    changed cached copy proves nothing.
+
+    Returns ``{"cabs", "unchecked"}``: the proven faces' CAB names, and
+    whether a kept face could not be checked on this device (no catalog, or
+    its original could not be read), as opposed to being another face.
     """
     from . import viewer_scene_roles
+    none = {"cabs": frozenset(), "unchecked": False}
     if face_cache_root is None or ships_own_face(context):
-        return frozenset()
+        return none
     from . import bundle_identity, model_faces
     declared, proven = {}, set()
     try:
@@ -449,22 +545,99 @@ def catalog_face_cabs(context, face_cache_root):
             if zipfile.is_zipfile(io.BytesIO(container["raw"])):
                 for raw in viewer_scene_roles._literal_faces(container["raw"]).values():
                     declared[hashlib.sha256(raw).hexdigest()] = raw
+        if not declared:
+            return none
         directory = Path(face_cache_root) / "models"
-        if not declared or directory.is_symlink() or not directory.is_dir():
-            return frozenset()
-        with os.scandir(directory) as entries:
-            for entry in islice(entries, MAX_CATALOG_FACE_FILES):
-                if not _CATALOG_FACE.fullmatch(entry.name) or not entry.is_file(follow_symlinks=False):
-                    continue
-                if (model_faces._meta(entry.path) or {}).get("sha256") not in declared:
-                    continue
-                data = model_faces._cached(entry.path)
-                if data is not None:
-                    proven.add(hashlib.sha256(data).hexdigest())
-        return frozenset(name.lower() for digest in proven & set(declared)
-                         for name in bundle_identity._cab_names(declared[digest]))
-    except (OSError, ValueError, KeyError, SyntaxError, zipfile.BadZipFile):
-        return frozenset()
+        if not directory.is_symlink() and directory.is_dir():
+            with os.scandir(directory) as entries:
+                for entry in islice(entries, MAX_CATALOG_FACE_FILES):
+                    if not _CATALOG_FACE.fullmatch(entry.name) or not entry.is_file(follow_symlinks=False):
+                        continue
+                    if (model_faces._meta(entry.path) or {}).get("sha256") not in declared:
+                        continue
+                    data = model_faces._cached(entry.path)
+                    if data is not None:
+                        proven.add(hashlib.sha256(data).hexdigest())
+        proven &= set(declared)
+        unchecked = set(declared) - proven
+        if unchecked and repo_root is not None:
+            found, unchecked = _catalog_proof({digest: declared[digest] for digest in unchecked}, repo_root=repo_root,
+                                              face_cache_root=face_cache_root, face_context=face_context,
+                                              download=download, owner_hint=209)
+            proven |= found
+        return {"cabs": frozenset(name.lower() for digest in proven
+                                  for name in bundle_identity._cab_names(declared[digest])),
+                "unchecked": bool(unchecked)}
+    except Exception:
+        # Nothing could be checked: nothing is proven.
+        return {"cabs": frozenset(), "unchecked": True}
+
+
+def _automatic_faces(context):
+    """The automatic face companions completed for the opened body, as files.
+
+    Faces a costume ZIP declares are its own (``ships_own_face``); these are
+    the faces the viewer completed from its face cache, a library or a saved
+    copy beside the body.
+    """
+    rows = {}
+    for index in context.get("outline_only_sources", []):
+        source = context["sources"][index]
+        container = context["containers"][source["container"]]
+        if source.get("member") is None and not zipfile.is_zipfile(io.BytesIO(container["raw"])):
+            rows[index] = container
+    return rows
+
+
+def private_automatic_faces(context, *, repo_root, face_cache_root=None, face_context=None, download=False,
+                            owner_hint=None):
+    """Automatic faces that are not the game's catalog original of their member's face.
+
+    An installed costume with its own face (Add to game with the face
+    included) depends on that private face, and reopening it from Game
+    assets completes it from the costume's own catalog dependency. Its bytes
+    differ from every catalog original of the member's face: like a ZIP that
+    ships its own face, it is the costume's own. A face whose original could
+    not be checked here (no catalog, or the original unread) is not counted;
+    the official face it most likely is keeps the option off as before.
+    """
+    if ships_own_face(context):
+        return []
+    from . import viewer_scene_roles
+    if context.get("model_id") and viewer_scene_roles.session_metadata(context["model_id"]) is not None:
+        return []
+    faces = _automatic_faces(context)
+    if not faces:
+        return []
+    raws = {index: container["raw"] for index, container in faces.items()}
+    paths = {index: container.get("path") for index, container in faces.items()}
+    try:
+        proven, unchecked = _catalog_proof(raws, repo_root=repo_root, face_cache_root=face_cache_root,
+                                           face_context=face_context, download=download, owner_hint=owner_hint,
+                                           paths=paths)
+    except Exception:
+        return []
+    return sorted(set(raws) - proven - unchecked)
+
+
+def face_option(context, *, repo_root, face_cache_root=None, face_context=None, download=False, owner_hint=None):
+    """The Save mod ZIP face option as the costume opens.
+
+    ``faceIncluded``: the costume ZIP ships its own face (``ships_own_face``),
+    or the body's automatic face is its own private face
+    (:func:`private_automatic_faces`). ``faceCheck`` is ``"unchecked"`` when a
+    scene saved without its face keeps one whose game original could not be
+    checked on this device: leaving it out is refused until it can be.
+    """
+    if ships_own_face(context):
+        return {"faceIncluded": True}
+    result = {"faceIncluded": bool(private_automatic_faces(context, repo_root=repo_root, face_cache_root=face_cache_root,
+                                                            face_context=face_context, download=download,
+                                                            owner_hint=owner_hint))}
+    if face_cache_root is not None and scene_face_proof(context, face_cache_root, repo_root=repo_root,
+                                                        face_context=face_context, download=download)["unchecked"]:
+        result["faceCheck"] = "unchecked"
+    return result
 
 
 def metadata(context, *, repo_root, cache_root, language="en"):
@@ -907,7 +1080,7 @@ def _source_costume(metadata):
 
 def create_package(token, state, *, output_root, repo_root, cache_root, display_name,
                    character_id=None, counterpart_path=None, selected_variant=None, thumbnail_token="", mesh_state=None,
-                   include_face_edits=None, name_parts=None, language="en", face_cache_root=None, job):
+                   include_face_edits=None, name_parts=None, language="en", face_cache_root=None, face_context=None, job):
     from webtools.core import model_edits, viewer_mod_package, viewer_mod_sources, viewer_mod_pair_edits, viewer_scene_roles
     name = validate_options(display_name, character_id, counterpart_path, selected_variant)
     name_parts = validate_name_parts(name_parts)
@@ -923,6 +1096,12 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         mesh = normalize_mesh_state(mesh_state)
         if mesh is not None and (counterpart_path or viewer_scene_roles.session_metadata(token)):
             raise ValueError("Mesh edits cannot be propagated to paired or scene costumes. Save an individual edited Unity bundle instead.")
+        if include_face_edits is False and private_automatic_faces(context, repo_root=repo_root, face_cache_root=face_cache_root,
+                                                                    face_context=face_context, owner_hint=character_id):
+            # The body depends on its own private face (an installed costume
+            # with its face): leaving it out would drop the face edits and
+            # leave the body pointing at a face the new costume lacks.
+            raise viewer_mod_package.ModPackageError(viewer_mod_package.FACE_EXCLUSION_REFUSED)
         from webtools.core import viewer_thumbnails
         thumbnail = viewer_thumbnails.for_viewer_package(thumbnail_token, token, normalized,
             character_id, counterpart_path, selected_variant, mesh_state=mesh, include_face_edits=include_face_edits)
@@ -982,16 +1161,26 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         names = localized_mod_names(name, name_parts, bases, language)
         source_costume = _source_costume(result.get("metadata"))
         # Leaving out a face the game itself provides leaves nothing dangling.
-        stock_faces = catalog_face_cabs(context, face_cache_root) if include_face_edits is False else frozenset()
-        packed = viewer_mod_package.package_saved_export(package_result, Path(result["recipe_path"]).parent / "mod",
-            display_name=name, chara_id=owner, pair=pair,
-            log=job.log, should_stop=job.should_stop,
-            **({"names": names} if names else {}),
-            **({"source_costume": source_costume} if source_costume else {}),
-            **({"face_companions": faces} if include_face_edits and faces else {}),
-            **({"include_face_edits": include_face_edits} if include_face_edits is not None else {}),
-            **({"catalog_face_cabs": stock_faces} if stock_faces else {}),
-            **({"thumbnail": thumbnail} if thumbnail is not None else {}))
+        # Its cached or local catalog copy proves it (the costume's open tried
+        # the asset server too); one that cannot be checked here is refused
+        # with that reason.
+        proof = (scene_face_proof(context, face_cache_root, repo_root=repo_root, face_context=face_context)
+                 if include_face_edits is False else {"cabs": frozenset(), "unchecked": False})
+        stock_faces = proof["cabs"]
+        try:
+            packed = viewer_mod_package.package_saved_export(package_result, Path(result["recipe_path"]).parent / "mod",
+                display_name=name, chara_id=owner, pair=pair,
+                log=job.log, should_stop=job.should_stop,
+                **({"names": names} if names else {}),
+                **({"source_costume": source_costume} if source_costume else {}),
+                **({"face_companions": faces} if include_face_edits and faces else {}),
+                **({"include_face_edits": include_face_edits} if include_face_edits is not None else {}),
+                **({"catalog_face_cabs": stock_faces} if stock_faces else {}),
+                **({"thumbnail": thumbnail} if thumbnail is not None else {}))
+        except viewer_mod_package.ModPackageError as error:
+            if proof["unchecked"] and str(error) == viewer_mod_package.FACE_EXCLUSION_REFUSED:
+                raise viewer_mod_package.ModPackageError(STOCK_FACE_UNCHECKED) from None
+            raise
         result["face_identity"] = packed.get("face_identity", [])
         if viewer_scene_roles.should_package(context, normalized, packed, token):
             if mesh is not None:
