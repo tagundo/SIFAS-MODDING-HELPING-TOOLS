@@ -354,25 +354,35 @@ select or upload facial files. Existing game downloads are reused before CDN
 downloads, and subsequent previews reuse the private cache.
 The face that the body's own BodyPartManager names is preferred: the selected
 game costume's own face (an installed costume's private face), a cached
-original, a face saved next to the body file, a face with the extractor's own
-file name (`chNNNN_facedynamic.unity` or `chNNNN_face.unity`) at the top of a
-library folder or in its `3d_model` or `extracted/3d_model` folder, then
-catalog originals. A library of extracted models therefore needs no download.
-The trade-off: an edited copy saved in those folders under that file name is
-trusted as the original, as in earlier versions. A
-catalog original is fetched only to compare it while no local face matches.
-That search skips another region's copy of an original already checked and
-stops at the first asset server that does not answer. A slow download keeps
-running: when 10 seconds of the face time remain, another face of the
-character is used if one is found, and otherwise the download is awaited; a
-fallback that comes before it in the earlier order waits for it at most half of
-the time left. A face elsewhere in the library can be an edited copy of a stock
-face with the same Unity names, so the catalog's own copy (a local pack first)
-is tried before it; when that copy fails or the asset server does not answer,
-the library face is used. An original the viewer downloaded keeps the place of
-a download in later previews of a body that names its face, and one downloaded
-only to compare it keeps that place for every body until it is used, so the
-face cache does not change which face is chosen.
+original, a face saved next to the body file, and the bundled extractor's
+output in a library folder are used at once. Extractor output is a file with
+the extractor's own name (`chNNNN_facedynamic.unity` or `chNNNN_face.unity`) at
+the top of a library folder or in its `3d_model` or `extracted/3d_model`
+folder, or any member model in one of those `3d_model` folders that the
+folder's `_extract_manifest.csv` lists with its size, or whose size is that of
+one of the character's catalog faces. A library made by the extractor therefore
+needs no download when it holds that face. The trade-off: an edited copy saved
+there under such a name, or with the stock size, is trusted as the original,
+as in earlier versions. The face found anywhere else in the library can be an
+edited copy of a stock face with the same Unity names, so the catalog's own
+copy (a local pack first) is tried first; after the first answer from the
+asset server (or none), the library face is used.
+Otherwise the earlier order is kept: local faces, then catalog downloads in
+the earlier order, each with the whole face time while no other face of the
+character is at hand (the selected game costume's own faces, when not local,
+are downloaded first and always measured as below, so they cannot hold up the
+earlier order). Once one is, a further download is made only if it may
+still be the named face, skipping the default costume's body and another
+region's copy of an original already checked. It is measured for a second and
+continues only while its rate brings it in 3 seconds before the face time
+ends; one that has sent nothing in that second, is too slow or meets an asset
+server that does not answer ends these downloads, and the face at hand (the
+earlier order's choice) is used. A download that keeps that pace but turns out
+not to be the named face still costs its time. Each pack is requested at most
+once per preview. An original the viewer downloaded keeps
+the place of a download in later previews of a body that names its face, and
+one downloaded without being used keeps that place for every body until it is
+used, so the face cache does not change which face is chosen.
 Face, Mouth and Eye outlines
 are editable only with the face the body names. Another face of the same character is shown as a fallback, and its
 face meshes are listed as not editable. To reopen a copied body alone, copy
