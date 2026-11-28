@@ -43,6 +43,16 @@ async function loadMesh(page) {
   await page.waitForFunction(() => !ModelViewer.getState().meshTools.busy && ModelViewer.getState().meshTools.runtime.boundPrimitives > 0);
   return { data, value };
 }
+// The 3D editing mode, vertex position and weight controls live in the
+// panel's settings; settings() opens or closes them.
+async function settings(page, panel, open) {
+  const toggle = page.locator('#viewer-mesh-' + panel + ' [data-uv-settings]');
+  if (((await toggle.getAttribute('aria-expanded')) === 'true') !== open) await toggle.click();
+}
+async function sceneMode(page, panel, mode) {
+  const toggle = page.locator('#viewer-mesh-' + panel + ' [data-uv-settings]'), wasOpen = (await toggle.getAttribute('aria-expanded')) === 'true';
+  await settings(page, panel, true); await page.locator('#viewer-mesh-' + panel + '-scene-mode').selectOption(mode); await settings(page, panel, wasOpen);
+}
 async function project(page, mesh, vertex) { return page.evaluate(({ mesh, vertex }) => ModelViewer.projectMeshVertex(mesh, vertex), { mesh, vertex }); }
 async function stageFocus(page) { await page.locator('#viewer-stage canvas').evaluate(e => { e.tabIndex = 0; e.focus({ preventScroll: true }); }); }
 async function shortcut(page, key) { await stageFocus(page); await page.keyboard.press(key); await page.waitForTimeout(70); }
@@ -87,9 +97,12 @@ async function run() {
     const restoredCopy = await save(page); const restored = await inspectCopy(page, restoredCopy); assert.equal(restored.triangles.length, 4);
     const deleted = await inspectCopy(page, deletionCopy); assert.equal(deleted.triangles.length, 4 - marked.length);
     report.cases.push({ name: 'UV selection, exact live deletion, keyboard Undo/Redo, serialized-save undo', selectedFaces: marked, deletedTriangles: deleted.triangles.length, restoredTriangles: restored.triangles.length });
-    // Clear the restored selection and paint directly on the model surface.
-    await page.locator('#viewer-mesh-deleter').getByRole('button', { name: 'Clear selection', exact: true }).click();
-    await page.locator('#viewer-mesh-deleter-scene-mode').selectOption('paint');
+    // Clear the restored selection (in the Selection menu) and paint directly on the model surface.
+    const selectionMenu = page.locator('#viewer-mesh-deleter .uv-selection-menu');
+    await selectionMenu.locator(':scope > summary').click(); assert(await selectionMenu.evaluate(menu => menu.open), 'the Selection menu opens');
+    await selectionMenu.getByRole('button', { name: 'Clear selection', exact: true }).click(); assert.deepStrictEqual((await state(page)).selectedFaces, [], 'Clear selection empties the face selection');
+    await selectionMenu.locator(':scope > summary').click();
+    await sceneMode(page, 'deleter', 'paint');
     const centre = await Promise.all(face.map(v => project(page, data.mesh, v)));
     const target = { x: centre.reduce((sum, p) => sum + p.x, 0) / 3, y: centre.reduce((sum, p) => sum + p.y, 0) / 3 };
     await page.locator('#viewer-stage').scrollIntoViewIfNeeded();
@@ -99,33 +112,33 @@ async function run() {
     report.cases.push({ name: 'direct 3D surface brush', hit: target });
     // Vertex dots are exact original-vertex click targets; drag updates geometry.
     await page.locator('#viewer-mesh-modify').evaluate(e => { e.open = true; }); await page.locator('#viewer-mesh-modify-select').selectOption(value);
-    await page.locator('#viewer-mesh-modify-scene-mode').selectOption('pick');
+    await sceneMode(page, 'modify', 'pick');
     let vertex = await project(page, data.mesh, 2); await page.mouse.click(vertex.x, vertex.y); s = await state(page); assert.deepStrictEqual(s.selectedVertices, [2]); assert(s.runtime.vertexDots > 0);
-    await page.locator('#viewer-mesh-modify [data-mesh-position-axis=X]').fill('.1234567'); await page.locator('#viewer-mesh-modify-position-set').click();
+    await settings(page, 'modify', true); await page.locator('#viewer-mesh-modify [data-mesh-position-axis=X]').fill('.1234567'); await page.locator('#viewer-mesh-modify-position-set').click();
     s = await state(page); near(s.edits.meshes[0].positions[0].position[0], .1234567, 'Finite sub-millimeter source coordinate accepted'); near(s.edits.meshes[0].positions[0].position[1], data.positions[2][1], 'Untouched source Float32 coordinate retained');
     await shortcut(page, 'Control+z');
     for (const [axis, number] of [['X', '.2'], ['Y', '.8'], ['Z', '-.1']]) await page.locator('#viewer-mesh-modify [data-mesh-position-axis=' + axis + ']').fill(number);
     await page.locator('#viewer-mesh-modify-position-set').click(); s = await state(page);
     near(s.runtime.bindings[0].samplePositions[6], -.2, 'Live source X reflection'); near(s.runtime.bindings[0].samplePositions[7], .8, 'Live source Y'); near(s.runtime.bindings[0].samplePositions[8], -.1, 'Live source Z');
     await shortcut(page, 'Control+z'); s = await state(page); near(s.runtime.bindings[0].samplePositions[6], -data.positions[2][0], 'Undo restores actual source position');
-    await shortcut(page, 'Control+Shift+z');
-    await page.locator('#viewer-mesh-modify-scene-mode').selectOption('drag'); vertex = await project(page, data.mesh, 2);
+    await shortcut(page, 'Control+Shift+z'); await settings(page, 'modify', false);
+    await sceneMode(page, 'modify', 'drag'); vertex = await project(page, data.mesh, 2);
     const beforeDrag = (await state(page)).edits.meshes[0].positions[0].position.slice();
     await page.mouse.move(vertex.x, vertex.y); await page.mouse.down(); await page.mouse.move(vertex.x + 25, vertex.y - 15, { steps: 4 }); await page.mouse.up();
     const afterDrag = (await state(page)).edits.meshes[0].positions[0].position; assert.notDeepStrictEqual(afterDrag, beforeDrag, 'Dragging a node edits source-local positions');
     await shortcut(page, 'Control+z'); assert.deepStrictEqual((await state(page)).edits.meshes[0].positions[0].position, beforeDrag);
     // Weight assignment changes actual GPU skin attributes; undo restores them.
-    await page.locator('#viewer-mesh-modify-weight-bone').selectOption('2'); await page.locator('#viewer-mesh-modify-weight-value').fill('.4'); await page.locator('#viewer-mesh-modify-weight-apply').click();
+    await settings(page, 'modify', true); await page.locator('#viewer-mesh-modify-weight-bone').selectOption('2'); await page.locator('#viewer-mesh-modify-weight-value').fill('.4'); await page.locator('#viewer-mesh-modify-weight-apply').click();
     s = await state(page); const weights = s.runtime.bindings[0].sampleWeights.slice(8, 12); near(weights.reduce((sum, n) => sum + n, 0), 1, 'Live GPU skin weights normalize'); assert(weights.some(w => Math.abs(w - .4) < 1e-5));
     const weightCopy = await save(page, '#viewer-mesh-modify-save'); const savedWeights = await inspectCopy(page, weightCopy); near(savedWeights.skin[2].find(([index]) => index === 2)[1], .4, 'Serialized changed skin weight');
     await shortcut(page, 'Control+z'); s = await state(page); near(s.runtime.bindings[0].sampleWeights[8], 1, 'Undo after saving restores prior skin');
-    await page.screenshot({ path: path.join(evidence, '02-live-vertex-targets.png') });
+    await settings(page, 'modify', false); await page.screenshot({ path: path.join(evidence, '02-live-vertex-targets.png') });
     report.cases.push({ name: '3D vertex pick, live XYZ, drag and GPU/serialized skin with Undo', beforeDrag, afterDrag, weights });
     if (gameSource) {
       const gameHash = sha(fs.readFileSync(gameSource)); await open(page, gameSource);
       const loaded = await loadMesh(page), game = loaded.data;
       assert(game.positions.length > 100, 'The original game costume supplies real geometry');
-      await page.locator('#viewer-mesh-deleter-scene-mode').selectOption('paint');
+      await sceneMode(page, 'deleter', 'paint');
       await page.locator('#viewer-mesh-deleter input[type=number]').fill('4');
       await page.locator('#viewer-stage').scrollIntoViewIfNeeded();
       const submesh = game.submeshes[0], step = Math.max(1, Math.floor(submesh.faceCount / 70)); let picked = null;
@@ -151,6 +164,10 @@ async function run() {
     }
     assert.equal(sha(fs.readFileSync(source)), sha(raw), 'Original file is immutable'); assert.deepStrictEqual(errors, [], 'No browser exceptions'); report.status = 'PASS';
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); throw error; }
-  finally { if (context) await context.close(); if (browser) await browser.close(); if (server) { server.child.kill(); server.stream.end(); } fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2)); }
+  finally {
+    if (context) await context.close(); if (browser) await browser.close();
+    if (server) { server.child.kill(); server.stream.end(); await new Promise(resolve => { if (server.child.exitCode !== null || server.child.signalCode !== null) return resolve(); server.child.once('exit', resolve); setTimeout(resolve, 5000).unref(); }); }
+    fs.rmSync(library, { recursive: true, force: true }); fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));
+  }
 }
 if (require.main === module) run().catch(() => { process.exitCode = 1; });

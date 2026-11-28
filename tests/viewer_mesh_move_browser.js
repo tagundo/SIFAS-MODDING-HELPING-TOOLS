@@ -99,7 +99,11 @@ async function runProfile(url, profile) {
     result.cases.push('One-click Pick selects an actual model vertex; move details remain compact');
     await page.locator('#viewer-mesh-modify-quick-drag').click(); await page.locator('#viewer-mesh-modify-move-axis').selectOption('x'); await page.locator('#viewer-mesh-modify-move-step').fill('.025');
     const movementBox = await page.locator('#viewer-mesh-modify .mesh-transform-tools').boundingBox();
-    assert(movementBox.height <= 112, 'Selected movement controls fit in two compact rows: ' + JSON.stringify(movementBox));
+    // Move mode adds one row: "Move vertices at the same position together".
+    // The axis, step and nudge controls still fit in two compact rows above it.
+    const togetherRow = await page.locator('#viewer-mesh-modify .mesh-transform-together').boundingBox();
+    assert(togetherRow && togetherRow.height <= (profile.touch ? 46 : 34), 'The same-position option is one compact row: ' + JSON.stringify(togetherRow));
+    assert(movementBox.height - togetherRow.height - 4 <= 112, 'Selected movement controls fit in two compact rows: ' + JSON.stringify({ movementBox, togetherRow }));
     const beforeNudge = await snapshot(page); await page.locator('#viewer-mesh-modify-nudge-plus').click();
     const nudged = await snapshot(page), nudgePosition = position(nudged, 2, data.positions[2]);
     near(nudgePosition[0], data.positions[2][0] + .025, 'X+ uses source mesh units');
@@ -158,5 +162,5 @@ async function runProfile(url, profile) {
     await runProfile(url, { name: 'phone-touch', width: 450, height: 1000, touch: true });
     assert.deepEqual(report.pageErrors, []); report.status = 'PASS'; console.log(JSON.stringify({ status: report.status, profiles: report.profiles.length, cases: report.profiles.reduce((sum, profile) => sum + profile.cases.length, 0), evidence }));
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); console.error(error); }
-  finally { if (browser) await browser.close(); if (server) server.kill(); fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n'); if (report.status !== 'PASS') process.exitCode = 1; }
+  finally { if (browser) await browser.close(); if (server) server.kill(); fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n'); fs.rmSync(library, { recursive: true, force: true }); if (report.status !== 'PASS') process.exitCode = 1; }
 })();

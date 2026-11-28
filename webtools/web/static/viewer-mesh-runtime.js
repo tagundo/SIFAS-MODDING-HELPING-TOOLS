@@ -72,6 +72,43 @@
     }
     return result;
   }
+  // Free camera-plane drag with "move vertices at the same position together".
+  // Each vertex's own inverse skin map turns the world-space pointer motion
+  // into a source-local delta. Seam copies can carry different skin weights,
+  // so their own maps would give them different deltas and open the seam in
+  // the saved mesh. A group therefore shares one delta: the picked vertex's
+  // when it is in the group (that vertex follows the pointer exactly, as
+  // before), else the delta of the group's lowest-index selected vertex with
+  // an invertible map. Equal start values plus one delta keep the group's
+  // saved local positions identical. Ungrouped selected vertices keep their
+  // own map; a vertex whose map is singular does not move (as before).
+  function planeDragPlan(selected, together, picked, positionOf, linearOf) {
+    var positions = {}, inverse = {}, follow = {}, grouped = new Set();
+    function invertible(vertex) {
+      if (Object.prototype.hasOwnProperty.call(inverse, vertex)) return true;
+      var linear = linearOf(vertex); if (Math.abs(linear.determinant()) < 1e-12) return false;
+      inverse[vertex] = linear.clone().invert(); return true;
+    }
+    together.groups.forEach(function (group) {
+      group.members.forEach(function (vertex) { grouped.add(vertex); });
+      var order = group.chosen.indexOf(picked) >= 0 ? [picked].concat(group.chosen) : group.chosen, seed = null;
+      for (var i = 0; i < order.length && seed === null; i++) if (invertible(order[i])) seed = order[i];
+      if (seed === null) return;
+      group.members.forEach(function (vertex) { positions[vertex] = positionOf(vertex); follow[vertex] = seed; });
+    });
+    selected.forEach(function (vertex) {
+      if (grouped.has(vertex)) return;
+      positions[vertex] = positionOf(vertex);
+      if (invertible(vertex)) follow[vertex] = vertex;
+    });
+    return { positions: positions, inverse: inverse, follow: follow };
+  }
+  function planeDragValues(plan, deltaWorld) {
+    var locals = {}, values = {};
+    Object.keys(plan.inverse).forEach(function (vertex) { locals[vertex] = deltaWorld.clone().applyMatrix3(plan.inverse[vertex]); });
+    Object.keys(plan.follow).forEach(function (vertex) { var local = locals[plan.follow[vertex]]; values[vertex] = plan.positions[vertex].map(function (value, axis) { return value + local.getComponent(axis); }); });
+    return values;
+  }
   function identityKey(value) { return JSON.stringify(value); }
   function mapping(mesh) { return mesh && (mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.viewerMesh || mesh.userData && mesh.userData.viewerMesh); }
   function validMapping(mesh) {
@@ -206,7 +243,10 @@
         var seen = new Set();
         list.forEach(function (binding) {
           if (context.submesh !== undefined && binding.map.submesh !== context.submesh) return;
-          binding.baseIndex.forEach(function (vertex) { if (!seen.has(vertex)) { pointVertices.push({ binding: binding, vertex: vertex }); seen.add(vertex); } });
+          // Same rule as pickVertex: a vertex on no live face is not on the
+          // model and cannot be picked, so it gets no target dot either.
+          var live = liveVertices(binding);
+          binding.baseIndex.forEach(function (vertex) { if (!seen.has(vertex) && !(live && !live[vertex])) { pointVertices.push({ binding: binding, vertex: vertex }); seen.add(vertex); } });
         });
       }
       if (overlayGeometry) overlayGeometry.setAttribute('position', new T.Float32BufferAttribute(new Float32Array(overlayRefs.length * 3), 3));
@@ -452,11 +492,27 @@
       });
       return polygon.map(function (point) { var p = screenPoint(point, rect); p.world = point; return p; });
     }
+    // Marks the vertices on at least one live (undeleted) face of a binding:
+    // the ones its current index uses. Cached until apply() changes the faces.
+    function liveVertices(binding) {
+      var index = binding.geometry.index; if (!index) return null;
+      if (binding.liveFaces !== binding.faceMap) {
+        var live = new Uint8Array(binding.geometry.attributes.position.count);
+        for (var i = 0; i < index.count; i++) live[index.getX(i)] = 1;
+        binding.live = live; binding.liveFaces = binding.faceMap;
+      }
+      return binding.live;
+    }
     function pickVertex(event, context) {
       beforeRender(); var pointer = pointerRay(event), rect = pointer.rect, nearest = null, seen = new Set(), radius = 12;
       activeBindings(context).forEach(function (binding) {
+        // A vertex whose faces are all deleted is not on the model, so it is
+        // skipped: a click at a seam picks the visible copy, not one left on
+        // deleted faces. With no deleted face the index is baseIndex, every
+        // vertex is live, and candidates and their order are as before.
+        var live = liveVertices(binding);
         binding.baseIndex.forEach(function (vertex) {
-          if (seen.has(vertex)) return; seen.add(vertex);
+          if (seen.has(vertex) || live && !live[vertex]) return; seen.add(vertex);
           var p = projectedVertex(binding, vertex, rect); if (p.z < -1 || p.z > 1) return;
           var distance = Math.hypot(p.x - event.clientX, p.y - event.clientY); if (distance > radius || nearest && distance > nearest.distance) return;
           // Surface occlusion uses the exact deformed triangles, avoiding rest
@@ -500,10 +556,16 @@
     }
     function startDrag(event, context, pick) {
       var axis = pick.axis || context.dragAxis;
+      // Vertices at a selected vertex's position (seam copies), read once per
+      // drag: null when the option is off, so the drag is the original one.
+      var together = context.moveGroups ? context.moveGroups() : null;
+      function current(vertex) { return (context.mesh.positions[vertex] || context.mesh.data.positions[vertex]).slice(); }
       if (['x', 'y', 'z'].indexOf(axis) >= 0) {
         var frame = selectedFrame(context, pick.binding), axisIndex = ['x', 'y', 'z'].indexOf(axis); if (!frame) return;
         var vector = frame.vectors[axisIndex], magnitude = vector.length(); if (magnitude < 1e-12) return;
         var source = {}; context.mesh.selected.forEach(function (vertex) { source[vertex] = (context.mesh.positions[vertex] || context.mesh.data.positions[vertex]).slice(); });
+        // One source-local axis delta for all: partners stay on their seed.
+        if (together) together.partners.forEach(function (vertex) { source[vertex] = current(vertex); });
         var origin = pointerRay(event), depth = Math.max(runtime.camera.near, viewDepth(frame.centre)), worldPixel = 2 * (runtime.camera.isOrthographicCamera ? 1 : depth) / Math.max(1e-12, origin.rect.height * Math.abs(runtime.camera.projectionMatrix.elements[5]));
         var from = screenPoint(frame.centre, origin.rect), to = screenPoint(frame.centre.clone().addScaledVector(vector, worldPixel * 60 / magnitude), origin.rect);
         var screenX = to.x - from.x, screenY = to.y - from.y, screenLength = Math.hypot(screenX, screenY);
@@ -515,6 +577,10 @@
       var ray = pointerRay(event).ray, normal = runtime.camera.getWorldDirection(new T.Vector3()), plane = new T.Plane().setFromNormalAndCoplanarPoint(normal, pick.point), anchor = ray.intersectPlane(plane, new T.Vector3());
       if (!anchor) return;
       var sourcePositions = {}, inverse = {}, list = activeBindings(context), binding = pick.binding;
+      if (together) {
+        var plan = planeDragPlan(context.mesh.selected, together, pick.vertex, current, function (vertex) { return sourceLinear(binding, vertex); });
+        stroke.drag = { plane: plane, anchor: anchor, positions: plan.positions, inverse: plan.inverse, follow: plan.follow }; return;
+      }
       context.mesh.selected.forEach(function (vertex) {
         sourcePositions[vertex] = (context.mesh.positions[vertex] || context.mesh.data.positions[vertex]).slice();
         var linear = sourceLinear(binding, vertex); if (Math.abs(linear.determinant()) < 1e-12) return;
@@ -563,7 +629,8 @@
             if (Number.isFinite(delta) && (drag.moved || Math.abs(delta) > 1e-12)) { drag.moved = true; Object.keys(drag.positions).forEach(function (vertex) { var position = drag.positions[vertex].slice(); position[drag.axis] += delta; values[vertex] = position; }); }
           } else {
             var point = pointerRay(event).ray.intersectPlane(drag.plane, new T.Vector3());
-            if (point) { var deltaWorld = point.sub(drag.anchor); Object.keys(drag.inverse).forEach(function (vertex) { var local = deltaWorld.clone().applyMatrix3(drag.inverse[vertex]); values[vertex] = drag.positions[vertex].map(function (value, axis) { return value + local.getComponent(axis); }); }); }
+            if (point && drag.follow) values = planeDragValues(drag, point.sub(drag.anchor));
+            else if (point) { var deltaWorld = point.sub(drag.anchor); Object.keys(drag.inverse).forEach(function (vertex) { var local = deltaWorld.clone().applyMatrix3(drag.inverse[vertex]); values[vertex] = drag.positions[vertex].map(function (value, axis) { return value + local.getComponent(axis); }); }); }
           }
           if (Object.keys(values).length && options.onDrag) options.onDrag(values);
         } else if (context.mode === 'paint') {
@@ -593,5 +660,6 @@
     return { sync: sync, beforeRender: beforeRender, reset: reset, getState: inspect, projectVertex: screenVertex,
       dispose: function () { disposed = true; reset(); } };
   }
-  global.ViewerMeshRuntime = { create: create, vertexLocal: vertexLocal, vertexWorld: vertexWorld, worldSnapshot: worldSnapshot, skinMatrix: skinMatrix, raycastMesh: raycastMesh };
+  global.ViewerMeshRuntime = { create: create, vertexLocal: vertexLocal, vertexWorld: vertexWorld, worldSnapshot: worldSnapshot, skinMatrix: skinMatrix, raycastMesh: raycastMesh,
+    planeDragPlan: planeDragPlan, planeDragValues: planeDragValues };
 })(window);

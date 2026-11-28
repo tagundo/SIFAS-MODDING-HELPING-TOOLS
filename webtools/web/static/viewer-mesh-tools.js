@@ -47,6 +47,9 @@
     'Move step': ['이동 간격', '移動量'], 'Centre (local XYZ)': ['중심 (로컬 XYZ)', '中心（ローカルXYZ）'],
     'Drag an axis arrow, or use the step buttons. Axis values use the source mesh coordinates.': ['축 화살표를 드래그하거나 간격 버튼으로 이동합니다. 축 값은 원본 메시 좌표를 사용합니다.', '軸の矢印をドラッグするか、移動量ボタンで動かします。軸は元メッシュの座標です。'],
     'Enter a positive move distance.': ['0보다 큰 이동 간격을 입력하세요.', '0より大きい移動量を入力してください。'],
+    'Move vertices at the same position together': ['같은 위치 정점 함께 이동', '同じ位置の頂点も一緒に移動'],
+    '(+{count} at the same position)': ['(같은 위치 정점 +{count})', '(同じ位置の頂点 +{count})'],
+    'UV seams and material borders split one point into several vertices. Moving one also moves the others, including copies in other materials or on deleted faces, so the surface stays closed. Selection and weights are unchanged.': ['UV 경계나 머티리얼 경계에서는 한 점이 여러 정점으로 나뉩니다. 하나를 옮기면 다른 머티리얼이나 삭제된 면에 있는 복사본까지 함께 옮겨 표면이 벌어지지 않습니다. 선택과 웨이트는 바뀌지 않습니다.', 'UV境界やマテリアル境界では1つの点が複数の頂点に分かれます。1つを動かすと、他のマテリアルや削除した面にあるコピーも一緒に動き、面が開きません。選択とウェイトは変わりません。'],
     'Show selection on model': ['모델에 선택 영역 표시', 'モデルに選択範囲を表示'], 'Show vertex targets': ['정점 선택점 표시', '頂点の選択点を表示'],
     'Delete selected faces': ['선택한 면 삭제', '選択面を削除'], 'Save mesh copy': ['메시 사본 저장', 'メッシュコピーを保存'],
     'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.': ['저장한 사본은 해당 버전을 유지합니다. 실행 취소로 화면의 메시를 복구한 후 다시 저장하면 복구한 사본이 만들어집니다.', '保存コピーはそのバージョンを保持します。元に戻すと表示中のメッシュが復元され、再保存で復元コピーを作成できます。'],
@@ -153,6 +156,149 @@
     });
     return queue;
   }
+  // Game meshes split a vertex wherever its UV, normal or material differs, so
+  // a seam keeps two or more vertices at one point. Two vertices of one mesh
+  // are at the same position when their current positions differ by at most
+  // SAME_POSITION_TOLERANCE model units on every axis; groups are the
+  // connected components. The tolerance is absolute: float32 steps shrink
+  // towards zero (a real Hair seam pair 3.6e-9 apart is ten million steps),
+  // and a move both copies share keeps their absolute gap, so a group moved
+  // together stays a group. Real costumes (499 meshes in 40 models): 113,025
+  // seams are bit-identical; 5e-7 adds 666 groups (1,278 of the 1,367
+  // seam-like copies closer than 4e-6 join), puts no triangle edge inside a
+  // group and spans at most 4.9e-7 on one axis. The closest distinct
+  // vertices (two corners of one triangle) are 1.2e-6 apart on their widest
+  // axis. Every pair within four float32 steps below 2 is within 5e-7.
+  var SAME_POSITION_TOLERANCE = 5e-7, SAME_POSITION_CELL = 1 / 524288;
+  function buildPositionGroups(count, positionAt, tolerance) {
+    tolerance = tolerance === undefined ? SAME_POSITION_TOLERANCE : Math.max(0, +tolerance || 0);
+    // Spatial hash over power-of-two cells wider than the tolerance, hashed to
+    // an integer. A neighbour within the tolerance is in this cell or, near
+    // its edge, the next one. Collisions only add candidates; every candidate
+    // is compared on all three axes.
+    // Each hash keeps its vertices in buckets, one per connected component
+    // (components only ever merge, so a bucket stays one component). A vertex
+    // skips buckets of its own component and stops a bucket at the first
+    // member within the tolerance: one match joins the whole bucket. So many
+    // copies at one point, or a dense cluster of near copies (a collapsed or
+    // shrunken part), cost one comparison each instead of the whole cell.
+    // Each bucket keeps the box of its members; a vertex farther than the
+    // tolerance from the box on any axis skips the bucket (no member can
+    // match: rounded differences are monotonic), so a big bucket of copies
+    // costs nothing to the separate vertices beside it.
+    // A vertex opens a new bucket in its cell only when it matched none of
+    // the cell's vertices, so the first vertices of a cell's buckets are
+    // pairwise more than the tolerance apart: a 2^-19 cell (3.8 tolerances
+    // wide) holds at most 4^3 buckets, and a vertex visits at most 8 cells of
+    // them (plus hash collisions), however many separate components crowd a
+    // small region. `visits` counts bucket visits in scans, `compares` member
+    // tests.
+    // Exact copies are collapsed first: vertices whose three values are equal
+    // (-0 equals +0, as in the comparison) share one point, the hash runs on
+    // the `distinct` points, and every copy takes its point's group. A copy is
+    // within the tolerance of exactly the vertices its point is, so the groups
+    // are the same; only the work shrinks: copies inside a hollow part's box
+    // (a shell shrunk around them) no longer each walk the whole part.
+    // Points are numbered in order of first use, so their order follows the
+    // lowest vertex of each point. A position with a non-finite value equals
+    // nothing, not even itself, and keeps a point of its own.
+    var cell = SAME_POSITION_CELL; while (cell <= tolerance) cell *= 2;
+    var coords = new Float64Array(count * 3), pointOf = new Int32Array(count), distinct = 0, exact = new Map(), sameKey = new Int32Array(count);
+    var bits = new Float64Array(1), words = new Int32Array(bits.buffer), joined = false;
+    // Hashes a value's bits; adding 0 turns -0 into +0 first.
+    function mix(h, value) { bits[0] = value + 0; return Math.imul(h ^ words[0], 0x5bd1e995) ^ Math.imul(words[1], 0x27d4eb2d); }
+    for (var v = 0; v < count; v++) {
+      var p = positionAt(v), px = +p[0], py = +p[1], pz = +p[2], finite = isFinite(px) && isFinite(py) && isFinite(pz), point = -1, key = 0, first = -1;
+      if (finite) {
+        key = mix(mix(mix(0x9747b28c, px), py), pz); first = exact.get(key); if (first === undefined) first = -1;
+        for (var same = first; same >= 0; same = sameKey[same]) if (coords[same * 3] === px && coords[same * 3 + 1] === py && coords[same * 3 + 2] === pz) { point = same; break; }
+      }
+      if (point >= 0) joined = true;
+      else {
+        point = distinct++; coords[point * 3] = px; coords[point * 3 + 1] = py; coords[point * 3 + 2] = pz;
+        sameKey[point] = first; if (finite) exact.set(key, point);
+      }
+      pointOf[v] = point;
+    }
+    var parent = new Int32Array(distinct), next = new Int32Array(distinct), heads = new Map(), compares = 0, visits = 0;
+    var bucketCount = 0, bucketRep = new Int32Array(distinct), bucketHead = new Int32Array(distinct), bucketTail = new Int32Array(distinct), bucketNext = new Int32Array(distinct), box = new Float64Array(distinct * 6);
+    function root(v) { while (parent[v] !== v) { parent[v] = parent[parent[v]]; v = parent[v]; } return v; }
+    function join(a, b) { a = root(a); b = root(b); if (a !== b) { if (b < a) { var swap = a; a = b; b = swap; } parent[b] = a; joined = true; } }
+    function hash(x, y, z) { return Math.imul(x | 0, 73856093) ^ Math.imul(y | 0, 19349663) ^ Math.imul(z | 0, 83492791); }
+    function scan(v, x, y, z) {
+      var first = heads.get(hash(x, y, z)), vx = coords[v * 3], vy = coords[v * 3 + 1], vz = coords[v * 3 + 2];
+      for (var bucket = first === undefined ? -1 : first; bucket >= 0; bucket = bucketNext[bucket]) {
+        visits++; var b = bucket * 6;
+        if (root(bucketRep[bucket]) === root(v)) continue;
+        if (box[b] - vx > tolerance || vx - box[b + 3] > tolerance || box[b + 1] - vy > tolerance || vy - box[b + 4] > tolerance || box[b + 2] - vz > tolerance || vz - box[b + 5] > tolerance) continue;
+        for (var other = bucketHead[bucket]; other >= 0; other = next[other]) {
+          compares++;
+          if (Math.abs(coords[other * 3] - vx) <= tolerance && Math.abs(coords[other * 3 + 1] - vy) <= tolerance && Math.abs(coords[other * 3 + 2] - vz) <= tolerance) { join(other, v); break; }
+        }
+      }
+    }
+    // Widens bucket target's box by another box (low corner at low, high at high, in values).
+    function grow(target, values, low, high) { for (var axis = 0; axis < 3; axis++) { var t = target * 6 + axis; if (values[low + axis] < box[t]) box[t] = values[low + axis]; if (values[high + axis] > box[t + 3]) box[t + 3] = values[high + axis]; } }
+    // Adds v to its hash, newest first, in its component's bucket; buckets
+    // that v's matches merged into one component become one bucket. (It walks
+    // the list v's scan of its own cell just walked, so it adds no visits.)
+    function insert(v, key) {
+      var first = heads.get(key), rv = root(v), target = -1, previous = -1;
+      for (var bucket = first === undefined ? -1 : first; bucket >= 0;) {
+        var following = bucketNext[bucket];
+        if (root(bucketRep[bucket]) === rv) {
+          if (target < 0) target = bucket;
+          else {
+            next[bucketTail[target]] = bucketHead[bucket]; bucketTail[target] = bucketTail[bucket]; bucketNext[previous] = following;
+            grow(target, box, bucket * 6, bucket * 6 + 3); bucket = following; continue;
+          }
+        }
+        previous = bucket; bucket = following;
+      }
+      if (target >= 0) { next[v] = bucketHead[target]; bucketHead[target] = v; grow(target, coords, v * 3, v * 3); return; }
+      target = bucketCount++; bucketRep[target] = v; bucketHead[target] = v; bucketTail[target] = v; next[v] = -1;
+      for (var axis = 0; axis < 3; axis++) box[target * 6 + axis] = box[target * 6 + 3 + axis] = coords[v * 3 + axis];
+      bucketNext[target] = first === undefined ? -1 : first; heads.set(key, target);
+    }
+    for (var d = 0; d < distinct; d++) {
+      parent[d] = d; px = coords[d * 3]; py = coords[d * 3 + 1]; pz = coords[d * 3 + 2];
+      // A non-finite value matches nothing: its point is never scanned or stored.
+      if (!(isFinite(px) && isFinite(py) && isFinite(pz))) continue;
+      // The loops count neighbour offsets, not cell numbers: beyond 2^53
+      // cells (|value| > 1.7e10) cx + 1 === cx, and a cell-number loop never ended.
+      var cx = Math.floor(px / cell), cy = Math.floor(py / cell), cz = Math.floor(pz / cell), x0 = 0, x1 = 0, y0 = 0, y1 = 0, z0 = 0, z1 = 0;
+      if (tolerance > 0) {
+        if (px - cx * cell <= tolerance) x0 = -1; if ((cx + 1) * cell - px <= tolerance) x1 = 1;
+        if (py - cy * cell <= tolerance) y0 = -1; if ((cy + 1) * cell - py <= tolerance) y1 = 1;
+        if (pz - cz * cell <= tolerance) z0 = -1; if ((cz + 1) * cell - pz <= tolerance) z1 = 1;
+      }
+      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) for (var z = z0; z <= z1; z++) scan(d, cx + x, cy + y, cz + z);
+      insert(d, hash(cx, cy, cz));
+    }
+    // A point's root is its component's lowest point, which holds the lowest
+    // vertex, so groups and members come out ascending.
+    var groupOf = new Int32Array(count).fill(-1), groups = [];
+    if (joined) {
+      var byRoot = new Map();
+      for (var vertex = 0; vertex < count; vertex++) { var r = root(pointOf[vertex]), members = byRoot.get(r); if (members) members.push(vertex); else byRoot.set(r, [vertex]); }
+      byRoot.forEach(function (list) { if (list.length > 1) { list.forEach(function (member) { groupOf[member] = groups.length; }); groups.push(list); } });
+    }
+    return { count: count, tolerance: tolerance, groupOf: groupOf, groups: groups, compares: compares, visits: visits, distinct: distinct };
+  }
+  // The vertices that move with `vertices` (the chosen ones): every other
+  // member of their groups. `groups` lists each touched group with its chosen
+  // members; a partner copies the movement of its group's first chosen vertex.
+  function samePositionPartners(index, vertices) {
+    var chosen = new Set(), partners = [], seeds = new Map(), groups = [], seen = new Set();
+    Array.from(vertices || []).forEach(function (v) { v = +v; if (Number.isInteger(v) && v >= 0 && v < index.count) chosen.add(v); });
+    Array.from(chosen).sort(function (a, b) { return a - b; }).forEach(function (v) {
+      var group = index.groupOf[v]; if (group < 0 || seen.has(group)) return; seen.add(group);
+      var members = index.groups[group], picked = members.filter(function (member) { return chosen.has(member); });
+      members.forEach(function (member) { if (!chosen.has(member)) { partners.push(member); seeds.set(member, picked[0]); } });
+      groups.push({ members: members.slice(), chosen: picked });
+    });
+    return { partners: partners, seeds: seeds, groups: groups };
+  }
   function clampView(view) {
     var zoom = Math.max(1, Math.min(16, +view.zoom || 1));
     return { zoom: zoom, x: Math.max(1 - zoom, Math.min(0, +view.x || 0)), y: Math.max(1 - zoom, Math.min(0, +view.y || 0)) };
@@ -167,10 +313,12 @@
     options = options || {};
     var holder = document.getElementById('viewer-control-panel'); if (!holder) return null;
     var token = null, records = [], cache = {}, panels = [], disposed = false, busy = false, request = 0, lastSaved = null, editRevision = 0;
-    var listeners = [], labels = [], history = [], future = [], historyBytes = 0, activePanel = null, runtimeEngine = null, runtimeGesture = null, savedToken = null, savedFingerprint = null, uvCursor = null;
+    var listeners = [], labels = [], titles = [], history = [], future = [], historyBytes = 0, activePanel = null, runtimeEngine = null, runtimeGesture = null, savedToken = null, savedFingerprint = null, uvCursor = null;
     function t(key) { return translated(key, options.translate); }
     function interactive() { return !options.isInteractive || options.isInteractive(); }
     function el(tag, parent, key) { var e = document.createElement(tag); if (key) { e.textContent = t(key); labels.push([e, key]); } if (parent) parent.appendChild(e); return e; }
+    // Tooltips follow a language switch like labels: a key, or a function for composed text.
+    function titled(e, text) { e.title = typeof text === 'function' ? text() : t(text); titles.push([e, text]); return e; }
     function on(e, type, handler) { e.addEventListener(type, handler); listeners.push(function () { e.removeEventListener(type, handler); }); }
     function button(parent, key, handler) { var b = el('button', parent, key); b.type = 'button'; on(b, 'click', handler); return b; }
     function select(parent, key, values) { var label = el('label', parent), span = el('span', label, key), s = el('select', label); span.style.display = 'block'; (values || []).forEach(function (entry) { var o = el('option', s, entry[1]); o.value = entry[0]; }); return s; }
@@ -179,6 +327,7 @@
     style.textContent += '.viewer-mesh-tools .mesh-transform-tools{min-width:0;border:1px solid var(--line,#667085);border-radius:6px;padding:5px;display:flex;flex-direction:column;gap:4px}.viewer-mesh-tools .mesh-transform-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0}.viewer-mesh-tools .mesh-transform-tools button{margin:0;min-width:32px;min-height:32px;padding:4px 7px;white-space:nowrap;font-size:12px;line-height:1.2}.viewer-mesh-tools .mesh-transform-tools button[aria-pressed=true]{border-color:var(--accent,#315fbc);box-shadow:inset 0 0 0 1px var(--accent,#315fbc)}.viewer-mesh-tools .mesh-transform-tools label{min-width:0;display:inline-flex;flex-wrap:nowrap;font-size:12px;gap:4px}.viewer-mesh-tools .mesh-transform-tools select{max-width:124px;min-height:32px;margin:0;padding:4px}.viewer-mesh-tools .mesh-transform-tools input{width:82px;min-width:0;min-height:32px;margin:0;padding:4px}.viewer-mesh-tools .mesh-transform-note{font-size:11px;line-height:1.3;margin:0;overflow-wrap:anywhere}.viewer-mesh-tools .mesh-transform-row[hidden]{display:none}.viewer-mesh-tools .mesh-transform-axis-x{color:#c53247}.viewer-mesh-tools .mesh-transform-axis-y{color:#147b4d}.viewer-mesh-tools .mesh-transform-axis-z{color:#255fc7}@media(pointer:coarse){.viewer-mesh-tools .mesh-transform-tools button,.viewer-mesh-tools .mesh-transform-tools select,.viewer-mesh-tools .mesh-transform-tools input{min-height:44px}.viewer-mesh-tools .mesh-transform-tools button{min-width:44px}}';
     style.textContent += '.viewer-mesh-tools.texture-pane-expanded .mesh-transform-tools,.viewer-mesh-tools .mesh-transform-tools [hidden]{display:none!important}.viewer-mesh-tools .mesh-transform-axis-label>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}';
     style.textContent += '.viewer-mesh-tools .mesh-transform-tools select{width:104px;max-width:104px;font-size:12px}.viewer-mesh-tools .mesh-transform-tools input{width:64px;font-size:12px}';
+    style.textContent += '.viewer-mesh-tools .mesh-transform-tools .mesh-together-label{display:flex;align-items:center;gap:6px;min-height:32px;max-width:100%;flex-wrap:nowrap;cursor:pointer}.viewer-mesh-tools .mesh-transform-tools input[type=checkbox]{width:16px;height:16px;min-width:16px;min-height:16px;margin:0;padding:0;flex:none}.viewer-mesh-tools .mesh-together-label>span{min-width:0;overflow-wrap:anywhere}@media(pointer:coarse){.viewer-mesh-tools .mesh-together-label,.viewer-mesh-tools .mesh-transform-tools .mesh-together-label{min-height:44px}.viewer-mesh-tools .mesh-together-label>input[type=checkbox]{width:22px;height:22px;min-width:22px;min-height:22px}}';
     style.textContent += '.viewer-mesh-tools .uv-short-workspace .uv-edit-toolbar>.mesh-reset{width:auto;min-width:0;flex:0 1 auto;font-size:12px;white-space:normal}#viewer-mesh-deleter .uv-short-rail .uv-edit-toolbar{grid-template-columns:repeat(4,minmax(0,1fr))}.viewer-mesh-tools .uv-short-rail .uv-edit-toolbar>.mesh-reset{grid-column:1/-1;width:100%}';
     async function api(route, payload) {
       var response = await fetch('/api/viewer/mesh/' + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -189,7 +338,55 @@
     function snapshot() { var out = {}; Object.keys(cache).forEach(function (k) { var m = cache[k]; out[k] = { deleted: Array.from(m.deleted), marked: Array.from(m.marked || []), selected: Array.from(m.selected), positions: clone(m.positions), weights: clone(m.weights) }; }); return out; }
     function remember(value) { value = typeof value === 'string' ? value : JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; while (history.length > 24 || historyBytes > 8 * 1024 * 1024) historyBytes -= history.shift().length; future = []; }
     function geometryChanged(m) { m.geometryRevision = (m.geometryRevision || 0) + 1; }
-    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = new Set(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); panels.forEach(function (p) { p.positionDraft = false; }); changed(); }
+    // Counts writes of current positions only (not weights, deleted faces or
+    // the selection), so the same-position groups are rebuilt only when a
+    // position may have changed.
+    function positionsChanged(m) { m.positionRevision = (m.positionRevision || 0) + 1; }
+    // Whether two position-edit sets give every vertex the same current position.
+    function samePositions(m, a, b) {
+      if (a === b) return true;
+      return Object.keys(a).concat(Object.keys(b)).every(function (vertex) {
+        var x = a[vertex] || m.data.positions[vertex], y = b[vertex] || m.data.positions[vertex];
+        return !!x && !!y && x[0] === y[0] && x[1] === y[1] && x[2] === y[2];
+      });
+    }
+    // Same-position groups follow the current positions. The index is rebuilt
+    // once per position revision; a drag freezes the groups it started with.
+    var groupStats = { builds: 0, lastBuildMs: 0, lastBuildVertices: 0, lookups: 0 };
+    // Vertex selections count their changes, so the partner lookup is reused
+    // until the selection or the position groups change (paint strokes and
+    // other redraws would otherwise repeat it on every pointer move).
+    function selectionSet(values) {
+      var set = new Set(values || []); set.revision = 0;
+      set.add = function (value) { if (!Set.prototype.has.call(set, value)) set.revision++; return Set.prototype.add.call(set, value); };
+      set.delete = function (value) { var removed = Set.prototype.delete.call(set, value); if (removed) set.revision++; return removed; };
+      set.clear = function () { if (set.size) set.revision++; Set.prototype.clear.call(set); };
+      return set;
+    }
+    function currentPosition(m, vertex) { return m.positions[vertex] || m.data.positions[vertex]; }
+    function positionIndex(m) {
+      if (!m.positionGroups || m.positionGroups.revision !== m.positionRevision) {
+        var started = performance.now(), index = buildPositionGroups(m.data.positions.length, function (vertex) { return currentPosition(m, vertex); });
+        groupStats.builds++; groupStats.lastBuildMs = performance.now() - started; groupStats.lastBuildVertices = index.count;
+        m.positionGroups = { revision: m.positionRevision, index: index };
+      }
+      return m.positionGroups.index;
+    }
+    function movesTogether(panel) { return !!(panel && panel.modify && panel.moveTogether); }
+    function samePosition(panel, m) {
+      if (!m || !movesTogether(panel) || !m.selected.size) return null;
+      if (runtimeGesture && runtimeGesture.together && runtimeGesture.together.mesh === m) return runtimeGesture.together.value;
+      var index = positionIndex(m), selected = m.selected, cached = m.partnerCache;
+      if (cached && cached.index === index && cached.selected === selected && selected.revision !== undefined && cached.revision === selected.revision) return cached.value;
+      groupStats.lookups++; var value = samePositionPartners(index, selected);
+      m.partnerCache = { index: index, selected: selected, revision: selected.revision, value: value }; return value;
+    }
+    // Selected vertices first, then their partners: the set a position edit writes.
+    function movingVertices(panel, m) {
+      var vertices = Array.from(m.selected), together = samePosition(panel, m);
+      return together ? vertices.concat(together.partners) : vertices;
+    }
+    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; if (!samePositions(m, m.positions, row.positions)) positionsChanged(m); m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = selectionSet(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); panels.forEach(function (p) { p.positionDraft = false; }); changed(); }
     function undo() { if (busy || runtimeGesture || !interactive() || !history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
     function redo() { if (busy || runtimeGesture || !interactive() || !future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
     function status(panel, text, error) { panel.status.textContent = text; panel.status.classList.toggle('mesh-error', !!error); }
@@ -209,7 +406,7 @@
       finally { if (ticket === request) { busy = false; redraw(); if (options.onChange) options.onChange(); } }
     }
     function makeMesh(data) {
-        var m = { data: data, deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, geometryRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
+        var m = { data: data, deleted: new Set(), marked: new Set(), selected: selectionSet(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, geometryRevision: 0, positionRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
         if (data.uv) {
           var grid = {}, cells = 0; data.triangles.forEach(function (face, index) {
             if (cells > 500000) return; var points = face.map(function (v) { return data.uv[v]; });
@@ -310,7 +507,7 @@
         Object.keys(cache).forEach(function (id) { previous.values[id] = Object.assign({}, cache[id]); });
         var panelState = panels.map(function (p) { return { mesh: p.mesh.value, submesh: p.submesh.value, bone: p.bone && p.bone.value, sourceBone: p.sourceBone && p.sourceBone.value }; });
         var next = {};
-        Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1, geometryRevision: (old.geometryRevision || 0) + 1 }); });
+        Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: selectionSet(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1, geometryRevision: (old.geometryRevision || 0) + 1, positionRevision: (old.positionRevision || 0) + 1 }); });
         Object.keys(prepared).forEach(function (id) { var item = prepared[id], mesh = next[id] || makeMesh(item.data); mesh.deleted = item.edits.deleted; mesh.positions = item.edits.positions; mesh.weights = item.edits.weights; geometryChanged(mesh); next[id] = mesh; });
         function restorePanels(values, fallback) {
           fillMeshes(); panels.forEach(function (p, index) {
@@ -350,11 +547,16 @@
     function visibleVertices(panel, m) {
       var result = new Set(); m.data.triangles.forEach(function (face, index) { if (visibleFace(panel, m, index)) face.forEach(function (v) { result.add(v); }); }); return result;
     }
+    function visibleVertexCache(panel, m) {
+      var cached = panel.visibleVertexCache, submesh = panel.submesh.value;
+      if (!cached || cached.mesh !== m || cached.submesh !== submesh) cached = panel.visibleVertexCache = { mesh: m, submesh: submesh, vertices: visibleVertices(panel, m) };
+      return cached.vertices;
+    }
     function fillSubmeshes(panel) {
       var m = current(panel); panel.submesh.textContent = '';
       (m ? m.data.submeshes || [{ index: 0, name: 'Material 1' }] : []).forEach(function (entry) { var option = el('option', panel.submesh); option.value = entry.index; option.textContent = entry.name + ' [' + entry.index + ']'; });
     }
-    function draw(panel) {
+    function draw(panel, together) {
       var m = current(panel), canvas = panel.canvas, rect = canvas.getBoundingClientRect();
       var target = rect.width > 0 ? Math.max(128, Math.min(2048, Math.round(rect.width * Math.min(2, window.devicePixelRatio || 1)))) : canvas.width;
       if (canvas.width !== target || canvas.height !== target) { canvas.width = target; canvas.height = target; panel.baseKey = ''; }
@@ -383,7 +585,18 @@
       ctx.save(); ctx.setTransform(view.zoom, 0, 0, view.zoom, view.x * size, view.y * size);
       m.deleted.forEach(function (index) { if (!visibleFace(panel, m, index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(0,0,0,.8)'; ctx.fill(); });
       m.marked.forEach(function (index) { if (!visibleFace(panel, m, index) || m.deleted.has(index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(255,50,80,.65)'; ctx.fill(); });
+      // Partners that move with the selection, only in the shown material: a
+      // pink dot with a dark rim under the yellow selected dots, and a pink
+      // ring above them, so a partner whose UV equals a selected vertex's UV
+      // (normal splits, full copies: 19 % of real groups) shows around it.
+      if (together === undefined) together = panel.modify ? samePosition(panel, m) : null;
+      var marks = [];
+      if (together && together.partners.length) {
+        var shown = m.data.submeshes && m.data.submeshes.length > 1 ? visibleVertexCache(panel, m) : null;
+        together.partners.forEach(function (v) { if (shown && !shown.has(v)) return; var p = point(v); marks.push(p); ctx.beginPath(); ctx.arc(p[0], p[1], 3.4 * density / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ff6fd8'; ctx.fill(); ctx.lineWidth = 1.2 * density / view.zoom; ctx.strokeStyle = '#17202b'; ctx.stroke(); });
+      }
       if (panel.modify) m.selected.forEach(function (v) { var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3 * density / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ffe05c'; ctx.fill(); });
+      marks.forEach(function (p) { ctx.beginPath(); ctx.arc(p[0], p[1], 5.6 * density / view.zoom, 0, Math.PI * 2); ctx.lineWidth = 3 * density / view.zoom; ctx.strokeStyle = '#17202b'; ctx.stroke(); ctx.lineWidth = 1.6 * density / view.zoom; ctx.strokeStyle = '#ff6fd8'; ctx.stroke(); });
       ctx.restore();
     }
     function operationState() {
@@ -399,7 +612,8 @@
         p.undo.disabled = busy || !!runtimeGesture || !history.length; p.redo.disabled = busy || !!runtimeGesture || !future.length;
         if (p.deleteFaces) p.deleteFaces.disabled = busy || !m || !m.marked.size || !interactive();
         p.canvas.style.opacity = busy ? '.5' : '1';
-        p.count.textContent = p.modify ? t('Selected vertices') + ': ' + (m ? m.selected.size : 0) + ' · ' + t('Position and weight edits') + ': ' + (m ? Object.keys(m.positions).length + Object.keys(m.weights).length : 0) : t('Selected faces') + ': ' + (m ? m.marked.size : 0) + ' · ' + t('Deleted faces') + ': ' + (m ? m.deleted.size : 0);
+        var together = p.modify ? samePosition(p, m) : null, partnerText = together && together.partners.length ? ' ' + t('(+{count} at the same position)').replace('{count}', together.partners.length) : '';
+        p.count.textContent = p.modify ? t('Selected vertices') + ': ' + (m ? m.selected.size : 0) + partnerText + ' · ' + t('Position and weight edits') + ': ' + (m ? Object.keys(m.positions).length + Object.keys(m.weights).length : 0) : t('Selected faces') + ': ' + (m ? m.marked.size : 0) + ' · ' + t('Deleted faces') + ': ' + (m ? m.deleted.size : 0);
         p.actions.forEach(function (b) { b.disabled = busy || !m || !interactive(); });
         if (p.connected) p.connected.disabled = busy || !m || !(p.modify ? m.selected.size : m.marked.size) || !interactive();
         if (p.zoom) { p.zoom.value = p.view.zoom; p.zoomText.textContent = Math.round(p.view.zoom * 100) + '%'; p.zoom.disabled = busy || !m || !m.data.uv; }
@@ -420,7 +634,7 @@
           });
           syncMovementTools(p, m);
         }
-        draw(p);
+        draw(p, together);
       });
       if (skipRuntime !== true) syncRuntime();
     }
@@ -452,7 +666,7 @@
             if (!stored) { delete mesh.positions[vertex]; altered = true; }
             else if (value.some(function (part, axis) { return part !== original[axis]; })) { mesh.positions[vertex] = original.slice(); altered = true; }
           });
-          if (altered) geometryChanged(mesh);
+          if (altered) { geometryChanged(mesh); positionsChanged(mesh); }
         });
       }
       if (gesture && (cancel || JSON.stringify(snapshot()) === gesture.before)) {
@@ -473,18 +687,33 @@
       if (!m || !m.data.positionWritable || !m.selected.size || busy || runtimeGesture || !interactive()) return;
       if (!panel.moveStep.value.trim() || !panel.moveStep.checkValidity() || !Number.isFinite(amount) || amount <= 0) return status(panel, t('Enter a positive move distance.'), true);
       var updates = {}, valid = true;
-      m.selected.forEach(function (vertex) {
+      movingVertices(panel, m).forEach(function (vertex) {
         var value = (m.positions[vertex] || m.data.positions[vertex]).slice(); value[axis] += amount * sign;
         if (value.some(function (part) { return !Number.isFinite(part) || Math.abs(part) > 1000000; })) valid = false;
         updates[vertex] = value;
       });
       if (!valid) return;
       activePanel = panel; panel.positionDraft = false; remember();
-      Object.keys(updates).forEach(function (vertex) { m.positions[vertex] = updates[vertex]; }); geometryChanged(m); changed();
+      Object.keys(updates).forEach(function (vertex) { m.positions[vertex] = updates[vertex]; }); geometryChanged(m); positionsChanged(m); changed();
+    }
+    function togetherBox(panel, parent, id) {
+      var label = el('label', parent), input = el('input', label); label.className = 'mesh-together-label'; input.type = 'checkbox'; input.id = id; input.checked = panel.moveTogether;
+      el('span', label, 'Move vertices at the same position together');
+      titled(label, 'UV seams and material borders split one point into several vertices. Moving one also moves the others, including copies in other materials or on deleted faces, so the surface stays closed. Selection and weights are unchanged.');
+      on(input, 'change', function () { setMoveTogether(panel, input.checked); }); return input;
+    }
+    // A movement setting, not an edit: it changes no history and no save state.
+    function setMoveTogether(panel, value) {
+      if (busy || runtimeGesture || !interactive()) { [panel.samePosition, panel.samePositionSettings].forEach(function (box) { if (box) box.checked = panel.moveTogether; }); return; }
+      panel.moveTogether = !!value; activePanel = panel;
+      [panel.samePosition, panel.samePositionSettings].forEach(function (box) { if (box && box.checked !== panel.moveTogether) box.checked = panel.moveTogether; });
+      redraw(); if (options.onChange) options.onChange();
     }
     function syncMovementTools(panel, m) {
       if (!panel.moveTools) return;
       var locked = busy || !!runtimeGesture || !interactive(), count = m ? m.selected.size : 0;
+      if (panel.samePosition.disabled !== locked) panel.samePosition.disabled = locked;
+      if (panel.samePositionSettings && panel.samePositionSettings.disabled !== locked) panel.samePositionSettings.disabled = locked;
       panel.moveModeButtons.forEach(function (button) {
         var disabled = locked || !m || panel.sceneMode.disabled, pressed = String(panel.sceneMode.value === button.dataset.meshSceneMode);
         if (button.disabled !== disabled) button.disabled = disabled; if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed);
@@ -494,6 +723,7 @@
       var moving = panel.sceneMode.value === 'drag';
       if (panel.moveAxis.parentElement.hidden !== !moving) panel.moveAxis.parentElement.hidden = !moving;
       if (panel.moveNudges.hidden !== !(moving && count)) panel.moveNudges.hidden = !(moving && count);
+      if (panel.moveTogetherRow.hidden !== !moving) panel.moveTogetherRow.hidden = !moving;
       var invalidStep = !panel.moveStep.value.trim() || !panel.moveStep.checkValidity() || !Number.isFinite(+panel.moveStep.value) || +panel.moveStep.value <= 0;
       var axis = 'xyz'.indexOf(panel.moveAxis.value), name = axis < 0 ? '' : 'XYZ'[axis];
       panel.moveNudgeButtons.forEach(function (button) {
@@ -598,7 +828,9 @@
       if (absolute && m.selected.size !== 1) return status(panel, t('Choose one vertex for an absolute position.'), true);
       var fields = absolute ? panel.xyz : panel.delta, value = fields.map(function (i) { return +i.value; });
       if (fields.some(function (i) { return !i.checkValidity() || !i.value.trim(); }) || value.some(function (v) { return !Number.isFinite(v); })) return;
-      remember(); panel.positionDraft = false; m.selected.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); geometryChanged(m); changed();
+      // Partners of the one absolutely placed vertex take the same value.
+      var vertices = movingVertices(panel, m);
+      remember(); panel.positionDraft = false; vertices.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); geometryChanged(m); positionsChanged(m); changed();
     }
     function applyWeights(panel) {
       var m = current(panel); if (!m || !m.data.skinWritable || !m.selected.size) return;
@@ -653,7 +885,9 @@
           var quick = button(p.moveNudges, sign < 0 ? '−' : '+', function () { var axis = 'xyz'.indexOf(p.moveAxis.value); if (axis >= 0) nudgeSelection(p, axis, sign); });
           quick.id = p.root.id + '-nudge-' + (sign < 0 ? 'minus' : 'plus'); quick.dataset.meshNudgeSign = String(sign); p.moveNudgeButtons.push(quick);
         });
-        p.moveTools.title = t('Drag an axis arrow, or use the step buttons. Axis values use the source mesh coordinates.');
+        p.moveTogetherRow = el('div', p.moveTools); p.moveTogetherRow.className = 'mesh-transform-row mesh-transform-together'; p.moveTogetherRow.hidden = true;
+        p.samePosition = togetherBox(p, p.moveTogetherRow, p.root.id + '-same-position');
+        titled(p.moveTools, 'Drag an axis arrow, or use the step buttons. Axis values use the source mesh coordinates.');
       }
       var tools = el('div', main); tools.className = 'uv-edit-toolbar'; tools.setAttribute('role', 'toolbar'); tools.setAttribute('aria-label', t('Texture interaction'));
       var stage = el('div', main); stage.className = 'uv-canvas-stage'; stage.appendChild(p.canvas);
@@ -664,14 +898,14 @@
       var settings = button(tools, 'Tool settings', function () {}); settings.className = 'uv-icon-button uv-settings-button'; settings.dataset.uvSettings = ''; settings.setAttribute('aria-expanded', 'false');
       original.forEach(function (node) { if (node !== p.canvas) inspector.appendChild(node); });
       function move(control, destination) { if (!control) return; var node = control.parentElement && control.parentElement.tagName === 'LABEL' ? control.parentElement : control; destination.appendChild(node); }
-      move(p.load, source); p.load.classList.add('uv-refresh-button'); p.load.title = t('Load meshes'); move(p.mesh, source); move(p.submesh, source);
+      move(p.load, source); p.load.classList.add('uv-refresh-button'); titled(p.load, 'Load meshes'); move(p.mesh, source); move(p.submesh, source);
       var quick = [];
       [['paint', 'Brush'], ['erase', 'Erase'], ['connected', 'Linked'], ['pan', 'Pan']].forEach(function (row) {
         var b = button(null, row[1], function () {
           activePanel = p; p.textureMode.value = row[0] === 'erase' ? 'paint' : row[0]; p.mode.value = row[0] === 'erase' ? 'erase' : 'paint';
           p.textureMode.dispatchEvent(new Event('change', { bubbles: true })); if (uvCursor) uvCursor.hidden = true;
         });
-        b.id = p.root.id + '-tool-' + row[0]; b.dataset.uvTool = row[0]; b.title = t(row[0] === 'connected' ? 'Connected faces' : row[0] === 'pan' ? 'Move texture' : row[1]) + ' (' + ({ paint: 'B', erase: 'E', connected: 'L', pan: 'V' }[row[0]]) + ')'; tools.insertBefore(b, settings); quick.push(b);
+        b.id = p.root.id + '-tool-' + row[0]; b.dataset.uvTool = row[0]; titled(b, function () { return t(row[0] === 'connected' ? 'Connected faces' : row[0] === 'pan' ? 'Move texture' : row[1]) + ' (' + ({ paint: 'B', erase: 'E', connected: 'L', pan: 'V' }[row[0]]) + ')'; }); tools.insertBefore(b, settings); quick.push(b);
       });
       move(p.radius, tools); p.radius.parentElement.classList.add('uv-compact-radius');
       tools.insertBefore(p.undo, settings); tools.insertBefore(p.redo, settings); p.undo.classList.add('uv-undo-button'); p.redo.classList.add('uv-redo-button');
@@ -698,7 +932,7 @@
       var box = el('details', holder); box.id = modify ? 'viewer-mesh-modify' : 'viewer-mesh-deleter'; box.className = 'viewer-adjustments viewer-mesh-tools';
       el('summary', box, modify ? 'Mesh modify' : 'Mesh deleter');
       el('p', box, modify ? 'Paint to select vertices, then edit positions or normalized weights.' : 'Paint selects faces. Delete selected faces removes them from the model. Ctrl/Cmd+Z restores the mesh.').className = 'viewer-render-note';
-      var p = { root: box, modify: modify, actions: [], view: { zoom: 1, x: 0, y: 0 }, viewButtons: [] }, row = el('div', box); row.className = 'mesh-row';
+      var p = { root: box, modify: modify, moveTogether: modify, actions: [], view: { zoom: 1, x: 0, y: 0 }, viewButtons: [] }, row = el('div', box); row.className = 'mesh-row';
       p.load = button(row, 'Load meshes', function () { inspectMeshes(p); }); p.mesh = select(row, 'Mesh', [['', 'Choose a mesh']]); on(p.mesh, 'change', function () { chooseMesh(p); });
       p.submesh = select(box, 'Material / submesh'); on(p.submesh, 'change', function () { activePanel = p; var m = current(p); if (m && p.modify) m.selected.clear(); p.baseKey = ''; changed(); });
       row = el('div', box); row.className = 'mesh-row'; p.mode = select(row, 'Paint', [['paint', 'Paint'], ['erase', 'Erase']]); p.radius = numeric(row, 'Brush radius', 30, 2, 200, 1);
@@ -745,13 +979,14 @@
         p.positionSet = button(position, 'Set vertex position', function () { changePosition(p, true); });
         row = el('div', position); row.className = 'mesh-row'; p.delta = ['X', 'Y', 'Z'].map(function (axis) { return numeric(row, 'Δ ' + axis, 0, -1000000, 1000000, .001); });
         p.translate = button(position, 'Translate selected vertices', function () { changePosition(p, false); });
+        p.samePositionSettings = togetherBox(p, position, box.id + '-same-position-settings');
         var weight = el('fieldset', box); el('legend', weight, 'Weight'); row = el('div', weight); row.className = 'mesh-row'; p.bone = select(row, 'Bone'); p.sourceBone = select(row, 'Source bone'); on(p.bone, 'change', redraw);
         row = el('div', weight); row.className = 'mesh-row'; p.weightMode = select(row, 'Weight mode', [['set', 'Set'], ['add', 'Add'], ['subtract', 'Subtract'], ['smooth', 'Smooth'], ['transfer', 'Transfer from bone']]); p.weight = numeric(row, 'Weight', .5, 0, 1, .01);
         p.weightApply = button(weight, 'Apply weights to selection', function () { applyWeights(p); });
         var lock = el('details', weight); el('summary', lock, 'Lock bone weights'); p.locks = el('div', lock); p.locks.className = 'mesh-weights';
         el('p', weight, 'Locked bones retain their current weights. Remaining weights normalize to a total of 1, with at most four influences.').className = 'viewer-render-note';
       }
-      p.reset = button(box, 'Restore mesh changes', function () { var m = current(p); if (!m) return; remember(); m.deleted.clear(); m.marked.clear(); m.selected.clear(); m.positions = {}; m.weights = {}; m.weightRevision++; geometryChanged(m); changed(); }); p.reset.className = 'mesh-reset'; p.actions.push(p.reset);
+      p.reset = button(box, 'Restore mesh changes', function () { var m = current(p); if (!m) return; remember(); if (Object.keys(m.positions).length) positionsChanged(m); m.deleted.clear(); m.marked.clear(); m.selected.clear(); m.positions = {}; m.weights = {}; m.weightRevision++; geometryChanged(m); changed(); }); p.reset.className = 'mesh-reset'; p.actions.push(p.reset);
       p.save = button(box, 'Save mesh copy', function () { save(p); }); p.save.className = 'mesh-save'; el('p', box, 'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.').className = 'viewer-render-note'; p.result = el('ul', box);
       p.status = el('p', box, 'Open a model first.'); p.status.className = 'viewer-render-note'; p.status.setAttribute('role', 'status'); p.status.setAttribute('aria-live', 'polite');
       var prefix = box.id;
@@ -772,6 +1007,8 @@
       var p = activePanel, m = p && current(p); if (!p || !m || p.root.hidden) return null;
       return { mesh: m, modify: p.modify, mode: p.sceneMode.value, submesh: +p.submesh.value || 0,
         dragAxis: p.moveAxis ? p.moveAxis.value : 'screen',
+        // Called once when a drag starts; the drag keeps these groups to its end.
+        moveGroups: function () { var value = samePosition(p, m); if (value && runtimeGesture) runtimeGesture.together = { mesh: m, value: value }; return value; },
         radius: +p.radius.value || 20, erase: p.mode.value === 'erase', showSelection: p.show3d.checked,
         showVertices: p.modify && p.showVertices.checked, interactive: interactive() && !busy && (!options.isSceneInteractive || options.isSceneInteractive()) };
     }
@@ -798,7 +1035,7 @@
         onPaint: function (indices, erase, modify) { var m = activePanel && current(activePanel); if (!m) return; var set = modify ? m.selected : m.marked, altered = false; indices.forEach(function (index) { if (erase) { if (set.delete(index)) altered = true; } else if ((modify || !m.deleted.has(index)) && !set.has(index)) { set.add(index); altered = true; } }); if (altered) redraw(); },
         onSelect: chooseVertex,
         onConnected: function (face, erase, toggle) { if (activePanel) selectConnected(activePanel, [face], erase, toggle, false); },
-        onDrag: function (values) { var m = activePanel && current(activePanel); if (!m) return; Object.keys(values).forEach(function (vertex) { m.positions[vertex] = values[vertex]; }); geometryChanged(m); changed(); },
+        onDrag: function (values) { var m = activePanel && current(activePanel); if (!m) return; Object.keys(values).forEach(function (vertex) { m.positions[vertex] = values[vertex]; }); geometryChanged(m); positionsChanged(m); changed(); },
         onEnd: endRuntimeGesture
       });
     }
@@ -829,11 +1066,17 @@
     }
     build(false); build(true);
     initializeRuntime(); initializeShortcuts(); refresh();
-    return { refresh: refresh, getStatus: quickStatus, canClearSelection: canClearSelection, clearSelection: clearSelection, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.updateLanguage(); }); redraw(); },
+    return { refresh: refresh, getStatus: quickStatus, canClearSelection: canClearSelection, clearSelection: clearSelection, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); titles.forEach(function (pair) { pair[0].title = typeof pair[1] === 'function' ? pair[1]() : t(pair[1]); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.updateLanguage(); }); redraw(); },
       getEdits: function () { return clone(operationState()); }, getEditRevision: function () { return editRevision; }, restoreEdits: restoreEdits,
-      getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, hasUnappliedSelection: summary.hasUnappliedSelection, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved }; },
+      getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, hasUnappliedSelection: summary.hasUnappliedSelection, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved,
+        samePosition: (function () { var p = panels.filter(function (panel) { return panel.modify; })[0], m = activePanel && activePanel.modify ? current(activePanel) : null, together = m ? samePosition(activePanel, m) : null;
+          return { enabled: !!(p && p.moveTogether), partners: together ? together.partners.slice().sort(function (a, b) { return a - b; }) : [], groups: together ? together.groups.length : 0,
+            builds: groupStats.builds, lookups: groupStats.lookups, lastBuildMs: groupStats.lastBuildMs, lastBuildVertices: groupStats.lastBuildVertices,
+            // The tolerance the shown mesh's groups were built with (the constant before any build).
+            tolerance: m && m.positionGroups ? m.positionGroups.index.tolerance : SAME_POSITION_TOLERANCE }; })() }; },
       dispose: function () { disposed = true; request++; runtimeGesture = null; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.dispose(); p.root.remove(); }); style.remove(); cache = {}; } };
   }
   window.ViewerMeshTools = { create: create, normalizeInfluences: normalize, redistributeInfluence: redistributeInfluence, circleIntersectsTriangle: intersects,
-    buildFaceConnectivity: buildFaceConnectivity, connectedFaces: connectedFaces, uvToView: uvToView, viewToUv: viewToUv, zoomView: zoomView };
+    buildFaceConnectivity: buildFaceConnectivity, connectedFaces: connectedFaces, uvToView: uvToView, viewToUv: viewToUv, zoomView: zoomView,
+    buildPositionGroups: buildPositionGroups, samePositionPartners: samePositionPartners, samePositionTolerance: SAME_POSITION_TOLERANCE };
 })();
