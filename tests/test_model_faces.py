@@ -743,7 +743,8 @@ class FaceTests(unittest.TestCase):
             viewer_mod_sources.register_game_import(str(self.body), record)
             self.assertEqual(self.plan().resolve(), [str(private)])
             self.assertEqual(calls, [("privateface", False), ("privateface", True)])
-            broad.assert_not_called()
+            # Local files are searched once before anything is downloaded.
+            broad.assert_called_once_with()
             # Offline, the earlier same-owner choice remains the fallback.
             calls.clear()
             self.context["allow_download"] = False
@@ -834,14 +835,14 @@ class FaceTests(unittest.TestCase):
                 patch.object(faces.FacePlan, "_resource", self.recording_resource(files, calls)):
             self.assertEqual(self.plan().resolve(), [str(local)])
         self.assertEqual(calls, [("stockface", False)])
-        # Without that local face the downloaded one is still used, from cache.
+        # Without that local face the downloaded one is still used, once fetched.
         local.unlink()
         calls.clear()
         with patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "3" * 32}), \
                 patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([self.catalog_descriptor("stockface")])), \
                 patch.object(faces.FacePlan, "_resource", self.recording_resource(files, calls)):
             self.assertEqual(self.plan().resolve(), [str(files["stockface"])])
-        self.assertEqual(calls, [("stockface", False), ("stockface", True), ("stockface", True)])
+        self.assertEqual(calls, [("stockface", False), ("stockface", True)])
 
     def test_hung_exact_download_leaves_time_for_another_member_face(self):
         directory = Path(self.context["cache_dir"]) / "models"
@@ -872,10 +873,9 @@ class FaceTests(unittest.TestCase):
         self.assertEqual(plan.deadline, deadline)
 
     @EXTRACTOR_REQUIRED
-    def test_slow_referenced_download_outlives_the_compare_share_and_is_used(self):
+    def test_slow_referenced_download_with_nothing_else_at_hand_has_the_whole_face_time(self):
         # The referenced stock face is only on a slow but working CDN and no
-        # other face exists. The compare step's share of the budget ends while
-        # it downloads; the late pass waits for that same download.
+        # other face exists: it is downloaded as before, with the face time.
         stock = self.referenced_donor("CAB-" + "2" * 32)
         descriptor = self.databases(stock)
         payload = self.encrypted(stock, descriptor)
@@ -900,12 +900,13 @@ class FaceTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertAlmostEqual(calls[0], deadline, delta=.01)
         self.assertEqual(plan.transferred, descriptor["pack_size"])
-        self.assertEqual(plan._kept, {})
 
     @EXTRACTOR_REQUIRED
-    def test_download_running_at_the_reserve_yields_to_another_member_face_and_stops(self):
-        # FACE_SECONDS leaves the compare step one second. With no fallback
-        # reserve the hung download would take the whole budget instead.
+    def test_named_download_with_another_face_at_hand_goes_on_only_while_it_can_finish(self):
+        # Another prefab of the member is cached; the referenced stock face is
+        # on a slow but working CDN, about five seconds for the pack. With a
+        # face time that leaves it room it is awaited and used; with one it
+        # cannot meet, it is stopped once measured and the cached face is used.
         directory = Path(self.context["cache_dir"]) / "models"
         directory.mkdir(parents=True)
         other = directory / ("ch0207_" + "a" * 24 + ".unity")
@@ -913,45 +914,57 @@ class FaceTests(unittest.TestCase):
         stock = self.referenced_donor("CAB-" + "2" * 32)
         descriptor = self.databases(stock)
         payload = self.encrypted(stock, descriptor)
-        step, reads = max(1, len(payload) // 100), []
-
-        class Response(io.BytesIO):
-            headers = {"Content-Length": str(len(payload))}
-
-            def read(self, size=-1):
-                # A slow but working CDN: about five seconds for the pack.
-                reads.append(time.monotonic())
-                time.sleep(.05)
-                return super().read(min(size, step))
-
-        opener = type("Opener", (), {"open": lambda self, *a, **kw: Response(payload)})()
-        slot = threading.BoundedSemaphore(1)
+        step = max(1, len(payload) // 100)
         self.context["allow_download"] = True
-        with patch.object(faces, "FACE_SECONDS", faces.FALLBACK_SECONDS + 1), \
-                patch.object(faces, "_DOWNLOAD_SLOT", slot), patch.object(faces, "build_opener", return_value=opener), \
-                patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}):
-            plan = self.plan()
-            started = time.monotonic()
-            self.assertEqual(plan.resolve(), [str(other)])
-            returned = time.monotonic()
-            self.assertLess(returned - started, 4)
-            # The abandoned worker stops at its next chunk and frees the slot.
-            self.assertTrue(slot.acquire(timeout=.5), "The abandoned download kept running")
-            slot.release()
-        self.assertTrue(reads)
-        self.assertLess(reads[-1], returned + .2)
-        self.assertEqual(plan._kept, {})
-        # Its bytes were never published to the face cache.
-        self.assertFalse((Path(self.context["cache_dir"]) / "packs" / descriptor["pack_name"]).exists())
-        self.assertEqual(sorted(directory.glob("*.unity")), [other])
+        for face_seconds, expected in ((faces.FALLBACK_SECONDS + 9, stock), (faces.FALLBACK_SECONDS + 4, None)):
+            reads = []
+
+            class Response(io.BytesIO):
+                headers = {"Content-Length": str(len(payload))}
+
+                def read(self, size=-1):
+                    reads.append(time.monotonic())
+                    time.sleep(.05)
+                    return super().read(min(size, step))
+
+            opener = type("Opener", (), {"open": lambda self, *a, **kw: Response(payload)})()
+            slot = threading.BoundedSemaphore(1)
+            for path in (Path(self.context["cache_dir"]) / "packs").glob("*"):
+                path.unlink()
+            for path in directory.glob("*.unity"):
+                if path != other:
+                    path.unlink()
+            with self.subTest(face_seconds=face_seconds), \
+                    patch.object(faces, "FACE_SECONDS", face_seconds), \
+                    patch.object(faces, "_DOWNLOAD_SLOT", slot), patch.object(faces, "build_opener", return_value=opener), \
+                    patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}):
+                plan = self.plan()
+                started = time.monotonic()
+                chosen = plan.resolve()
+                returned = time.monotonic()
+                # Either way the one worker is free at once.
+                self.assertTrue(slot.acquire(timeout=.5), "The stopped download kept running")
+                slot.release()
+                self.assertEqual(plan.transferred, descriptor["pack_size"])
+                if expected is not None:
+                    self.assertEqual([Path(path).read_bytes() for path in chosen], [expected])
+                    self.assertGreater(returned - started, 4)
+                    continue
+                self.assertEqual(chosen, [str(other)])
+                # Measured for MEASURE_SECONDS, then stopped at its next chunk.
+                self.assertLess(returned - started, faces.MEASURE_SECONDS + 1)
+                self.assertLess(reads[-1], returned + .2)
+                # Its bytes were never published to the face cache.
+                self.assertFalse((Path(self.context["cache_dir"]) / "packs" / descriptor["pack_name"]).exists())
+                self.assertEqual(sorted(directory.glob("*.unity")), [other])
 
     @EXTRACTOR_REQUIRED
-    def test_download_still_running_finishes_before_a_later_fallback_download(self):
-        # The first pack answers 404, so its second asset is not fetched to
-        # compare it; the third candidate is still downloading at the reserve.
-        # The late pass would fetch that second asset first (old order), but
-        # one worker serves both: the running download is finished first, and
-        # used at once when it is the named face.
+    def test_a_pack_is_requested_once_and_its_bytes_are_reserved_once(self):
+        # The first pack answers 404 (a transient one: it would answer the
+        # next time). Its second asset is not fetched again, so each pack is
+        # requested, and its bytes reserved, once; the old order goes on with
+        # the next candidate, used as the earlier choice when it is not the
+        # face the body names.
         first, second, stock = (self.referenced_donor("CAB-" + digit * 32) for digit in "456")
         descriptors = [dict(self.descriptor(first, name="sharedpack"), asset_path="firstface"),
                        dict(self.descriptor(second, name="sharedpack"), asset_path="secondface", head=len(first)),
@@ -959,9 +972,7 @@ class FaceTests(unittest.TestCase):
         descriptors[0]["pack_size"] = descriptors[1]["pack_size"] = len(first) + len(second)
         shared = self.encrypted(first, descriptors[0]) + self.encrypted(second, descriptors[1])
         self.context["allow_download"] = True
-        for references, expected, fetched in (({"cab-" + "6" * 32}, stock, ["sharedpack", "stockpack"]),
-                                              # Not the named face: the old order applies.
-                                              ({"cab-" + "3" * 32}, second, ["sharedpack", "stockpack", "sharedpack"])):
+        for references in ({"cab-" + "6" * 32}, {"cab-" + "3" * 32}):
             answered = []
 
             def download(url, expected_size, deadline, byte_limit=faces.MAX_PACK_BYTES):
@@ -983,19 +994,18 @@ class FaceTests(unittest.TestCase):
                     patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([dict(row) for row in descriptors])), \
                     patch.object(faces, "_download", download):
                 plan = self.plan()
-                self.assertEqual([Path(path).read_bytes() for path in plan.resolve()], [expected])
-            self.assertEqual(answered, fetched)
-            self.assertEqual((plan._running, plan._kept), ([], {}))
-            # The stock face was fetched only to compare it: unless it was
-            # used, later opens give it a download's place.
+                self.assertEqual([Path(path).read_bytes() for path in plan.resolve()], [stock])
+            self.assertEqual(answered, ["sharedpack", "stockpack"])
+            self.assertEqual(plan.transferred, descriptors[0]["pack_size"] + descriptors[2]["pack_size"])
+            # It was used, so it is an ordinary download for later opens.
             stocked, = [path for path in (Path(self.context["cache_dir"]) / "models").glob("*.unity")
                         if path.read_bytes() == stock]
-            self.assertEqual(faces._compared(stocked), expected != stock)
+            self.assertFalse(faces._compared(stocked))
 
     @EXTRACTOR_REQUIRED
     def test_the_running_named_download_itself_has_the_whole_face_time(self):
-        # Cut off at the reserve, it needs more than half of the time left:
-        # it is the next item of the late pass, so nothing stops it.
+        # Nothing else is at hand: it is downloaded with the face time, as
+        # before, and never measured or stopped early.
         stock = self.referenced_donor("CAB-" + "2" * 32)
         descriptor = self.databases(stock)
         payload, calls = self.encrypted(stock, descriptor), []
@@ -1044,11 +1054,11 @@ class FaceTests(unittest.TestCase):
         self.assertTrue(calls[0].endswith("/privatepack"))
 
     @EXTRACTOR_REQUIRED
-    def test_fallback_before_a_hung_named_download_in_the_old_order_still_gets_the_network(self):
+    def test_fallback_first_in_the_old_order_is_downloaded_first_and_a_named_download_too_slow_stops(self):
         # The default suit's own model comes first in the old order and is
-        # never fetched to compare it. The named face's download never ends:
-        # the old order's fallback gets the network once half of the time
-        # left after the reserve has passed, instead of losing the face.
+        # downloaded first, as before. The named face's download then cannot
+        # finish in the face time: once measured it is stopped and the
+        # fallback is used, instead of waiting for it.
         suit, named = self.referenced_donor("CAB-" + "1" * 32), self.referenced_donor("CAB-" + "2" * 32)
         descriptors = [dict(self.descriptor(suit, name="suitpack"), asset_path="suitbody"),
                        dict(self.descriptor(named, name="namedpack"), asset_path="namedface")]
@@ -1098,11 +1108,10 @@ class FaceTests(unittest.TestCase):
             slot.release()
         self.assertEqual([Path(path).read_bytes() for path in chosen], [suit])
         self.assertEqual(plan.status, "added")
-        self.assertEqual(opened, ["namedpack", "suitpack"])
-        # The reserve (1 s) plus half of the three seconds left, then the fallback.
-        self.assertGreater(elapsed, 2.3)
-        self.assertLess(elapsed, 3.5)
-        self.assertEqual((plan._running, plan._kept), ([], {}))
+        self.assertEqual(opened, ["suitpack", "namedpack"])
+        # Stopped within its measuring time, not at the deadline.
+        self.assertLess(elapsed, faces.MEASURE_SECONDS + .8)
+        self.assertEqual(plan.transferred, len(payloads["suitpack"]) + len(payloads["namedpack"]))
         self.assertFalse((Path(self.context["cache_dir"]) / "packs" / "namedpack").exists())
 
     def test_a_step_bound_never_extends_the_face_deadline(self):
@@ -1114,9 +1123,14 @@ class FaceTests(unittest.TestCase):
             self.assertEqual(plan.deadline, deadline - 1)
             with plan._until(deadline + 5):
                 self.assertEqual(plan.deadline, deadline - 1)
-                # Downloads may still use the whole face budget.
-                self.assertEqual(plan._outer, deadline)
-        self.assertEqual((plan.deadline, plan._outer), (deadline, None))
+        self.assertEqual(plan.deadline, deadline)
+        # A download measured while another face is at hand ends early; the
+        # selected costume's own downloads are measured with the face time.
+        with plan._download_step(True, True):
+            self.assertEqual((plan.deadline, plan._measured), (deadline - faces.FALLBACK_SECONDS, True))
+        with plan._download_step(True, False):
+            self.assertEqual((plan.deadline, plan._measured), (deadline, True))
+        self.assertEqual((plan.deadline, plan._measured), (deadline, False))
         # The bounded broad search (8 s while a download is pending) still
         # stops at a face deadline that is nearer.
         def walk(plan):
@@ -1773,6 +1787,84 @@ class FaceTests(unittest.TestCase):
                 self.assertEqual(self.plan().resolve(), [str(other)])
             self.assertEqual([name for name, download in calls if download], fetched)
 
+    @EXTRACTOR_REQUIRED
+    def test_a_stopped_pack_is_never_requested_or_reserved_again(self):
+        # A download stopped early (or not answered) leaves its pack requested:
+        # another asset of it, or the same one again, is refused without a
+        # second request or a second reservation of its bytes.
+        stock = self.referenced_donor("CAB-" + "2" * 32)
+        descriptor = self.descriptor(stock)
+        calls = []
+
+        def stopped(url, expected, deadline, byte_limit=faces.MAX_PACK_BYTES, *, limit=None):
+            calls.append(url)
+            raise faces._NoAnswer("Finding the original face took too long.")
+
+        self.context["allow_download"] = True
+        plan = self.plan()
+        with patch.object(faces, "_download_with_deadline", stopped):
+            with self.assertRaises(faces._NoAnswer):
+                plan._resource(dict(descriptor))
+            for other in (dict(descriptor), dict(descriptor, asset_path="other207", head=0, size=len(stock) - 1)):
+                with self.assertRaisesRegex(faces.FaceUnavailable, "already requested"):
+                    plan._resource(other)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(plan.transferred, descriptor["pack_size"])
+
+    @EXTRACTOR_REQUIRED
+    def test_stalled_selected_suit_download_is_stopped_and_frees_the_worker_for_the_old_order(self):
+        # Nothing is at hand. The selected costume's own face pack never sends
+        # a byte: it is measured anyway, stopped, and the catalog's stock face
+        # (the one the body names) still gets the one network worker.
+        from collections import OrderedDict
+        from webtools.core import viewer_mod_sources
+        stock = self.referenced_donor("CAB-" + "2" * 32)
+        descriptor = self.databases(stock)
+        payload = self.encrypted(stock, descriptor)
+        self.game_catalog("installedbody", ["privateface"], [("privateface", "privatepack", 0, 900, 0, 0)],
+                          name="asset_a_ko.db")
+        record = {"region": "gl", "suit_id": 900000001, "variant": "primary", "download": True,
+                  "model": "installedbody", "purpose": "viewer", "platform": "android", "selection_language": "ko"}
+        opened = []
+
+        class Response(io.BytesIO):
+            def __init__(self, data, hang):
+                super().__init__(data)
+                self.hang, self.headers = hang, {"Content-Length": str(len(data))}
+
+            def read(self, size=-1):
+                while self.hang:
+                    # The worker stops at its next chunk once abandoned.
+                    if threading.current_thread().face_stop.wait(.05):
+                        return b""
+                return super().read(size)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        class Opener:
+            def open(self, request, timeout=None):
+                pack = request.full_url.rsplit("/", 1)[1]
+                opened.append(pack)
+                return Response(b"\0" * 900, True) if pack == "privatepack" else Response(payload, False)
+
+        slot = threading.BoundedSemaphore(1)
+        self.context["allow_download"] = True
+        with patch.object(viewer_mod_sources, "_REGISTRY", OrderedDict()), \
+                patch.object(faces, "_DOWNLOAD_SLOT", slot), patch.object(faces, "build_opener", return_value=Opener()), \
+                patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}):
+            viewer_mod_sources.register_game_import(str(self.body), record)
+            plan = self.plan()
+            started = time.monotonic()
+            chosen = plan.resolve()
+            elapsed = time.monotonic() - started
+        self.assertEqual([Path(path).read_bytes() for path in chosen], [stock])
+        self.assertEqual(opened, ["privatepack", descriptor["pack_name"]])
+        self.assertLess(elapsed, faces.MEASURE_SECONDS + 1)
+
     def test_unanswered_cdn_for_the_selected_suit_skips_compared_downloads(self):
         from collections import OrderedDict
         from webtools.core import viewer_mod_sources
@@ -1807,7 +1899,8 @@ class FaceTests(unittest.TestCase):
         real, observed = faces.FacePlan._inspect, {}
 
         def inspect(plan, path):
-            observed[path] = plan.deadline
+            # The first reading, in the search; using it reads it again.
+            observed.setdefault(path, plan.deadline)
             return real(plan, path)
 
         self.context["allow_download"] = True

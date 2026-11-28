@@ -6,6 +6,7 @@ Only the viewer decides which Face/Eyes renderers from a donor can be exported.
 """
 import ast
 from contextlib import closing, contextmanager
+import csv
 import hashlib
 import json
 from itertools import islice
@@ -35,12 +36,17 @@ MAX_AUTO_FILES = 4
 COMPANION_HINT = "viewer-companions.json"
 MAX_HINT_BYTES = 64 * 1024
 FACE_SECONDS = 40
-# Downloads that may still find the face a body references stop this long
-# before the face deadline, so another prefab of the member can still be used.
-FALLBACK_SECONDS = 10
+# While another face of the member is already at hand, a download that may
+# still be the face a body references ends this long before the face deadline,
+# so that face can still be added.
+FALLBACK_SECONDS = 3
+# Such a download is measured for this long. Then it goes on only while its
+# rate so far brings the rest in by its end; one that sent nothing has stalled.
+MEASURE_SECONDS = 1
 # While a catalog original may still be downloaded, the broad library search
 # and the other same-member files it keeps share this bound.
 LOCAL_SECONDS = 8
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 _OWNER = re.compile(r"(?:^|[^a-z0-9])ch(\d{4})(?=[^0-9]|$)", re.I)
 _PACK = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
@@ -65,12 +71,7 @@ class SavedFacePlatformMismatch(FaceUnavailable):
 
 
 class _NoAnswer(FaceUnavailable):
-    """Nothing was learned about the face: its time ran out or the worker was busy."""
-
-
-class _StillDownloading(_NoAnswer):
-    """A download outlived one step's share of the face budget and keeps going."""
-
+    """Nothing was learned about the face: its time ran out, it was stopped, or the worker was busy."""
 
 
 def _check(deadline):
@@ -673,7 +674,14 @@ def _alive(deadline):
 
 
 def _download(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
-    """Existing CDN's /static/<pack> route, bounded even for missing length headers."""
+    """Existing CDN's /static/<pack> route, bounded even for missing length headers.
+
+    The worker's ``face_progress`` (see _Transfer) counts the bytes received,
+    in small reads so that a slow but steady download shows its rate early.
+    """
+    progress = getattr(threading.current_thread(), "face_progress", None)
+    if progress is not None:
+        progress.update(reported=True, total=expected, received=0)
     _alive(deadline)
     request = Request(url, headers={"User-Agent": "Elichika model viewer"})
     with build_opener(_SameOriginRedirect()).open(request, timeout=min(8, max(1, deadline - time.monotonic()))) as response:
@@ -681,19 +689,41 @@ def _download(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
         length = response.headers.get("Content-Length")
         if length is not None and (int(length) > byte_limit or (expected is not None and int(length) != expected)):
             raise FaceUnavailable("The original asset server returned an unexpected file size.")
+        if progress is not None and length is not None:
+            progress["total"] = int(length)
         chunks, size = [], 0
         while True:
             _alive(deadline)
-            chunk = response.read(min(65536, byte_limit - size + 1))
+            chunk = response.read(min(8192, byte_limit - size + 1))
             if not chunk:
                 break
             size += len(chunk)
             if size > byte_limit or (expected is not None and size > expected):
                 raise FaceUnavailable("The original asset exceeds the face download limit.")
             chunks.append(chunk)
+            if progress is not None:
+                progress["received"] = size
     if size == 0 or (expected is not None and size != expected):
         raise FaceUnavailable("The original asset download was incomplete.")
     return b"".join(chunks)
+
+
+def _behind(progress, started, now, limit):
+    """Whether a measured download cannot finish by ``limit``.
+
+    Nothing is judged in its first MEASURE_SECONDS. Then one that has received
+    nothing has stalled, and one whose average rate so far would bring the rest
+    in after ``limit`` is too slow. A downloader that reports no progress, or
+    an unknown size, is left to run until ``limit``.
+    """
+    if now - started < MEASURE_SECONDS or not progress.get("reported"):
+        return False
+    received, total = progress.get("received") or 0, progress.get("total")
+    if received <= 0:
+        return True
+    if not isinstance(total, int) or total <= received:
+        return False
+    return now + (total - received) * (now - started) / received > limit
 
 
 class _Transfer:
@@ -703,17 +733,21 @@ class _Transfer:
     The worker receives no FacePlan or cache path and only returns bytes, and
     it stops at ``deadline``. An abandoned result is discarded, so late
     DNS/HTTP completion cannot decrypt assets or publish cache files after the
-    caller has returned its base model.
+    caller has returned its base model. With ``limit`` the download is
+    measured and stopped as soon as it cannot finish by then (_behind).
     """
 
-    def __init__(self, url, expected, deadline, byte_limit):
+    def __init__(self, url, expected, deadline, byte_limit, limit=None):
         _check(deadline)
         slot = _DOWNLOAD_SLOT
         if not slot.acquire(blocking=False):
             raise _NoAnswer("An original face download is still finishing. Local facial assets can still be used.")
-        self.deadline = deadline
+        self.deadline, self.limit = deadline, limit
         self.completed, self.lock, self.stop = threading.Event(), threading.Lock(), threading.Event()
         self.state = {"abandoned": False}
+        # The worker's downloader counts the bytes it received here.
+        self.progress = {}
+        self.started = time.monotonic() if limit is not None else None
         downloader = _download
 
         def run():
@@ -732,37 +766,43 @@ class _Transfer:
 
         try:
             worker = threading.Thread(target=run, name="viewer-face-download", daemon=True)
-            worker.face_stop = self.stop
+            worker.face_stop, worker.face_progress = self.stop, self.progress
             worker.start()
         except Exception as error:
             slot.release()
             raise FaceUnavailable("The original face download could not be started.") from error
 
-    def result(self, until):
-        """The bytes, if the worker finishes by ``until``.
+    def result(self):
+        """The bytes, if the worker finishes by its deadline; otherwise it is stopped.
 
-        A wait that ends before the worker's own deadline leaves it running
-        (_StillDownloading); calling again keeps waiting for the same bytes.
+        A measured download is checked every tenth of a second and stopped as
+        soon as it cannot finish by its limit. Stopping raises _NoAnswer with
+        this transfer as ``transfer``: its worker frees the slot at its next
+        chunk, so the caller can wait for ``completed`` before another download.
         """
-        finished = self.completed.wait(max(0., until - time.monotonic()))
-        with self.lock:
-            if not finished or time.monotonic() >= until:
-                from .transient_failures import note
-                note()
-                if until < self.deadline:
-                    raise _StillDownloading("The original face download continues in the background.")
-                self._abandon()
-                raise _NoAnswer("Finding the original face took too long.")
-            error, data = self.state.pop("error", None), self.state.pop("data", None)
+        until = self.deadline
+        while True:
+            wait = until - time.monotonic()
+            if self.limit is not None:
+                wait = min(wait, .1)
+            finished = self.completed.wait(max(0., wait))
+            with self.lock:
+                now = time.monotonic()
+                if finished and now < until:
+                    error, data = self.state.pop("error", None), self.state.pop("data", None)
+                    break
+                if now >= until or self.limit is not None and _behind(self.progress, self.started, now, self.limit):
+                    from .transient_failures import note
+                    note()
+                    self._abandon()
+                    stopped = _NoAnswer("Finding the original face took too long.")
+                    stopped.transfer = self
+                    raise stopped
         if error is not None:
             raise error
         if data is None:
             raise FaceUnavailable("The original face download did not finish.")
         return data
-
-    def abandon(self):
-        with self.lock:
-            self._abandon()
 
     def _abandon(self):
         self.state.clear()
@@ -770,26 +810,13 @@ class _Transfer:
         self.stop.set()
 
 
-def _download_with_deadline(url, expected, deadline, byte_limit=MAX_PACK_BYTES, *, wait=None, kept=None):
+def _download_with_deadline(url, expected, deadline, byte_limit=MAX_PACK_BYTES, *, limit=None):
     """Bound the caller's wait even when OS DNS ignores the socket timeout.
 
-    With ``kept`` (the caller's unfinished downloads by URL), the caller waits
-    only until ``wait``. A download still running then stays in ``kept`` with
-    its own ``deadline``; asking for the same URL again waits for it instead of
-    starting over.
+    With ``limit``, the download is measured and stopped early once it cannot
+    finish by ``limit`` (see _behind and _Transfer.result).
     """
-    until = deadline if wait is None else min(wait, deadline)
-    transfer = kept.pop(url, None) if kept is not None else None
-    if transfer is None:
-        transfer = _Transfer(url, expected, deadline, byte_limit)
-    try:
-        return transfer.result(until)
-    except _StillDownloading:
-        if kept is None:
-            transfer.abandon()
-            raise _NoAnswer("Finding the original face took too long.") from None
-        kept[url] = transfer
-        raise
+    return _Transfer(url, expected, deadline, byte_limit, limit).result()
 
 
 def _prune_cache(root, protected=(), deadline=None):
@@ -859,15 +886,18 @@ class FacePlan:
         self.face_references, self._game_records, self._deferred = set(), [], []
         # Catalog identities of the member's default suit body itself.
         self._suit_models = set()
-        # Downloads still running past one step's share of the budget, the
-        # face deadline outside any _until, and viewer downloads that are not
-        # the referenced face (kept for the late pass, like a fresh download).
-        self._kept, self._outer, self._late = {}, None, []
-        # (catalog candidate, fetched only to compare it) pairs whose download
-        # is still running in ``_kept``.
-        self._running = []
+        # Cached faces the viewer downloaded that are not the referenced face:
+        # they keep a download's place, after the catalog downloads.
+        self._late = []
         # Cached faces whose bytes this plan downloaded, with their pack.
         self._fetched = {}
+        # Pack URLs requested once (each reserves its bytes once), a download
+        # stopped early whose worker is still leaving, and section sizes of
+        # this member's catalog faces (see _trusted).
+        self._requested, self._stopping, self._sizes = set(), None, set()
+        # Inspections of kept candidates, the roles the kept candidates
+        # complete (see _hold), a measured download step, extractor manifests.
+        self._inspected, self._cover, self._measured, self._manifests = {}, set(), False, {}
         self.initial_roles = roles(scene) if self.enabled else set()
         if not self.enabled:
             return
@@ -1474,19 +1504,27 @@ class FacePlan:
                 if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
                     raise FaceUnavailable("Configure a valid HTTPS original-asset CDN.")
                 url = base.rstrip("/") + "/" + pack_name
-                limit = MAX_PACK_BYTES
-                if url not in self._kept:
-                    remaining = MAX_TRANSFER_BYTES - self.transferred
-                    reservation = pack_size if pack_size is not None else MAX_PACK_BYTES
-                    if reservation > remaining:
-                        raise FaceUnavailable("The original face exceeds the download budget.")
-                    # Reserve before opening a socket, including failed attempts.
-                    self.transferred += reservation
-                    limit = min(MAX_PACK_BYTES, remaining)
-                # The worker may use the whole face budget even while this step
-                # waits only for its share; an unfinished download is kept.
-                outer = self._outer if self._outer is not None else self.deadline
-                packed = _download_with_deadline(url, pack_size, outer, limit, wait=self.deadline, kept=self._kept)
+                if url in self._requested:
+                    # Each pack is requested once: one that failed, did not
+                    # answer or was stopped is not fetched (or reserved) again.
+                    raise FaceUnavailable("The original face pack was already requested.")
+                remaining = MAX_TRANSFER_BYTES - self.transferred
+                reservation = pack_size if pack_size is not None else MAX_PACK_BYTES
+                if reservation > remaining:
+                    raise FaceUnavailable("The original face exceeds the download budget.")
+                # Reserve before opening a socket, including failed attempts.
+                self._requested.add(url)
+                self.transferred += reservation
+                if self._stopping is not None:
+                    # A download stopped early frees the one worker at its next chunk.
+                    self._stopping.completed.wait(max(0., self.deadline - time.monotonic()))
+                    self._stopping = None
+                try:
+                    packed = _download_with_deadline(url, pack_size, self.deadline, min(MAX_PACK_BYTES, remaining),
+                                                     limit=self.deadline if self._measured else None)
+                except _NoAnswer as error:
+                    self._stopping = getattr(error, "transfer", None) or self._stopping
+                    raise
                 if not 0 < len(packed) <= MAX_PACK_BYTES or (pack_size is not None and len(packed) != pack_size):
                     raise FaceUnavailable("The original asset download was incomplete.")
                 downloaded = fetched = True
@@ -1509,7 +1547,7 @@ class FacePlan:
         if not self.enabled or self.owner is None:
             return []
         try:
-            pending, selected_pending = [], []
+            pending, selected_pending, later, checked = [], [], [], set()
             try:
                 for path in self._verified_companions():
                     self._accept(path)
@@ -1525,6 +1563,7 @@ class FacePlan:
                 if self.needed:
                     for descriptor in self._selected_iter():
                         _check(self.deadline)
+                        self._sizes.add(descriptor.get("size"))
                         try:
                             if self._accept(self._resource(descriptor, download=False), exact=True, own=True):
                                 break
@@ -1534,17 +1573,13 @@ class FacePlan:
                 pass
             # A downloaded same-owner original must not wait behind catalog
             # scans. Names only select candidates; _accept validates contents.
-            # A referenced face found by its native name outside the body's
-            # folder and the extractor's own library folders may be an edited
-            # copy, so it waits like ``later`` below.
-            later = []
+            # A referenced face that may be an edited copy of a catalog face
+            # (see _trusted) waits in ``later`` for the catalog's own copy.
             try:
                 if self.needed:
                     for path in self._known_local():
-                        if (self.face_references and not self._in_cache(path) and not self._beside(path)
-                                and not self._extracted(path) and self._referenced(path)):
-                            if path not in later:
-                                later.append(path)
+                        if self.face_references and not self._trusted(path) and self._referenced(path):
+                            self._hold(later, path)
                             continue
                         if self._accept(path, exact=True):
                             break
@@ -1554,18 +1589,18 @@ class FacePlan:
             # search. A populated library must not consume the entire facial
             # budget before we can reuse its already-downloaded original pack.
             # ``checked`` holds the catalog assets already decrypted here.
-            checked = set()
             try:
                 if self.needed:
                     for descriptor in self._descriptor_iter():
                         _check(self.deadline)
                         if self.face_references and self._suit_model(descriptor):
                             # The default suit's own body is not the face a
-                            # BodyPartManager references. It stays a late,
-                            # non-exact candidate, never decrypted or fetched
-                            # only to be compared.
+                            # BodyPartManager references. It keeps its old
+                            # place among the downloads and is never decrypted
+                            # or fetched only to be compared.
                             pending.append(descriptor)
                             continue
+                        self._sizes.add(descriptor.get("size"))
                         try:
                             path = self._resource(descriptor, download=False)
                             checked.add(_asset(descriptor))
@@ -1573,135 +1608,30 @@ class FacePlan:
                                 break
                             if path in self._late:
                                 # An earlier open downloaded it: it keeps the
-                                # place that download had, in the late pass.
-                                pending.append(descriptor)
+                                # place that download had.
+                                pending.append(path)
                         except Exception:
                             pending.append(descriptor)
             except Exception:
                 # Standalone/local-only viewers do not need an asset catalog.
                 pass
-            # Downloads that may still find the referenced face leave the last
-            # FALLBACK_SECONDS of the face budget to another prefab. One still
-            # running then is kept and finished by the late pass if no other
-            # prefab is used; only real answers mark a candidate as failed.
-            allow = self.context.get("allow_download", True)
-            reserve = max(time.monotonic(), self.deadline - FALLBACK_SECONDS)
-            # The client downloads its own suit's missing face pack; do the
-            # same before settling for another prefab of this member.
-            answered, selected_failed = True, set()
-            try:
-                if self.needed and allow and selected_pending:
-                    with self._until(reserve):
-                        answered = self._fetch_exact(selected_pending, set(), selected_failed)
-            except Exception:
-                pass
-            # The referenced face may sit next to the body: the viewer saves an
-            # edited face beside it, and that face is used at once. One found
-            # elsewhere in the library may be an edited copy of a catalog face
-            # with the same serialized names, so it waits until the catalog's
-            # own copy has been tried. Every other same-member file is kept,
-            # in the old order, for the fallback.
-            local_span, local_time = None, None
-            if self.needed and self.face_references:
-                start = len(self._deferred)
-                local_time = self._search_local(pending, exact=True, later=later)
-                local_span = (start, len(self._deferred))
-            # A stock body's referenced face may only be on the CDN while
-            # another prefab of this member is cached. Fetch the catalog
-            # candidates that may still be it. One that is not keeps its old,
-            # late place below; a failed one is not tried twice.
-            failed = set()
-            try:
-                if self.needed and allow and answered and self.face_references and pending:
-                    with self._until(reserve):
-                        self._fetch_exact(pending, checked, failed, compare=True)
-            except Exception:
-                pass
-            # A referenced face kept for ``later`` is used now: the catalog's
-            # own copy was not found (it failed, did not answer, is still
-            # downloading, or downloads are off). It has the face deadline,
-            # whatever time the broad search left.
-            try:
-                for path in later:
+            if self.needed:
+                self._search_local(pending, later)
+            if self.needed:
+                obtained = self._download_pass(selected_pending + pending + list(self._late),
+                                               len(selected_pending), checked, later)
+                # The face the body references was not obtained: the earlier
+                # choice, the first same-member candidate in the old order. A
+                # referenced face kept for later comes first.
+                for path in later + self._deferred + obtained:
                     if not self.needed or self._accept(path):
                         break
-            except Exception:
-                pass
-            # The broad search keeps one bound for its walk and the other
-            # candidates it kept, as before.
-            limit = []
-
-            def accept_local(path):
-                if local_time is None:
-                    return self._accept(path)
-                if not limit:
-                    limit.append(time.monotonic() + local_time)
-                with self._until(limit[0]):
-                    return self._accept(path)
-
-            # None of those is the face the body references, e.g. a mod
-            # renamed its face but left it out. Keep the earlier choice: the
-            # first same-owner candidate, in the same order as before.
-            try:
-                for position, path in enumerate(list(self._deferred)):
-                    if not self.needed:
-                        break
-                    if local_span and local_span[0] <= position < local_span[1]:
-                        if accept_local(path):
-                            break
-                    elif self._accept(path):
-                        break
-            except Exception:
-                pass
-            if self.needed and local_span is None:
-                self._search_local(pending)
-            # The late pass: downloads in their old order, with the whole
-            # budget. A download kept running above is waited for, not
-            # restarted, unless a fallback before it in that order needs the
-            # network. Faces the viewer downloaded earlier come last.
-            if self.needed:
-                late = [descriptor for index, descriptor in enumerate(selected_pending) if index not in selected_failed]
-                late += [descriptor for index, descriptor in enumerate(pending) if index not in failed]
-                # Where the download still running stands in the old order.
-                running = next((index for index, item in enumerate(late)
-                                if any(item is descriptor for descriptor, _ in self._running)), 0)
-                for position, item in enumerate(late + list(self._late)):
-                    if not self.needed:
-                        break
-                    _check(self.deadline)
-                    try:
-                        path = item if isinstance(item, str) else None
-                        if path is None and self._running:
-                            try:
-                                path = self._resource(item, download=False)
-                            except Exception:
-                                # A new download needs the one network worker.
-                                # The running download may be the face the
-                                # body names, so it finishes first. An item
-                                # before it in the old order (the fallback the
-                                # old order used) waits for it at most half of
-                                # the time left; then it is stopped.
-                                until = (None if position >= running else
-                                         time.monotonic() + max(0., self.deadline - time.monotonic()) / 2)
-                                if self._finish_running(until):
-                                    break
-                                self._drop_running()
-                        if path is None:
-                            path = self._resource(item)
-                        if self._accept(path):
-                            break
-                    except Exception:
-                        # One missing optional pack cannot hide a costume.
-                        continue
         except SavedFacePlatformMismatch:
             raise
         except Exception:
             pass
         finally:
-            # A download no longer waited for stops; its bytes are discarded.
-            for transfer in self._kept.values():
-                transfer.abandon()
-            self._kept.clear()
+            self._inspected.clear()
         if self.needed:
             self.status = "partial" if self.auto_paths else "unavailable"
             self.warn("face_source_unavailable", "The original face is unavailable. The costume is still shown; check the asset connection and try again.")
@@ -1720,14 +1650,23 @@ class FacePlan:
     @contextmanager
     def _until(self, deadline):
         """Bound one step by ``deadline``, never past the face deadline."""
-        original, outer = self.deadline, self._outer
-        if outer is None:
-            self._outer = original
+        original = self.deadline
         self.deadline = min(original, deadline)
         try:
             yield
         finally:
-            self.deadline, self._outer = original, outer
+            self.deadline = original
+
+    @contextmanager
+    def _download_step(self, measured, early):
+        """One download of the pass: ``measured`` (see _behind), ending FALLBACK_SECONDS early if ``early``."""
+        original, self._measured = self.deadline, measured
+        if early:
+            self.deadline = original - FALLBACK_SECONDS
+        try:
+            yield
+        finally:
+            self.deadline, self._measured = original, False
 
     def _beside_dirs(self):
         """The folders the selected files are in, as chosen and as resolved."""
@@ -1745,14 +1684,57 @@ class FacePlan:
 
         These are the library roots and their 3d_model and extracted/3d_model
         folders, the places ``_known_local`` probes for the extractor's own
-        chNNNN_facedynamic/chNNNN_face names. A face there is used at once, as
-        before; an edited copy saved there under that name is trusted too.
+        chNNNN_facedynamic/chNNNN_face names.
         """
         folders = set()
         for root in self.context.get("library_roots", []):
             for relative in ("", "3d_model", os.path.join("extracted", "3d_model")):
                 folders.add(os.path.realpath(os.path.join(os.path.realpath(root), relative)))
         return os.path.dirname(os.path.realpath(path)) in folders
+
+    def _trusted(self, path):
+        """Whether a referenced face is used at once, before the catalog's own copy.
+
+        It is beside a selected body (where the viewer saves an edited face),
+        in the face cache, or the bundled extractor's output in a library
+        folder (see _extracted): a file with the extractor's own name, or, in
+        a 3d_model folder, a member model that the extractor's
+        _extract_manifest.csv lists with this size, or that has the size of
+        one of this member's catalog faces. A referenced face anywhere else
+        may be an edited copy with the stock face's serialized names.
+        """
+        if self._beside(path) or self._in_cache(path):
+            return True
+        if not self._extracted(path):
+            return False
+        native = native_from_member(self.owner)
+        if os.path.basename(path).casefold() in (f"ch{native:04}_facedynamic.unity", f"ch{native:04}_face.unity"):
+            return True
+        if os.path.basename(os.path.dirname(os.path.realpath(path))) != "3d_model":
+            return False
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return False
+        return size in self._sizes or self._listed(path, size)
+
+    def _listed(self, path, size):
+        """Whether the extractor's _extract_manifest.csv lists ``path`` as an extracted member model of ``size`` bytes."""
+        real = os.path.realpath(path)
+        out_dir = os.path.dirname(os.path.dirname(real))
+        manifest = os.path.join(out_dir, "_extract_manifest.csv")
+        if manifest not in self._manifests:
+            rows = set()
+            try:
+                if not os.path.islink(manifest) and os.path.isfile(manifest) and os.path.getsize(manifest) <= MAX_MANIFEST_BYTES:
+                    with open(manifest, newline="", encoding="utf-8") as handle:
+                        for row in csv.reader(handle):
+                            if len(row) == 9 and row[0] == "member_model" and row[8] == "OK":
+                                rows.add((row[7].replace("\\", "/"), row[4]))
+            except (OSError, ValueError, csv.Error):
+                rows = set()
+            self._manifests[manifest] = rows
+        return (os.path.relpath(real, out_dir).replace(os.sep, "/"), str(size)) in self._manifests[manifest]
 
     def _in_cache(self, path):
         """Whether ``path`` is one of the face cache's own model files."""
@@ -1765,41 +1747,28 @@ class FacePlan:
             return False
         return os.path.dirname(os.path.realpath(path)) == directory
 
-    def _search_local(self, pending, *, exact=False, later=None):
+    def _search_local(self, pending, later):
         """The broad same-member file search, with its old bound.
 
         With a catalog original still to download, the walk and the
-        candidates it accepts share LOCAL_SECONDS. Returns what remains of them
-        for candidates kept for later, or None when unbounded. With ``later``,
-        only a referenced face beside a selected body is accepted here; one
-        elsewhere is added to ``later`` and any other file is deferred. A face
-        the viewer downloaded only to compare it keeps a download's place.
+        candidates it accepts or keeps share LOCAL_SECONDS. With a body
+        reference, a referenced face is used at once when it is trusted
+        (_trusted), one elsewhere is kept in ``later``, and any other file is
+        kept for the fallback in the old order (see _waits).
         """
         bounded = bool(pending) and self.context.get("allow_download", True)
-        beside = self._beside_dirs()
-        started = time.monotonic()
         try:
             # Leave time to obtain a known original when a large local
             # collection contains no usable same-character donor.
-            with self._until(started + LOCAL_SECONDS if bounded else self.deadline):
+            with self._until(time.monotonic() + LOCAL_SECONDS if bounded else self.deadline):
                 for path in self._local():
-                    if later is not None and os.path.dirname(os.path.realpath(path)) not in beside:
-                        if self._referenced(path):
-                            if path not in later:
-                                later.append(path)
-                        elif self._late_download(path):
-                            if path not in self._late:
-                                self._late.append(path)
-                        elif path not in self._deferred:
-                            self._deferred.append(path)
+                    if self.face_references and self._referenced(path) and not self._trusted(path):
+                        self._hold(later, path)
                         continue
-                    if not self.face_references and self._waits(path):
-                        continue
-                    if self._accept(path, exact=exact):
+                    if self._accept(path, exact=True):
                         break
         except Exception:
             pass
-        return max(0., LOCAL_SECONDS - (time.monotonic() - started)) if bounded else None
 
     def _referenced(self, path):
         try:
@@ -1807,129 +1776,141 @@ class FacePlan:
         except Exception:
             return False
 
-    def _fetch_exact(self, descriptors, checked, failed, *, compare=False):
-        """Download catalog candidates that may be the referenced face.
+    def _download_pass(self, items, own, checked, later):
+        """Download catalog candidates in the old order; return the faces obtained but not used.
 
-        A ``compare`` candidate that is not that face is not deferred: its
-        old place is the late download pass. Other regions' copies of an
-        asset already decrypted here (same path and size, so the same
-        serialized names) and further assets of a pack that just failed are
-        not fetched. Returns False once the CDN does not answer at all, so
-        nothing else waits for it.
-
-        Only an answer marks a candidate as ``failed``: an HTTP error, wrong
-        or incomplete bytes, a network that does not answer. Running out of
-        this step's share of the time, or a busy network worker, ends the step
-        and leaves the candidate to the late pass, which has the whole budget
-        and finishes a download still running from here.
+        ``items`` holds the selected costume's own descriptors (the first
+        ``own``), the catalog candidates and the cached downloads, in the old
+        order. While no face of the member is at hand, each is downloaded with
+        the whole face time, as before; the face the body references is used
+        at once, and any other usable face is at hand. Once one is at hand,
+        only candidates that may still be the referenced face are downloaded,
+        each measured (_behind) and ending FALLBACK_SECONDS before the face
+        deadline. The first of them that is stopped or meets an asset server
+        that does not answer ends the downloads, as does any answer while a
+        referenced library face waits in ``later``. The selected costume's own
+        downloads are always measured: the old order still follows them. Each
+        pack is requested once (_resource).
         """
         from urllib.error import HTTPError
-        broken = set()
-        for index, descriptor in enumerate(descriptors):
+        allow = self.context.get("allow_download", True)
+        obtained, broken, ended = [], set(), False
+        for index, item in enumerate(items):
             if not self.needed:
                 break
-            if descriptor.get("pack_name") in broken or compare and (
-                    self._suit_model(descriptor) or _asset(descriptor) in checked):
-                continue
-            _check(self.deadline)
-            try:
-                path = self._resource(descriptor)
-            except _NoAnswer as error:
-                if isinstance(error, _StillDownloading):
-                    self._running.append((descriptor, compare))
-                return True
-            except Exception as error:
-                failed.add(index)
-                broken.add(descriptor.get("pack_name"))
-                if isinstance(error, OSError) and not isinstance(error, HTTPError):
-                    return False
-                continue
-            if compare:
+            path = item if isinstance(item, str) else None
+            if path is None:
+                at_hand = self._covered()
+                if ended or not allow or item.get("pack_name") in broken:
+                    continue
+                if at_hand and self.face_references and (self._suit_model(item) or _asset(item) in checked):
+                    continue
+                try:
+                    with self._download_step(at_hand or index < own, at_hand):
+                        path = self._resource(item)
+                except _NoAnswer:
+                    ended = ended or at_hand
+                    continue
+                except Exception as error:
+                    # A pack that failed is not asked for its other assets.
+                    broken.add(item.get("pack_name"))
+                    ended = ended or at_hand and bool(later or isinstance(error, OSError) and not isinstance(error, HTTPError))
+                    continue
+                checked.add(_asset(item))
+                ended = ended or at_hand and bool(later)
+            if not self.face_references or self._referenced(path):
+                if self._accept(path):
+                    break
+            else:
+                # Not the face the body references: a fallback at its place.
+                # Until it is used, a download keeps a download's place in
+                # later opens too.
                 self._compared_now(path)
-            checked.add(_asset(descriptor))
-            if self._accept(path, exact=True, defer=not compare, own=not compare):
-                break
-        return True
+                self._hold(obtained, path)
+        return obtained
 
     def _late_download(self, path):
         """A face cached only because the viewer downloaded it.
 
-        Without the cache it would be downloaded again, in the late pass, so
-        it keeps that place in every later open: whether an earlier open
-        fetched it cannot change the choice.
+        Without the cache it would be downloaded again, after the catalog
+        downloads, so it keeps that place in every later open: whether an
+        earlier open fetched it cannot change the choice.
         """
         return self._in_cache(path) and _downloaded(path)
 
     def _compared_now(self, path):
-        """Mark a face this plan downloaded only to compare it, with its pack."""
+        """Mark a face this plan downloaded but did not use, with its pack."""
         if path in self._fetched:
             _set_compared(path, True)
             if self._fetched[path]:
                 _set_compared(self._fetched[path], True)
 
-    def _finish_running(self, until=None):
-        """Wait for the downloads kept running, until ``until`` at most.
+    def _covered(self):
+        """Whether the candidates kept for the fallback complete the missing roles."""
+        return bool(self.needed) and not self.needed - self._cover
 
-        True once the named face is in. A download still running then stays
-        in ``_kept`` for ``_drop_running``.
+    def _hold(self, kept, path):
+        """Keep a same-member candidate in ``kept``, in order, for the fallback.
+
+        Until the kept candidates complete the missing roles, each is inspected
+        now, within the current step's bound as accepting it would be. The
+        download pass relies on that (_covered); _accept reuses the inspection.
         """
-        running, self._running = self._running, []
-        for descriptor, compare in running:
-            try:
-                with self._until(self.deadline if until is None else until):
-                    path = self._resource(descriptor)
-                if compare:
-                    self._compared_now(path)
-                if self._accept(path, exact=True, defer=False, own=not compare):
-                    return True
-            except Exception:
-                continue
-        return False
+        if path not in kept:
+            kept.append(path)
+        if not self._covered():
+            self._cover |= completion_roles(self._usable(path))
 
-    def _drop_running(self):
-        """Stop the downloads still kept running and wait for the network worker.
+    def _usable(self, path):
+        """The roles a candidate would add now (an inspection kept for _accept)."""
+        if path in self.paths or path in self.auto_paths:
+            return set()
+        try:
+            inspected = self._inspection(path)
+        except SavedFacePlatformMismatch:
+            raise
+        except Exception:
+            return set()
+        return set(inspected[2]) if inspected else set()
 
-        The worker stops at its next chunk; its bytes are discarded.
+    def _inspection(self, path):
+        """_inspect, reusing an earlier inspection for the same missing roles.
+
+        A scene keeps the deadline it was read with, so one read within a
+        shorter step bound (the broad search's) is read again.
         """
-        self._running = []
-        transfers = list(self._kept.values())
-        self._kept.clear()
-        for transfer in transfers:
-            transfer.abandon()
-        for transfer in transfers:
-            transfer.completed.wait(max(0., self.deadline - time.monotonic()))
+        key, kept = frozenset(self.needed), self._inspected.get(path)
+        if kept is None or kept[0] != key or kept[1] < self.deadline:
+            kept = self._inspected[path] = (key, self.deadline, self._inspect(path))
+        return kept[2]
 
-    def _waits(self, path, defer=True, own=False):
+    def _waits(self, path, own=False):
         """Whether a candidate keeps a later place instead of being used now.
 
         With a body reference, another face prefab of the same member is only
         a fallback while the face it references may still be found. For every
-        body, a face the viewer downloaded only to compare it keeps the place
-        a fresh download has, so that download cannot change later choices;
+        body, a face the viewer downloaded but did not use keeps the place a
+        fresh download has, so that download cannot change later choices;
         the selected game costume's ``own`` faces are not held back by it.
         """
         if self.face_references:
             if self._referenced(path):
                 return False
-            if self._late_download(path):
-                if path not in self._late:
-                    self._late.append(path)
-            elif defer and path not in self._deferred:
-                self._deferred.append(path)
+            self._hold(self._late if self._late_download(path) else self._deferred, path)
             return True
         if not own and self._in_cache(path) and _compared(path):
-            if path not in self._late:
-                self._late.append(path)
+            self._hold(self._late, path)
             return True
         return False
 
-    def _accept(self, path, exact=False, defer=True, own=False):
+    def _accept(self, path, exact=False, own=False):
         if path in self.paths or path in self.auto_paths or len(self.auto_paths) >= MAX_AUTO_FILES:
             return False
-        if exact and self._waits(path, defer, own):
+        if exact and self._waits(path, own):
             return False
         try:
-            inspected = self._inspect(path)
+            inspected = self._inspection(path)
+            self._inspected.pop(path, None)
             if inspected is None:
                 return False
             scene, dynamic, found = inspected
