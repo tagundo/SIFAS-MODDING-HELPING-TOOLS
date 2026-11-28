@@ -25,6 +25,17 @@ const frontendFiles = ['webtools/web/index.html', 'webtools/web/static/viewer-pe
 const frontendHashes = () => Object.fromEntries(frontendFiles.map(name => [name, sha(fs.readFileSync(path.join(product, name)))]));
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const frames = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+// A route for one endpoint whatever its query: the page sends its language
+// with a package request (/api/viewer/edit/package?lang=ko), which a glob
+// such as '**/api/viewer/edit/package' does not match.
+const endpoint = name => url => url.pathname === name;
+// A request the test waits for fails the run when it never comes, instead
+// of leaving the run waiting with its product server running.
+function within(promise, ms, what) {
+  let timer;
+  const late = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(what + ' was not seen within ' + ms / 1000 + ' s')), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
 function py(code, args = []) {
   const result = spawnSync(python, ['-c', code, ...args], { cwd: product, encoding: 'utf8', maxBuffer: 8*1024*1024 });
   assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout);
@@ -227,14 +238,15 @@ async function downloads(page, modPath, locale) {
       let releaseInstall, installReceived;
       const installGate = new Promise(resolve => { releaseInstall = resolve; });
       const installStarted = new Promise(resolve => { installReceived = resolve; });
-      await page.route('**/api/viewer/edit/install', async route => { const response = await route.fetch(); installReceived(); await installGate; await route.fulfill({ response }); });
+      const installRoute = endpoint('/api/viewer/edit/install');
+      await page.route(installRoute, async route => { const response = await route.fetch(); installReceived(); await installGate; await route.fulfill({ response }); });
       await breast(page, addFactor);
       await downloads(page, oldPackagePath, profile.locale); // Current edits do not relabel an older completed file.
-      await (await show(page, '#viewer-add-to-game')).click(); await installStarted;
+      await (await show(page, '#viewer-add-to-game')).click(); await within(installStarted, 120000, 'The Add to game install request');
       assert(await page.locator('#viewer-save-cancel').isHidden()); assert(await page.locator('#viewer-save-cancel').isDisabled());
       await page.locator('#viewer-save-cancel').dispatchEvent('click');
       assert.equal(cancellations.length, 0, 'A submitted install is tracked to completion instead of falsely reporting cancellation');
-      releaseInstall(); const added = await finished(page, 120000); await page.unroute('**/api/viewer/edit/install');
+      releaseInstall(); const added = await finished(page, 120000); await page.unroute(installRoute);
       assert.equal(packages.length, 2, 'Direct Add packages the current edit instead of reusing the old ZIP');
       assert.equal(installs.length, 1); assert.deepStrictEqual(Object.keys(installs[0]), ['package_token']);
       assert.notEqual(added.modPackage.packagePath, oldPackagePath);
@@ -267,9 +279,12 @@ async function downloads(page, modPath, locale) {
       // Delay only the delivery of a successful, real background-job response.
       let release, received; const gate = new Promise(resolve => { release = resolve; });
       const started = new Promise(resolve => { received = resolve; });
-      await page.route('**/api/viewer/edit/package', async route => { const response = await route.fetch(); received(); await gate; await route.fulfill({ response }); });
-      await (await show(page, '#viewer-add-to-game')).click(); await started;
-      await open(page, fixture.board); release(); const stale = await finished(page);
+      const packageRoute = endpoint('/api/viewer/edit/package'), gatedQueries = [];
+      await page.route(packageRoute, async route => { gatedQueries.push(new URL(route.request().url()).search); const response = await route.fetch(); received(); await gate; await route.fulfill({ response }); });
+      await (await show(page, '#viewer-add-to-game')).click(); await within(started, 120000, 'The Add to game package request');
+      // The page asks for the Mod ZIP names in its own language.
+      assert.deepStrictEqual(gatedQueries, ['?lang=' + profile.locale]);
+      await open(page, fixture.board); release(); const stale = await finished(page); await page.unroute(packageRoute);
       assert.equal(stale.status, 'error'); assert(stale.error.includes('model, body edits or mod settings changed'), stale.error);
       assert.equal(installs.length, 1, 'A package that finishes after a model switch is never installed');
       const previousResult = await (await fetch(server.url + '/api/viewer/edit/result/' + encodeURIComponent(stale.jobId))).json();

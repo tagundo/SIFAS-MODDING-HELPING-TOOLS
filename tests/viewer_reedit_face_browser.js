@@ -216,7 +216,10 @@ async function fixtureCases(browser) {
     // Add to game: a Mod ZIP result naming parts kept on this variant, then
     // the Elichika installer's own failure summary.
     await setScale(page, [1.15, 1, 1]);
-    await page.route('**/api/viewer/edit/package', route => route.fulfill({ json: { job_id: 'abcdef0000aa' } }));
+    // The page sends its language with a package request (?lang=ko), which a
+    // '**/api/viewer/edit/package' glob would not match.
+    const packageRoute = url => url.pathname === '/api/viewer/edit/package', packageQueries = [];
+    await page.route(packageRoute, route => { packageQueries.push(new URL(route.request().url()).search); return route.fulfill({ json: { job_id: 'abcdef0000aa' } }); });
     await page.route('**/api/viewer/edit/install', route => route.fulfill({ json: { job_id: 'abcdef0000bb' } }));
     const stream = body => route => route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: 'data: ' + JSON.stringify(body) + '\n\n' });
     await page.route('**/api/jobs/abcdef0000aa/events', stream({ type: 'done', status: 'done', summary: 'ok', output_paths: [] }));
@@ -235,7 +238,8 @@ async function fixtureCases(browser) {
     const installer = strings["The costume installer stopped with exit code {code}. Usual causes are missing Elichika settings (config.json) or a Mod ZIP the installer could not find in its costume folder; the server console shows the installer's message."].replace('{code}', '1');
     assert(/[가-힣]/.test(installer));
     assert.equal(await statusText(page), installer);
-    for (const pattern of ['**/api/viewer/edit/package', '**/api/viewer/edit/install', '**/api/jobs/abcdef0000aa/events', '**/api/jobs/abcdef0000bb/events', '**/api/viewer/edit/result/abcdef0000aa']) await page.unroute(pattern);
+    assert.deepStrictEqual(packageQueries, ['?lang=ko', '?lang=ko'], 'Save mod ZIP and Add to game each package once through the fixture');
+    for (const pattern of [packageRoute, '**/api/viewer/edit/install', '**/api/jobs/abcdef0000aa/events', '**/api/jobs/abcdef0000bb/events', '**/api/viewer/edit/result/abcdef0000aa']) await page.unroute(pattern);
     report.cases.push({ name: 'kept-parts note and installer summary (ko)', kept, installer });
     assert.deepStrictEqual(errors, []);
     await context.close();
