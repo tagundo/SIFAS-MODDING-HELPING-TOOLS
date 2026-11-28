@@ -907,6 +907,8 @@ class FaceTests(unittest.TestCase):
         # on a slow but working CDN, about five seconds for the pack. With a
         # face time that leaves it room it is awaited and used; with one it
         # cannot meet, it is stopped once measured and the cached face is used.
+        # The roomy case leaves several times the transfer time, because
+        # packaged runs on shared CI machines read each chunk much slower.
         directory = Path(self.context["cache_dir"]) / "models"
         directory.mkdir(parents=True)
         other = directory / ("ch0207_" + "a" * 24 + ".unity")
@@ -916,7 +918,7 @@ class FaceTests(unittest.TestCase):
         payload = self.encrypted(stock, descriptor)
         step = max(1, len(payload) // 100)
         self.context["allow_download"] = True
-        for face_seconds, expected in ((faces.FALLBACK_SECONDS + 9, stock), (faces.FALLBACK_SECONDS + 4, None)):
+        for face_seconds, expected in ((faces.FALLBACK_SECONDS + 25, stock), (faces.FALLBACK_SECONDS + 4, None)):
             reads = []
 
             class Response(io.BytesIO):
