@@ -528,7 +528,15 @@ repacking is unnecessary and the source files remain unchanged.
   Rina mod packages apply the same source-relative body changes to both board
   and unmasked models, including when you edit only one variant. Each variant
   uses its own original transforms and validated editing session. Missing or mismatched counterpart data prevents
-  packaging instead of producing an incomplete installable costume.
+  packaging instead of producing an incomplete installable costume. Outline
+  and physics edits of a part the other variant does not have at all (the
+  board's Mask, HeadSet, eye_* and mouth_* meshes, or the Normal face's hair
+  swing bones) stay on the edited variant, and the other variant keeps its
+  original model; the save log names those parts. A reopened costume keeps
+  them in the other view too: saving there writes them back unchanged. A part the other variant
+  has but cannot be matched exactly, a Node edit of a bone it lacks, and any
+  part missing from the same variant's Android/iOS alternative are still
+  refused. These refusals name the part after a fixed, translated sentence.
   Rina **BreastSize/HipsSize Node Scaling** packages also include a separate
   board model for Home/outfit preview, alongside the two MV models. The MV
   body edits are not applied again. Supplied Android/iOS versions each keep
@@ -540,8 +548,13 @@ repacking is unnecessary and the source files remain unchanged.
   the face, so its face outlines are not editable there. Its saved face
   outline edits are kept: the costume's own **Normal face** body proves that
   face, and **Save** and the Mod ZIP write those edits unchanged and list them
-  in the saved recipe. An outline edit of only the face keeps both board and
-  unmasked bodies original.
+  in the saved recipe. The save panel says how many face outline edits are
+  kept, and they count in **Model changes**, the suggested mod name and the
+  "already added" check. Loading a recipe keeps them unless that recipe sets
+  the face itself (it has outline, texture or other rows for that face); then
+  its own face rows replace them and the status says how many were released.
+  An outline edit of only the face keeps both board and unmasked bodies
+  original.
   Previously installed Rina mods are not rewritten automatically. Reopen the
   original ZIP or saved edited source, choose **Save mod ZIP** or **Add to game**,
   then select the newly installed costume. Old app versions cannot install
@@ -549,7 +562,13 @@ repacking is unnecessary and the source files remain unchanged.
 - **Open saved result** inspects the actual serialized output. Persistent body
   controls stay locked while inspecting it; pose, motion, camera and expressions
   remain available. **Re-edit from original** restores the saved editing recipe
-  on its preserved original files. Save newer body changes before inspecting an
+  on its preserved original files. It reopens the originals you selected; a
+  face the preview completed automatically is completed again from its saved
+  copy beside the body, so **Save mod ZIP** and **Add to game** still package
+  one costume with its face. Re-editing a save of a reopened Rina scene
+  costume (either face view) keeps it a scene costume with its name, source
+  and face edits, while this app keeps running; the same original opened from
+  anywhere else is a new costume. Save newer body changes before inspecting an
   older result so returning to its recipe cannot discard unsaved edits.
 - **Animation priority** shows the loaded clip's own track values after node
   adjustments, including constant scale tracks. It helps expose competing keys;

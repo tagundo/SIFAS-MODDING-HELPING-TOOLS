@@ -23,6 +23,35 @@ def _check(job):
         raise InterruptedError("Paired body editing was cancelled.")
 
 
+# Refusals that name one bone, physics component or mesh. Each is a fixed
+# sentence ending in ": {name}"; the page translates the sentence and keeps
+# the name (viewer-persistence.js translateMessage, webtools/i18n.py).
+MISSING_BONE = "The counterpart is missing a unique matching bone hierarchy: {name}"
+BONE_NOT_WRITABLE = "The counterpart bone is not writable: {name}"
+SAVE_METHOD = "The counterpart cannot preserve the selected save method: {name}"
+MISSING_PHYSICS = "The counterpart has no unique matching physics component: {name}"
+MISSING_OUTLINE = "The counterpart has no unique matching outline mesh: {name}"
+OUTLINE_VERTEX_ORDER = "The counterpart has no verified matching vertex order for detailed outline edits: {name}"
+NAMED_REFUSALS = (MISSING_BONE, BONE_NOT_WRITABLE, SAVE_METHOD, MISSING_PHYSICS, MISSING_OUTLINE, OUTLINE_VERTEX_ORDER)
+SELECTED_ONLY = "Edits of parts that only the selected costume variant has stay on that variant: {names}"
+
+
+class _Family(list):
+    """Declared member names (a list, as before) and each member's variant role."""
+
+    def __init__(self, members, roles):
+        super().__init__(members)
+        self.roles = roles
+
+
+class PairEditError(ValueError):
+    """A refusal about one named part; ``template`` and ``name`` stay separate."""
+
+    def __init__(self, template, name):
+        self.template, self.name = template, str(name)
+        super().__init__(template.replace("{name}", self.name))
+
+
 def _zip_declarations(raw):
     if not zipfile.is_zipfile(io.BytesIO(raw)):
         return []
@@ -93,7 +122,7 @@ def _zip_declarations(raw):
             if not rina and any(values.get(field) for field in
                                 ("rina_unmask_costume_file", "rina_unmask_costume_file_ios")):
                 raise ValueError("Only Rina may declare board and unmasked costume variants.")
-            selected = []
+            selected, roles = [], {}
             digests = set()
             explicit_ios = bool(values.get("costume_file_ios") or values.get("rina_unmask_costume_file_ios"))
             for platform, main, other in (("android", "costume_file", "rina_unmask_costume_file"),
@@ -131,9 +160,10 @@ def _zip_declarations(raw):
                         raise ValueError("One model cannot stand in for distinct costume/platform variants.")
                     digests.add(digest)
                     selected.append(member.filename)
+                    roles[member.filename] = "unmasked" if field == other else "primary"
             if len(selected) not in (2, 4) or len(set(selected)) != len(selected):
                 raise ValueError("A paired Mod ZIP must declare two or four distinct costume variants.")
-            output.append(selected)
+            output.append(_Family(selected, roles))
         return output
 
 
@@ -154,7 +184,7 @@ def apply_pair_edits(context, result, state, *, pair, job):
         texture_notes.append({"kind": "textures", "status": "selected_source_only", "textures": count, "note": message})
         state = copy.deepcopy(state)
         state.pop("textures", None)
-        if not edits.has_changes(state):
+        if not edits.has_changes(state) and not context.get("held_counterpart"):
             return {"result": result, "pair": pair, "summary": texture_notes}
     outcome = _apply(context, result, state, pair=pair, declarations=declarations, job=job)
     if texture_notes:
@@ -218,7 +248,20 @@ def _relative(kind, desired, source_base, target_base):
     raise ValueError("This paired transform property is unsupported.")
 
 
-def _map_state(context, state, source_index, source_info, target_context, target_info):
+def _map_state(context, state, source_index, source_info, target_context, target_info, *, kept=None):
+    """Translate one source's edits onto a counterpart rig.
+
+    With ``kept`` ({"physics", "outlines", "names"}), the counterpart is
+    Rina's other variant (board or unmasked): an outline mesh or physics bone
+    it does not have at all (e.g. the board's Mask, eye_* and mouth_* meshes,
+    or the unmasked hair dyna bones) has nothing to mirror, so its row stays
+    on the selected source only and is listed in ``kept``. Without ``kept``
+    (the same variant for another platform has every part), a missing part
+    is refused. A part the counterpart has, but not as one proven match, is
+    always refused, and so is a node edit of a bone the counterpart lacks:
+    a bone edit moves everything below it, so a missing counterpart bone is
+    a rig mismatch, not an optional part.
+    """
     source_nodes = {node["node"]: node for node in context["nodes"] if node["sourceIndex"] == source_index}
     target_nodes = {_key(node): node for node in target_context["nodes"]}
     move_counts = [sum(name == "Move" for name in info["names"].values()) for info in (source_info, target_info)]
@@ -227,34 +270,42 @@ def _map_state(context, state, source_index, source_info, target_context, target
     anchored = move_counts == [1, 1]
     source_paths, source_inverse = _hierarchy(source_info, anchored)
     _, target_inverse = _hierarchy(target_info, anchored)
+    target_names = set(target_info["names"].values())
     mapping = {}
-    def mapped(ident):
-        if ident in mapping:
-            return mapping[ident]
+    def bound(ident):
         source = source_nodes.get(ident)
         if source is None:
             raise ValueError("A paired edit refers to a different source model.")
         key = _key(source)
         if key not in source_paths or source_info["names"][key] != source["name"]:
             raise ValueError("An edited bone no longer matches its immutable source.")
+        return source, key
+    def mapped(ident):
+        if ident in mapping:
+            return mapping[ident]
+        source, key = bound(ident)
         path = source_paths[key]
         candidates = target_inverse.get(path, [])
         if len(source_inverse[path]) != 1 or len(candidates) != 1:
-            raise ValueError("The counterpart is missing a unique matching bone hierarchy: " + source["name"])
+            raise PairEditError(MISSING_BONE, source["name"])
         target = target_nodes.get(candidates[0])
         if target is None:
-            raise ValueError("The counterpart bone is not writable: " + source["name"])
+            raise PairEditError(BONE_NOT_WRITABLE, source["name"])
         source_base = edits._public_trs(source_info["effective"][key])
         target_base = edits._public_trs(target_info["effective"][candidates[0]])
         mapping[ident] = (source, target, source_base, target_base, path)
         return mapping[ident]
+    def keep(kind, ident, name):
+        kept[kind].append(ident)
+        if name not in kept["names"]:
+            kept["names"].append(name)
     converted, required_references = [], set()
     for row in state["edits"]:
         if row["node"] not in source_nodes:
             continue
         source, target, source_base, target_base, _ = mapped(row["node"])
         if row["method"] not in target["methods"]:
-            raise ValueError("The counterpart cannot preserve the selected save method: " + source["name"])
+            raise PairEditError(SAVE_METHOD, source["name"])
         change = {"node": target["node"], "method": row["method"], "compensate": row.get("compensate", False)}
         for kind in ("scale", "position", "rotation"):
             if kind in row:
@@ -287,8 +338,14 @@ def _map_state(context, state, source_index, source_info, target_context, target
         matches = [record for record in target_physics if record["kind"] == source_component["kind"] and
                    target_paths.get(_key(record)) == semantic and
                    record.get("siblingIndex") == source_component.get("siblingIndex")]
+        if (kept is not None and semantic is not None and not matches and len(source_inverse.get(semantic, [])) == 1 and
+                source_info["names"].get(_key(source_component)) not in target_names and
+                not any(record["name"] == source_component["name"] for record in target_physics)):
+            # The component's bone exists only in the selected variant.
+            keep("physics", row["id"], source_component["name"])
+            continue
         if semantic is None or len(matches) != 1:
-            raise ValueError("The counterpart has no unique matching physics component: " + source_component["name"])
+            raise PairEditError(MISSING_PHYSICS, source_component["name"])
         # Fields retain their original Unity units, so one explicit endpoint is
         # assigned to both native versions. No browser simulation is baked.
         physics.append({"id": matches[0]["id"], "values": copy.deepcopy(row["values"])})
@@ -297,6 +354,9 @@ def _map_state(context, state, source_index, source_info, target_context, target
     source_outlines = [row for row in context.get("outlines", {}).get("meshes", [])
                        if row["sourceIndex"] == source_index]
     target_outlines = target_context.get("outlines", {}).get("meshes", [])
+    # Excluded meshes still exist in the counterpart: a row for one of them is
+    # refused, never silently left on the selected variant.
+    target_mesh_names = {item.get("name") for item in target_outlines + target_context.get("outlines", {}).get("excludedMeshes", [])}
     by_outline_id = {row["id"]: row for row in source_outlines}
     for row in state.get("outlines", []):
         source_outline = by_outline_id.get(row["id"])
@@ -305,8 +365,13 @@ def _map_state(context, state, source_index, source_info, target_context, target
         semantic = source_outline.get("semantic")
         origins = [item for item in source_outlines if item.get("semantic") == semantic]
         matches = [item for item in target_outlines if item.get("semantic") == semantic]
+        if (kept is not None and semantic is not None and len(origins) == 1 and not matches and
+                source_outline["name"] not in target_mesh_names):
+            # The counterpart has no mesh of this name at all: nothing to mirror.
+            keep("outlines", row["id"], source_outline["name"])
+            continue
         if semantic is None or len(origins) != 1 or len(matches) != 1:
-            raise ValueError("The counterpart has no unique matching outline mesh: " + source_outline["name"])
+            raise PairEditError(MISSING_OUTLINE, source_outline["name"])
         change = {"id": matches[0]["id"], "factor": row["factor"]}
         if "absolute" in row:
             change["absolute"] = row["absolute"]
@@ -314,12 +379,13 @@ def _map_state(context, state, source_index, source_info, target_context, target
             signature = source_outline.get("vertexOrderSignature")
             if (not signature or signature != matches[0].get("vertexOrderSignature") or
                     source_outline.get("vertexCount") != matches[0].get("vertexCount")):
-                raise ValueError("The counterpart has no verified matching vertex order for detailed outline edits: " + source_outline["name"])
+                raise PairEditError(OUTLINE_VERTEX_ORDER, source_outline["name"])
             change["vertices"] = copy.deepcopy(row["vertices"])
         outline_changes.append(change)
         outline_proof.append({"sourceOutline": row["id"], "targetOutline": matches[0]["id"],
                               "meshSemantic": copy.deepcopy(semantic)})
-    if not converted and not physics and not outline_changes and "accessoryUnclip" not in state:
+    if (not converted and not physics and not outline_changes and "accessoryUnclip" not in state and
+            not (kept and any(kept[kind] for kind in ("physics", "outlines")))):
         raise ValueError("There are no source-bound body edits to apply to the counterpart.")
     references = []
     for row in state.get("compensationReference", []):
@@ -353,7 +419,44 @@ def _map_state(context, state, source_index, source_info, target_context, target
     return translated, proof + physics_proof + outline_proof
 
 
-def _edit_partner(context, state, source_index, original_raw, folder, job):
+def _owns_rows(context, state, source_index):
+    """Whether ``state`` edits ``source_index`` (or applies accessory un-clip)."""
+    nodes = {node["node"] for node in context["nodes"] if node["sourceIndex"] == source_index}
+    return ("accessoryUnclip" in state or any(row["node"] in nodes for row in state.get("edits", [])) or
+            any(row["id"].split(":", 1)[0] == str(source_index) for field in ("physics", "outlines")
+                for row in state.get(field, [])))
+
+
+def _carried(context, source_index, source_info, partner_context, held, original_raw):
+    """The counterpart's own rows for parts the selected source does not have.
+
+    ``held`` lists the reopened scene's other-variant recipes (bound to their
+    original's sha256, rows in that original's "0:" index space, which is the
+    temporary counterpart session's). Rows of parts the selected source also
+    has are mirrored from this view's own state instead.
+    """
+    rows = [entry for entry in held if entry["sha256"] == sources._sha(original_raw)]
+    if not rows:
+        return {}, []
+    own = context.get("outlines", {})
+    mesh_names = {row.get("name") for row in own.get("meshes", []) + own.get("excludedMeshes", [])
+                  if row.get("sourceIndex") == source_index}
+    bone_names = set(source_info["names"].values())
+    partner_meshes = {row["id"]: row for row in partner_context.get("outlines", {}).get("meshes", [])}
+    partner_physics = {row["id"]: row for row in partner_context.get("physics", {}).get("components", [])}
+    carried, names = {}, []
+    for entry in rows:
+        for field, catalog, own_names in (("outlines", partner_meshes, mesh_names), ("physics", partner_physics, bone_names)):
+            for row in entry.get(field, []):
+                record = catalog.get(row.get("id"))
+                if record is not None and record.get("name") not in own_names:
+                    carried.setdefault(field, []).append(copy.deepcopy(row))
+                    if record["name"] not in names:
+                        names.append(record["name"])
+    return carried, names
+
+
+def _edit_partner(context, state, source_index, original_raw, folder, job, *, other_variant):
     _check(job)
     source = context["sources"][source_index]
     container = context["containers"][source["container"]]
@@ -375,8 +478,35 @@ def _edit_partner(context, state, source_index, original_raw, folder, job):
         if metadata.get("available") is not True:
             raise ValueError("The counterpart has no writable body rig.")
         partner_context = edits.mod_source_context(token)
-        translated, proof = _map_state(context, state, source_index, edits._inspect(source_raw),
-                                       partner_context, edits._inspect(original_raw))
+        # Only Rina's other variant (board <-> unmasked) lacks parts by design.
+        kept = {"physics": [], "outlines": [], "names": []} if other_variant else None
+        source_info = edits._inspect(source_raw)
+        if _owns_rows(context, state, source_index):
+            translated, proof = _map_state(context, state, source_index, source_info,
+                                           partner_context, edits._inspect(original_raw), kept=kept)
+        else:
+            translated, proof = {"version": edits.VERSION, "savedSettingsEnabled": True, "unsupported": [],
+                                 "edits": [], "compensationReference": []}, []
+        kept = kept or {"physics": [], "outlines": [], "names": []}
+        if other_variant and context.get("held_counterpart"):
+            # A reopened scene's other variant keeps its own edits of parts
+            # this view does not have; they are written back unchanged.
+            carried, carried_names = _carried(context, source_index, source_info, partner_context,
+                                              context["held_counterpart"], original_raw)
+            for field, rows in carried.items():
+                present = {row["id"] for row in translated.get(field, [])}
+                translated[field] = sorted(translated.get(field, []) + [row for row in rows if row["id"] not in present],
+                                           key=lambda row: row["id"])
+            if carried_names:
+                kept["carried"] = carried_names
+        if not edits.has_changes(translated):
+            # Every edit is of a part only the selected variant has: the
+            # counterpart keeps its exact original bytes.
+            if kept["names"]:
+                job.log(SELECTED_ONLY.replace("{names}", ", ".join(kept["names"])))
+            return {"unchanged": True, "original_sha256": sources._sha(original_raw), "kept": kept}
+        if kept["names"]:
+            job.log(SELECTED_ONLY.replace("{names}", ", ".join(kept["names"])))
         normalized = edits.validate_state(token, translated)
         _check(job)
         exported = edits.export(token, normalized, folder / "export", log=job.log)
@@ -390,7 +520,7 @@ def _edit_partner(context, state, source_index, original_raw, folder, job):
             raise ValueError("A counterpart original changed during paired editing.")
         return {"raw": output_raw, "sha256": sources._sha(output_raw),
                 "original_sha256": sources._sha(original_raw), "export": exported,
-                "mapping": proof}
+                "mapping": proof, "kept": kept}
     finally:
         # These are internal temporary rigs, not extra user editor sessions.
         with edits._LOCK:
@@ -450,13 +580,16 @@ def _apply(context, result, state, *, pair, declarations, job):
             index, source, role = selected[0]
             other = "unmasked" if role == "primary" else "primary"
             path, raw = roles[other]
-            edited = _edit_partner(context, state, index, raw, temporary / f"variant-{count}", job)
+            edited = _edit_partner(context, state, index, raw, temporary / f"variant-{count}", job, other_variant=True)
             count += 1
-            target = edited["export"]["preview_paths"][0]
-            new_pair[other] = {"path": target, "sha256": edited["sha256"]}
             initial[path] = sources._sha(raw)
-            partner_exports.append(edited["export"])
-            summaries.append({"variant": other, **{key: edited[key] for key in ("original_sha256", "sha256", "mapping")}})
+            if edited.get("unchanged"):
+                summaries.append({"variant": other, "unchanged": True, **{key: edited[key] for key in ("original_sha256", "kept")}})
+            else:
+                target = edited["export"]["preview_paths"][0]
+                new_pair[other] = {"path": target, "sha256": edited["sha256"]}
+                partner_exports.append(edited["export"])
+                summaries.append({"variant": other, **{key: edited[key] for key in ("original_sha256", "sha256", "mapping", "kept")}})
         else:
             for ci, groups in enumerate(declarations):
                 if not groups:
@@ -472,6 +605,10 @@ def _apply(context, result, state, *, pair, declarations, job):
                                     any(row["id"].split(":", 1)[0] == str(index) for row in state.get("outlines", [])))]
                     accessory_only = not selected and "accessoryUnclip" in state
                     if accessory_only:
+                        selected = opened
+                    if not selected and context.get("held_counterpart") and len(opened) == 1:
+                        # Nothing edited here, but the other variant's own
+                        # edits of a reopened scene are written back.
                         selected = opened
                     if not selected:
                         continue
@@ -491,20 +628,28 @@ def _apply(context, result, state, *, pair, declarations, job):
                                 raise ValueError("Two paired declarations target the same costume member.")
                             claimed.add(member)
                             raw = archive.read(member)
-                            edited = _edit_partner(context, state, index, raw, temporary / f"variant-{count}", job)
+                            roles = getattr(members, "roles", {})
+                            edited = _edit_partner(context, state, index, raw, temporary / f"variant-{count}", job,
+                                                   other_variant=roles.get(member) != roles.get(source["member"]))
                             count += 1
+                            if edited.get("unchanged"):
+                                summaries.append({"member": member, "unchanged": True,
+                                                  **{key: edited[key] for key in ("original_sha256", "kept")}})
+                                continue
                             replacements[member] = edited["raw"]
                             partner_exports.append(edited["export"])
-                            summaries.append({"member": member, **{key: edited[key] for key in ("original_sha256", "sha256", "mapping")}})
+                            summaries.append({"member": member, **{key: edited[key] for key in ("original_sha256", "sha256", "mapping", "kept")}})
                 if replacements:
                     saved = str(Path(result["preview_paths"][ci]).resolve())
                     destination = temporary / f"paired-{ci}.zip"
                     if _replace_zip(saved, destination, replacements) != initial[saved]:
                         raise ValueError("The selected saved ZIP changed during paired editing.")
                     replaced_paths[saved] = str(destination)
-        if not summaries:
+        if all(row.get("unchanged") for row in summaries):
+            # Nothing was written for any counterpart; each one listed here
+            # keeps its original bytes (viewer_scene_roles reads this).
             shutil.rmtree(temporary)
-            return {"result": result, "pair": pair, "summary": []}
+            return {"result": result, "pair": pair, "summary": summaries}
         _check(job)
         for path, digest in initial.items():
             if sources._sha(sources._read(path)) != digest:

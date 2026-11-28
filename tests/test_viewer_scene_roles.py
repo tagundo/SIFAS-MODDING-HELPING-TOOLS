@@ -64,7 +64,10 @@ class SceneRolesTests(unittest.TestCase):
             metadata = edits.register_session(prepared["id"], expanded.paths, prepared["rig"],
                 originals=expanded.editing_originals or [str(path)], origins=expanded.origins,
                 archive_members=expanded.archive_members,
-                variants=expanded.editing_variants if expanded.editing_variants is not None else {str(path): "primary"})
+                variants=(expanded.editing_variants if expanded.editing_variants is not None else
+                          # As the HTTP route: the variant picked for a plain costume ZIP.
+                          {item["source_path"]: item["selected"] for item in expanded.variants} if variant is not None else
+                          {str(path): "primary"}))
             state = roles.register_reopened(prepared["id"], expanded.scene_context) if expanded.scene_context else None
         return prepared["id"], {row["name"]: row for row in metadata["nodes"]}, state
 
@@ -531,9 +534,188 @@ class SceneRolesTests(unittest.TestCase):
             self.assertEqual(archive.read(member), session["sources"][0]["raw"] + b"held")
         self.assertEqual(result["summary"][0]["outlines"], 1)
         self.assertEqual(json.loads(Path(result["recipe_path"]).read_text())["state"]["outlines"], held)
-        # Restoring a recipe without them releases them.
+        # A recipe with no row for that face keeps them held: this view
+        # cannot edit them, so it cannot mean to drop them.
         edits.restore(token, dict(recipe, state=empty), allow_empty=True)
+        self.assertEqual((session["heldFaceOutlines"], session["heldFaceProof"]), (held, proof))
+
+    def held_view(self):
+        """A masked view of the neutral family holding one row of source 0."""
+        token, _, _ = self.prepare(self.source(), "primary")
+        session = edits._session(token)
+        empty = {"version": 1, "savedSettingsEnabled": True, "edits": [], "unsupported": [], "compensationReference": []}
+        recipe = {"format": "elichika-viewer-body-edit", "version": 1, "sources": edits._source_signature(session),
+                  "originals": [{"name": item["name"], "sha256": item["sha256"]} for item in session["containers"]],
+                  "state": empty, "nodeIdentities": []}
+        held = [{"id": "0:0:7", "factor": 1.0, "absolute": 40}]
+        proof = {"meshes": [{"id": "0:0:7", "sourceIndex": 0, "name": "Mouth"}]}
+        with patch.object(roles, "split_held_face_outlines", return_value=([], copy.deepcopy(held), proof)):
+            edits.restore(token, dict(recipe, state=dict(empty, outlines=held)))
+        return token, session, recipe, empty, held, proof
+
+    def test_restore_keeps_held_rows_unless_the_recipe_sets_their_face(self):
+        token, session, recipe, empty, held, proof = self.held_view()
+        self.assertEqual(edits.held_summary(session), {"count": 1, "meshes": ["Mouth"], "rows": held})
+        before = edits.held_snapshot(token)
+        edits.restore(token, recipe, allow_empty=True)
+        self.assertEqual(edits.held_response(token, before),
+                         {"heldFaceOutlines": {"count": 1, "meshes": ["Mouth"], "rows": held}})
+        # A recipe that sets that face itself (here an editable row of the same
+        # source) releases the held rows, and the response says so.
+        mesh = next(row["id"] for row in session["outlines"]["meshes"] if row["id"].startswith("0:"))
+        own = dict(recipe, state=dict(empty, outlines=[{"id": mesh, "factor": 0.5}]))
+        edits.restore(token, own)
         self.assertEqual((session["heldFaceOutlines"], session["heldFaceProof"]), ([], None))
+        response = edits.held_response(token, before)
+        self.assertEqual(response["heldFaceOutlines"], {"count": 0, "meshes": [], "rows": []})
+        self.assertEqual(response["notice"], {"text": edits.HELD_RELEASED_ONE, "values": {}})
+        from webtools import i18n
+        for text in (edits.HELD_RELEASED, edits.HELD_RELEASED_ONE):
+            for language in ("ko", "ja"):
+                self.assertNotEqual(i18n.tr(text, language), text)
+        two = [{"id": "0:0:7", "factor": 1.0}, {"id": "0:0:8", "factor": 0.5}]
+        self.assertEqual(edits.held_response(token, two)["notice"], {"text": edits.HELD_RELEASED, "values": {"count": 2}})
+        # Replaced rows are released as well: the recipe's own face rows hold.
+        with patch.object(roles, "split_held_face_outlines", return_value=([], copy.deepcopy(held), proof)):
+            edits.restore(token, dict(recipe, state=dict(empty, outlines=held)))
+        replaced = [{"id": "0:0:7", "factor": 0.5}]
+        before = edits.held_snapshot(token)
+        with patch.object(roles, "split_held_face_outlines", return_value=([], copy.deepcopy(replaced), proof)):
+            edits.restore(token, dict(recipe, state=dict(empty, outlines=replaced)))
+        self.assertEqual(session["heldFaceOutlines"], replaced)
+        self.assertIn("notice", edits.held_response(token, before))
+
+    def test_a_refused_restore_keeps_the_earlier_held_rows(self):
+        token, session, recipe, empty, held, proof = self.held_view()
+        other = [{"id": "0:0:7", "factor": 0.25}]
+        # The new held rows split fine, but the rest of the recipe is invalid.
+        with patch.object(roles, "split_held_face_outlines", return_value=([], copy.deepcopy(other), {"meshes": []})), \
+                self.assertRaisesRegex(ValueError, "preview-only"):
+            edits.restore(token, dict(recipe, state=dict(empty, outlines=other, unsupported=["pose"])))
+        self.assertEqual((session["heldFaceOutlines"], session["heldFaceProof"]), (held, proof))
+
+    def test_reedit_of_a_reopened_scene_original_packages_the_scene(self):
+        token, nodes, _ = self.prepare(self.source())
+        result, original = self.package(token, self.state(nodes))
+        reopened, nodes, state = self.prepare(Path(result["mod_package"]["package_path"]), "primary")
+        save = lambda token, value, folder: flow.export_current(token, value, self.root / folder,
+            repo_root=self.root, cache_root=self.root / "game-cache")
+        saved = save(reopened, state, "saved")
+        # Saving copies the canonical originals ZIP unchanged; re-edit opens that copy.
+        raw = edits._session(reopened)["containers"][0]["raw"]
+        self.assertEqual(Path(saved["original_paths"][0]).read_bytes(), raw)
+        reedit, _, none = self.prepare(Path(saved["original_paths"][0]), "primary")
+        self.assertIsNone(none)
+        self.assertIsNone(roles.session_metadata(reedit))
+        context = edits.mod_source_context(reedit)
+        changed = dict(context, containers=[dict(context["containers"][0], sha256="0" * 64)])
+        self.assertIsNone(roles.register_preserved(reedit, changed))
+        metadata = roles.register_preserved(reedit, context)
+        self.assertEqual(metadata, roles.session_metadata(reopened))
+        self.assertEqual(roles.session_metadata(reedit), metadata)
+        self.assertTrue(edits._session(reedit)["allowEmptySceneReset"])
+        restored = edits.restore(reedit, saved["recipe"])
+        again, decoded = self.package(reedit, restored)
+        self.assertTrue(fmt.is_scene_package(again["mod_package"]["package_path"]))
+        self.assertEqual(decoded["manifest"]["source_suit_id"], original["manifest"]["source_suit_id"])
+        # A save of the re-edit is re-editable as the scene again.
+        twice, _, _ = self.prepare(Path(save(reedit, restored, "saved-again")["original_paths"][0]), "primary")
+        self.assertEqual(roles.register_preserved(twice, edits.mod_source_context(twice)), metadata)
+        # The same original bytes anywhere else (the person's own copy of the
+        # costume they first opened) stay an ordinary costume source.
+        copied = self.root / "own-copy.zip"; copied.write_bytes(raw)
+        plain, nodes, _ = self.prepare(copied)
+        self.assertIsNone(roles.register_preserved(plain, edits.mod_source_context(plain)))
+        self.assertIsNone(roles.session_metadata(plain))
+        # Nor is a save of an ordinary costume.
+        ordinary, _, _ = self.prepare(Path(save(plain, self.state(nodes), "saved-plain")["original_paths"][0]))
+        self.assertIsNone(roles.register_preserved(ordinary, edits.mod_source_context(ordinary)))
+        self.assertFalse(edits._session(ordinary).get("allowEmptySceneReset"))
+
+    @staticmethod
+    def outline_width(raw, name):
+        from webtools.core import model_outlines
+        catalog = model_outlines.catalogue_sources([(edits._inspect(raw), 0)])
+        return next(row["originalWidth"] for row in catalog["meshes"] if row["name"] == name)
+
+    def test_board_only_outline_edit_survives_packaging_from_either_view(self):
+        import UnityPy
+        env = UnityPy.load(bundle_fixture(fmt.PLATFORMS["android"], "primary"))
+        for obj in env.objects:
+            if obj.type.name == "Mesh":
+                tree = obj.read_typetree(); tree["m_Name"] = "BoardOnlyNeutral"; obj.save_typetree(tree)
+        data = {("android", "primary"): env.file.save(),
+                ("android", "unmasked"): bundle_fixture(fmt.PLATFORMS["android"], "unmasked")}
+        token, nodes, _ = self.prepare(self.source(data=data))
+        scene, _ = self.package(token, self.state(nodes))
+        token, _, state = self.prepare(Path(scene["mod_package"]["package_path"]), "primary")
+        mesh = next(row["id"] for row in edits._session(token)["outlines"]["meshes"] if row["name"] == "BoardOnlyNeutral")
+        result, first = self.package(token, dict(state, outlines=[{"id": mesh, "factor": 0.5}]))
+        # The unmasked body has no such mesh: it stays its original, with no rows.
+        self.assertEqual([row["factor"] for row in json.loads(first["files"][first["manifest"]["authoring"]["android"]["primary"]["recipe"]["member"]])["state"]["outlines"]], [0.5])
+        self.assertFalse(json.loads(first["files"][first["manifest"]["authoring"]["android"]["unmasked"]["recipe"]["member"]])["state"].get("outlines"))
+        edited = self.outline_width(self.golden(first, "android", "primary"), "BoardOnlyNeutral")
+        self.assertNotEqual(edited, self.outline_width(data["android", "primary"], "BoardOnlyNeutral"))
+        self.assertEqual(self.outline_width(self.golden(first, "android", "unmasked"), "BodyControlNeutral"),
+                         self.outline_width(data["android", "unmasked"], "BodyControlNeutral"))
+        # Repackaging from the Normal face view, which cannot show that mesh,
+        # writes the board's own row back instead of dropping it.
+        reopened, _, state = self.prepare(Path(result["mod_package"]["package_path"]), "unmasked")
+        self.assertEqual(edits.mod_source_context(reopened)["held_counterpart"][0]["outlines"], [{"id": "0" + mesh[mesh.index(":"):], "factor": 0.5}])
+        again, second = self.package(reopened, state)
+        self.assertEqual(json.loads(second["files"][second["manifest"]["authoring"]["android"]["primary"]["recipe"]["member"]])["state"]["outlines"],
+                         [{"id": "0" + mesh[mesh.index(":"):], "factor": 0.5}])
+        self.assertEqual(self.outline_width(self.golden(second, "android", "primary"), "BoardOnlyNeutral"), edited)
+        # Saving this view with no body edits at all (a reset) still writes the
+        # board's own row back; only the node edits go.
+        _, reset = self.package(reopened, {"version": 1, "savedSettingsEnabled": True, "edits": []})
+        board = json.loads(reset["files"][reset["manifest"]["authoring"]["android"]["primary"]["recipe"]["member"]])["state"]
+        self.assertEqual((board["edits"], board["outlines"]), ([], [{"id": "0" + mesh[mesh.index(":"):], "factor": 0.5}]))
+        self.assertEqual(self.outline_width(self.golden(reset, "android", "primary"), "BoardOnlyNeutral"), edited)
+        held = copy.deepcopy(edits._session(reopened)["heldCounterpart"])
+        saved = flow.export_current(reopened, state, self.root / "saved", repo_root=self.root, cache_root=self.root / "game-cache")
+        # Without the held rows the board would have been rebuilt unedited.
+        edits._session(reopened)["heldCounterpart"] = []
+        _, third = self.package(reopened, state)
+        self.assertFalse(json.loads(third["files"][third["manifest"]["authoring"]["android"]["primary"]["recipe"]["member"]])["state"].get("outlines"))
+        # Re-edit of that save keeps the board's row as well.
+        reedit, _, _ = self.prepare(Path(saved["original_paths"][0]), "unmasked")
+        self.assertIsNotNone(roles.register_preserved(reedit, edits.mod_source_context(reedit)))
+        self.assertEqual(edits._session(reedit)["heldCounterpart"], held)
+        _, fourth = self.package(reedit, edits.restore(reedit, saved["recipe"]))
+        self.assertEqual(self.outline_width(self.golden(fourth, "android", "primary"), "BoardOnlyNeutral"), edited)
+        # Those rows are the board's own: a board view of the same copy does not hold them.
+        board, _, _ = self.prepare(Path(saved["original_paths"][0]), "primary")
+        self.assertIsNotNone(roles.register_preserved(board, edits.mod_source_context(board)))
+        self.assertEqual(edits._session(board).get("heldCounterpart", []), [])
+
+    def test_counterpart_without_the_edited_parts_keeps_its_original_and_no_recipe(self):
+        context, result, pair, goldens = self.raw_pair()
+        body_row = {"id": "1:0:222", "factor": 0.75}
+        state = {"version": 1, "savedSettingsEnabled": True, "edits": [], "unsupported": [],
+                 "compensationReference": [], "outlines": [body_row]}
+        result["recipe"]["state"] = copy.deepcopy(state)
+        with self.assertRaisesRegex(ValueError, "no complete native original family"):
+            roles._originals_and_recipes(context, result, pair, goldens, state)
+        # With no body edits both variants stay their originals, unless the
+        # other variant has rows of its own: those come back only through pairing.
+        empty = dict(state, outlines=[])
+        self.assertEqual(roles._originals_and_recipes(context, result, pair, goldens, empty)[0], goldens)
+        held = dict(context, held_counterpart=[{"sha256": fmt.sha(goldens["android", "primary"]), "outlines": [{"id": "0:0:7", "factor": .5}]}])
+        with self.assertRaisesRegex(ValueError, "no complete native original family"):
+            roles._originals_and_recipes(held, result, pair, goldens, empty)
+        # Pair editing reported the board as unchanged (it has no such mesh).
+        result["paired_edits"] = [{"variant": "primary", "unchanged": True, "original_sha256": fmt.sha(goldens["android", "primary"]),
+                                   "kept": {"physics": [], "outlines": ["1:0:222"], "names": ["Mask"]}}]
+        originals, recipes = roles._originals_and_recipes(context, result, pair, goldens, state)
+        self.assertEqual(originals, goldens)
+        self.assertEqual(recipes["android", "primary"]["state"]["edits"], [])
+        self.assertFalse(recipes["android", "primary"]["state"].get("outlines"))
+        self.assertEqual(recipes["android", "unmasked"]["state"]["outlines"], [{"id": "0:0:222", "factor": 0.75}])
+        # The unchanged report must be about the bytes in the pair.
+        result["paired_edits"][0]["original_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "paired canonical original is missing"):
+            roles._originals_and_recipes(context, result, pair, goldens, state)
 
 
 if __name__ == "__main__": unittest.main()

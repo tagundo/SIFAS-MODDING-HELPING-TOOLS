@@ -11,6 +11,7 @@ import copy
 import io
 import json
 import math
+import os
 import struct
 from pathlib import Path
 import secrets
@@ -22,6 +23,11 @@ from . import model_edits as edits
 from . import viewer_scene_format as fmt
 
 _SCENES = OrderedDict()
+# Saved originals copy of a reopened scene (real path) -> its bytes' sha256,
+# the scene metadata, the view's variant and the other variant's held rows.
+# "Re-edit from original" opens that copy and reopens the same scene
+# (remember_saved_originals, register_preserved).
+_PRESERVED = OrderedDict()
 _LOCK = threading.RLock()
 _FIELDS = {"costume_file": "primary", "rina_unmask_costume_file": "unmasked",
            "costume_file_ios": "primary", "rina_unmask_costume_file_ios": "unmasked"}
@@ -210,7 +216,10 @@ def _originals_and_recipes(context, result, pair, goldens, state):
     if faces and partner_state.get("outlines"):
         partner_state["outlines"] = [row for row in partner_state["outlines"]
                                      if int(row["id"].split(":", 1)[0]) not in faces]
-    partner_body_changed = edits.has_changes(partner_state)
+    partner_body_changed = edits.has_changes(partner_state) or bool(context.get("held_counterpart"))
+    # A counterpart that has none of the edited parts (Rina's board-only Mask,
+    # eye and mouth meshes) keeps its original bytes and has no variant recipe.
+    unchanged = {summary["original_sha256"] for summary in result.get("paired_edits", []) if summary.get("unchanged")}
     originals = {}
     for container in context["containers"]:
         if zipfile.is_zipfile(io.BytesIO(container["raw"])):
@@ -231,6 +240,11 @@ def _originals_and_recipes(context, result, pair, goldens, state):
         for summary in summaries:
             if summary.get("variant") not in fmt.VARIANTS:
                 continue
+            if summary.get("unchanged"):
+                raw = Path(pair[summary["variant"]]["path"]).read_bytes()
+                _require(fmt.sha(raw) == summary["original_sha256"], "A paired canonical original is missing.")
+                originals[platform, summary["variant"]] = raw
+                continue
             candidates = [Path(path).read_bytes() for path in result.get("paired_original_paths", [])
                           if fmt.sha(Path(path).read_bytes()) == summary["original_sha256"]]
             _require(len(candidates) == 1, "A paired canonical original is missing.")
@@ -247,7 +261,8 @@ def _originals_and_recipes(context, result, pair, goldens, state):
     normalized = {}
     for key, original in originals.items():
         candidates = [recipe for recipe in recipes if any(source["sha256"] == fmt.sha(original) for source in recipe["sources"])]
-        if not edits.has_changes(state) or not candidates and not partner_body_changed:
+        if (not (edits.has_changes(state) or context.get("held_counterpart")) or
+                not candidates and (not partner_body_changed or fmt.sha(original) in unchanged)):
             normalized[key] = _empty_recipe(original, "_".join(key) + ".unity")
         else:
             _require(len(candidates) == 1, "The scene costume has no unique original-bound variant recipe.")
@@ -433,8 +448,12 @@ def expand_scene(path, directory, variant=None, *, platform=None):
     recipe = _json(files[manifest["authoring"][platform][variant]["recipe"]["member"]])
     face = manifest.get("face_authoring", {}).get(platform)
     face_recipes = [_json(files[face["recipe"]["member"]])] if face else []
+    # The other variant's recipes: rows for parts this view's body lacks are
+    # carried into its pair edit (hold_counterpart), never shown or dropped.
+    other_recipes = [_json(files[family[role]["recipe"]["member"]]) for family in manifest["authoring"].values()
+                     for role in fmt.VARIANTS if role != variant]
     return {"path": str(original_zip), "variant": variant, "platform": platform,
-            "recipe": recipe, "face_recipes": face_recipes,
+            "recipe": recipe, "face_recipes": face_recipes, "other_recipes": other_recipes,
             "metadata": {**{key: copy.deepcopy(manifest[key]) for key in ("display_name", "source_suit_id", "source_provenance")},
                          "target_member_id": manifest.get("target_member_id", 209),
                          "default_variant": manifest.get("default_variant", "primary")}}
@@ -530,11 +549,81 @@ def register_reopened(token, scene):
     recipe["originals"] = [{"name": item["name"], "sha256": item["sha256"]} for item in session["containers"]]
     session["allowEmptySceneReset"] = True
     state = edits.restore(token, recipe)
+    hold_counterpart(session, scene.get("other_recipes", []))
     with _LOCK:
         _SCENES[token] = copy.deepcopy(scene["metadata"])
         while len(_SCENES) > edits.MAX_SESSIONS:
             _SCENES.popitem(last=False)
     return state
+
+
+def hold_counterpart(session, recipes):
+    """Keep the other variant's own outline and physics rows for pair editing.
+
+    A reopened scene shows one variant. Rows that only the other variant's
+    parts have (the board's Mask meshes in the Normal face view, the Normal
+    face's hair dyna bones in the board view) cannot appear here, but every
+    save and Mod ZIP of this view rewrites that variant: pair editing writes
+    them back (viewer_mod_pair_edits). Each entry names the original it binds.
+    """
+    held = []
+    for recipe in recipes:
+        state = recipe.get("state", {})
+        rows = {field: copy.deepcopy(state[field]) for field in ("outlines", "physics") if state.get(field)}
+        if rows and len(recipe.get("sources", [])) == 1:
+            held.append({"sha256": recipe["sources"][0]["sha256"], **rows})
+    session["heldCounterpart"] = held
+
+
+def remember_saved_originals(token, context, paths):
+    """Remember the originals copy a save of a reopened scene wrote.
+
+    Saving a reopened scene copies its canonical originals ZIP unchanged to the
+    export's originals/ folder, which Re-edit from original opens. Only that
+    exact file (location and bytes) reopens as this scene: the person's own
+    copy of the same original, or a save of another scene made from it, stays
+    what it is. Kept in memory for this server.
+    """
+    if len(context["containers"]) != 1 or len(paths) != 1:
+        return
+    metadata = session_metadata(token)
+    if metadata is None:
+        return
+    held = copy.deepcopy(edits._session(token).get("heldCounterpart", []))
+    key = os.path.realpath(paths[0])
+    with _LOCK:
+        _PRESERVED[key] = {"sha256": context["containers"][0]["sha256"], "metadata": metadata,
+                           "variant": context["variants"].get("0", "primary"), "held": held}
+        _PRESERVED.move_to_end(key)
+        while len(_PRESERVED) > 64:
+            _PRESERVED.popitem(last=False)
+
+
+def register_preserved(token, context):
+    """Bind a re-edit of a saved scene's originals copy to that scene.
+
+    Opening exactly a file remember_saved_originals recorded, with unchanged
+    bytes, packages a scene Mod ZIP with the scene's name, source and face
+    authoring, as reopening the scene ZIP does, and keeps the other variant's
+    own rows when it opens in the saved view's variant. ``context`` is the
+    session's mod_source_context. Returns the scene metadata, or None for any
+    other input.
+    """
+    if len(context["containers"]) != 1:
+        return None
+    container = context["containers"][0]
+    with _LOCK:
+        entry = copy.deepcopy(_PRESERVED.get(os.path.realpath(container["path"])))
+        if entry is None or entry["sha256"] != container["sha256"]:
+            return None
+        _SCENES[token] = copy.deepcopy(entry["metadata"])
+        while len(_SCENES) > edits.MAX_SESSIONS:
+            _SCENES.popitem(last=False)
+    session = edits._session(token)
+    session["allowEmptySceneReset"] = True
+    if context["variants"].get("0", "primary") == entry["variant"]:
+        session["heldCounterpart"] = entry["held"]
+    return entry["metadata"]
 
 
 def should_package(context, state, packed, token):

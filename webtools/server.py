@@ -857,10 +857,22 @@ class Handler(BaseHTTPRequestHandler):
                                 from webtools.core import viewer_scene_roles
                                 result["editing"]["initialState"] = viewer_scene_roles.register_reopened(
                                     result["id"], expanded.scene_context)
+                                # Face rows a Rina board view holds but cannot edit.
+                                result["editing"]["heldFaceOutlines"] = model_edits.held_summary(
+                                    model_edits._session(result["id"]))
                                 result["editing"]["allowEmptySceneReset"] = True
                                 result["editing"]["modPackaging"].update(
                                     nameBase=expanded.scene_context["metadata"]["display_name"], characterId=209,
                                     requiresCounterpart=False, sceneRoles=True)
+                            else:
+                                # Re-edit from original: the saved copy of a
+                                # reopened scene's canonical originals.
+                                preserved = viewer_scene_roles.register_preserved(result["id"], editing_context)
+                                if preserved is not None:
+                                    result["editing"]["allowEmptySceneReset"] = True
+                                    result["editing"]["modPackaging"].update(
+                                        nameBase=preserved["display_name"], characterId=209,
+                                        requiresCounterpart=False, sceneRoles=True)
                     except (ValueError, OSError) as exc:
                         if getattr(expanded, "scene_context", None):
                             raise
@@ -1430,10 +1442,16 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(params["recipe"], dict):
                 raise ValueError("Choose an editing recipe for this original model.")
             from webtools.core import model_edits, viewer_mod_flow
+            snapshot = getattr(model_edits, "held_snapshot", None)
+            before = snapshot(params["token"]) if snapshot is not None else None
             if params["recipe"].get("tool") == "mesh-tools":
                 result = viewer_mod_flow.restore_current(params["token"], params["recipe"])
             else:
                 result = {"state": model_edits.restore(params["token"], params["recipe"])}
+            if before is not None:
+                # Face rows a Rina board view holds (it cannot edit them): what
+                # is held now, and a notice when this recipe released some.
+                result.update(model_edits.held_response(params["token"], before))
             return self._send_json(result)
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)

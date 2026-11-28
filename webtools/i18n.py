@@ -2566,6 +2566,43 @@ for _source, _translated in _VIEWER_MODEL_SAVE_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]
 
+# Costume variant (pair) refusals that name one part: fixed sentences ending in
+# ": {name}" (viewer_mod_pair_edits.NAMED_REFUSALS). The viewer translates the
+# sentence and keeps the name. Rina board view: held face outline rows.
+_VIEWER_PAIR_TRANSLATIONS = {
+    "The counterpart is missing a unique matching bone hierarchy: {name}": (
+        "다른 버전 모델에 같은 계층의 고유한 본이 없습니다: {name}", "もう一方のモデルに同じ階層の固有のボーンがありません: {name}"),
+    "The counterpart bone is not writable: {name}": (
+        "다른 버전 모델의 본은 저장할 수 없습니다: {name}", "もう一方のモデルのボーンは保存できません: {name}"),
+    "The counterpart cannot preserve the selected save method: {name}": (
+        "다른 버전 모델에서는 선택한 저장 방식을 쓸 수 없습니다: {name}", "もう一方のモデルでは選択した保存方法を使えません: {name}"),
+    "The counterpart has no unique matching physics component: {name}": (
+        "다른 버전 모델에 일치하는 고유한 물리 컴포넌트가 없습니다: {name}", "もう一方のモデルに一致する固有の物理コンポーネントがありません: {name}"),
+    "The counterpart has no unique matching outline mesh: {name}": (
+        "다른 버전 모델에 일치하는 고유한 외곽선 메시가 없습니다: {name}", "もう一方のモデルに一致する固有の輪郭線メッシュがありません: {name}"),
+    "The counterpart has no verified matching vertex order for detailed outline edits: {name}": (
+        "다른 버전 모델의 정점 순서가 같은지 확인할 수 없어 정점별 외곽선 편집을 적용할 수 없습니다: {name}",
+        "もう一方のモデルの頂点の順序が同じか確認できないため、頂点ごとの輪郭線編集を適用できません: {name}"),
+    "Edits of parts that only the selected costume variant has stay on that variant: {names}": (
+        "선택한 의상 버전에만 있는 부분의 편집은 그 버전에만 적용됩니다: {names}",
+        "選択した衣装バージョンにだけある部分の編集は、そのバージョンにのみ適用されます: {names}"),
+    "1 face outline edit made in the Normal face view is kept ({meshes}).": (
+        "일반 얼굴 보기에서 편집한 얼굴 외곽선 1개가 유지됩니다 ({meshes}).",
+        "素顔の表示で編集した顔の輪郭線1件を保持しています（{meshes}）。"),
+    "{count} face outline edits made in the Normal face view are kept ({meshes}).": (
+        "일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개가 유지됩니다 ({meshes}).",
+        "素顔の表示で編集した顔の輪郭線{count}件を保持しています（{meshes}）。"),
+    "This recipe sets the face outlines itself; 1 face outline edit made in the Normal face view was released.": (
+        "이 편집 기록은 얼굴 외곽선을 직접 정하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 1개는 유지되지 않습니다.",
+        "この編集レシピは顔の輪郭線を自ら指定するため、素顔の表示で編集した顔の輪郭線1件は保持されません。"),
+    "This recipe sets the face outlines itself; {count} face outline edits made in the Normal face view were released.": (
+        "이 편집 기록은 얼굴 외곽선을 직접 정하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개는 유지되지 않습니다.",
+        "この編集レシピは顔の輪郭線を自ら指定するため、素顔の表示で編集した顔の輪郭線{count}件は保持されません。"),
+}
+for _source, (_korean, _japanese) in _VIEWER_PAIR_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
 
 # MV Studio editor lane C: the camera editor (keys, curves, key diamonds). "Keyframes",
 # "Result" and "Automatic" are already translated above and are not redefined here.
