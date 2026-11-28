@@ -13,6 +13,11 @@ from webtools import filebrowser
 
 from . import costume_pack_sources, game_models as game, viewer_mod_flow
 from . import viewer_archive, viewer_mod_package, viewer_mod_sources, viewer_physics_runtime
+from .member_identity import member_from_native
+# Anywhere in a display name: a readable name puts the member first
+# ("004 Umi Sonoda · ch0004_suit…_primary · Outlines" for an older Mod ZIP).
+# The viewer's labels read the same code (model_labels.declared_hint).
+from .model_labels import DISPLAY_HINT as _DISPLAY_HINT
 from .viewer_cache import game_models_dir
 
 DIRECTIONS = {"android_to_ios": ("android", "ios"), "ios_to_android": ("ios", "android")}
@@ -21,7 +26,6 @@ AMBIGUOUS = "More than one original costume matches this bundle. Choose the cost
 WRONG_REGION = "The edited bundle's source belongs to a different game region. Select that region or choose the original manually."
 _PREFAB = re.compile(r"assets/llas/resources/characters/models/ch(\d{4})/ch\1_[a-z0-9_]{1,96}_member\.prefab")
 _FILENAME_HINT = re.compile(r"ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?:_[a-z0-9_-]{1,60})?\.unity(?:3d)?", re.I)
-_DISPLAY_HINT = re.compile(r"ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?=$|[^a-z0-9])", re.I)
 _NATIVE_PLATFORMS = {"android": 13, "ios": 9}
 _CAB = re.compile(r"cab-[0-9a-f]{32}")
 _PACK_WRAPPERS = ("", "files", "files/files", "static")
@@ -41,6 +45,11 @@ def _checked_path(value, *, directory=False):
         raise ValueError("The selected costume bundle or packs folder is unavailable.")
     return path
 
+
+
+def _archive_source_costume(archive, members):
+    """A viewer Mod ZIP's inert source record: a candidate, never identity."""
+    return viewer_mod_package.read_source_costume(archive, members.values())
 
 
 def _archive_models(archive):
@@ -72,7 +81,7 @@ def _archive_models(archive):
     if not manifests:
         if len(models) != 1:
             raise ValueError("Choose a costume ZIP containing one Unity body or one installer manifest.")
-        return [members[key] for key in models], ()
+        return [members[key] for key in models], (), None
     if len(manifests) != 1:
         raise ValueError("The costume ZIP contains multiple installer manifests.")
     info, relative = manifests[0]
@@ -92,7 +101,7 @@ def _archive_models(archive):
     if not bodies or bodies & companions or models - companions != bodies:
         raise ValueError("The costume ZIP does not declare each Unity model as a body or companion.")
     names = tuple(values[key] for key in viewer_mod_package._NAMES if isinstance(values.get(key), str))
-    return [members[key] for key in sorted(bodies)], names
+    return [members[key] for key in sorted(bodies)], names, _archive_source_costume(archive, members)
 
 
 def _read_archive_body(path, source_platform):
@@ -110,7 +119,7 @@ def _read_archive_body(path, source_platform):
         viewer_archive._preflight_zip(private)
         try:
             with zipfile.ZipFile(private) as archive:
-                models, names = _archive_models(archive)
+                models, names, source = _archive_models(archive)
                 selected = None
                 for info in models:
                     if not 0 < info.file_size <= game.MAX_MODEL_BYTES:
@@ -137,7 +146,7 @@ def _read_archive_body(path, source_platform):
         label = "Android" if source_platform == "android" else "iOS"
         raise ValueError(f"The costume ZIP contains no {label} body for this conversion direction.")
     raw, member = selected
-    return raw, member, names
+    return raw, member, names, source
 
 
 @contextmanager
@@ -146,7 +155,7 @@ def converter_input(path, source_platform, *, expected_sha256=None):
     if path.suffix.lower() != ".zip":
         yield path, expected_sha256
         return
-    raw, _, _ = _read_archive_body(_checked_path(str(path)), source_platform)
+    raw, _, _, _ = _read_archive_body(_checked_path(str(path)), source_platform)
     digest = hashlib.sha256(raw).hexdigest()
     if expected_sha256 is not None and digest != expected_sha256:
         raise ValueError("The costume body in the ZIP changed. Match the original again.")
@@ -378,7 +387,7 @@ def _unity_selection(path, env, *, repo_root, region, language, platforms, packs
 
 
 
-def _archive_selection(member, names, env, *, repo_root, region, language, platform, packs):
+def _archive_selection(member, names, env, *, repo_root, region, language, platform, packs, source=None):
     identity = _body_identity(env)
     if identity is None:
         return "unknown", None
@@ -386,9 +395,18 @@ def _archive_selection(member, names, env, *, repo_root, region, language, platf
     with closing(game._readonly(Path(repo_root) / "assets/db" / region / "masterdata.db")) as db:
         candidates = _named_catalog_matches(db, owner, prefab)
         hints = [_FILENAME_HINT.fullmatch(Path(member).name)]
-        hints.extend(_DISPLAY_HINT.match(name) for name in names)
+        # Older Mod ZIPs could carry a code-like display name, also after a
+        # readable member prefix a later re-save gave it.
+        hints.extend(hint for name in names for hint in _DISPLAY_HINT.finditer(name))
         candidates.update((int(hint.group(2)), hint.group(3).lower()) for hint in hints
                           if hint and int(hint.group(1)) == owner)
+        # A viewer Mod ZIP's source record names its game costume; it is only
+        # a candidate for its region (a record read from an older code-like
+        # name: each region that code named) and this body's member,
+        # verified below.
+        if (source and region in source.get("regions", (source["region"],))
+                and member_from_native(owner) == source["member"]):
+            candidates.add((source["suit_id"], source["variant"]))
         matched = set()
         for suit_id, variant in sorted(candidates):
             try:
@@ -412,11 +430,20 @@ def _label(repo_root, region, suit_id, owner, language):
     with closing(game._readonly(Path(repo_root) / "assets/db" / region / "masterdata.db")) as db:
         key = db.execute("SELECT name FROM m_suit WHERE id=?", (suit_id,)).fetchone()[0]
     dictionary = game._dictionary(repo_root, region, language)
+    from . import model_labels
     try:
-        costume = extractor.real_costume_name(dictionary, key) or str(suit_id)
+        costume = model_labels.dictionary_text(extractor.real_costume_name(dictionary, key)) or str(suit_id)
     finally:
         if dictionary:
             dictionary.close()
+    try:
+        member = model_labels.member_names(repo_root, owner, region=region)
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        member = None
+    if member:
+        # "004 소노다 우미 · <costume>", like the viewer's other model names.
+        code = language if language in model_labels.LANGUAGES else "en"
+        return model_labels.titled(owner, member[code], costume, model_labels._aliases(owner, member))[:240]
     member = game._names(extractor).get(owner, str(owner))
     return f"{member} — {costume}"[:240]
 
@@ -434,9 +461,9 @@ def resolve(repo_root, payload, *, language="en", cache_root=None):
     source, target = DIRECTIONS[payload["direction"]]
     cache_root = game_models_dir() if cache_root is None else Path(cache_root)
     packs = _LocalPacks(extra)
-    member, names = None, ()
+    member, names, recorded = None, (), None
     if donor.suffix.lower() == ".zip":
-        raw, member, names = _read_archive_body(donor, source)
+        raw, member, names, recorded = _read_archive_body(donor, source)
     else:
         raw = viewer_mod_sources._read(donor)
     if len(raw) > game.MAX_MODEL_BYTES:
@@ -470,7 +497,7 @@ def resolve(repo_root, payload, *, language="en", cache_root=None):
                                                 language=language, platforms=(source, target), packs=packs)
         else:
             status, identity = _archive_selection(member, names, env, repo_root=repo_root, region=region,
-                                                  language=language, platform=source, packs=packs)
+                                                  language=language, platform=source, packs=packs, source=recorded)
         if status != "matched":
             return {**result, "status": status, "message": AMBIGUOUS if status == "ambiguous" else UNKNOWN}
     suit_id, variant = identity

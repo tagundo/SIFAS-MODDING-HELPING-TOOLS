@@ -14,16 +14,19 @@ _ASSEMBLY = "UnityEngine.Timeline.dll"
 _NAMESPACE = "UnityEngine.Timeline"
 _MAX_SCALARS = 300_000
 _MAX_MIX_KEYS = 128
-_MATERIAL_KINDS = {"overlayTint", "overlayUV", "overlayColor", "overlayScalar"}
+_MATERIAL_KINDS = {"overlayTint", "overlayUV", "overlayColor", "overlayScalar", "overlayAmbient"}
 _SOFT_BILLBOARD_KINDS = {"overlayColor", "overlayScalar"}
+# AS/Blend/Opaque's material curves: _BlendRate (declared by no other shipped
+# shader) marks the renderer, whose _TintColor and _AmbientColor its own
+# stage material also holds (MVStudioStageMaterial.materialChannel).
+_BLEND_KINDS = {"overlayTint", "overlayAmbient", "overlayScalar"}
+_BLEND_RATE = "_BlendRate"
 _WIDTH = {"translation": 3, "rotation": 4, "euler": 3, "scale": 3, "visibility": 1,
-          "overlayTint": 4, "overlayUV": 4, "overlayColor": 4, "overlayScalar": 1}
+          "overlayTint": 4, "overlayUV": 4, "overlayColor": 4, "overlayScalar": 1, "overlayAmbient": 4}
 _STAGE_QUALITY = {"post": "posteffect", "ambient": "stage_ambient", "animation": "stage_animation",
                   "coloring": "stage_coloring", "control": "stage_control", "flashlight": "stage_flash_light",
                   "display": "stage_display", "audience": "stage_audience", "emissive": "stage_emissive",
                   "overlayeffect": "stage_overlay_effect"}
-_AION_OVERLAY = _BINDING_ROOT + "fx_ove_so2028_01/Effect_root"
-_AION_OVERLAY_CLIP = 3160271792038109442
 _LASER_BINDING = _BINDING_ROOT + "fx_par_so2056_05/root"
 _LASER_TRACK = "StageEffect/Expert/Control/fx_par_so2056_05_root"
 _LASER_CLIP = -7002476404608242900
@@ -152,15 +155,16 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
                             for item in tree.get("m_FloatCurves", [])):
         return None
     data = animation.decode_clip(tree, deadline)
-    particles = []
-    supported_packed = {(23, 22), (137, 22)}
+    particles, dropped = [], []
+    from .mv_studio_stage_overlay import DROPPED_RENDERERS, material_channels
+    # Material curves of a renderer no preview material holds are dropped (and reported), not the clip.
+    supported_packed = {(23, 22), (137, 22), *((renderer, 22) for renderer in DROPPED_RENDERERS)}
     if world:
         supported_packed.add((198, 27))
     if (overlay or world) and data["unsupported"] and all(
             (row["typeID"], row["customType"]) in supported_packed for row in data.get("unsupportedKinds", ())):
-        from .mv_studio_stage_overlay import material_channels
         packed = animation._packed_curves(tree, deadline)
-        channels, described = material_channels(bindings, packed, animation._width, world=world)
+        channels, described = material_channels(bindings, packed, animation._width, world=world, dropped=dropped)
         particle_described = 0
         if world:
             particles, particle_described = _particle_start_colors(bindings, packed)
@@ -168,6 +172,8 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
                 and (not particles or any(channel.get("rendererClass") == 137 for channel in channels))):
             data["tracks"].extend(channels)
             data["unsupported"] = 0
+        else:
+            dropped = []
     tint = None
     if (resident_laser and data["unsupported"] == 20 and
             (data["start"], data["duration"], data["loop"]) == (0.0, _LASER_DURATION, False)):
@@ -198,6 +204,8 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
             return None
         cost += channel_cost
         channel = {"path": path, "kind": kind, "curves": curves}
+        if kind == "euler":
+            channel["rotationOrder"] = track.get("rotationOrder", animation.DEFAULT_EULER_ORDER)
         if kind == "visibility":
             channel["visibilityType"] = "gameObject"
         if kind == "overlayScalar":
@@ -206,6 +214,9 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
             channel["rendererClass"] = 137
         channels.append(channel)
     clip = {"start": data["start"], "duration": data["duration"], "loop": data["loop"], "channels": channels}
+    if dropped:
+        # The original also animates these material properties; the preview plays the rest.
+        clip["droppedChannels"] = dropped
     if particles:
         for target in particles:
             target_cost = _curve_cost(target["curves"])
@@ -305,13 +316,9 @@ def read(objects, mono, tracks, deadline):
         laser_track = binding == _LASER_BINDING and track["label"] == _LASER_TRACK
         parent = timeline._pointer(obj, tree.get("m_Parent"))
         setting = "stage_overlay_effect" if overlay else _quality(track["label"], parent=parent, mono=mono)
-        material_scope = None
-        if setting == "stage_overlay_effect":
-            material_scope = "overlay"
-        elif _quality(track["label"]) in {"stage_animation", "stage_control"}:
-            # Nested groups can affect the authored world pass even when the
-            # game's quality switch does not mute their AnimationTrack output.
-            material_scope = "world"
+        # An AnimationTrack animates its bound renderers' materials whatever its timeline group:
+        # the group only decides which quality switch mutes it. Layer-20 overlays keep their own scope.
+        material_scope = "overlay" if setting == "stage_overlay_effect" else "world"
         for event in track["events"]:
             _remaining(deadline)
             values = event["values"]
@@ -353,8 +360,6 @@ def read(objects, mono, tracks, deadline):
                     rejected.add(profile)
                     continue
                 declaration, cost = clip
-                if binding == _AION_OVERLAY and key[1] == _AION_OVERLAY_CLIP:
-                    declaration["sampleTimeF32"] = True
             if setting == "stage_display" and all(channel["kind"] == "visibility" for channel in declaration["channels"]):
                 # Unity samples the activation clock in float32 before a
                 # newly enabled ParticleSystem advances this display frame.
@@ -363,9 +368,25 @@ def read(objects, mono, tracks, deadline):
             requires_material = False
             if material_channels:
                 has_skin = any(channel.get("rendererClass") == 137 for channel in material_channels)
-                has_soft_billboard = any(channel["kind"] in _SOFT_BILLBOARD_KINDS for channel in material_channels)
+                has_soft_billboard = any(channel["kind"] in _SOFT_BILLBOARD_KINDS and channel.get("property") != _BLEND_RATE
+                                         for channel in material_channels)
+                blend_paths = {channel["path"] for channel in material_channels
+                               if channel["kind"] == "overlayScalar" and channel.get("property") == _BLEND_RATE}
+                renderer_blend = bool(blend_paths) and all(
+                    channel["path"] in blend_paths and channel["kind"] in _BLEND_KINDS
+                    and channel.get("property") in (None, _BLEND_RATE) for channel in material_channels)
                 if material_scope == "world":
-                    if has_skin or has_soft_billboard:
+                    # A MeshRenderer _MainTex_ST curve (e.g. 12025 Anim_root's
+                    # speaker) animates that renderer only, and the runtime binds
+                    # it to the renderer's own stage material or skips the whole
+                    # event. So does an AS/Blend/Opaque renderer's _BlendRate with
+                    # its _TintColor and _AmbientColor (MVStudioStageMaterial serves
+                    # overlayUV, and these for AS/Blend/Opaque only). Any other
+                    # MeshRenderer channel (_TintColor) has no world holder there,
+                    # so such a clip stays rejected instead of exporting a binding
+                    # root that never animates.
+                    renderer_uv = all(channel["kind"] == "overlayUV" for channel in material_channels)
+                    if has_skin or has_soft_billboard or (renderer_uv or renderer_blend) and not resident_laser:
                         timing["materialScope"] = "world"
                         timing_cost += 1
                         requires_material = True
@@ -382,6 +403,9 @@ def read(objects, mono, tracks, deadline):
                 continue
             if requires_material:
                 declaration["requiresOverlayMaterial"] = True
+            if requires_material or material_scope == "overlay":
+                # The native AnimationClipPlayable samples every overlay clip at
+                # its normalized float time (MVStudioStageMotion sampleTime).
                 declaration["sampleTimeF32"] = True
             remaining -= cost + timing_cost
             clips[identity] = declaration

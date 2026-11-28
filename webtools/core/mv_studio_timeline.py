@@ -1,6 +1,8 @@
 """Read native Unity MV tracks and their existing scene events."""
+import itertools
 import math
 import re
+import struct
 import time
 from collections import Counter, defaultdict
 
@@ -14,8 +16,11 @@ _MAX_CAMERA_FRAMES = 72_000
 _MAX_WARNINGS = 96
 _MAX_VALUE_ITEMS = 256
 _FOV = 2282594708
+# Kept for parses without the timeline's dependency packs (mods, reopen, export).
+# A game import resolves these clips in mv_studio_external_clips instead.
+EXTERNAL_CLIP_WARNING = "Some original animation clips need their exact companion asset packs."
 _PERFORMER_MODEL = re.compile(r"/EntryPoint/Live/Members/Member([1-9][0-9]*)/Model")
-_MEMBER_SHAFT = re.compile(r"/EntryPoint/Live/Members/Member([1-9])")
+_MEMBER_SHAFT = re.compile(r"/EntryPoint/Live/Members/Member([1-9][0-9]*)")
 _COMMON = {"m_GameObject", "m_Enabled", "m_Script", "m_Name", "m_PrefabInstance", "m_PrefabAsset"}
 _CLIP_TIMING = {
     "m_ClipIn": "clipIn", "m_TimeScale": "timeScale", "m_EaseInDuration": "easeIn",
@@ -219,9 +224,19 @@ def _camera_channels(tree, deadline):
             if channel in channels:
                 raise ValueError("The camera clip has conflicting channel bindings.")
             channels[channel] = group
+            if channel == "euler":
+                # GenericBinding.customType is the Unity RotationOrder (SIFAS cameras use 0, XYZ).
+                channels["eulerOrder"] = _camera_euler_order(bind)
     if len(curves) != offset or "position" not in channels or not {"rotation", "euler"} & channels.keys():
         raise ValueError("The camera clip has unsupported native channel bindings.")
     return channels
+
+
+def _camera_euler_order(binding):
+    try:
+        return animation.euler_order(binding.get("customType", animation.DEFAULT_EULER_ORDER))
+    except animation.AnimationError as error:
+        raise ValueError("The camera clip has an unsupported Euler rotation order.") from error
 
 
 def _camera_binding(binding):
@@ -235,17 +250,68 @@ def _camera_binding(binding):
     return None
 
 
-def _camera_frames(obj, clip, duration, deadline, remaining_frames):
+_CAMERA_SOURCE = "Camera point edits need an untrimmed native shot: clip offset 0, speed 1 and its own camera bindings."
+_CAMERA_FRAMES = "A camera shot with camera edits needs a length of whole frames (1/60 s)."
+_CAMERA_POINTS = "Keep one camera point per frame of the shot, at its frame times."
+
+
+def _camera_rotation(values, euler_order=None):
+    """A camera point's rotation from its native samples: Euler degrees in `euler_order`, or a
+    quaternion (`euler_order` None). The parse and the writer's own check share this computation."""
+    rotation = animation._quaternion(values, euler=euler_order is not None,
+                                     order=animation.DEFAULT_EULER_ORDER if euler_order is None else euler_order)
+    # The viewer helper returns glTF handedness. This descriptor exposes
+    # Unity coordinates, keeping handedness conversion with the renderer.
+    rotation[1] = -rotation[1]
+    rotation[2] = -rotation[2]
+    return rotation
+
+
+def _camera_count(duration, rate):
+    """The samples of a camera shot on its grid: one every 1/rate s, the last one at the clip's end."""
+    return math.ceil(duration * rate - 1e-9) + 1
+
+
+def _camera_rewrite_refusal(tree, clip, duration):
+    """Why _write_camera cannot give this clip dense samples for a shot of `duration`, or None.
+
+    One rule for the parse (which marks keyframes editable) and the writer: an untrimmed source
+    (clip-in 0, speed 1, source start 0), a 1-60 Hz sample rate, a length of whole samples (two at
+    least), and the native position, rotation and FOV bindings. The source's stop time may differ
+    from the clip's length (split-screen sub cameras: 1.7833 s of motion in a 1.8 s clip, or 1.8 s in
+    a 0.8667 s one); the writer sets it to the length it writes."""
+    muscle = tree.get("m_MuscleClip") if isinstance(tree.get("m_MuscleClip"), dict) else {}
+    rate, start = tree.get("m_SampleRate"), muscle.get("m_StartTime", 0)
+    if (clip.get("m_ClipIn", 0) != 0 or clip.get("m_TimeScale", 1) != 1 or type(start) not in (int, float)
+            or abs(start) > 1e-6 or type(rate) not in (int, float) or not 1 <= rate <= 60):
+        return _CAMERA_SOURCE
+    if (type(duration) not in (int, float) or not 0 < duration <= _MAX_SECONDS
+            or abs(duration * rate - (_camera_count(duration, rate) - 1)) > 1e-3):
+        return _CAMERA_FRAMES
+    try:
+        _camera_sample_order(tree)
+    except (ValueError, KeyError, TypeError):
+        return _CAMERA_SOURCE
+    return None
+
+
+def _camera_frames(obj, clip, duration, deadline, remaining_frames, euler_order=None, tree=None):
+    """Sample a camera shot. `euler_order` overrides an Euler binding's own order (legacy project checks only).
+
+    `tree` is the AnimationClip's type tree when the caller has read it already."""
     if duration <= 0:
         return []
-    tree = obj.read_typetree()
+    if tree is None:
+        tree = obj.read_typetree()
     rate = _time(tree.get("m_SampleRate", 60), "camera sample rate", minimum=1, maximum=1000)
     speed = _time(clip.get("m_TimeScale", 1), "camera clip speed", minimum=.000001, maximum=100)
     rate = min(60, max(1, rate * speed))
-    count = math.ceil(duration * rate - 1e-9) + 1
+    count = _camera_count(duration, rate)
     if count > remaining_frames:
         raise ValueError("The project camera sample limit was reached.")
     channels = _camera_channels(tree, deadline)
+    if euler_order is None:
+        euler_order = channels.get("eulerOrder", animation.DEFAULT_EULER_ORDER)
     muscle = tree.get("m_MuscleClip") or {}
     first = _time(muscle.get("m_StartTime", 0), "camera source start")
     last = _time(muscle.get("m_StopTime", first), "camera source end", minimum=first)
@@ -259,12 +325,8 @@ def _camera_frames(obj, clip, duration, deadline, remaining_frames):
         stamp = max(first, min(last, first + source_offset + local * speed))
         position = [animation._finite(evaluate(value, stamp)) for value in channels["position"]]
         orientation = channels.get("rotation") or channels["euler"]
-        rotation = animation._quaternion([evaluate(value, stamp) for value in orientation],
-                                         euler="rotation" not in channels)
-        # The viewer helper returns glTF handedness. This descriptor exposes
-        # Unity coordinates, keeping handedness conversion with the renderer.
-        rotation[1] = -rotation[1]
-        rotation[2] = -rotation[2]
+        rotation = _camera_rotation([evaluate(value, stamp) for value in orientation],
+                                    euler_order if "rotation" not in channels else None)
         fov = animation._finite(evaluate(channels["fov"][0], stamp)) if "fov" in channels else None
         result.append({"time": local, "position": position, "rotation": rotation, "fov": fov})
     return result
@@ -304,14 +366,17 @@ def _event(track_obj, clip, key, index, kind, objects, mono, references, animati
                 values["animationName"] = _label(animation_obj.peek_name())
                 if kind == "camera":
                     try:
-                        values["keyframes"] = _camera_frames(animation_obj, clip, duration, deadline, remaining_frames)
+                        camera_tree = animation_obj.read_typetree()
+                        values["keyframes"] = _camera_frames(animation_obj, clip, duration, deadline, remaining_frames,
+                                                             tree=camera_tree)
+                        # Editable exactly when the writer can rewrite them (one shared rule).
                         if (values["keyframes"] and references[asset] == 1 and animations[animation_key] == 1
-                                and values.get("clipIn", 0) == 0 and values.get("timeScale", 1) == 1):
+                                and _camera_rewrite_refusal(camera_tree, clip, duration) is None):
                             editable.append("keyframes")
                     except (ValueError, KeyError, TypeError) as error:
                         warnings.add(f"Camera clip '{label}' could not be sampled: {error}")
             elif animation_key is not None:
-                warnings.add("Some original animation clips need their exact companion asset packs.")
+                warnings.add(EXTERNAL_CLIP_WARNING)
         elif references[asset] == 1:
             editable.extend(sorted(_EDITABLE_VALUES.get(playable_class, set()) & values.keys()))
     elif asset is not None:
@@ -340,12 +405,31 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
                    preview_stage_glow=False, preview_stage_lens=False, preview_stage_speed_back=False,
                    preview_stage_display_lights=False, preview_stage_falling_effects=False,
                    preview_stage_break=False, preview_stage_finale_floor=False,
-                   preview_stage_sparks_a=False, preview_stage_sparks_b=False, preview_stage_sparks_roop=False) -> dict:
+                   preview_stage_sparks_a=False, preview_stage_sparks_b=False, preview_stage_sparks_roop=False,
+                   preview_particle_systems=False, preview_control_prefabs=False) -> dict:
     """Return scene tracks, timing and preview samples without changing the bundle."""
+    from . import mv_studio_progress
     from .model_viewer import _remaining
 
+    effects = [flag for flag in (preview_split, preview_stage_motion, preview_stage_title, preview_stage_particles,
+                                 preview_stage_ribbons, preview_stage_spotlight, preview_stage_butterfly, preview_stage_rain,
+                                 preview_stage_leaves, preview_stage_momiji, preview_stage_confetti, preview_stage_glow,
+                                 preview_stage_lens, preview_stage_speed_back, preview_stage_display_lights,
+                                 preview_stage_falling_effects, preview_stage_break, preview_stage_finale_floor,
+                                 preview_stage_sparks_a, preview_stage_sparks_b, preview_stage_sparks_roop,
+                                 preview_particle_systems, preview_control_prefabs) if flag]
+    started = 0
+
+    def part():
+        # Progress of an MV import (a no-op otherwise): stage effect readers begun so far.
+        nonlocal started
+        mv_studio_progress.tick("effects", started, len(effects), force=not started)
+        started += 1
+
+    mv_studio_progress.tick("bundle", force=True)
     deadline = time.monotonic() + 45
     _, objects, source = _read(raw, name, deadline)
+    mv_studio_progress.tick("tracks", force=True)
     warnings = _Warnings()
     mono, roots = {}, {}
     for key, obj in objects.items():
@@ -452,78 +536,91 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
         raise ValueError("The native TimelineAsset has no readable tracks.")
     result = {"duration": duration, "tracks": tracks, "warnings": warnings.result()}
     if preview_split:
+        part()
         from . import mv_studio_split
 
         split = mv_studio_split.read(objects, mono, tracks, deadline)
         if split:
             result["splitScreen"] = split
     if preview_stage_motion:
+        part()
         from . import mv_studio_stage_motion
 
         stage_motion = mv_studio_stage_motion.read(objects, mono, tracks, deadline)
         if stage_motion:
             result["stageMotion"] = stage_motion
     if preview_stage_title:
+        part()
         from . import mv_studio_stage_title
 
         stage_title = mv_studio_stage_title.read(objects, mono, tracks, deadline)
         if stage_title:
             result["stageTitle"] = stage_title
     if preview_stage_particles:
+        part()
         from . import mv_studio_stage_particles
 
         stage_particles = mv_studio_stage_particles.read(objects, mono, tracks, deadline)
         if stage_particles:
             result["stageParticles"] = stage_particles
     if preview_stage_ribbons:
+        part()
         from . import mv_studio_stage_ribbons
 
         stage_ribbons = mv_studio_stage_ribbons.read(objects, mono, tracks, deadline)
         if stage_ribbons:
             result["stageRibbons"] = stage_ribbons
     if preview_stage_spotlight:
+        part()
         from . import mv_studio_stage_spotlight
 
         stage_spotlight = mv_studio_stage_spotlight.read(objects, mono, tracks, deadline)
         if stage_spotlight:
             result["stageSpotlight"] = stage_spotlight
     if preview_stage_butterfly:
+        part()
         from . import mv_studio_butterfly
 
         butterfly = mv_studio_butterfly.read(objects, mono, tracks, deadline)
         if butterfly:
             result["stageButterfly"] = butterfly
     if preview_stage_rain:
+        part()
         from . import mv_studio_rain
 
         rain = mv_studio_rain.read(objects, mono, tracks, deadline)
         if rain:
             result["stageRain"] = rain
     if preview_stage_leaves:
+        part()
         from . import mv_studio_leaves
 
         leaves = mv_studio_leaves.read(objects, mono, tracks, deadline)
         if leaves:
             result["stageLeaves"] = leaves
     if preview_stage_momiji:
+        part()
         from . import mv_studio_momiji
 
         momiji = mv_studio_momiji.read(objects, mono, tracks, deadline)
         if momiji:
             result["stageMomiji"] = momiji
     if preview_stage_confetti:
+        part()
         from . import mv_studio_confetti
 
         confetti = mv_studio_confetti.read(objects, mono, tracks, deadline)
         if confetti:
             result["stageConfetti"] = confetti
     if preview_stage_glow:
+        part()
         from . import mv_studio_stage_glow
 
         glow = mv_studio_stage_glow.read(objects, mono, tracks, deadline)
         if glow:
             result["stageGlow"] = glow
     if preview_stage_lens:
+        part()
         from . import mv_studio_stage_lens
 
         lens = mv_studio_stage_lens.read(objects, mono, tracks, deadline)
@@ -532,53 +629,94 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
     atlas_refs = {} if (preview_stage_falling_effects or preview_stage_break or preview_stage_finale_floor
                         or preview_stage_sparks_a or preview_stage_sparks_b or preview_stage_sparks_roop) else None
     if preview_stage_speed_back:
+        part()
         from . import mv_studio_speed_back
 
         speed_back = mv_studio_speed_back.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if speed_back:
             result["stageSpeedBack"] = speed_back
     if preview_stage_display_lights:
+        part()
         from . import mv_studio_display_lights
 
         display_lights = mv_studio_display_lights.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if display_lights:
             result["stageDisplayLights"] = display_lights
     if preview_stage_falling_effects:
+        part()
         from . import mv_studio_falling_display
 
         falling = mv_studio_falling_display.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if falling:
             result["stageFallingEffects"] = falling
     if preview_stage_break:
+        part()
         from . import mv_studio_stage_break
 
         stage_break = mv_studio_stage_break.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if stage_break:
             result["stageBreak"] = stage_break
     if preview_stage_finale_floor:
+        part()
         from . import mv_studio_finale_floor
 
         finale_floor = mv_studio_finale_floor.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if finale_floor:
             result["stageFinaleFloor"] = finale_floor
     if preview_stage_sparks_a:
+        part()
         from . import mv_studio_sparks_a
 
         sparks_a = mv_studio_sparks_a.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if sparks_a:
             result["stageSparksA"] = sparks_a
     if preview_stage_sparks_b:
+        part()
         from . import mv_studio_sparks_b
 
         sparks_b = mv_studio_sparks_b.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if sparks_b:
             result["stageSparksB"] = sparks_b
     if preview_stage_sparks_roop:
+        part()
         from . import mv_studio_sparks_roop
 
         sparks_roop = mv_studio_sparks_roop.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if sparks_roop:
             result["stageSparksRoop"] = sparks_roop
+    outcomes = {} if preview_particle_systems else None
+    textures, shared = None, 0
+    if preview_control_prefabs:
+        from . import mv_studio_control_prefabs as control_prefabs
+
+        legacy = control_prefabs.claims(result)
+    if preview_particle_systems:
+        part()
+        from . import mv_studio_particle_systems as particle_systems
+
+        # One texture table for the particle systems and the prefab meshes of the same clones.
+        textures = particle_systems._Textures(deadline)
+        # After the per-prefab readers, so a cue one of them draws is not drawn twice.
+        systems = particle_systems.read(objects, mono, tracks, deadline, claimed=particle_systems.claimed_cues(result),
+                                        outcomes=outcomes, textures=textures)
+        note = particle_systems.warning(systems, meshes_elsewhere=preview_control_prefabs)
+        if note:
+            result["warnings"].append(note)
+        if systems and systems["cues"]:
+            result["stageParticleSystems"] = systems
+            shared = len(systems["textures"])
+    if preview_control_prefabs:
+        part()
+        # The meshes of the same clones, and one coverage row for every CustomControlClip.
+        prefabs, ledger = control_prefabs.read(objects, mono, tracks, deadline, claimed=legacy, outcomes=outcomes,
+                                               textures=textures, shared=shared)
+        note = control_prefabs.warning(ledger)
+        if note:
+            result["warnings"].append(note)
+        if prefabs:
+            result["stageControlPrefabs"] = prefabs
+        if ledger:
+            result["controlCoverage"] = ledger
     return result
 
 
@@ -591,32 +729,172 @@ _EDITABLE_VALUES = {
     "MemberGazeClip": {"target", "weightForDirection"},
     "MemberCheekClip": {"cheekType", "intensity"},
     "LiveBloomClip": {"intensity", "threshold", "softKnee", "radius", "antiFlicker"},
-    "LiveDepthOfFieldClip": {"focusDistance", "aperture", "focalLength", "useCameraFov", "antiAura"},
+    "LiveDepthOfFieldClip": {"focusDistance", "aperture", "focalLength", "useCameraFov", "antiAura",
+                             "kernelSize", "useMemberDistance", "bodyPart", "memberPosition", "cameraAutoDistanceMode",
+                             "focusTransitionTime"},
     "LiveBaseLightClip": {"ambientColor", "ambientTintColor", "rimlightColor", "rimlightIntensity",
-                         "rimlightSharpness", "rimlightDirection"},
-    "LiveMemberAmbientClip": {"color", "tintColor"},
-    "LiveStageAmbientClip": {"color", "tintColor", "blendColor"},
-    "LiveStageSingleAmbientClip": {"color", "tintColor", "blendColor"},
-    "LiveStageEmissiveClip": {"color", "intensity"},
-    "LiveMemberSpotLightAreaClip": {"color"},
-    "LiveMemberSpotLightShaftClip": {"color", "scale", "offsetHeight", "smoothTime"},
-    "LiveRimlightClip": {"color", "intensity", "sharpness", "direction"},
-    "LiveFlareClip": {"color", "center", "intensity", "smoothness", "roundness", "rounded"},
-    "LiveFlashLightClip": {"tintColor", "speed"},
-    "LiveDisplayClip": {"scrollSpeed", "ambientColor"},
-    "LiveColoringClip": {"shift", "tintColor", "speed"},
-    "LiveCameraOffsetClip": {"intensity"},
+                         "rimlightSharpness", "rimlightDirection", "ambientColorType", "rimlightColorType",
+                         "ambientMemberPosition", "rimlightMemberPosition"},
+    "LiveMemberAmbientClip": {"color", "tintColor", "colorSpecifiedType", "memberPosition"},
+    "LiveStageAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType", "memberPosition"},
+    "LiveStageSingleAmbientClip": {"color", "tintColor", "blendColor", "colorSpecifiedType", "memberPosition"},
+    "LiveStageEmissiveClip": {"color", "intensity", "colorSpecifiedType", "memberPosition"},
+    "LiveMemberSpotLightAreaClip": {"color", "colorSpecifiedType", "memberPosition"},
+    "LiveMemberSpotLightShaftClip": {"color", "scale", "offsetHeight", "smoothTime", "colorSpecifiedType",
+                                     "drawObjectIndex", "memberPosition"},
+    "LiveRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType", "memberPosition"},
+    "LiveFlareClip": {"color", "center", "intensity", "smoothness", "roundness", "rounded", "colorSpecifiedType",
+                      "memberPosition"},
+    "LiveFlashLightClip": {"tintColor", "speed", "colorSpecifiedType", "status", "memberPosition"},
+    "LiveDisplayClip": {"scrollSpeed", "ambientColor", "materialIndex"},
+    "LiveColoringClip": {"shift", "tintColor", "speed", "textureIndex"},
+    "LiveCameraOffsetClip": {"intensity", "memberPosition"},
     "LivePenlightClip": {"tintColor", "fogIntensity", "randomBrightness", "beatLength", "beatOffset",
-                         "randomDelay", "randomUp", "randomSwingIntensity"},
+                         "randomDelay", "randomUp", "randomSwingIntensity", "swingMode", "position", "memberColors",
+                         "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ", "basicYZSwingPowerZ",
+                         "growthYZMoveY", "growthYZMoveZ", "growthYZRotateZ", "growthYZSwingBackZ", "growthYZSwingPowerZ",
+                         "growthYZSwingBottomZ", "basicXRotateX", "basicXMoveX", "basicXMoveY", "simpleXZRotateX",
+                         "simpleXZRotateZ"},
     "CustomControlClip": {"weight", "offset"},
+    "LiveMemberScalingClip": {"intensity"},
+    "LivePropAmbientClip": {"color", "tintColor", "colorSpecifiedType", "memberPosition"},
+    "LivePropRimlightClip": {"color", "intensity", "sharpness", "direction", "colorSpecifiedType", "memberPosition"},
 }
+# Every class above whose clips pick their colour source with colorSpecifiedType
+# (0 custom, 1 member, 2 original member) is resolved by the preview's
+# MVStudioLighting.memberColor, so the choice previews as it exports.
+_COLOR_SOURCE_CLASSES = frozenset(native for native, fields in _EDITABLE_VALUES.items() if "colorSpecifiedType" in fields)
 _LIMITED_VALUES = {
     ("MemberLipSyncClip", "index"): (0, 4096),
     ("MemberEyeClip", "index"): (0, 4096),
     ("MemberGazeClip", "target"): (0, 256),
     ("MemberCheekClip", "cheekType"): (0, 1),
+    **{(native, "colorSpecifiedType"): (0, 2) for native in _COLOR_SOURCE_CLASSES},
+    ("LiveDepthOfFieldClip", "kernelSize"): (0, 3),
+    ("LiveDepthOfFieldClip", "useMemberDistance"): (0, 1),
+    # LiveDepthOfFieldMixer.CalcFocusDistance (0x29237fc): 1 the nearest member, 2 the member nearest
+    # the view axis, anything else memberPosition (mv-studio-dof-focus.js memberFocus).
+    ("LiveDepthOfFieldClip", "cameraAutoDistanceMode"): (0, 2),
+    ("LiveBaseLightClip", "ambientColorType"): (0, 2),
+    ("LiveBaseLightClip", "rimlightColorType"): (0, 2),
+    ("LiveFlashLightClip", "status"): (0, 2),
+    # AS/Penlight ships one variant per swing keyword (_SWING_MODE_STOP, _BASIC_YZ, _GROWTH_YZ,
+    # _BASIC_X, _SIMPLE_XZ); stock clips use 0 to 3 (mv-studio-penlight.js uMode).
+    ("LivePenlightClip", "swingMode"): (0, 4),
+}
+# Values that name a member slot: a changed one must be a slot this timeline binds a performer
+# model to (_PERFORMER_MODEL). The client reads Members[slot - 1] behind a bounds check and throws
+# for a missing member (LiveDepthOfFieldMixer.CalcFocusDistance 0x2924148), and the member colour
+# and camera height lookups read the same members.
+_MEMBER_POSITIONS = frozenset(
+    {(native, "memberPosition") for native in _COLOR_SOURCE_CLASSES | {"LiveDepthOfFieldClip", "LiveCameraOffsetClip"}}
+    | {("LiveBaseLightClip", "ambientMemberPosition"), ("LiveBaseLightClip", "rimlightMemberPosition")})
+MEMBER_SLOT = "Choose a member this MV has."
+# Float fields with a native range (other floats take any value within +-1e6).
+_FLOAT_RANGES = {
+    ("LiveDepthOfFieldClip", "focusTransitionTime"): (0, 60),
+    # AS/Penlight swing shapes (mv-studio-penlight.js): moves in metres, tilts in radians, the
+    # rest offsets, and two exponents of a 0..1 wave (negative would divide by zero at 0).
+    # growthYZSwingBottomZ splits the growth cycle (cycle / z and (cycle - z) / (1 - z)), so it stays
+    # inside 0..1. growthYZSwingPowerY stays read-only: the preview reads LivePenlightMixer as passing
+    # it on multiplied by its reset output (mv-studio-penlight.js uGrowthShape.x = 0), so an edit would
+    # change nothing in the game (not re-read for this change).
+    **{("LivePenlightClip", field): (-10, 10) for field in (
+        "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ", "growthYZMoveY", "growthYZMoveZ",
+        "growthYZRotateZ", "growthYZSwingBackZ", "basicXRotateX", "basicXMoveX", "basicXMoveY", "simpleXZRotateX",
+        "simpleXZRotateZ")},
+    ("LivePenlightClip", "basicYZSwingPowerZ"): (0, 100),
+    ("LivePenlightClip", "growthYZSwingPowerZ"): (0, 100),
+    ("LivePenlightClip", "growthYZSwingBottomZ"): (.01, .99),
+}
+# LivePenlightClip.memberColors: one entry per palette slot; the length stays (the client sizes the
+# palette from it), each entry keeps its fields.
+_MEMBER_COLOR_KEYS = frozenset({"color", "colorSpecifiedType", "memberPosition"})
+# Indices into game-side lists the bundle does not describe (coloring textures,
+# display materials, shaft draw objects, BodyPartManager parts): a revision may
+# only pick a value the original MV already uses for that field, on the same
+# track or anywhere in the timeline.
+_OBSERVED_VALUES = {
+    ("LiveColoringClip", "textureIndex"): "track",
+    ("LiveDisplayClip", "materialIndex"): "track",
+    ("LiveMemberSpotLightShaftClip", "drawObjectIndex"): "track",
+    ("LiveDepthOfFieldClip", "bodyPart"): "timeline",
+}
+# Changed values that only work for a clip whose member position (as revised) is a member slot:
+# (values, message, the field holding that position).
+_COLOUR_MEMBER = "This colour source needs the clip's member position to be 1 to 12."
+_MEMBER_SLOT_VALUES = {
+    **{(native, "colorSpecifiedType"): ({1, 2}, _COLOUR_MEMBER, "memberPosition") for native in _COLOR_SOURCE_CLASSES},
+    ("LiveBaseLightClip", "ambientColorType"): ({1, 2}, _COLOUR_MEMBER, "ambientMemberPosition"),
+    ("LiveBaseLightClip", "rimlightColorType"): ({1, 2}, _COLOUR_MEMBER, "rimlightMemberPosition"),
+    ("LiveDepthOfFieldClip", "useMemberDistance"): ({1}, "Member focus needs the clip's member position to be 1 to 12.",
+                                                    "memberPosition"),
 }
 _TIMING_NATIVE = {label: field for field, label in _CLIP_TIMING.items()}
+# Track fields an export writes into the track's own MonoBehaviour, for a track whose
+# exportable_track_fields lists them (mv_studio_register.normalize sends every other
+# track field back to the original).
+EXPORTABLE_TRACK_FIELDS = ("muted",)
+# The client compiles each output track by its own m_Muted (TrackAsset.compilable 0x35b8c00 reads
+# +0x19; a GroupTrack is never compiled), so a GroupTrack's mute changes nothing in the game.
+GROUP_MUTE = "A group track's mute does not reach the game. Mute the tracks inside it."
+# LiveQualityOperator decides the mute of every direct child track of these category groups (GL
+# 3.12.0 libil2cpp): director setup (0x2924cdc) calls 0x20f3a00, which runs ApplyLiveQualityTo*
+# (0x20f2788 motionMiscTracks, 0x20f2a98 globalEffectTracks, 0x20f2b70 stageEffectTracks, 0x20f3164
+# memberEffectTracks, 0x20f331c propEffectTracks: the operator's fields +0x18..+0x38). Each fills
+# {category name: !option} and 0x20f28a0 calls ApplyMuteToChildTracks (0x20f348c) on each category group
+# of its root with one of those names; that calls ApplyMuteToTrack (0x20f30e8) on each direct child, and
+# with muted false it calls TrackAsset.set_muted(false) (0x35d10e8). So an option that is on unmutes these
+# tracks and one that is off mutes them: their own m_Muted never reaches the game. Tracks one group
+# deeper, and tracks in a category with another name, keep theirs. The names are the string literals of
+# those five functions, matched without spaces and lower-cased (StageEffect's are
+# mv_studio_stage_motion._STAGE_QUALITY).
+_QUALITY_CATEGORIES = {
+    "StageEffect": frozenset({"post", "ambient", "animation", "coloring", "control", "flashlight", "display",
+                              "audience", "emissive", "overlayeffect"}),
+    "MemberEffect": frozenset({"memberambient", "memberrimlight", "memberspotlightarea", "memberspotlightshaft"}),
+    "PropEffect": frozenset({"propambient", "proprimlight", "propcoloring"}),
+    "GlobalEffect": frozenset({"baselight"}),
+    "MotionMisc": frozenset({"splitscreen"}),
+}
+QUALITY_MUTE = "The game's quality settings turn this track on and off, so its mute does not reach the game."
+# The client also sets the mute of every eye and mouth track itself: after BindTimeline, director
+# setup always runs LiveDirector.InitializeMemberHead (0x2924d04), which per member collects
+# GetTracks<MemberEyeTrack> and GetTracks<MemberLipSyncTrack> (no muted test) and calls
+# SetupFacialTrackMute (0x29250d4); that sets muted = IsRinaFacial XOR useRina on each of them
+# (eor at 0x29251ac and 0x2925298, TrackAsset.set_muted 0x35d10e8), replacing the authored m_Muted
+# (game_motion_timeline.parse_timeline models the same rule).
+_FACIAL_MUTE_CLASSES = frozenset({"MemberEyeTrack", "MemberLipSyncTrack"})
+FACIAL_MUTE = "The game turns eye and mouth tracks on and off itself, so this mute does not reach the game."
+
+
+def quality_category(label):
+    """The normalized name of the quality category group a track sits directly in, or None.
+
+    ``label`` is the parsed track path <root>/<difficulty>/<category>/<track>; the client matches the
+    category name without spaces and lower-cased (NormalizeTrackName). No stock group or track name
+    contains "/"."""
+    parts = label.split("/") if isinstance(label, str) else []
+    if len(parts) != 4 or parts[0] not in _QUALITY_CATEGORIES:
+        return None
+    category = parts[2].replace(" ", "").lower()
+    return category if category in _QUALITY_CATEGORIES[parts[0]] else None
+
+
+def track_mute_refusal(track):
+    """Why a mute of this parsed track does not reach the game, or None when it does."""
+    if not isinstance(track, dict) or track.get("nativeClass") == "GroupTrack":
+        return GROUP_MUTE
+    if track.get("nativeClass") in _FACIAL_MUTE_CLASSES:
+        return FACIAL_MUTE
+    if quality_category(track.get("label")) is not None:
+        return QUALITY_MUTE
+    return None
+
+
+def exportable_track_fields(track):
+    """The EXPORTABLE_TRACK_FIELDS an export writes for this parsed (original) track."""
+    return () if track_mute_refusal(track) else EXPORTABLE_TRACK_FIELDS
 
 
 def _index_rows(items, name):
@@ -644,8 +922,10 @@ def _changes(original, revised):
     last_event_end = 0.
     for identity, before in old_tracks.items():
         after = new_tracks[identity]
-        if {k: v for k, v in before.items() if k != "events"} != {k: v for k, v in after.items() if k != "events"}:
+        fixed = lambda track: {k: v for k, v in track.items() if k != "events" and k not in EXPORTABLE_TRACK_FIELDS}  # noqa: E731
+        if before.keys() != after.keys() or fixed(before) != fixed(after):
             raise ValueError("Track identity, binding, and original metadata are read-only in native exports.")
+        _track_fields(before, after)
         old_events = _index_rows(before["events"], "event")
         new_events = _index_rows(after["events"], "event")
         if list(old_events) != list(new_events):
@@ -665,6 +945,30 @@ def _changes(original, revised):
     if revised["duration"] != original["duration"] and (not changes or revised["duration"] != last_event_end):
         raise ValueError("Change the original clip timings to set the native timeline duration.")
     return changes
+
+
+def _track_fields(before, after):
+    """[(field, value)] of the EXPORTABLE_TRACK_FIELDS ``after`` changes on one track, or ValueError
+    when the change cannot reach the game (a GroupTrack, an eye or mouth track, a quality category's
+    track) or is not a bool."""
+    result = []
+    for field in EXPORTABLE_TRACK_FIELDS:
+        if field not in before or after.get(field) == before[field]:
+            continue
+        if type(after.get(field)) is not bool:
+            raise ValueError("A track mute must be on or off.")
+        refusal = track_mute_refusal(before)
+        if refusal:
+            raise ValueError(refusal)
+        result.append((field, after[field]))
+    return result
+
+
+def _track_changes(original, revised):
+    """[(track id, field, value)] for a revision _changes accepted."""
+    revised_tracks = _index_rows(revised["tracks"], "track")
+    return [(track["id"], field, value) for track in original["tracks"]
+            for field, value in _track_fields(track, revised_tracks[track["id"]])]
 
 
 def _replace_value(native, value, field):
@@ -696,13 +1000,126 @@ def _set_timing(clip, field, value):
     clip[_TIMING_NATIVE[field]] = value
 
 
+def _member_colors(native, value):
+    """A revised LivePenlightClip.memberColors: the same length and fields; an entry takes a colour, a
+    changed colour source 0..2 and a changed member slot 1..12 (_check_values checks the slot against
+    the MV). An unchanged source or slot stays as stock has it (custom-colour entries may hold 0)."""
+    if (not isinstance(native, list) or not isinstance(value, list) or len(value) != len(native)
+            or any(not isinstance(entry, dict) or entry.keys() != _MEMBER_COLOR_KEYS for entry in (*native, *value))):
+        raise ValueError("Keep the penlight colour list's length and fields.")
+    result = []
+    for old, new in zip(native, value):
+        if new == old:
+            result.append(old)
+            continue
+        kind, slot = new["colorSpecifiedType"], new["memberPosition"]
+        if type(kind) is not int or kind != old["colorSpecifiedType"] and not 0 <= kind <= 2:
+            raise ValueError("'colorSpecifiedType' is outside the supported native range.")
+        if type(slot) is not int or slot != old["memberPosition"] and not 1 <= slot <= 12:
+            raise ValueError(MEMBER_SLOT)
+        result.append({key: _replace_value(old[key], new[key], "memberColors") for key in old})
+    return result
+
+
 def _set_playable_value(tree, native, field, value):
+    if native == "LivePenlightClip" and field == "memberColors":
+        tree[field] = _member_colors(tree[field], value)
+        return
     bounds = _LIMITED_VALUES.get((native, field))
     if bounds and (type(value) is not int or not bounds[0] <= value <= bounds[1]):
         raise ValueError(f"'{field}' is outside the supported native range.")
-    if field in ("weight", "weightForDirection") or native == "MemberCheekClip" and field == "intensity":
+    if (native, field) in _MEMBER_POSITIONS and (type(value) is not int or not 1 <= value <= 12):
+        raise ValueError(MEMBER_SLOT)
+    if (field in ("weight", "weightForDirection")
+            or native in ("MemberCheekClip", "LiveMemberScalingClip") and field == "intensity"):
         value = _time(value, field, minimum=0, maximum=1)
+    floats = _FLOAT_RANGES.get((native, field))
+    if floats:
+        value = _time(value, field, minimum=floats[0], maximum=floats[1])
     tree[field] = _replace_value(tree[field], value, field)
+
+
+def _value_key(value):
+    import json
+
+    return json.dumps(value, sort_keys=True)
+
+
+def performer_slots(tracks):
+    """The member slots a parsed timeline binds a performer model to (Members/Member<n>/Model)."""
+    slots = set()
+    for track in tracks:
+        bindings = [track.get("binding"), *(track.get("bindings") or ())] if isinstance(track, dict) else ()
+        for binding in bindings:
+            match = _PERFORMER_MODEL.fullmatch(binding) if isinstance(binding, str) else None
+            if match:
+                slots.add(int(match[1]))
+    return frozenset(slots)
+
+
+def _check_member_colors(before, after, slots):
+    """A changed penlight palette entry names a performer slot, and a member colour source needs a
+    member slot; malformed lists are left to _member_colors."""
+    if not isinstance(before, list) or not isinstance(after, list) or len(before) != len(after):
+        return
+    for old, new in zip(before, after):
+        if not isinstance(old, dict) or not isinstance(new, dict) or new == old:
+            continue
+        slot = new.get("memberPosition")
+        if slot != old.get("memberPosition") and not (type(slot) is int and slot in slots):
+            raise ValueError(MEMBER_SLOT)
+        kind = new.get("colorSpecifiedType")
+        if (kind != old.get("colorSpecifiedType") and type(kind) is int and kind in (1, 2)
+                and not (type(slot) is int and 1 <= slot <= 12)):
+            raise ValueError(_COLOUR_MEMBER)
+
+
+def _check_values(original, revised):
+    """Rules on changed values that one field alone cannot check.
+
+    A field of _OBSERVED_VALUES must take a value the original timeline already
+    uses for it (on the same track, or anywhere); a changed member position must
+    be one of the timeline's performer slots; and a member colour or member focus
+    needs the clip's member position (as revised) to be a member slot.
+    Malformed revisions are left to _changes."""
+    if not isinstance(revised, dict) or not isinstance(revised.get("tracks"), list):
+        return
+    revised_events = {}
+    for track in revised["tracks"]:
+        for event in track.get("events", []) if isinstance(track, dict) and isinstance(track.get("events"), list) else []:
+            if isinstance(event, dict) and isinstance(event.get("id"), str) and isinstance(event.get("values"), dict):
+                revised_events.setdefault(event["id"], event["values"])
+    observed = {}
+    for track in original["tracks"]:
+        for event in track["events"]:
+            values = event["values"]
+            for (native, field), scope in _OBSERVED_VALUES.items():
+                if values.get("playableClass") == native and field in values:
+                    key = (native, field, track["id"] if scope == "track" else None)
+                    observed.setdefault(key, set()).add(_value_key(values[field]))
+    slots = performer_slots(original["tracks"])
+    for track in original["tracks"]:
+        for event in track["events"]:
+            before, after = event["values"], revised_events.get(event["id"])
+            native = before.get("playableClass")
+            if after is None:
+                continue
+            for field in before.keys() & after.keys():
+                value = after[field]
+                if value == before[field] and type(value) is type(before[field]):
+                    continue
+                scope = _OBSERVED_VALUES.get((native, field))
+                if scope and _value_key(value) not in observed.get(
+                        (native, field, track["id"] if scope == "track" else None), ()):
+                    raise ValueError(f"Choose a value this MV already uses for '{field}'.")
+                if (native, field) in _MEMBER_POSITIONS and not (type(value) is int and value in slots):
+                    raise ValueError(MEMBER_SLOT)
+                if native == "LivePenlightClip" and field == "memberColors":
+                    _check_member_colors(before[field], value, slots)
+                rule = _MEMBER_SLOT_VALUES.get((native, field))
+                slot = after.get(rule[2], before.get(rule[2])) if rule else None
+                if rule and type(value) is int and value in rule[0] and not (type(slot) is int and 1 <= slot <= 12):
+                    raise ValueError(rule[1])
 
 
 def _camera_sample_order(tree):
@@ -718,46 +1135,135 @@ def _camera_vector(value, length, label):
     return [_time(item, label, minimum=-1_000_000, maximum=1_000_000) for item in value]
 
 
-def _write_camera(tree, clip, old_event, new_event):
-    from live_timeline.sifas_timeline_inject import quat_to_unity_euler
+_F32, _U32 = struct.Struct("<f"), struct.Struct("<I")
 
-    before, after = old_event["values"]["keyframes"], new_event["values"]["keyframes"]
-    span = old_event["duration"]
+
+def _f32(value):
+    return _F32.unpack(_F32.pack(value))[0]
+
+
+def _f32_step(value, direction):
+    """The float32 next to float32 `value`, one step up (direction 1) or down (-1)."""
+    if value == 0:
+        return _F32.unpack(_U32.pack(1 if direction > 0 else 0x80000001))[0]
+    bits = _U32.unpack(_F32.pack(value))[0]
+    return _F32.unpack(_U32.pack(bits + 1 if (value > 0) == (direction > 0) else bits - 1))[0]
+
+
+def _f32_at_least(value):
+    """The smallest float32 at or above `value` (a positive time)."""
+    rounded = _f32(value)
+    return rounded if rounded >= value else _f32_step(rounded, 1)
+
+
+# Euler angles (degrees) closer to 0 than this are written as 0. Converting a written sample back
+# and forth (Euler -> quaternion -> Euler, in doubles) leaves an angle that is 0 at about 1e-15
+# degrees, and float32 keeps such values, so each export would write different noise. 1e-5 degrees
+# is below the float32 step of an angle of about 2 degrees and above that noise by eight orders.
+_EULER_ZERO = 1e-5
+# A quaternion's float32 neighbours: one to four components one float32 step away, fewer first.
+_QUATERNION_STEPS = tuple(combo for count in (1, 2, 3, 4) for combo in itertools.product((0, -1, 1), repeat=4)
+                          if sum(1 for step in combo if step) == count)
+
+
+def _camera_rotation_samples(rotation, euler_order, reference):
+    """The float32 rotation samples (Euler degrees in `euler_order`, nearest `reference`, or a
+    quaternion when `euler_order` is None) to store for one camera point, written so that the next
+    parse -> export writes them again.
+
+    MV Studio's checks (check_editor_bytes, convert_parsed, another slot, a pack's other platform)
+    export a written timeline's parsed points once more and compare bytes. A parsed rotation is the
+    normalized quaternion of the stored float32 samples (_camera_rotation), and rounding it back does
+    not always give those samples: a quaternion normalized again moves its small components a float32
+    step, and an Euler angle near 0 or near the middle-axis gimbal moves by noise. So the samples
+    stored are the first float32 set found whose parse is exactly `rotation` (compared as given: a
+    parsed rotation is normalized already): b, the point rounded to float32 samples, or for a
+    quaternion one of b's float32 neighbours. When none is (an edited point), the point becomes b's
+    parse and the search repeats; what it finds is what the next export, starting from that parse,
+    finds first. Measured: the camera shots of 12035, 12056 and 12023, as parsed and turned, need at
+    most three rounds. Within 1e-3 degrees of the middle-axis gimbal, 6 of 24,000 searches (12,000
+    keys, each written and its parse written again) found none in eight rounds and wrote b; each of
+    those keys still wrote the same samples twice."""
+    euler = euler_order is not None
+    target = list(rotation)
+    for _ in range(8):
+        length = math.sqrt(sum(axis * axis for axis in target))
+        unit = [axis / length for axis in target]
+        if euler:
+            angles = animation.unity_euler_near(unit, euler_order, reference)
+            base = tuple(0. if abs(angle) < _EULER_ZERO else _f32(angle) + 0. for angle in angles)
+            candidates = (base,)
+        else:
+            base = tuple(_f32(axis) + 0. for axis in unit)
+            candidates = itertools.chain((base,), (tuple(_f32_step(value, step) if step else value
+                                                         for value, step in zip(base, combo))
+                                                   for combo in _QUATERNION_STEPS))
+        for candidate in candidates:
+            if _camera_rotation(list(candidate), euler_order) == target:
+                return list(candidate)
+        target = _camera_rotation(list(base), euler_order)
+    return list(base)
+
+
+def _write_camera(tree, clip, old_event, new_event):
+    """Write a shot's points as the clip's dense 60 Hz samples, its stop time at the shot's end.
+
+    `clip` is the TimelineClip as it will be saved (its new timing). A resized shot (new_event's
+    duration) brings the points of its new grid, ceil(duration·60) + 1 of them at min(i/60,
+    duration): the clip is written for that length. The export of a parse of the result writes the
+    same samples again (_camera_rotation_samples; positions and FOV parse back to their float32)."""
+    after = new_event["values"]["keyframes"]
+    span = new_event["duration"]
+    if old_event["values"].get("clipIn", 0) != 0 or old_event["values"].get("timeScale", 1) != 1:
+        raise ValueError(_CAMERA_SOURCE)
+    refusal = _camera_rewrite_refusal(tree, clip, span)
+    if refusal:
+        raise ValueError(refusal)
     rate = float(tree["m_SampleRate"])
     muscle = tree["m_MuscleClip"]
-    first, last = float(muscle["m_StartTime"]), float(muscle["m_StopTime"])
-    if (not isinstance(after, list) or len(after) != len(before) or not 2 <= len(after) <= _MAX_CAMERA_FRAMES
-            or new_event["duration"] != span or old_event["values"].get("clipIn", 0) != 0
-            or old_event["values"].get("timeScale", 1) != 1 or clip.get("m_ClipIn", 0) != 0
-            or clip.get("m_TimeScale", 1) != 1 or abs(first) > 1e-6 or abs(last - span) > 1e-3
-            or not 1 <= rate <= 60 or abs(span * rate - (len(after) - 1)) > 1e-3):
-        raise ValueError("Camera point edits require an untrimmed, full native shot with unchanged sample times.")
+    first = float(muscle["m_StartTime"])
+    count = _camera_count(span, rate)
+    if not isinstance(after, list) or len(after) != count or not 2 <= count <= _MAX_CAMERA_FRAMES:
+        raise ValueError(_CAMERA_POINTS)
     order = _camera_sample_order(tree)
-    sample_array, previous_euler = [], None
-    for index, (old_point, point) in enumerate(zip(before, after)):
+    sample_array, previous_euler, euler_order = [], None, None
+    if "euler" in order:
+        channels = _camera_channels(tree, None)
+        euler_order = channels["eulerOrder"]
+        # Start from the original first sample's angles; later samples follow their predecessor.
+        previous_euler = [animation._evaluate(curve, first) for curve in channels["euler"]]
+    for index, point in enumerate(after):
+        # The times the parse gives this shot: index / rate, the last one at the shot's end.
         if (not isinstance(point, dict) or set(point) != {"time", "position", "rotation", "fov"}
-                or point["time"] != old_point["time"] or abs(point["time"] - index / rate) > 1e-5):
-            raise ValueError("Keep the original camera point count and times.")
-        position = _camera_vector(point["position"], 3, "position")
+                or point["time"] != min(span, index / rate)):
+            raise ValueError(_CAMERA_POINTS)
+        # +0.: a -0. sample would parse as 0. between two samples (the dense lerp adds 0.).
+        position = [value + 0. for value in _camera_vector(point["position"], 3, "position")]
         rotation = _camera_vector(point["rotation"], 4, "rotation")
-        length = math.sqrt(sum(axis * axis for axis in rotation))
-        if length < 1e-10:
+        if math.sqrt(sum(axis * axis for axis in rotation)) < 1e-10:
             raise ValueError("The camera rotation quaternion must be nonzero.")
-        rotation = [axis / length for axis in rotation]
-        fov = [_time(point["fov"], "field of view", minimum=.01, maximum=179.99)]
-        values = {"position": position, "rotation": rotation, "fov": fov}
+        fov = [_time(point["fov"], "field of view", minimum=.01, maximum=179.99) + 0.]
+        values = {"position": position, "fov": fov}
         if "euler" in order:
-            euler = quat_to_unity_euler(rotation)
-            if previous_euler is not None:
-                euler = [axis + 360 * round((previous - axis) / 360) for axis, previous in zip(euler, previous_euler)]
-            values["euler"] = previous_euler = euler
+            # Write the binding's own rotation order. The dense clip lerps Euler
+            # samples, so keep the equivalent angles nearest the previous sample.
+            values["euler"] = previous_euler = _camera_rotation_samples(rotation, euler_order, previous_euler)
+        else:
+            values["rotation"] = _camera_rotation_samples(rotation, None, None)
         for channel in order:
             sample_array.extend(values[channel])
     packed = muscle["m_Clip"]["data"]
     packed["m_StreamedClip"].update(data=[], curveCount=0)
     packed["m_ConstantClip"]["data"] = []
-    packed["m_DenseClip"].update(m_FrameCount=len(after), m_CurveCount=len(sample_array) // len(after),
+    packed["m_DenseClip"].update(m_FrameCount=count, m_CurveCount=len(sample_array) // count,
                                  m_SampleRate=rate, m_BeginTime=0., m_SampleArray=sample_array)
+    # The clip now ends where the shot does. A source that stopped a frame early (or ran past the
+    # shot, as some split-screen sub cameras do) would clamp or extend the written samples. The
+    # stored float32 is the first one at or after the shot's end: the float32 nearest a length such
+    # as 1.8 s lies below it, and the parse would clamp the last point to it (between two samples).
+    stop = _f32_at_least(span)
+    if _f32(float(muscle["m_StopTime"])) != stop:
+        muscle["m_StopTime"] = stop
 
 
 def _bundle_facts(env):
@@ -830,27 +1336,390 @@ def restore_emissive_track_metadata(tracks, originals):
     return restored
 
 
-def export_timeline(raw: bytes, name: str, tracks: list) -> bytes:
-    """Derive the base from these source bytes and export the submitted tracks."""
+def shared_playables(tracks):
+    """Asset ids that more than one saved clip references.
+
+    The parser lists value fields as editable only for a playable that one clip
+    references, so a clip of a shared playable never needs an editableValues sync."""
+    counts = Counter()
+    for track in tracks if isinstance(tracks, list) else ():
+        events = track.get("events") if isinstance(track, dict) else None
+        for event in events if isinstance(events, list) else ():
+            values = event.get("values") if isinstance(event, dict) else None
+            asset = values.get("asset") if isinstance(values, dict) else None
+            if isinstance(asset, str):
+                counts[asset] += 1
+    return frozenset(asset for asset, count in counts.items() if count > 1)
+
+
+def needs_editable_values_sync(track, shared=None):
+    """A saved track with an event whose whitelisted fields are not all in its editableValues.
+
+    `shared` is shared_playables() of the whole project; by default the clips of this
+    track alone tell which playables are shared."""
+    if not isinstance(track, dict) or not isinstance(track.get("events"), list):
+        return False
+    if shared is None:
+        shared = shared_playables([track])
+    for event in track["events"]:
+        values = event.get("values") if isinstance(event, dict) else None
+        saved = event.get("editableValues") if isinstance(event, dict) else None
+        native = values.get("playableClass") if isinstance(values, dict) else None
+        asset = values.get("asset") if isinstance(values, dict) else None
+        if (isinstance(native, str) and isinstance(saved, list) and not (isinstance(asset, str) and asset in shared)
+                and (_EDITABLE_VALUES.get(native, set()) & values.keys()) - set(saved)):
+            return True
+    return False
+
+
+def sync_editable_values(tracks, originals):
+    """Give events saved with an older field whitelist the current editableValues.
+
+    An event takes the fresh parse's list only when its asset and playable class
+    are the original's and its saved list is a subset of the fresh one, so a
+    project saved before the whitelist grew exports again (_changes compares the
+    lists) and nothing else changes."""
+    native = {}
+    for track in originals:
+        for event in track["events"]:
+            native[event["id"]] = event
+    result = []
+    for track in tracks:
+        if not isinstance(track, dict) or not isinstance(track.get("events"), list):
+            result.append(track)
+            continue
+        events, touched = [], False
+        for event in track["events"]:
+            source = native.get(event.get("id")) if isinstance(event, dict) and isinstance(event.get("id"), str) else None
+            values = event.get("values") if source is not None else None
+            saved = event.get("editableValues") if source is not None else None
+            fresh = source["editableValues"] if source is not None else None
+            if (isinstance(values, dict) and isinstance(saved, list) and saved != fresh
+                    and all(isinstance(field, str) for field in saved) and set(saved) <= set(fresh)
+                    and values.get("asset") == source["values"].get("asset")
+                    and values.get("playableClass") == source["values"].get("playableClass")):
+                event = {**event, "editableValues": list(fresh)}
+                touched = True
+            events.append(event)
+        result.append({**track, "events": events} if touched else track)
+    return result
+
+
+# Before camera Euler bindings honoured their Unity RotationOrder, every camera
+# sample was composed in the default ZXY order. Projects saved then carry those
+# rotations; a point that still equals that legacy evaluation was never edited.
+_LEGACY_CAMERA_ORDER = animation.DEFAULT_EULER_ORDER
+_LEGACY_CAMERA_TOLERANCE = 1e-6  # Per unit-quaternion component.
+
+
+def needs_camera_keyframe_check(track):
+    """A saved camera track with sampled points, which may predate camera Euler rotation orders."""
+    return (isinstance(track, dict) and track.get("kind") == "camera" and isinstance(track.get("events"), list)
+            and any(isinstance(event, dict) and isinstance(event.get("values"), dict)
+                    and isinstance(event["values"].get("keyframes"), list) for event in track["events"]))
+
+
+def _same_rotation(saved, expected):
+    if (not isinstance(saved, list) or len(saved) != 4
+            or any(type(value) not in (int, float) or not math.isfinite(value) for value in saved)):
+        return False
+    return min(max(abs(a - b) for a, b in zip(saved, expected)),
+               max(abs(a + b) for a, b in zip(saved, expected))) <= _LEGACY_CAMERA_TOLERANCE
+
+
+def _legacy_camera_frames(raw, name, events):
+    """{event id: its points composed in the legacy ZXY order} for native camera events with another order."""
+    deadline = time.monotonic() + 45
+    _, objects, _ = _read(raw, name, deadline)
+    by_id = {_id(key): key for key in objects}
+    clips, result = {}, {}
+    for event in events:
+        track_id, index = event["id"].rsplit(":", 1)
+        try:
+            if track_id not in clips:
+                clips[track_id] = objects[by_id[track_id]].read_typetree()["m_Clips"]
+            clip = clips[track_id][int(index)]
+            motion = objects[by_id[event["values"]["animation"]]]
+            if motion.type.name != "AnimationClip":
+                continue
+            channels = _camera_channels(motion.read_typetree(), deadline)
+            if "rotation" in channels or channels["eulerOrder"] == _LEGACY_CAMERA_ORDER:
+                continue  # The legacy composition gave these same rotations.
+            result[event["id"]] = _camera_frames(motion, clip, event["duration"], deadline, _MAX_CAMERA_FRAMES,
+                                                 euler_order=_LEGACY_CAMERA_ORDER)
+        except (KeyError, IndexError, TypeError, ValueError):
+            if time.monotonic() >= deadline:
+                raise
+    return result
+
+
+def restore_legacy_camera_keyframes(raw, name, tracks, originals):
+    """Give camera points saved with the legacy ZXY composition their current rotation, keeping edits.
+
+    Only a point whose saved rotation equals the legacy evaluation of its native
+    sample takes the current one; its saved time, position and field of view stay.
+    Edited rotations stay as saved and are written in the binding's own order."""
+    native_tracks = {track["id"]: track for track in originals if track.get("kind") == "camera"}
+
+    def pairs():
+        for position, track in enumerate(tracks):
+            identity = track.get("id") if needs_camera_keyframe_check(track) else None
+            native = native_tracks.get(identity) if isinstance(identity, str) else None
+            if native is None:
+                continue
+            native_events = _index_rows(native["events"], "event")
+            for index, event in enumerate(track["events"]):
+                event_id = event.get("id") if isinstance(event, dict) else None
+                source = native_events.get(event_id) if isinstance(event_id, str) else None
+                values = event.get("values") if source is not None else None
+                saved = values.get("keyframes") if isinstance(values, dict) else None
+                current = source["values"].get("keyframes") if source is not None else None
+                if (isinstance(saved, list) and isinstance(current, list) and saved != current
+                        and len(saved) == len(current) and values.get("animation") == source["values"].get("animation")):
+                    yield position, index, source
+
+    candidates = list(pairs())
+    if not candidates:
+        return tracks
+    legacy = _legacy_camera_frames(raw, name, [source for _, _, source in candidates])
+    restored = list(tracks)
+    for position, index, source in candidates:
+        before = legacy.get(source["id"])
+        current = source["values"]["keyframes"]
+        if before is None or len(before) != len(current):
+            continue
+        track = restored[position]
+        event = track["events"][index]
+        points = [{**point, "rotation": list(new["rotation"])}
+                  if (isinstance(point, dict) and point.get("time") == old["time"]
+                      and _same_rotation(point.get("rotation"), old["rotation"])) else point
+                  for point, old, new in zip(event["values"]["keyframes"], before, current)]
+        events = list(track["events"])
+        events[index] = {**event, "values": {**event["values"], "keyframes": points}}
+        restored[position] = {**track, "events": events}
+    return restored
+
+
+def prepare_tracks(raw: bytes, name: str, tracks, original_tracks, *, legacy_camera=True):
+    """Bring saved tracks up to the current parse rules of their source bytes, keeping every edit.
+
+    The steps every native export runs first: emissive track metadata, the current editableValues
+    lists, legacy (ZXY) camera rotations of unedited points, and the derived shaftSlot. Without
+    them a project saved by an older version would differ from its own source where nothing was
+    edited.
+
+    ``legacy_camera`` False skips the legacy camera step, for tracks that are the parse of timeline
+    bytes (convert_parsed: a conversion, another slot's other platform, check_editor_bytes), never a
+    saved project: their points are what the current parse reads. The step would turn a point back
+    to the stock rotation when its float32 parse lands within the step's tolerance (1e-6 per
+    quaternion component) of the stock sample's legacy rotation, although the point was an edit, and
+    the result would no longer be the bytes it was parsed from."""
+    if not isinstance(tracks, list):
+        return tracks
+    tracks = restore_emissive_track_metadata(tracks, original_tracks)
+    tracks = sync_editable_values(tracks, original_tracks)
+    if legacy_camera:
+        tracks = restore_legacy_camera_keyframes(raw, name, tracks, original_tracks)
+    # Shaft targets are derived preview metadata, independent of any clip's
+    # member color selector. The original track identity remains read-only.
+    return [
+        {key: value for key, value in track.items() if key != "shaftSlot"}
+        if (isinstance(track, dict) and type(track.get("shaftSlot")) is int
+            and _shaft_slot(track) == track["shaftSlot"]) else track
+        for track in tracks
+    ]
+
+
+def export_timeline(raw: bytes, name: str, tracks: list, *, legacy_camera=True) -> bytes:
+    """Derive the base from these source bytes and export the submitted tracks.
+
+    ``legacy_camera`` False: ``tracks`` are the parse of timeline bytes, not a saved project, and
+    the legacy camera step of prepare_tracks is skipped."""
     original = parse_timeline(raw, name)
-    if isinstance(tracks, list):
-        tracks = restore_emissive_track_metadata(tracks, original["tracks"])
-        # Shaft targets are derived preview metadata, independent of any clip's
-        # member color selector. The original track identity remains read-only.
-        tracks = [
-            {key: value for key, value in track.items() if key != "shaftSlot"}
-            if (isinstance(track, dict) and type(track.get("shaftSlot")) is int
-                and _shaft_slot(track) == track["shaftSlot"]) else track
-            for track in tracks
-        ]
+    tracks = prepare_tracks(raw, name, tracks, original["tracks"], legacy_camera=legacy_camera)
     if original["tracks"] == tracks:
         return raw
     return _rewrite_timeline(raw, original, {**original, "tracks": tracks})
 
 
+MERGE_LAYOUT = "The MV in the game has a different track layout. Use Apply all."
+_CLIP_FIELDS = ("start", "duration", "label")
+
+
+def _float32(value):
+    """``value`` with every float rounded to float32, the precision a native timeline stores, and every
+    integer as the same float: a project posted by the page has lost the difference (JSON numbers), and
+    Python compares 1 == 1.0 too. Booleans stay booleans."""
+    import struct
+
+    if type(value) is int:
+        try:
+            return float(value)
+        except OverflowError:
+            return value
+    if type(value) is float:
+        try:
+            return struct.unpack("<f", struct.pack("<f", value))[0]
+        except (OverflowError, struct.error):
+            return value
+    if isinstance(value, dict):
+        return {key: _float32(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_float32(item) for item in value]
+    return value
+
+
+def field_digest(value):
+    """A short digest of a merged field's value once stored (floats as float32): equal digests are the
+    same value in the game, so an edit typed again (0.7) equals what the game holds (0.699999988)."""
+    import hashlib
+
+    return hashlib.sha256(_value_key(_float32(value)).encode()).hexdigest()[:16]
+
+
+def _merge_value(event, field):
+    return event[field] if field in _CLIP_FIELDS else event["values"][field]
+
+
+def _merge_label(value):
+    """A short display form of a merged field's value for the conflict list."""
+    import json
+
+    if isinstance(value, list) and value and all(isinstance(item, dict) and "time" in item for item in value):
+        return f"{len(value)} keys"
+    if type(value) is float:
+        return f"{value:.6g}"
+    if isinstance(value, dict) and all(type(item) in (int, float) for item in value.values()):
+        return "(" + ", ".join(f"{item:.4g}" for item in value.values()) + ")"
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return text if len(text) <= 48 else text[:47] + "…"
+
+
+def _merge_fields(before, mine):
+    for field in (*_CLIP_FIELDS, *before["values"]):
+        if field in _CLIP_FIELDS or field in mine["values"]:
+            yield field
+
+
+def _shown(value):
+    """The display form a synced entry keeps of an applied value (at most 64 characters)."""
+    label = _merge_label(value)
+    return label if len(label) <= 64 else label[:63] + "…"
+
+
+def synced_digest(entry):
+    """(digest, label) of one ``synced`` entry: ``[digest, label]`` as ``synced_fields`` makes it, or a
+    bare digest; (None, None) for anything else."""
+    if isinstance(entry, str):
+        return entry, None
+    if (isinstance(entry, (list, tuple)) and len(entry) == 2 and isinstance(entry[0], str)
+            and (entry[1] is None or isinstance(entry[1], str))):
+        return entry[0], entry[1]
+    return None, None
+
+
+def merge_changes(base, ours, theirs, synced=None):
+    """Three-way merge of clip fields: put the edits ``ours`` made onto ``theirs``.
+
+    ``base`` is the parse of the timeline a project was loaded from, ``ours`` the project's
+    tracks normalized against it (mv_studio_register.normalize: same tracks, clips and value
+    keys), ``theirs`` the parse of the timeline the game plays now. ``synced`` ({event id:
+    {field: [field_digest, label]}}, from ``synced_fields`` after an earlier apply of this
+    project to this platform) holds the values the project and the game last agreed on where
+    they are not the base's. Every clip's start, duration, label and each of its values (camera
+    keyframes as one field) is merged on its own, against its last agreed value:
+
+    - unchanged in ours: theirs stays (also a change the game made since);
+    - changed in ours, and theirs still has the agreed value or already ours: ours is taken;
+    - changed differently in both: a conflict, and nothing is taken silently.
+
+    Values compare as stored (``field_digest``). A conflict names its ``basis``: "load" (the
+    agreed value is the loaded one, shown as ``loaded``) or "applied" (the value this project
+    last applied, shown as ``loaded`` from the synced label). Track fields of
+    EXPORTABLE_TRACK_FIELDS merge the same way, keyed by the track id in ``synced``; their
+    conflicts have ``scope`` "track" (the track id as ``eventId``, no clip). Returns ``(merged
+    tracks, conflicts, taken, theirs_only)``: merged is theirs with the taken fields;
+    ``theirs_only`` counts the fields the game changed that the project does not hold. Raises
+    ValueError(MERGE_LAYOUT) when theirs has other tracks, clips or value keys."""
+    import copy
+
+    if (not isinstance(theirs, list) or len(theirs) != len(base) or len(ours) != len(base)
+            or any(track["id"] != other["id"] or [event["id"] for event in track["events"]]
+                   != [event["id"] for event in other["events"]] for track, other in zip(base, theirs))):
+        raise ValueError(MERGE_LAYOUT)
+    synced = synced if isinstance(synced, dict) else {}
+    merged = copy.deepcopy(theirs)
+    conflicts, counts = [], {"taken": 0, "theirs_only": 0}
+
+    def merge(identity, field, old, new, now, put, where):
+        """Merge one field: put(new) when ours is taken, a conflict row (``where`` + values) otherwise."""
+        agreed = synced.get(identity) if isinstance(synced.get(identity), dict) else {}
+        old_digest, applied_label = synced_digest(agreed.get(field))
+        basis = "applied" if old_digest is not None else "load"
+        if old_digest is None:
+            old_digest = field_digest(old)
+        new_digest, now_digest = field_digest(new), field_digest(now)
+        if new_digest == old_digest:
+            if now_digest != old_digest:
+                counts["theirs_only"] += 1
+            return
+        if now_digest == new_digest:
+            return
+        if now_digest == old_digest:
+            put(new)
+            counts["taken"] += 1
+            return
+        conflicts.append({**where, "field": field, "basis": basis,
+                          "loaded": _merge_label(old) if basis == "load" else (applied_label or "?"),
+                          "project": _merge_label(new), "game": _merge_label(now)})
+
+    for base_track, our_track, merged_track in zip(base, ours, merged):
+        track_label = str(base_track.get("label") or base_track["id"])
+        for field in EXPORTABLE_TRACK_FIELDS:
+            if field in base_track and field in our_track:
+                if field not in merged_track:
+                    raise ValueError(MERGE_LAYOUT)
+                merge(base_track["id"], field, base_track[field], our_track[field], merged_track[field],
+                      lambda value, track=merged_track, key=field: track.__setitem__(key, value),
+                      {"track": track_label, "trackId": base_track["id"], "clip": "", "eventId": base_track["id"],
+                       "start": 0.0, "scope": "track"})
+        for before, mine, game in zip(base_track["events"], our_track["events"], merged_track["events"]):
+            if not isinstance(game.get("values"), dict) or before["values"].keys() - game["values"].keys():
+                raise ValueError(MERGE_LAYOUT)
+            for field in _merge_fields(before, mine):
+                target = game if field in _CLIP_FIELDS else game["values"]
+                merge(before["id"], field, _merge_value(before, field), _merge_value(mine, field),
+                      _merge_value(game, field), lambda value, target=target, key=field: target.__setitem__(key, value),
+                      {"track": track_label, "trackId": base_track["id"], "clip": str(before.get("label") or before["id"]),
+                       "eventId": before["id"], "start": before["start"]})
+    return merged, conflicts, counts["taken"], counts["theirs_only"]
+
+
+def synced_fields(base, ours):
+    """What a project and the game agree on after a successful apply: {event id: {field: [digest,
+    label]}} of every field where ours is not the base (the base holds for every other field); a
+    changed EXPORTABLE_TRACK_FIELDS field is listed under its track id."""
+    result = {}
+    for base_track, our_track in zip(base, ours):
+        for field in EXPORTABLE_TRACK_FIELDS:
+            if field in base_track and field in our_track:
+                digest = field_digest(our_track[field])
+                if digest != field_digest(base_track[field]):
+                    result.setdefault(base_track["id"], {})[field] = [digest, _shown(our_track[field])]
+        for before, mine in zip(base_track["events"], our_track["events"]):
+            for field in _merge_fields(before, mine):
+                value = _merge_value(mine, field)
+                digest = field_digest(value)
+                if digest != field_digest(_merge_value(before, field)):
+                    result.setdefault(before["id"], {})[field] = [digest, _shown(value)]
+    return result
+
+
 def _rewrite_timeline(raw, original, revised):
+    _check_values(original, revised)
     changes = _changes(original, revised)
-    if not changes:
+    track_changes = _track_changes(original, revised)
+    if not changes and not track_changes:
         return raw
     deadline = time.monotonic() + 45
     env, objects, source = _read(raw, "original", deadline)
@@ -911,10 +1780,38 @@ def _rewrite_timeline(raw, original, revised):
             for field in payload_fields:
                 _set_playable_value(asset_tree, asset_type, field, new["values"][field])
             dirty[asset] = asset_tree
+    for identity, field, value in track_changes:
+        # The track MonoBehaviour's own TrackAsset.m_Muted (the only EXPORTABLE_TRACK_FIELDS entry).
+        track = by_id[identity]
+        tree, native = mono[track]
+        if native == "GroupTrack":
+            raise ValueError(GROUP_MUTE)
+        if native in _FACIAL_MUTE_CLASSES:
+            raise ValueError(FACIAL_MUTE)
+        if field != "muted" or type(tree.get("m_Muted")) not in (bool, int):
+            raise ValueError("This native track has no mute to change.")
+        tree["m_Muted"] = value if type(tree["m_Muted"]) is bool else int(value)
+        dirty[track] = tree
 
     import hashlib
     untouched = {key: hashlib.sha256(obj.get_raw_data()).digest() for key, obj in objects.items() if key not in dirty}
-    edited_payloads = {key: objects[key].save_typetree(tree) for key, tree in dirty.items()}
+    # m_MuscleClipSize of a camera clip _write_camera rewrote (the only AnimationClips in dirty).
+    # Every inspected stock camera clip records it as its serialized size + 188 bytes, and a dense
+    # rewrite can grow a clip past it (a constant shot baked dense: so2036_2840f_2931f_camera,
+    # 2432 -> 4972 bytes against 2620). Unity allocates the muscle-clip blob with this size, so a
+    # clip that grew gets old value + growth + 64, rounded up to 16 (over-allocating is the safe
+    # direction; unverified on device); it is never shrunk. A uint32, so the length is kept.
+    camera_sizes = {key: len(objects[key].get_raw_data()) for key in dirty if objects[key].type.name == "AnimationClip"}
+
+    def save(key, tree):
+        payload = objects[key].save_typetree(tree)
+        growth = len(payload) - camera_sizes[key] if key in camera_sizes and "m_MuscleClipSize" in tree else 0
+        if growth > 0:
+            tree["m_MuscleClipSize"] = (int(tree["m_MuscleClipSize"]) + growth + 64 + 15) // 16 * 16
+            payload = objects[key].save_typetree(tree)
+        return payload
+
+    edited_payloads = {key: save(key, tree) for key, tree in dirty.items()}
     # The existing native timeline tools use Unity's LZ4 bundle container.
     # UnityPy's "original" only retains the first block's compression mode,
     # which can make mixed-compression stock timelines several times larger.

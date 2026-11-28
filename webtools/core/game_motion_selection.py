@@ -4,23 +4,53 @@ This module never identifies a dancer by a camera/clip filename or by the order
 of database dependencies. Only the timeline's Animator binding, serialized CAB
 identity and AnimationPlayableAsset object pointer select an animation.
 """
+from contextlib import contextmanager
 import hashlib
 import math
+import os
 from pathlib import Path
 import re
+import threading
 
 MAX_OBJECTS = 50000
 MAX_SEGMENTS = 1024
 _MEMBER_MODEL = re.compile(r"^/EntryPoint/Live/Members/Member([1-9][0-9]*)/Model$")
+_SHARED = threading.local()
 
 
 def _cab(value):
     return str(value or "").replace("\\", "/").rsplit("/", 1)[-1].casefold()
 
 
+@contextmanager
+def shared_reads():
+    """Within this block, on this thread, each bundle file is read and parsed once.
+
+    An MV import selects every member's dance from the same timeline and
+    choreography bundles; without this each member decompressed and parsed all
+    of them again (nine members: 99 reads of 10 files). A file is known by its
+    resolved path, size, mtime and inode, so a rewritten file is read again.
+    Readers only read the shared result; write_selected restores what it prunes.
+    """
+    previous = getattr(_SHARED, "reads", None)
+    if previous is None:
+        _SHARED.reads = {}
+    try:
+        yield
+    finally:
+        if previous is None:
+            _SHARED.reads = None
+
+
 def _read(path, deadline):
     from .model_viewer import _environment, _remaining
     _remaining(deadline)
+    held, key = getattr(_SHARED, "reads", None), None
+    if held is not None:
+        info = os.stat(path)
+        key = (str(Path(path).resolve()), info.st_size, info.st_mtime_ns, info.st_ino)
+        if key in held:
+            return held[key]
     env = _environment([str(path)], deadline)
     objects = list(env.objects)
     if len(objects) > MAX_OBJECTS:
@@ -30,7 +60,10 @@ def _read(path, deadline):
         if obj.type.name == "MonoScript":
             tree = obj.read_typetree()
             scripts[(_cab(obj.assets_file.name), obj.path_id)] = tree.get("m_ClassName", "")
-    return {"path": Path(path), "env": env, "objects": objects, "scripts": scripts}
+    result = {"path": Path(path), "env": env, "objects": objects, "scripts": scripts}
+    if key is not None:
+        held[key] = result
+    return result
 
 
 def _object_key(obj):
@@ -53,6 +86,61 @@ def _class(source, obj, tree):
         return source["scripts"].get(_pointer_key(obj, tree.get("m_Script", {})), "")
     except ValueError:
         return ""
+
+
+def _serialized_files(source):
+    files = {}
+    for obj in source["objects"]:
+        assets_file = getattr(obj, "assets_file", None)
+        if assets_file is not None:
+            files.setdefault(id(assets_file), assets_file)
+    return list(files.values())
+
+
+def dependency_closure(timeline, sources):
+    """Return the CABs a timeline can reach through serialized externals.
+
+    Unity resolves a PPtr with m_FileID > 0 through the referencing
+    SerializedFile's externals[m_FileID - 1], which names a CAB in a loaded
+    dependency bundle. The closure starts at the timeline's own CABs and
+    follows the externals of every loaded file it reaches, so a bundle the
+    timeline never names cannot supply an object identity.
+    """
+    loaded = {}
+    for source in sources:
+        for assets_file in _serialized_files(source):
+            loaded.setdefault(_cab(assets_file.name), []).append(assets_file)
+    pending = _serialized_files(timeline)
+    reachable = {_cab(assets_file.name) for assets_file in pending}
+    while pending:
+        assets_file = pending.pop()
+        for external in getattr(assets_file, "externals", ()):
+            cab = _cab(external.path)
+            if cab and cab not in reachable:
+                reachable.add(cab)
+                pending.extend(loaded.get(cab, ()))
+    return reachable
+
+
+def dependency_objects(timeline, sources):
+    """Map exact (CAB, PathID) identities to objects of the timeline's dependency closure.
+
+    Returns ``(objects, owners)``. Objects of loaded bundles outside the
+    closure are ignored. The same identity with different serialized bytes
+    in two loaded files is refused, as before.
+    """
+    reachable = dependency_closure(timeline, sources)
+    object_map, source_map = {}, {}
+    for source in [timeline] + list(sources):
+        for obj in source["objects"]:
+            key = _object_key(obj)
+            if key[0] not in reachable:
+                continue
+            if key in object_map and object_map[key].get_raw_data() != obj.get_raw_data():
+                raise ValueError("Two motion dependencies have conflicting serialized identities.")
+            object_map[key] = obj
+            source_map[key] = source
+    return object_map, source_map
 
 
 def _number(value, label, *, minimum=0, maximum=600):
@@ -165,14 +253,7 @@ def select(timeline_path, candidate_paths, *, performer=1, category="mv", deadli
     """
     timeline = _read(timeline_path, deadline)
     sources = [_read(path, deadline) for path in candidate_paths]
-    object_map, source_map = {}, {}
-    for source in [timeline] + sources:
-        for obj in source["objects"]:
-            key = _object_key(obj)
-            if key in object_map and object_map[key].get_raw_data() != obj.get_raw_data():
-                raise ValueError("Two motion dependencies have conflicting serialized identities.")
-            object_map[key] = obj
-            source_map[key] = source
+    object_map, source_map = dependency_objects(timeline, sources)
     mono, classes = {}, {}
     for obj in timeline["objects"]:
         if obj.type.name == "MonoBehaviour":
@@ -273,7 +354,8 @@ def facial_banks(paths, *, deadline):
 
     Semantic ids are the client's FacialAnimationId values: eyes below 10000,
     mouth in the 10000 range. This preserves aliases such as eye101 -> eye005
-    without guessing a clip filename from an event's index.
+    without guessing a clip filename from an event's index. A row with a null
+    clip is reported with key None.
     """
     sources = [_read(path, deadline) for path in paths]
     objects = {_object_key(obj): (obj, source) for source in sources for obj in source["objects"]}
@@ -294,7 +376,12 @@ def facial_banks(paths, *, deadline):
                     continue
                 kind = "eyes" if 0 < summary < 10000 else "mouth" if 10000 <= summary < 20000 else None
                 pointer = data.get("clip", {})
-                if kind is None or pointer.get("m_PathID", 0) == 0:
+                if kind is None:
+                    continue
+                if pointer.get("m_PathID", 0) == 0:
+                    # CreateAnimationClip makes no playable for a null clip: the
+                    # index plays nothing, which the viewer must know (key None).
+                    entries.append({"key": None, "kind": kind, "index": index, "customIndex": data.get("customIndex", 0), "summary": summary})
                     continue
                 key = _pointer_key(obj, pointer)
                 resolved = objects.get(key)
@@ -315,13 +402,23 @@ def write_selected(selection, directory):
     files, identities = [], {}
     for index, group in enumerate(groups.values()):
         source, keep = group["source"], group["keys"]
-        for obj in source["objects"]:
-            if _object_key(obj) not in keep:
-                del obj.assets_file.objects[obj.path_id]
-        containers = list(source["env"].files.values())
-        if len(containers) != 1:
-            raise ValueError("An imported motion has an ambiguous source container.")
-        raw = containers[0].save(packer="lz4")
+        # The source may be shared (shared_reads): every pruned object table is put
+        # back exactly, in its order, once the clips are saved.
+        pruned = {}
+        try:
+            for obj in source["objects"]:
+                if _object_key(obj) not in keep:
+                    table = obj.assets_file.objects
+                    pruned.setdefault(id(table), (table, list(table.items())))
+                    del table[obj.path_id]
+            containers = list(source["env"].files.values())
+            if len(containers) != 1:
+                raise ValueError("An imported motion has an ambiguous source container.")
+            raw = containers[0].save(packer="lz4")
+        finally:
+            for table, items in pruned.values():
+                table.clear()
+                table.update(items)
         path = Path(directory) / f"animation-{index + 1}.unity"
         path.write_bytes(raw)
         digest = hashlib.sha256(raw).hexdigest()

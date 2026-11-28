@@ -57,6 +57,17 @@ check('models without face bindings show a warning while the body remains usable
   s.frame(.5); close(s.bone.position.x, .5, 'body remains compatible'); assert.equal(s.player.compatibleSegments, 1);
   assert(s.player.warnings.some(text => /unavailable/i.test(text)), 'face availability must depend on actual loaded morph targets, not only metadata names');
 });
+check('sampleLocal reads a dance property at another time without posing', () => {
+  const s = setup(); s.frame(.5); close(s.bone.position.x, .5, 'posed at the playhead');
+  const out = [9, 9, 9];
+  assert.strictEqual(s.player.sampleLocal(s.bone, 'position', 2, out), out, 'the blended value lands in the caller buffer');
+  close(out[0], 2, 'the dance at 2 s'); close(s.bone.position.x, .5, 'the pose is left alone');
+  assert.strictEqual(s.player.sampleLocal(s.bone, 'quaternion', 2), null, 'an unanimated property has no sample');
+  assert.strictEqual(s.player.sampleLocal(new THREE.Bone(), 'position', 2), null, 'nor has another node');
+  s.frame(.75); close(s.bone.position.x, .75, 'the next evaluation is unaffected');
+  const sampled = s.player.sampleLocal(s.bone, 'position', 1.25); close(sampled[0], 1.25, 'without a buffer a new array');
+  s.player.evaluatePose(.75); close(s.bone.position.x, .75, 'a re-evaluation at the same time after a sample is fresh');
+});
 check('audio tail contributes to one shared timeline duration', () => {
   const s = setup(); s.descriptor.audio = { tracks: [{ startTime: 2, duration: 5, offset: 0, playbackRate: 1 }] };
   const player = factory.create(s.root, [s.body], s.metadata, s.descriptor); close(player.duration, 7, 'voice/music tail must not be cut off at final body frame');

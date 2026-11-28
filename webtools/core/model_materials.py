@@ -23,6 +23,20 @@ FLOATS = {
     "_MainTexMipmapBias": 0, "_CullMode": 2, "_OutlineStencilComp": 8,
 }
 MAX_ARRAY_BYTES = 64 * 1024 * 1024
+# MemberCheekBase.Initialize (GL 3.12.0 0x27c4a88) puts one cached texture into
+# _CheekTex: SetCheekTexture (0x27c4b2c) loads it once with
+# Resources.Load<Texture2DArray>("Live/Characters/facialAssets/cheek_array"),
+# which globalgamemanagers maps to the client APK's
+# assets/bin/Data/71c40f69646c1c446aee4779ed1b6f26, PathID 1. The costume's own
+# _CheekTex is never read. Elichika and the preview have no access to that APK
+# file, so only its identity is recorded here (read from the GL client APK):
+# the preview keeps the head's own array and can tell whether it is a copy.
+SHARED_CHEEK_ARRAY = {
+    "resource": "Live/Characters/facialAssets/cheek_array",
+    "width": 256, "height": 256, "depth": 2, "format": 4, "mips": 1,
+    "filter": 1, "wrapU": 1, "wrapV": 1, "colorSpace": 1, "bytes": 524288,
+    "sha256": "26de3c60f632112a8a9617cbaac04d390936a8da3849ddfd9e28fdc5b7a34b09",
+}
 
 
 def _finite(value):
@@ -87,6 +101,20 @@ def _array_layer(obj, layer):
                            read=lambda: proxy)
 
 
+def _array_identity(texture):
+    """The sampled content of a Texture2DArray: layout, sampler and pixel bytes."""
+    import hashlib
+    data = texture.image_data
+    if not isinstance(data, (bytes, bytearray)) or not 0 < len(data) <= MAX_ARRAY_BYTES:
+        return None
+    settings = texture.m_TextureSettings
+    return {"width": int(texture.m_Width), "height": int(texture.m_Height), "depth": int(texture.m_Depth),
+            "format": int(texture.m_Format), "mips": int(texture.m_MipCount),
+            "filter": int(settings.m_FilterMode), "wrapU": int(settings.m_WrapU), "wrapV": int(settings.m_WrapV),
+            "colorSpace": int(getattr(texture, "m_ColorSpace", 1)), "bytes": len(data),
+            "sha256": hashlib.sha256(bytes(data)).hexdigest()}
+
+
 def _original_mips(obj, texture, *, stage=False):
     """Yield exact authored mip pixels to the same bounded image exporter."""
     from UnityPy.enums import TextureFormat
@@ -107,7 +135,8 @@ def _original_mips(obj, texture, *, stage=False):
     crunch65 = name == "ETC2_RGBA8Crunched"
     pvrtc = stage and name in ("PVRTC_RGB4", "PVRTC_RGBA4")
     etc1 = stage and name == "ETC_RGB4"
-    if channels is None and astc is None and not (crunch65 or pvrtc or etc1):
+    etc2a8 = stage and name == "ETC2_RGBA8"
+    if channels is None and astc is None and not (crunch65 or pvrtc or etc1 or etc2a8):
         raise ValueError("The authored mip format is unavailable in this preview.")
     if pvrtc and (width & (width - 1) or height & (height - 1)):
         raise ValueError("Authored PVRTC mip chains require power-of-two dimensions.")
@@ -137,6 +166,8 @@ def _original_mips(obj, texture, *, stage=False):
             size = max(8, w) * max(8, h) // 2
         elif etc1:
             size = ((w + 3) // 4) * ((h + 3) // 4) * 8
+        elif etc2a8:
+            size = ((w + 3) // 4) * ((h + 3) // 4) * 16
         else:
             block = int(astc.group(1))
             size = ((w + block - 1) // block) * ((h + block - 1) // block) * 16
@@ -158,9 +189,39 @@ def _original_mips(obj, texture, *, stage=False):
                 path_id=(obj.path_id, "authored-mip", level),
                 type=SimpleNamespace(name="Texture2D"), read=lambda value=proxy: value))
         offset += size
-    if (pvrtc or etc1) and offset != len(data):
+    if (pvrtc or etc1 or etc2a8) and offset != len(data):
         raise ValueError("The authored block-compressed mip data does not match the declared levels.")
     return output
+
+
+def _texture_entry(target, texture, source, index, mip_resolver, texture_resolver, name, limitations):
+    """One exported shader texture: its GLB index, sampler inputs and authored mips."""
+    entry = {"index": index, "name": str(texture.m_Name), "colorSpace": int(getattr(texture, "m_ColorSpace", 1)),
+             "scale": [_finite(source.get("m_Scale", {}).get(key, 1)) for key in "xy"],
+             "offset": [_finite(source.get("m_Offset", {}).get(key, 0)) for key in "xy"],
+             "filterMode": int(getattr(getattr(texture, "m_TextureSettings", None), "m_FilterMode", 1))}
+    try:
+        mips = _original_mips(target, texture)
+        if mips:
+            entry["mipmaps"] = [index] + (mip_resolver(mips) if mip_resolver is not None else
+                                         [texture_resolver(level) for level in mips])
+            entry["mipWidths"] = [max(1, int(texture.m_Width) >> level) for level in range(len(mips) + 1)]
+            entry["mipHeights"] = [max(1, int(texture.m_Height) >> level) for level in range(len(mips) + 1)]
+    except Exception as error:
+        from .transient_failures import note_if_environmental
+        note_if_environmental(error)
+        limitations.append("Authored mip levels unavailable: " + name)
+    return entry
+
+
+def authored_rimlight(metadata):
+    """The material's own rim switch: authored _RimglightIntensity and _RimlightColor.a.
+
+    Live AS/Member rim no longer uses it (the timeline writes the intensity);
+    callers that still need the authored switch, such as the hand-prop export,
+    name it explicitly.
+    """
+    return metadata["floats"]["_RimglightIntensity"] > 0 and metadata["colors"]["_RimlightColor"][3] > 0
 
 
 def attach_member_metadata(scene, obj, tree, material, texture_resolver, *, mip_resolver=None):
@@ -183,22 +244,29 @@ def attach_member_metadata(scene, obj, tree, material, texture_resolver, *, mip_
         metadata["floats"][name] = _finite(floats.get(name, default))
     keywords = str(tree.get("m_ShaderKeywords", "")).split()[:64]
     metadata["keywords"] = keywords
-    features = {"rimlight": metadata["floats"]["_RimglightIntensity"] > 0
-                and metadata["colors"]["_RimlightColor"][3] > 0,
+    cheek_array = bool(envs.get("_CheekTex", {}).get("m_Texture", {}).get("m_PathID"))
+    # Every compiled Hidden/AS/Member/Main variant (base and each _CHEEK_ON/
+    # _EMISSIVE_ON/_MATCAP_ON combination) adds the rim term, and the live
+    # timeline (CommonCoreMember.Initialize -> ApplyIntensity(0), then
+    # LiveRimlightMixer/LiveBaseLightReciever) writes its inputs every frame.
+    # The authored _RIMLIGHT float/_RIMLIGHT_ON keyword are legacy (the current
+    # shader declares no _RIMLIGHT, so LiveCoreMemberRimlight.isLegacyShader is
+    # false): the rim texture is a used input of every AS/Member material.
+    features = {"rimlight": True,
                 "matcap": "_MATCAP_ON" in keywords,
                 "emissive": "_EMISSIVE_ON" in keywords,
+                # MemberCheekMixer turns _CHEEK_ON on at runtime for the head
+                # material holding the cheek array, whatever it was authored with.
                 "cheek": "_CHEEK_ON" in keywords,
                 "outline": True}
     metadata["features"] = features
 
-    wanted = ["_MainTex"]
-    if features["rimlight"]:
-        wanted.append("_RimlightTex")
+    wanted = ["_MainTex", "_RimlightTex"]
     if features["matcap"]:
         wanted.extend(("_MatcapTex", "_MatcapMaskTex"))
     if features["emissive"]:
         wanted.extend(("_EmissiveTex", "_EmissiveScrollTex"))
-    if features["cheek"] and metadata["floats"]["_CheekIntensity"] != 0:
+    if features["cheek"] or cheek_array:
         wanted.append("_CheekTex")
 
     for name in wanted:
@@ -212,31 +280,39 @@ def attach_member_metadata(scene, obj, tree, material, texture_resolver, *, mip_
             target = _ref(obj, pointer)
             if target is None:
                 raise ValueError("A shader texture dependency is missing.")
-            layer = None
+            layer = layers = None
+            if name == "_CheekTex" and target.type.name != "Texture2DArray" and not features["cheek"]:
+                continue  # Only an array feeds the runtime cheek; this authored-off slot is unused.
             if target.type.name == "Texture2DArray" and name == "_CheekTex":
-                target = _array_layer(target, metadata["floats"]["_CheekTexArrayIndex"])
+                # MemberCheekMixer selects the slice at runtime (ApplyCheek sets
+                # _CheekTexArrayIndex = cheekType), so every slice is exported as
+                # an exact byte copy with the array's own sampler settings.
+                array = target
+                array_name = str(array.read().m_Name)
+                layers = []
+                for slice_index in range(int(array.read().m_Depth)):
+                    item = _array_layer(array, slice_index)
+                    layers.append(_texture_entry(item, item.read(), source, texture_resolver(item), mip_resolver,
+                                                 texture_resolver, name, metadata["limitations"]))
+                    layers[-1].update(arrayLayer=slice_index, name=array_name)
+                target = _array_layer(array, metadata["floats"]["_CheekTexArrayIndex"])
                 layer = target.preview_array_layer
             if target.type.name != "Texture2D":
                 raise ValueError("This shader texture type is unsupported.")
-            index = texture_resolver(target)
             texture = target.read()
-            entry = {"index": index, "colorSpace": int(getattr(texture, "m_ColorSpace", 1)),
-                     "scale": [_finite(source.get("m_Scale", {}).get(key, 1)) for key in "xy"],
-                     "offset": [_finite(source.get("m_Offset", {}).get(key, 0)) for key in "xy"]}
+            entry = _texture_entry(target, texture, source, texture_resolver(target), mip_resolver,
+                                   texture_resolver, name, metadata["limitations"])
             if layer is not None:
-                entry["arrayLayer"] = layer
-            entry["filterMode"] = int(getattr(getattr(texture, "m_TextureSettings", None), "m_FilterMode", 1))
-            try:
-                mips = _original_mips(target, texture)
-                if mips:
-                    entry["mipmaps"] = [index] + (mip_resolver(mips) if mip_resolver is not None else
-                                                 [texture_resolver(level) for level in mips])
-                    entry["mipWidths"] = [max(1, int(texture.m_Width) >> level) for level in range(len(mips) + 1)]
-                    entry["mipHeights"] = [max(1, int(texture.m_Height) >> level) for level in range(len(mips) + 1)]
-            except Exception:
-                metadata["limitations"].append("Authored mip levels unavailable: " + name)
+                entry.update(arrayLayer=layer, name=array_name, depth=len(layers), layers=layers)
+                identity = _array_identity(array.read())
+                shared = {key: value for key, value in SHARED_CHEEK_ARRAY.items() if key != "resource"}
+                entry["sharedArray"] = {"resource": SHARED_CHEEK_ARRAY["resource"],
+                                        "matches": identity == shared if identity else None}
+                features["cheek"] = True
             metadata["textures"][name] = entry
-        except Exception:
+        except Exception as error:
+            from .transient_failures import note_if_environmental
+            note_if_environmental(error)
             metadata["limitations"].append("Shader texture unavailable: " + name)
             # An unresolved nonzero dependency is different from a ShaderLab
             # default. Disable just its feature instead of inventing a glow.

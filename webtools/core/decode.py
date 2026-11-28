@@ -16,6 +16,7 @@ import threading
 import time
 from collections import OrderedDict
 
+from . import mv_studio_progress, transient_failures
 from .repo import ensure_repo_on_path, repo_root
 
 # (path, mtime) -> PNG bytes; b"" marks a known-failed decode so we don't retry.
@@ -34,7 +35,122 @@ _RAW_FORMATS = {
     "ARGB32": ("RGBA", "ARGB", 4),
     "BGRA32": ("RGBA", "BGRA", 4),
 }
-_STAGE_BLOCK_FORMATS = {"ETC_RGB4": "etc1", "PVRTC_RGB4": "pvrtc4", "PVRTC_RGBA4": "pvrtc4a"}
+# "etc2a8" decodes in this process with numpy (_etc2_rgba8_image), the others in texture65.
+_STAGE_BLOCK_FORMATS = {"ETC_RGB4": "etc1", "PVRTC_RGB4": "pvrtc4", "PVRTC_RGBA4": "pvrtc4a", "ETC2_RGBA8": "etc2a8"}
+# ETC1/ETC2 and EAC tables (OpenGL ES 3.0 C.1), in the order of the pinned upstream
+# texture2ddecoder etc.cpp (resources/texture65_decoder/upstream).
+_ETC1_MODIFIERS = ((2, 8), (5, 17), (9, 29), (13, 42), (18, 60), (24, 80), (33, 106), (47, 183))
+_ETC2_DISTANCES = (3, 6, 11, 16, 23, 32, 41, 64)
+_EAC_MODIFIERS = (
+    (-3, -6, -9, -15, 2, 5, 8, 14), (-3, -7, -10, -13, 2, 6, 9, 12), (-2, -5, -8, -13, 1, 4, 7, 12),
+    (-2, -4, -6, -13, 1, 3, 5, 12), (-3, -6, -8, -12, 2, 5, 7, 11), (-3, -7, -9, -11, 2, 6, 8, 10),
+    (-4, -7, -8, -11, 3, 6, 7, 10), (-3, -5, -8, -11, 2, 4, 7, 10), (-2, -6, -8, -10, 1, 5, 7, 9),
+    (-2, -5, -8, -10, 1, 4, 7, 9), (-2, -4, -8, -10, 1, 3, 7, 9), (-2, -5, -7, -10, 1, 4, 6, 9),
+    (-3, -4, -7, -10, 2, 3, 6, 9), (-1, -2, -3, -10, 0, 1, 2, 9), (-4, -6, -8, -9, 3, 5, 7, 8),
+    (-3, -5, -7, -9, 2, 4, 6, 8))
+
+
+def _etc2_rgb(blocks):
+    """ETC2 RGB blocks (N, 8) -> (N, 16, 3) colours, pixel i = x * 4 + y (the bit order)."""
+    import numpy as np
+
+    d = [blocks[:, index].astype(np.int32)[:, None] for index in range(8)]
+    pixel = np.arange(16)
+    x, y = pixel // 4, pixel % 4
+    j = (d[6] << 8 | d[7]) >> pixel & 1  # low index bit of pixel i
+    k = (d[4] << 8 | d[5]) >> pixel & 1  # high index bit (the sign in the ETC1 modes)
+    expand4 = lambda value: (value & 0xf0) | (value >> 4)
+    clamp = lambda value: np.clip(value, 0, 255)
+    # Individual and differential (ETC1) base colours, per subblock.
+    r, g, b = d[0] & 0xf8, d[1] & 0xf8, d[2] & 0xf8
+    delta = [(value << 3 & 0x18) - (value << 3 & 0x20) for value in d[:3]]
+    differential = (d[3] & 2) != 0
+    individual = [[expand4(value) for value in d[:3]], [expand4(value << 4 & 0xff) for value in d[:3]]]
+    sums = [r + delta[0], g + delta[1], b + delta[2]]
+    joined = [[value | value >> 5 for value in (r, g, b)],
+              [np.clip(value, 0, 255) | np.clip(value, 0, 255) >> 5 for value in sums]]
+    base = [np.stack([np.where(differential, joined[s][axis], individual[s][axis])[:, 0] for axis in range(3)], -1)
+            for s in (0, 1)]
+    flip = (d[3] & 1) != 0
+    subblock = np.where(flip, y >= 2, x >= 2)
+    table = np.asarray(_ETC1_MODIFIERS, np.int32)
+    codes = np.where(subblock, d[3] >> 2 & 7, d[3] >> 5)
+    modifier = table[codes, j]
+    modifier = np.where(k == 1, -modifier, modifier)
+    colors = np.where(subblock[..., None], base[1][:, None], base[0][:, None])
+    result = clamp(colors + modifier[..., None])
+    # T, H and planar: differential blocks whose red, green or blue sum overflows.
+    t_mode = differential[:, 0] & ((sums[0] < 0) | (sums[0] > 255))[:, 0]
+    h_mode = differential[:, 0] & ~t_mode & ((sums[1] < 0) | (sums[1] > 255))[:, 0]
+    planar = differential[:, 0] & ~t_mode & ~h_mode & ((sums[2] < 0) | (sums[2] > 255))[:, 0]
+    distances = np.asarray(_ETC2_DISTANCES, np.int32)
+    select = 2 * k + j
+    if t_mode.any():
+        e = [value[t_mode] for value in d]
+        first = np.stack([(e[0] << 3 & 0xc0) | (e[0] << 4 & 0x30) | (e[0] >> 1 & 0xc) | (e[0] & 3),
+                          expand4(e[1]), expand4(e[1] << 4 & 0xff)], -1)
+        second = np.stack([expand4(e[2]), expand4(e[2] << 4 & 0xff), expand4(e[3])], -1)
+        step = distances[(e[3] >> 1 & 6) | (e[3] & 1)][..., None]
+        palette = np.stack([first, clamp(second + step), second, clamp(second - step)], 1)[:, :, 0]
+        result[t_mode] = np.take_along_axis(palette, select[t_mode][..., None], 1)
+    if h_mode.any():
+        e = [value[h_mode] for value in d]
+        green = (e[0] << 5 & 0xe0) | (e[1] & 0x10)
+        blue = (e[1] & 8) | (e[1] << 1 & 6) | e[2] >> 7
+        first = np.stack([(e[0] << 1 & 0xf0) | (e[0] >> 3 & 0xf), green | green >> 4, blue | (blue << 4 & 0xff)], -1)
+        green = (e[2] << 5 & 0xe0) | (e[3] >> 3 & 0x10)
+        second = np.stack([(e[2] << 1 & 0xf0) | (e[2] >> 3 & 0xf), green | green >> 4,
+                           (e[3] << 1 & 0xf0) | (e[3] >> 3 & 0xf)], -1)
+        packed = lambda color: color[..., 0] << 16 | color[..., 1] << 8 | color[..., 2]
+        index = (e[3] & 4) | (e[3] << 1 & 2) | (packed(first) >= packed(second)).astype(np.int32)
+        step = distances[index][..., None]
+        palette = np.stack([clamp(first + step), clamp(first - step), clamp(second + step), clamp(second - step)], 1)[:, :, 0]
+        result[h_mode] = np.take_along_axis(palette, select[h_mode][..., None], 1)
+    if planar.any():
+        e = [value[planar] for value in d]
+        blue = (e[1] << 7 & 0x80) | (e[2] << 2 & 0x60) | (e[2] << 3 & 0x18) | (e[3] >> 5 & 4)
+        origin = np.stack([(e[0] << 1 & 0xfc) | (e[0] >> 5 & 3), (e[0] << 7 & 0x80) | (e[1] & 0x7e) | (e[0] & 1),
+                           blue | blue >> 6], -1)
+        blue = (e[4] << 7 & 0x80) | (e[5] >> 1 & 0x7c)
+        horizontal = np.stack([(e[3] << 1 & 0xf8) | (e[3] << 2 & 4) | (e[3] >> 5 & 3), (e[4] & 0xfe) | e[4] >> 7,
+                               blue | blue >> 6], -1)
+        vertical = np.stack([(e[5] << 5 & 0xe0) | (e[6] >> 3 & 0x1c) | (e[5] >> 1 & 3),
+                             (e[6] << 3 & 0xf8) | (e[7] >> 5 & 6) | (e[6] >> 4 & 1), (e[7] << 2 & 0xff) | (e[7] >> 4 & 3)], -1)
+        result[planar] = clamp((x[:, None] * (horizontal - origin) + y[:, None] * (vertical - origin)
+                                + 4 * origin + 2) >> 2)
+    return result
+
+
+def _etc2_rgba8_image(data, width, height):
+    """Exact ETC2 RGBA8 (EAC alpha + ETC2 colour) pixels, unflipped, like texture65's output.
+
+    A numpy port of upstream decode_etc2a8 (no native codec enters this process).
+    """
+    import numpy as np
+    from PIL import Image
+
+    columns, rows = (width + 3) // 4, (height + 3) // 4
+    size = columns * rows * 16
+    if len(data) < size:
+        raise ValueError("Truncated compressed stage texture data.")
+    blocks = np.frombuffer(bytes(data[:size]), np.uint8).reshape(-1, 16)
+    pixels = np.empty((len(blocks), 16, 4), np.uint8)
+    for start in range(0, len(blocks), 16384):  # bounds the int32 working arrays
+        pixels[start:start + 16384, :, :3] = _etc2_rgb(blocks[start:start + 16384, 8:])
+    alpha = blocks[:, :8].astype(np.int64)
+    bits = np.zeros(len(blocks), np.uint64)
+    for index in range(8):
+        bits = bits << np.uint64(8) | alpha[:, index].astype(np.uint64)
+    order = np.arange(16, dtype=np.uint64)
+    codes = (bits[:, None] >> (np.uint64(3) * (np.uint64(15) - order)) & np.uint64(7)).astype(np.int64)
+    multiplier = alpha[:, 1:2] >> 4
+    modifiers = np.asarray(_EAC_MODIFIERS, np.int64)[alpha[:, 1] & 0xf]
+    values = alpha[:, :1] + multiplier * np.take_along_axis(modifiers, codes, 1)
+    # A zero multiplier keeps the base codeword for every pixel.
+    pixels[..., 3] = np.where(multiplier == 0, alpha[:, :1], np.clip(values, 0, 255))
+    # Pixel i = x * 4 + y -> rows of 4x4 blocks, cropped to the logical extent.
+    image = pixels.reshape(rows, columns, 4, 4, 4).transpose(0, 3, 1, 2, 4).reshape(rows * 4, columns * 4, 4)
+    return Image.fromarray(np.ascontiguousarray(image[:height, :width]), "RGBA")
 
 
 def _embedded_android():
@@ -57,7 +173,9 @@ def _remember_android_thumbnail(key, data):
 def _remaining(deadline):
     seconds = deadline - time.monotonic()
     if seconds <= 0:
+        transient_failures.note()
         raise TimeoutError("Thumbnail decoding timed out")
+    mv_studio_progress.alive()  # an MV import stops here for a client that left
     return seconds
 
 
@@ -89,6 +207,7 @@ def _stage_block_image(format_name, data, width, height, deadline):
     if not binary or not os.path.isfile(binary):
         raise ValueError("The bundled stage texture decoder is unavailable.")
     if not _TEXTURE65_SLOT.acquire(timeout=_remaining(deadline)):
+        transient_failures.note()
         raise TimeoutError("Another compressed texture is still decoding.")
     try:
         with tempfile.TemporaryDirectory(prefix="webtools_stage_texture_") as directory:
@@ -108,6 +227,10 @@ def _stage_block_image(format_name, data, width, height, deadline):
             if len(pixels) != expected:
                 raise ValueError("The stage texture decoder output changed while reading.")
             return Image.frombytes("RGBA", (width, height), pixels)
+    except BaseException:
+        # The child may have been killed, timed out or failed to start.
+        transient_failures.note()
+        raise
     finally:
         _TEXTURE65_SLOT.release()
 
@@ -117,8 +240,17 @@ def _android_image(texture, deadline, *, stage=False):
 
     Do not access Texture2D.image: unsupported formats can enter native texture
     decoders with known SIGILL failures. get_image_data() only reads bytes and
-    also handles Unity's external/streamed texture storage.
+    also handles Unity's external/streamed texture storage. A failure of the
+    machine (I/O, memory, a decoder child) is noted in transient_failures.
     """
+    try:
+        return _decode_android_image(texture, deadline, stage=stage)
+    except transient_failures.ENVIRONMENT:
+        transient_failures.note()
+        raise
+
+
+def _decode_android_image(texture, deadline, *, stage=False):
     _remaining(deadline)
     width, height = texture.m_Width, texture.m_Height
     if (not isinstance(width, int) or not isinstance(height, int)
@@ -159,6 +291,8 @@ def _android_image(texture, deadline, *, stage=False):
         if len(data) < needed:
             raise ValueError("Truncated raw texture data")
         image = Image.frombytes(mode, (width, height), bytes(data[:needed]), "raw", layout)
+    elif stage_format == "etc2a8":
+        image = _etc2_rgba8_image(data, width, height)
     elif stage_format:
         physical = (width, height)
         if stage_format == "etc1":
@@ -180,6 +314,7 @@ def _android_image(texture, deadline, *, stage=False):
         if not binary or not os.path.isfile(binary):
             raise ValueError("Bundled UnityCrunch ETC2A decoder is unavailable")
         if not _TEXTURE65_SLOT.acquire(timeout=_remaining(deadline)):
+            transient_failures.note()
             raise TimeoutError("Another UnityCrunch texture is still decoding")
         try:
             with tempfile.TemporaryDirectory(prefix="webtools_texture65_") as directory:
@@ -204,6 +339,10 @@ def _android_image(texture, deadline, *, stage=False):
                 if len(pixels) != needed:
                     raise ValueError("UnityCrunch decoder output changed while reading")
                 image = Image.frombytes("RGBA", (width, height), pixels)
+        except BaseException:
+            # The child may have been killed (a negative code), timed out or failed to start.
+            transient_failures.note()
+            raise
         finally:
             _TEXTURE65_SLOT.release()
     else:
@@ -236,14 +375,19 @@ def _android_image(texture, deadline, *, stage=False):
             # Decoding blocks is pixel-exact at every thread count; retain up
             # to four workers only for images large enough to use them.
             threads = max(1, min(4, os.cpu_count() or 1, (width * height + 8191) // 8192))
-            subprocess.run([binary, "-dl", source, output, "-j", str(threads)], check=True,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                           timeout=_remaining(deadline))
-            # Explicit readers avoid importing unrelated Pillow plugins.
-            with decoded_image(output) as decoded:
-                if decoded.size != (width, height):
-                    raise ValueError("ASTC decoder returned incorrect dimensions")
-                image = decoded.convert("RGBA")
+            try:
+                subprocess.run([binary, "-dl", source, output, "-j", str(threads)], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               timeout=_remaining(deadline))
+                # Explicit readers avoid importing unrelated Pillow plugins.
+                with decoded_image(output) as decoded:
+                    if decoded.size != (width, height):
+                        raise ValueError("ASTC decoder returned incorrect dimensions")
+                    image = decoded.convert("RGBA")
+            except BaseException:
+                # The child may have been killed, timed out or failed to start.
+                transient_failures.note()
+                raise
     # UnityPy's Texture2D.image applies this same final flip by default.
     try:
         return image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)

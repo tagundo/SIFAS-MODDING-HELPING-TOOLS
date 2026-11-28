@@ -409,24 +409,141 @@ class ViewerModFlowTests(unittest.TestCase):
         public = self.package()["mod_package"]
         controller = Mock()
         controller.is_running.return_value = True
+        saved = Path(public["package_path"])
+        added = self.output / "mods/added" / saved.name
         def runner(job, source_path, expected_sha256, *, restart_server=False):
             self.assertTrue(restart_server)
             self.assertEqual(expected_sha256, public["sha256"])
-            copied = Path(source_path)
-            self.assertEqual(copied.parent, self.library / "suit")
-            self.assertTrue(copied.is_absolute())
-            self.assertEqual(hashlib.sha256(copied.read_bytes()).hexdigest(), public["sha256"])
+            handed = Path(source_path)
+            self.assertEqual(handed, added)
+            self.assertTrue(handed.is_absolute())
+            self.assertFalse(saved.exists())
+            self.assertEqual(hashlib.sha256(handed.read_bytes()).hexdigest(), public["sha256"])
             return "Mock runner hand-off only; no installer executed"
         with patch("adminui.serverctl._controller", controller), patch("adminui.tools.installers.run_costume_file", side_effect=runner) as called:
             installed = self.install(public["token"])
             self.assertIs(installed["installed"], True)
             self.assertTrue(installed["was_running"])
-            self.assertEqual(installed["mod_package"], public)
+            # The saved ZIP itself moved to mods/added; nothing else changed.
+            self.assertEqual(installed["mod_package"], {**public, "package_path": str(added)})
+            self.assertEqual(installed["installed_package_path"], str(added))
+            self.assertEqual(sorted(path.name for path in self.output.rglob("*.zip")), [saved.name])
+            self.assertFalse((self.library / "suit").exists())
             with self.assertRaisesRegex(ValueError, "already being added|installed"):
                 self.install(public["token"])
             called.assert_called_once()
         with self.assertRaises(ValueError):
             flow.validate_install(public["token"])
+
+    def test_mod_zip_lands_in_mods_saved_with_a_readable_date_first_name(self):
+        result = self.package()
+        package = Path(result["mod_package"]["package_path"])
+        self.assertEqual(package.parent, (self.output / "mods/saved").resolve())
+        self.assertRegex(package.name, r"^\d{4}-\d{2}-\d{2}_\d{4}_006_Maki_Neutral_edited_costume_(android|ios)\.zip$")
+        self.assertIn(str(package), result["output_paths"])
+        # The edit folder keeps its work files but no second copy of the ZIP.
+        edit = Path(result["recipe_path"]).parent
+        self.assertFalse((edit / "mod").exists())
+        self.assertEqual(list(self.output.rglob("*.zip")), [package])
+        with patch.object(flow, "mod_zip_stem", return_value="same-name"):
+            first = Path(self.package()["mod_package"]["package_path"])
+            (self.output / "mods/added").mkdir(parents=True, exist_ok=True)
+            (self.output / "mods/added/same-name_2.zip").write_bytes(b"added earlier")
+            second = Path(self.package()["mod_package"]["package_path"])
+        self.assertEqual((first.name, second.name), ("same-name.zip", "same-name_3.zip"))
+        self.assertEqual((self.output / "mods/added/same-name_2.zip").read_bytes(), b"added earlier")
+
+    def test_another_mod_member_installs_names_with_that_members_number(self):
+        # Opened as Umi's costume; the Mod is for Chika. Without dictionaries
+        # the member names fall back to the roster, like the page's choices.
+        opened = {"nameBases": {"en": "004 Umi Sonoda · Winter", "ko": "004 소노다 우미 · 동복", "ja": "004 園田 海未 · 冬服"},
+                  "nameTexts": {"en": "Winter", "ko": "동복", "ja": "冬服"}, "nameOwner": 4, "characterId": 4, "sources": []}
+        def installed(character, name):
+            with patch.object(flow, "metadata", return_value=dict(opened)):
+                result = flow.create_package(self.token, self.state, output_root=self.output, repo_root=self.runtime,
+                    cache_root=self.cache, display_name=name, character_id=character, name_parts=[[{"k": "Outlines"}]],
+                    language="ko", job=self.job)
+            package = Path(result["mod_package"]["package_path"])
+            with zipfile.ZipFile(package) as archive:
+                manifest = next(name for name in archive.namelist() if name.endswith("modinstall.txt"))
+                values = {node.targets[0].id: ast.literal_eval(node.value) for node in ast.parse(archive.read(manifest).decode("utf-8")).body
+                          if isinstance(node, ast.Assign) and node.targets[0].id.startswith("costume_name_")}
+            return package.name, values
+        name, values = installed(101, "101 Chika Takami · 동복 · 외곽선")
+        self.assertEqual(values, {"costume_name_en": "101 Chika Takami · Winter · Outlines", "costume_name_ko": "101 Chika Takami · 동복 · 외곽선",
+                                  "costume_name_zh": "101 Chika Takami · Winter · Outlines", "costume_name_ja": "101 Chika Takami · 冬服 · 輪郭線"})
+        self.assertRegex(name, r"^\d{4}-\d{2}-\d{2}_\d{4}_101_Chika_Takami_동복_외곽선_(android|ios)\.zip$")
+        # The opened member's own automatic name is installed per language too.
+        _, values = installed(4, "004 소노다 우미 · 동복 · 외곽선")
+        self.assertEqual(values["costume_name_ja"], "004 園田 海未 · 冬服 · 輪郭線")
+        # Umi's automatic name for Chika is not the automatic name: one typed name for all.
+        name, values = installed(101, "004 소노다 우미 · 동복 · 외곽선")
+        self.assertEqual(set(values.values()), {"004 소노다 우미 · 동복 · 외곽선"})
+
+    def test_publication_check_failure_leaves_no_zip_in_mods_saved(self):
+        move = flow._move_mod_zip
+        def damaged(*args, **kwargs):
+            target = move(*args, **kwargs)
+            with target.open("ab") as output:
+                output.write(b"damaged in transit")
+            return target
+        with patch.object(flow, "_move_mod_zip", side_effect=damaged):
+            with self.assertRaisesRegex(ValueError, "completed-output check"):
+                self.package()
+        self.assertEqual(list(self.output.rglob("*.zip")), [])
+        self.assertEqual(len(flow._PACKAGES), 0)
+
+    def test_mod_zip_names(self):
+        from datetime import datetime
+        when = datetime(2026, 11, 27, 14, 5)
+        # A typed name: the member's three-digit number, then the given name.
+        self.assertEqual(flow.mod_zip_stem("Knit reform", 208, "android", when=when),
+                         "2026-11-27_1405_208_Emma_Knit_reform_android")
+        self.assertEqual(flow.mod_zip_stem("Emma knit", 208, "android+ios", when=when),
+                         "2026-11-27_1405_208_Emma_knit_android-ios")
+        self.assertEqual(flow.mod_zip_stem("리나 보드 / 교복", 209, "ios", scene=True, when=when),
+                         "2026-11-27_1405_209_Rina_리나_보드_교복_ios_scene")
+        # The automatic name already starts with the number and the member.
+        self.assertEqual(flow.mod_zip_stem("209 텐노지 리나 · 리나 보드", 209, "ios", scene=True, when=when),
+                         "2026-11-27_1405_209_텐노지_리나_리나_보드_ios_scene")
+        self.assertEqual(flow.mod_zip_stem("..", None, None, when=when), "2026-11-27_1405_costume")
+        self.assertEqual(flow.mod_zip_stem("../../x", 999, "android", when=when), "2026-11-27_1405_x_android")
+
+    @unittest.skipUnless(PARENT_INSTALLERS, "Parent installer adapters are needed for mocked hand-off unit checks")
+    def test_failed_installer_hand_off_returns_the_zip_to_mods_saved(self):
+        self.runtime_gates()
+        public = self.package()["mod_package"]
+        saved = Path(public["package_path"])
+        def runner(job, source_path, expected_sha256, *, restart_server=False):
+            self.assertFalse(saved.exists())
+            self.assertEqual(Path(source_path).parent, self.output / "mods/added")
+            raise RuntimeError("QA installer failure")
+        with patch("adminui.serverctl._controller", None), patch("adminui.tools.installers.run_costume_file", side_effect=runner):
+            with self.assertRaisesRegex(RuntimeError, "QA installer failure"):
+                self.install(public["token"])
+        self.assertEqual(hashlib.sha256(saved.read_bytes()).hexdigest(), public["sha256"])
+        self.assertEqual(list((self.output / "mods/added").iterdir()), [])
+        receipt = flow._PACKAGES[public["token"]]
+        self.assertEqual((receipt["status"], receipt["public"]["package_path"]), ("failed", str(saved)))
+
+    @unittest.skipUnless(PARENT_INSTALLERS, "Parent installer adapters are needed for mocked hand-off unit checks")
+    def test_added_name_never_replaces_a_file_in_the_installer_drop_folders(self):
+        self.runtime_gates()
+        public = self.package()["mod_package"]
+        saved = Path(public["package_path"])
+        drops = [self.library / "suit" / saved.name, self.runtime / "assets/package/suit" / (saved.stem + "_2.zip")]
+        for path in drops:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"user drop")
+        handed = []
+        def runner(job, source_path, expected_sha256, *, restart_server=False):
+            handed.append(Path(source_path))
+            return "Mock runner hand-off only"
+        with patch("adminui.serverctl._controller", None), patch("adminui.tools.installers.run_costume_file", side_effect=runner):
+            installed = self.install(public["token"])
+        self.assertEqual(handed, [self.output / "mods/added" / (saved.stem + "_3.zip")])
+        self.assertEqual(installed["mod_package"]["package_path"], str(handed[0]))
+        self.assertEqual([path.read_bytes() for path in drops], [b"user drop", b"user drop"])
 
     @unittest.skipUnless(PARENT_INSTALLERS, "Parent installer adapters are needed for mocked hand-off unit checks")
     def test_installer_unit_double_install_is_blocked_while_first_runner_is_active(self):
@@ -603,6 +720,199 @@ class ViewerModPreservedProvenanceTests(unittest.TestCase):
                 repo_root=fixture.root, cache_root=fixture.cache))
         self.assertEqual(list(fixture.cache.glob(".provenance-*.json")), [])
         self.assertEqual(preserved.read_bytes(), imported.read_bytes())
+
+
+@unittest.skipUnless(AVAILABLE, "Real UnityPy/numpy and the paired-edit module are required")
+class ViewerModGameFaceTests(unittest.TestCase):
+    """The face option and Save mod ZIP follow whether a body's completed face is the game's own."""
+
+    MEMBER = 6
+
+    @classmethod
+    def setUpClass(cls):
+        from test_viewer_transplants import costume_fixture
+
+        def bundle(names, mouth=None):
+            environment = UnityPy.load(costume_fixture())
+            for obj in environment.objects:
+                if obj.type.name == "Texture2D":
+                    tree = obj.read_typetree(); tree["m_Name"] = names; obj.save_typetree(tree)
+                if obj.type.name == "AssetBundle" and mouth:
+                    tree = obj.read_typetree()
+                    tree["m_Name"] = tree["m_AssetBundleName"] = "ch0006_facedynamic.prefab.unity3d"
+                    obj.save_typetree(tree)
+                if obj.type.name == "Mesh" and mouth:
+                    tree = obj.read_typetree(); tree["m_Name"] = mouth; obj.save_typetree(tree)
+            return environment.file.save()
+        cls.body_raw = bundle("ch0006_co0001_body")
+        # The member's shared catalog face, and an installed costume's own face.
+        cls.stock = bundle("ch0006_face", "Mouth")
+        cls.private = bundle("ch0006_face_installed_private", "Mouth")
+        assert cls.stock != cls.private
+
+    def setUp(self):
+        import catalog_face_fixture
+        self.catalog = catalog_face_fixture
+        self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.runtime, self.cache = self.root / "runtime", self.root / "face-cache"
+        self.runtime.mkdir()
+        self.output, self.game_cache = self.root / "exports", self.root / "game-cache"
+        receipts = patch.object(flow, "_PACKAGES", OrderedDict())
+        receipts.start(); self.addCleanup(receipts.stop)
+        # Only the extractor's entry is replaced: restoring all of sys.modules
+        # would drop modules first imported during a test.
+        self.addCleanup(catalog_face_fixture.install_extractor(self.root))
+        from webtools.core import model_faces
+        self.faces = model_faces
+        self.context = {"repo_root": str(self.runtime), "cache_dir": str(self.cache)}
+
+    def session(self, face_raw, face_path):
+        """A body with an automatic face companion at ``face_path``, as prepare registers it."""
+        body = self.root / "costume.unity"
+        body.write_bytes(self.body_raw)
+        face_path = Path(face_path); face_path.parent.mkdir(parents=True, exist_ok=True)
+        if face_path.parent.name == "models":
+            self.faces._save(face_path, face_raw, self.MEMBER)
+        else:
+            face_path.write_bytes(face_raw)
+        rig = model_viewer.prepare([str(body), str(face_path)], rigged=True,
+                                   face_context={"enabled": False, "allow_download": False})["rig"]
+        token = secrets.token_hex(16)
+        proof = {"path": str(face_path), "sha256": hashlib.sha256(face_raw).hexdigest(), "sourceIndex": 1}
+        model_edits.register_session(token, [str(body)], rig, companions=[proof])
+        return token
+
+    def package(self, token, include, allow_download=False):
+        return flow.create_package(token, {"version": 1, "savedSettingsEnabled": True, "edits": []},
+            output_root=self.output, repo_root=self.runtime, cache_root=self.game_cache, display_name="Face option",
+            character_id=self.MEMBER, include_face_edits=include, face_cache_root=self.cache,
+            face_context=dict(self.context, allow_download=allow_download), job=Job())
+
+    def option(self, token, **options):
+        return flow.face_option(model_edits.mod_source_context(token), repo_root=self.runtime,
+                                face_cache_root=self.cache, face_context=self.context, **options)
+
+    def shipped_face(self, result):
+        with zipfile.ZipFile(result["mod_package"]["package_path"]) as archive:
+            fields = {node.targets[0].id: ast.literal_eval(node.value)
+                      for node in ast.parse(archive.read("modinstall.txt").decode()).body}
+            return archive.read(fields["costume_facedynamic_file"]) if fields["costume_facedynamic_file"] else None
+
+    def test_the_catalog_original_is_read_as_automatic_faces_are_read(self):
+        descriptors = self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", self.stock)})
+        name = self.faces._cache_name(self.MEMBER, descriptors["face6"])
+        other, smaller = self.stock[:-1] + bytes([self.stock[-1] ^ 1]), self.stock[:-7]
+        faces = {"stock": self.stock, "other": other, "smaller": smaller}
+        with patch.object(self.faces, "_download_with_deadline", side_effect=AssertionError("A local pack is read first")) as never:
+            found = self.faces.catalog_originals(self.MEMBER, faces, self.context, platform=13, download=True)
+        never.assert_not_called()
+        self.assertEqual(found, {"listed": True, "proven": {"stock"}, "unread": set(), "names": {name}})
+        # The local pack's section was decrypted into the face cache under the
+        # catalog name automatic faces use, as a local (not downloaded) copy.
+        cached = self.cache / "models" / name
+        self.assertEqual(self.faces._cached(cached), self.stock)
+        self.assertFalse(self.faces._downloaded(cached))
+        # Without the cache copy and the pack, an original of a face's size is unread...
+        (self.runtime / "static" / "packface6").unlink(); cached.unlink(); Path(str(cached) + ".json").unlink()
+        # ...the asset server is asked only when downloads are allowed...
+        with patch.object(self.faces, "_download_with_deadline", side_effect=AssertionError("Downloads are off")) as never:
+            found = self.faces.catalog_originals(self.MEMBER, faces, self.context, platform=13)
+            refused = self.faces.catalog_originals(self.MEMBER, faces, dict(self.context, allow_download=False),
+                                                   platform=13, download=True)
+        never.assert_not_called()
+        self.assertEqual((found["proven"], found["unread"]), (set(), {"stock", "other"}))
+        self.assertEqual(refused["unread"], {"stock", "other"})
+        # ...and a copy fetched only to compare keeps a download's place.
+        with patch.object(self.faces, "_download_with_deadline", return_value=self.stock) as download:
+            found = self.faces.catalog_originals(self.MEMBER, faces, self.context, platform=13, download=True)
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual((found["proven"], found["unread"]), ({"stock"}, set()))
+        self.assertTrue(self.faces._downloaded(cached) and self.faces._compared(cached))
+        self.assertTrue(self.faces._compared(self.cache / "packs" / "packface6"))
+        # No catalog at all lists nothing; a listing that fails leaves every face unread.
+        self.assertEqual(self.faces.catalog_originals(self.MEMBER, faces, dict(self.context, repo_root=str(self.root / "none")))["listed"], False)
+        with patch.object(self.faces._CatalogFaces, "_descriptor_iter", side_effect=RuntimeError("catalog")):
+            self.assertEqual(self.faces.catalog_originals(self.MEMBER, faces, self.context)["unread"], set(faces))
+        # The default body itself is never a face original.
+        self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", self.stock)})
+        with sqlite3.connect(self.runtime / "assets/db/gl/asset_a_en.db") as db:
+            db.execute("INSERT INTO member_model VALUES('body-default','packbody',0,?,1,2)", (len(self.private),))
+            db.execute("INSERT INTO m_asset_package_mapping VALUES('packbody',?)", (len(self.private),))
+        (self.runtime / "static" / "packbody").write_bytes(self.private)
+        found = self.faces.catalog_originals(self.MEMBER, {"private": self.private}, self.context, platform=13)
+        self.assertEqual((found["proven"], found["unread"]), (set(), set()))
+        self.assertEqual(found["names"], {name})
+
+    def test_an_installed_costumes_own_face_is_included_and_cannot_be_left_out(self):
+        from webtools.core import viewer_mod_package
+        from webtools import i18n
+        self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", self.stock)})
+        # An official costume completes the member's catalog face: off, as before.
+        official = self.session(self.stock, self.root / "library" / "ch0006_facedynamic.unity")
+        self.assertEqual(self.option(official), {"faceIncluded": False})
+        self.assertIsNone(self.shipped_face(self.package(official, False)))
+        # An installed costume completes its own private face (a cache copy of
+        # its own catalog asset): it is the costume's own face.
+        installed = self.session(self.private, self.cache / "models" / ("ch0006_" + "a" * 24 + ".unity"))
+        context = model_edits.mod_source_context(installed)
+        self.assertEqual(flow.private_automatic_faces(context, repo_root=self.runtime, face_cache_root=self.cache,
+                                                      face_context=self.context), [1])
+        self.assertEqual(self.option(installed), {"faceIncluded": True})
+        saved = self.output / flow.MODS_FOLDER / flow.SAVED_FOLDER
+        before = sorted(saved.iterdir())
+        with self.assertRaises(viewer_mod_package.ModPackageError) as refused:
+            self.package(installed, False)
+        self.assertEqual(str(refused.exception), viewer_mod_package.FACE_EXCLUSION_REFUSED)
+        for language in ("ko", "ja"):
+            self.assertNotEqual(i18n.tr(str(refused.exception), language), str(refused.exception))
+        self.assertEqual(sorted(saved.iterdir()), before, "No Mod ZIP was created")
+        self.assertIsNotNone(self.shipped_face(self.package(installed, True)), "Ticked, the own face ships")
+
+    def test_a_face_whose_original_cannot_be_read_counts_only_as_another_catalog_copy(self):
+        # The member's original has this face's size, but neither its cache copy
+        # nor its pack is here and nothing may be downloaded.
+        self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", b"x" * len(self.private))}, local=False)
+        cached = self.session(self.private, self.cache / "models" / ("ch0006_" + "b" * 24 + ".unity"))
+        self.assertEqual(self.option(cached), {"faceIncluded": True}, "A cache copy of another catalog asset is the costume's own")
+        # A changed cache copy, or a library file, proves nothing either way: as before.
+        changed = self.cache / "models" / ("ch0006_" + "b" * 24 + ".unity.json")
+        record = json.loads(changed.read_text()); changed.write_text(json.dumps(dict(record, sha256="0" * 64)))
+        self.assertEqual(self.option(cached), {"faceIncluded": False})
+        library = self.session(self.private, self.root / "library" / "ch0006_facedynamic.unity")
+        self.assertEqual(self.option(library), {"faceIncluded": False})
+        self.assertIsNone(self.shipped_face(self.package(library, False)))
+        # A standalone viewer without a game catalog keeps the earlier behaviour.
+        import shutil
+        shutil.rmtree(self.runtime / "assets")
+        installed = self.session(self.private, self.cache / "models" / ("ch0006_" + "c" * 24 + ".unity"))
+        self.assertEqual(self.option(installed), {"faceIncluded": False})
+        self.assertIsNone(self.shipped_face(self.package(installed, False)))
+
+    def test_the_face_option_downloads_only_when_the_open_allows_it(self):
+        descriptors = self.catalog.write_catalog(self.runtime, self.MEMBER, {"face6": ("packface6", self.stock)}, local=False)
+        official = self.session(self.stock, self.root / "library" / "ch0006_facedynamic.unity")
+        # The face context alone does not allow it: the open's own choice does.
+        with patch.object(self.faces, "_download_with_deadline", side_effect=AssertionError("No download without permission")) as never:
+            self.assertEqual(self.option(official), {"faceIncluded": False}, "Unread: as before")
+            self.assertEqual(flow.face_option(model_edits.mod_source_context(official), repo_root=self.runtime,
+                                              face_cache_root=self.cache, face_context=dict(self.context, allow_download=False),
+                                              download=True), {"faceIncluded": False})
+            # Save mod ZIP never downloads, even where the face context would allow it.
+            self.assertIsNone(self.shipped_face(self.package(official, False, allow_download=True)))
+        never.assert_not_called()
+        with patch.object(self.faces, "_download_with_deadline", return_value=self.stock) as download:
+            self.assertEqual(self.option(official, download=True), {"faceIncluded": False})
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual(self.faces._cached(self.cache / "models" / self.faces._cache_name(self.MEMBER, descriptors["face6"])), self.stock)
+        # Save mod ZIP checks again from that cache copy, without the network.
+        with patch.object(self.faces, "_download_with_deadline", side_effect=AssertionError("Saving never downloads")) as never:
+            installed = self.session(self.private, self.root / "library2" / "ch0006_facedynamic.unity")
+            self.assertEqual(self.option(installed), {"faceIncluded": True}, "Its original was read: another face")
+            with self.assertRaisesRegex(ValueError, "cannot be left out"):
+                self.package(installed, False)
+        never.assert_not_called()
 
 
 if __name__ == "__main__":

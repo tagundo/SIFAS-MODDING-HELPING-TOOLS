@@ -55,12 +55,26 @@ class AtlasBake:
     diagnostics: tuple
     identity: bool
     unique_sources: int
+    # {slot: changed reserved texels per mip level} when the bake was given
+    # reserved surfaces (other surfaces of the receiver texture), else None.
+    reserved_changes: dict = None
 
 
 _MEMBER_EXTERNAL = ("cab-9382ea964987eceddd567506a3b21312", 8291131735116688333)
 _FEATURES = {"_MATCAP_ON", "_EMISSIVE_ON", "_CHEEK_ON"}
 _RIM_FLOATS = ("_RimglightIntensity", "_RimglightPower")
 _RIM_COLORS = ("_RimlightColor", "_RimlightDirection")
+CULL_MODE_HINT = ("One game material holds one culling setting, so the donor's and the receiving mesh's materials must "
+                  "match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.")
+# Template detail before CULL_MODE_HINT; UIs translate it with its values kept.
+CULL_MODE_DETAIL = "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}."
+# A culled donor part on a receiving material that culls nothing (_CullMode 0) keeps every
+# triangle it had. The part graft gives it its own submesh and a culled copy of the receiving
+# material (graft_game_rules rule 2) and says so with CULL_MODE_OWN_MATERIAL; only when that
+# split cannot be done is it drawn from both sides like the rest of that mesh (CULL_MODE_BOTH_SIDES).
+CULL_MODE_OWN_MATERIAL = ("{donor} (_CullMode {donor_value}) keeps its culling: it becomes its own submesh drawn by "
+                          "{copy}, a copy of {receiver} (_CullMode 0) with _CullMode {donor_value}.")
+CULL_MODE_BOTH_SIDES = "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show."
 
 
 def _pairs(tree, key):
@@ -181,11 +195,18 @@ def _check_profiles(sources, diagnostics):
                         f"{source.name}: outline stencil {floats[name]:g} -> {tf[name]:g} from wearer material "
                         f"{sources[0].name}; its registered original character rimlight controller owns the 3/8 stencil state.")
                     continue
+                if name == "_CullMode" and _equal(tf[name], 0.) and floats[name] in (1., 2.):
+                    # The receiving material draws both sides, so every donor triangle
+                    # still draws; nothing the donor showed is lost. Whether the part
+                    # keeps its culling is decided after the atlas, when the written
+                    # part is split off (graft_game_rules); that step reports it.
+                    continue
                 if name == "_CullMode":
-                    raise AtlasCompatibilityError(
-                        f"{source.name}: _CullMode is {floats[name]:g}, while {sources[0].name} uses {tf[name]:g}. "
-                        "One game material needs matching culling settings. Choose a matching target mesh "
-                        "(for a head accessory, choose Hair).")
+                    # A material-state rule, not a head rule: the client keeps one
+                    # sharedMaterial per combined renderer (CombineBody/BuildSkinInfo).
+                    raise AtlasCompatibilityError(CULL_MODE_DETAIL.format(
+                        donor=source.name, donor_value=f"{floats[name]:g}", receiver=sources[0].name,
+                        receiver_value=f"{tf[name]:g}") + " " + CULL_MODE_HINT)
                 raise AtlasCompatibilityError(f"{source.name}: active {name} differs from the wearer; match this material setting before combining Body materials.")
         for name in wanted_colors:
             # RGB values of a zero-strength tint/ambient operation are dormant.

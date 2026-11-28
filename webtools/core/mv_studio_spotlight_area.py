@@ -101,5 +101,5 @@ def export(scene, glb, materials, source, deadline):
         "uv": glb.attribute(np.asarray(_QUAD["uv"], dtype=np.float32), "VEC2"),
         "index": glb.attribute(np.asarray(_QUAD["indices"], dtype=np.uint16), "SCALAR", 5123),
     }
-    return {"prefabPathId": str(prefab.path_id), "geometry": geometry, "textures": texture_indices,
+    return {"prefabPathId": str(prefab.path_id), "name": scene.name(prefab), "geometry": geometry, "textures": texture_indices,
             "queue": 3000, "uv": uv, **_authored_trs(scene.local_tree(transform))}

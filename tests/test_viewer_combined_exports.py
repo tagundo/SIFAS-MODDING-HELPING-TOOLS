@@ -97,6 +97,26 @@ class CombinedExportTests(unittest.TestCase):
         self.assertEqual(source.read_bytes(), raw); self.assertEqual(donor.read_bytes(), raw)
         self.assertEqual(graft.read_bytes(), graft_raw)
 
+    def test_held_face_outline_rows_reach_the_combined_mesh_recipe(self):
+        # A masked Rina view holds face rows it cannot edit (viewer_scene_roles).
+        # A mesh-tool save writes them with the same writer and both recipe
+        # copies name them, so the combined recipe still restores.
+        session = model_edits._session(self.token)
+        record = session['outlines']['meshes'][0]
+        row = {'id': record['id'], 'factor': .5}
+        operations = self.mesh_state(deleteFaces=[0])
+        expected = self.export(dict(self.empty, outlines=[row]), mesh_state=operations)
+        session['heldFaceOutlines'], session['heldFaceProof'] = [row], {'meshes': [record]}
+        result = self.export(self.empty, mesh_state=operations)
+        self.assertEqual(Path(result['preview_paths'][0]).read_bytes(), Path(expected['preview_paths'][0]).read_bytes())
+        self.assertEqual(result['recipe']['bodyState']['outlines'], [row])
+        self.assertEqual(result['recipe']['bodyRecipe']['state'], result['recipe']['bodyState'])
+        self.assertEqual(json.loads(Path(result['recipe_path']).read_text()), result['recipe'])
+        # This view can edit that mesh itself, so restoring puts it in the state.
+        restored = flow.restore_current(self.token, result['recipe'])
+        self.assertEqual(restored['state']['outlines'], [row])
+        self.assertEqual(session['heldFaceOutlines'], [])
+
     def test_mesh_body_physics_and_outline_share_one_real_serialized_export(self):
         breast = next(row for row in self.metadata['nodes'] if row['name'] == 'BreastSize')
         bone = next(row for row in self.metadata['physics']['components'] if row['kind'] == 'bone')
@@ -242,6 +262,74 @@ class CombinedExportTests(unittest.TestCase):
                 self.assertEqual(self.source.read_bytes(), body_raw); self.assertEqual(face.read_bytes(), face_raw)
                 self.assertTrue(result['metadata']['hasFaceCompanions'])
 
+    def test_reedit_from_original_reopens_the_body_and_its_automatic_face_as_companion(self):
+        _, body_raw, face_raw = self.face_session(203)
+        record = next(row for row in self.metadata['outlines']['meshes'] if row['sourceIndex'] == 1)
+        state = dict(self.empty, outlines=[{'id': record['id'], 'factor': 1, 'absolute': 40}])
+        saved = model_edits.export(self.token, model_edits.validate_state(self.token, state), self.output)
+        # Every original is preserved; re-edit reopens only the selected body
+        # and completes its face again as the automatic companion.
+        self.assertEqual([Path(path).read_bytes() for path in saved['original_paths']], [body_raw, face_raw])
+        self.assertEqual(saved['reedit_paths'], saved['original_paths'][:1])
+        self.assertEqual((saved['reedit_variants'], saved['reedit_auto_face']), ({}, True))
+        body, face = saved['original_paths']
+        # The saved face is named with its body, so face completion of the
+        # re-edit takes exactly that copy first (model_faces COMPANION_HINT).
+        from webtools.core import model_faces
+        hint = json.loads((Path(body).parent / model_faces.COMPANION_HINT).read_text())
+        self.assertEqual(hint, {'version': 1, 'body': {'file': Path(body).name, 'sha256': hashlib.sha256(body_raw).hexdigest()},
+                                'companions': [{'file': Path(face).name, 'sha256': hashlib.sha256(face_raw).hexdigest()}]})
+        self.assertNotIn(Path(face).name, (model_faces.COMPANION_HINT, model_edits.SCENE_BINDING))
+        # A fallback face (its outlines not proven by this body) is not pinned.
+        session = model_edits._session(self.token)
+        proven = session['outlines']['meshes']
+        session['outlines']['meshes'] = [row for row in proven if row['sourceIndex'] != 1]
+        try:
+            fallback = model_edits.export(self.token, model_edits.validate_state(self.token, self.empty, allow_empty=True),
+                                          self.output, allow_empty=True)
+        finally:
+            session['outlines']['meshes'] = proven
+        self.assertFalse((Path(fallback['original_paths'][0]).parent / model_faces.COMPANION_HINT).exists())
+        rig = model_viewer.prepare([body, face], rigged=True, face_context={'enabled': False, 'allow_download': False})['rig']
+        companion = {'path': face, 'sha256': hashlib.sha256(face_raw).hexdigest(), 'sourceIndex': 1}
+        package = lambda token, restored: flow.create_package(token, restored, output_root=self.output,
+            repo_root=self.runtime, cache_root=self.cache, display_name='Re-edit', character_id=None,
+            include_face_edits=True, job=Job(secrets.token_hex(6), 'viewer_mod_package'))
+        reedit = secrets.token_hex(16)
+        model_edits.register_session(reedit, saved['reedit_paths'], rig, companions=[companion])
+        restored = model_edits.restore(reedit, saved['recipe'])
+        result = package(reedit, restored)
+        with zipfile.ZipFile(result['mod_package']['package_path']) as archive:
+            fields = {node.targets[0].id: ast.literal_eval(node.value)
+                      for node in ast.parse(archive.read('modinstall.txt').decode()).body}
+            self.assertTrue(fields['costume_facedynamic_file'])
+        # Reopening the saved face as a second selected model (the old
+        # re-edit) is the refused case.
+        both = secrets.token_hex(16)
+        model_edits.register_session(both, saved['original_paths'], rig)
+        with self.assertRaisesRegex(ValueError, 'Choose one costume to package'):
+            package(both, model_edits.restore(both, saved['recipe']))
+
+    def test_a_costume_zip_that_includes_its_face_keeps_it_by_default(self):
+        def metadata(fields, automatic=()):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, 'w') as archive:
+                archive.writestr('modinstall.txt', ''.join(f'{key} = {value!r}\n' for key, value in fields.items()))
+            raw = buffer.getvalue()
+            context = {'containers': [{'name': 'costume.zip', 'path': str(self.root / 'costume.zip'), 'raw': raw,
+                                       'sha256': hashlib.sha256(raw).hexdigest()}],
+                       'sources': [], 'outline_only_sources': list(automatic)}
+            return flow.metadata(context, repo_root=self.runtime, cache_root=self.cache)
+        body = {'chara_id': 6, 'costume_file': 'body.unity'}
+        included = metadata(dict(body, costume_facedynamic_file='face.unity'))
+        self.assertEqual((included['hasFaceCompanions'], included['faceIncluded']), (True, True))
+        ios = metadata(dict(body, costume_file_ios='body-ios.unity', costume_facedynamic_file_ios='face-ios.unity'))
+        self.assertTrue(ios['faceIncluded'])
+        self.assertFalse(metadata(body)['faceIncluded'])
+        # An automatic face is offered but stays off by default.
+        automatic = metadata(body, automatic=[1])
+        self.assertEqual((automatic['hasFaceCompanions'], automatic['faceIncluded']), (True, False))
+
     def test_including_already_baked_face_and_explicit_exclusion(self):
         face, body_raw, face_raw = self.face_session(6)
         for include in (False, True):
@@ -313,9 +401,16 @@ class CombinedExportTests(unittest.TestCase):
         bundle_identity.verify_identity_only(body_raw, body_exec, body_proof['namespace'], _identities=identities, _bundle_names=runtime)
         bundle_identity.verify_identity_only(face_raw, face_exec, face_proof['namespace'])
         from webtools.core import viewer_mod_package
-        with self.assertRaisesRegex(ValueError, 'Reimport the original body'):
+        from webtools import i18n
+        with self.assertRaises(ValueError) as refused:
             viewer_mod_package.package_saved_export({'preview_paths': [str(package)], 'originals_preserved': True},
                 self.output / 'private-face-off', display_name='Must not break', include_face_edits=False)
+        # The refusal names the option that keeps the face, in every language.
+        self.assertEqual(str(refused.exception), viewer_mod_package.FACE_EXCLUSION_REFUSED)
+        self.assertIn("'Include face and mouth edits for this costume'", viewer_mod_package.FACE_EXCLUSION_REFUSED)
+        for language, label in (('ko', '이 코스튬의 얼굴·입 편집 포함'), ('ja', 'この衣装の顔・口の編集を含める')):
+            self.assertIn(label, i18n.tr(viewer_mod_package.FACE_EXCLUSION_REFUSED, language))
+            self.assertEqual(i18n.tr('Include face and mouth edits for this costume', language), label)
         # A raw body retains its original public dependency unchanged when its
         # automatic face is excluded; only private ZIP dependencies need refusal.
         off = self.package(self.empty, include_face_edits=False)

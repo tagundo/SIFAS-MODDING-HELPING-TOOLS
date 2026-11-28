@@ -1,17 +1,24 @@
 """Bounded Unity AnimationClip curves exported as standard glTF animations.
 
-Sources are read only. Streamed polynomials, dense samples and constants are
-evaluated at the source sample rate (at most 60 Hz) into LINEAR glTF samplers.
+Sources are read only. Cubic (streamed or editor Hermite) translation, rotation
+and scale channels are exported exactly as CUBICSPLINE samplers on their own key
+stamps; a value jump or a Float32 stamp collision keeps the LINEAR grid. Dense
+samples, Euler rotations and morph weights are evaluated at the source sample
+rate (at most 60 Hz) into LINEAR glTF samplers; an Euler rotation also carries
+its exact cubic in the clip extras (unityEuler). Constant channels keep their
+two end samples.
 Unsupported visibility/material/humanoid channels are reported, never guessed.
 No clip, including SIFAS's eye_900, is implicitly selected as a neutral pose.
 """
 import bisect
 from hashlib import blake2b
 import math
+import operator
 import os
 from pathlib import Path
 import re
 import struct
+import sys
 import time
 import zlib
 
@@ -45,6 +52,8 @@ class AnimationError(ValueError):
 
 def _check(deadline):
     if deadline is not None and time.monotonic() >= deadline:
+        from .transient_failures import note
+        note()
         raise AnimationError("Animation export exceeded its time budget.")
 
 
@@ -244,6 +253,233 @@ def _evaluate(curve, stamp):
     return value
 
 
+# Exact TRS export. Unity 2018.4 keeps, per streamed curve, the coefficients of
+# that curve's last key at or before the sample time and evaluates
+# t*(t*(t*c0 + c1) + c2) + c3 with t = time - key time (libunity GL 3.12.0:
+# StreamedClip seek 0x591304 caches {key time, c0..c3} per curve index, and
+# SampleClip 0x591078 evaluates that cache with separate fmul/fadd). A key has
+# no in/out weights: the four coefficients are the whole segment. Between two
+# stamps a cubic is exactly the glTF CUBICSPLINE (Hermite) segment built from
+# its values and first derivatives at both ends, so a channel keeps every key
+# stamp of its components (a component without a key there is split, with
+# equal in and out derivatives). Dense curves interpolate linearly (SampleClip
+# 0x591210) and stay on the LINEAR sample grid, as do Euler rotations, which
+# become quaternions per sample; their Euler cubic is kept beside that grid.
+_CUBIC_KINDS = ("translation", "rotation", "scale")
+# Float32 coefficients of a continuous curve meet the next key's value within
+# about 1e-7 (12035 and 12023 dances); a stepped key or an infinite editor
+# tangent jumps. A jump keeps the LINEAR grid, which does not invent a ramp.
+_CUBIC_JUMP = 1e-5
+
+
+def _float32(value):
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
+def _cubic_at(key, stamp):
+    """Value and derivative of one key's cubic segment at `stamp` (as `_evaluate`)."""
+    start, (a, b, c, d) = key
+    if abs(start) > 1e20:
+        return d, 0.  # Unity's negative sentinel seeds a constant first value.
+    delta = stamp - start
+    if delta <= 0:
+        return d, (c if delta == 0 else 0.)
+    return ((a * delta + b) * delta + c) * delta + d, (3 * a * delta + 2 * b) * delta + c
+
+
+def _cubic_channel(track, start, stop, deadline=None):
+    """(relative Float32 stamps, per-stamp [in, value, out] rows) or None for the LINEAR grid.
+
+    Rows hold raw Unity components: a cubic rotation is not normalized or
+    sign-flipped, as each component is its own curve in the client.
+    """
+    curves = track["curves"]
+    if (track["kind"] not in _CUBIC_KINDS + ("euler",) or not any(mode == "cubic" for mode, _ in curves)
+            or any(mode not in ("cubic", "constant") for mode, _ in curves)):
+        return None
+    stamps = {start, stop}
+    for mode, keys in curves:
+        if mode == "cubic":
+            if not keys:
+                raise AnimationError("An animation binding has no scalar curve values.")
+            stamps.update(stamp for stamp, _ in keys if start < stamp < stop)
+    stamps = sorted(stamps)
+    if len(stamps) > MAX_KEYFRAMES:
+        raise AnimationError("The animation has too many sampled frames.")
+    relative = [_float32(stamp - start) for stamp in stamps]
+    if any(a >= b for a, b in zip(relative, relative[1:])):
+        return None  # glTF inputs cannot tell these Float32 times apart.
+    columns = []
+    for mode, keys in curves:
+        _check(deadline)
+        if mode == "constant":
+            columns.append([(0., keys, 0.)] * len(stamps))
+            continue
+        times, column = [stamp for stamp, _ in keys], []
+        for row, stamp in enumerate(stamps):
+            if row % 1024 == 0:
+                _check(deadline)
+            index = max(0, bisect.bisect_right(times, stamp) - 1)
+            value, outgoing = _cubic_at(keys[index], stamp)
+            incoming = outgoing
+            if row and times[index] == stamp:
+                # The incoming side is the previous segment (or the hold before the first key).
+                left, incoming = _cubic_at(keys[index - 1], stamp) if index else (keys[0][1][3], 0.)
+                if abs(left - value) > _CUBIC_JUMP * max(1., abs(left), abs(value)):
+                    return None
+            column.append((incoming, value, outgoing))
+        columns.append(column)
+    rows = []
+    for row in range(len(stamps)):
+        rows.append([[column[row][part] for column in columns] for part in range(3)])
+    return relative, rows
+
+
+def _mirror(kind, values):
+    if kind == "translation":
+        return [-values[0], values[1], values[2]]
+    if kind == "rotation":
+        return [values[0], -values[1], -values[2], values[3]]
+    return list(values)
+
+
+_KEY_TIME = operator.itemgetter(0)
+
+
+def _ascending(times):
+    return all(a <= b for a, b in zip(times, times[1:]))
+
+
+def _keys_ascending(keys):
+    # Every table this module builds is ascending (streamed keys out of order are
+    # refused, dense stamps grow, editor rows are sorted); a stable sort of an
+    # ascending list is the same list, and this is cheaper than a pairwise walk.
+    stamps = list(map(_KEY_TIME, keys))
+    return stamps == sorted(stamps)
+
+
+def _sample(curve, times, deadline=None):
+    """``[_evaluate(curve, stamp) for stamp in times]`` for ascending ``times``.
+
+    One forward walk over ascending keys replaces a bisection per stamp. The
+    key found is the same (the last key at or before the stamp, else the
+    first), and every value uses _evaluate's arithmetic in the same order, so
+    the floats are bit-identical. bisect_right over keys that are not
+    ascending finds keys no walk would, so such a table is evaluated stamp by
+    stamp.
+    """
+    mode, keys = curve
+    if mode == "constant":
+        return [keys] * len(times)
+    if not times:
+        return []
+    if not keys:
+        raise AnimationError("An animation binding has no scalar curve values.")
+    if not _keys_ascending(keys):
+        output = []
+        for sample_index, stamp in enumerate(times):
+            if sample_index % 128 == 0:
+                _check(deadline)
+            output.append(_evaluate(curve, stamp))
+        return output
+    output, index, last = [], 0, len(keys) - 1
+    append = output.append
+    start, value = keys[0]
+    following = keys[1][0] if last else None
+    cubic = mode == "cubic"
+    for sample_index, stamp in enumerate(times):
+        if sample_index % 1024 == 0:
+            _check(deadline)
+        if index < last and following <= stamp:
+            index += 1
+            while index < last and keys[index + 1][0] <= stamp:
+                index += 1
+            start, value = keys[index]
+            following = keys[index + 1][0] if index < last else None
+        if cubic:
+            if abs(start) > 1e20:
+                append(value[3])  # Unity's negative sentinel seeds the first value.
+            else:
+                delta = max(0., stamp - start)
+                append(((value[0] * delta + value[1]) * delta + value[2]) * delta + value[3])
+        elif index < last and following > start:
+            other = keys[index + 1][1]
+            fraction = min(1., max(0., (stamp - start) / (following - start)))
+            append(value + (other - value) * fraction)
+        else:
+            append(value)
+    return output
+
+
+def _sample_array(curve, grid):
+    """_sample with float64 element-wise numpy: the same IEEE operations in the same order.
+
+    ``grid`` is the ascending stamp array. searchsorted(side="right") - 1,
+    clamped at 0, is bisect_right - 1 clamped at 0. Separate ufunc calls
+    round every intermediate like Python floats do (nothing fuses into an
+    FMA), and ``where(x > 0., x, 0.)`` / ``where(x < 1., x, 1.)`` are exactly
+    ``max(0., x)`` / ``min(1., x)``, including for signed zeros. Returns None
+    when a key table is not ascending: searchsorted assumes sorted keys, and
+    the caller's _sample then evaluates each stamp with _evaluate's bisect.
+    """
+    import numpy as np
+    mode, keys = curve
+    stamps = np.fromiter((key[0] for key in keys), dtype=np.float64, count=len(keys))
+    if len(stamps) > 1 and not (stamps[1:] >= stamps[:-1]).all():
+        return None
+    index = np.searchsorted(stamps, grid, side="right") - 1
+    np.maximum(index, 0, out=index)
+    start = stamps[index]
+    with np.errstate(all="ignore"):
+        if mode == "cubic":
+            table = np.array([key[1] for key in keys], dtype=np.float64).reshape(len(keys), 4)[index]
+            delta = grid - start
+            delta = np.where(delta > 0., delta, 0.)
+            value = ((table[:, 0] * delta + table[:, 1]) * delta + table[:, 2]) * delta + table[:, 3]
+            # Unity's negative sentinel seeds the first value.
+            value = np.where(np.abs(start) > 1e20, table[:, 3], value)
+        else:
+            values = np.fromiter((key[1] for key in keys), dtype=np.float64, count=len(keys))
+            following = np.minimum(index + 1, len(keys) - 1)
+            stop, current, other = stamps[following], values[index], values[following]
+            fraction = (grid - start) / (stop - start)
+            fraction = np.where(fraction > 0., fraction, 0.)
+            fraction = np.where(fraction < 1., fraction, 1.)
+            value = np.where((index + 1 < len(keys)) & (stop > start), current + (other - current) * fraction, current)
+    return value.tolist()
+
+
+# Below this many samples the Python walk is cheaper than building arrays.
+_ARRAY_SAMPLES = 64
+
+
+def _columns(curves, times, deadline=None, ascending=None):
+    """Sample each curve at ``times``; an unordered grid keeps the per-stamp search."""
+    if ascending is None:
+        ascending = _ascending(times)
+    if ascending:
+        grid, columns = None, []
+        for curve in curves:
+            column = None
+            if curve[0] != "constant" and curve[1] and len(times) >= _ARRAY_SAMPLES:
+                _check(deadline)
+                if grid is None:
+                    import numpy as np
+                    grid = np.array(times, dtype=np.float64)
+                column = _sample_array(curve, grid)
+            columns.append(_sample(curve, times, deadline) if column is None else column)
+        return columns
+    columns = []
+    for curve in curves:
+        column = []
+        for sample_index, stamp in enumerate(times):
+            if sample_index % 128 == 0:
+                _check(deadline)
+            column.append(_evaluate(curve, stamp))
+        columns.append(column)
+    return columns
+
+
 def _editor_scalar(keys, axis=None, deadline=None):
     rows = []
     for index, key in enumerate(keys):
@@ -287,7 +523,10 @@ def _editor_curves(tree, deadline=None):
                 raise AnimationError("An editor animation has too many keys.")
             components = [_editor_scalar(keys, axis, deadline) for axis in axes]
             if keys:
-                tracks.append({"path": item.get("path", ""), "kind": kind, "curves": components})
+                track = {"path": item.get("path", ""), "kind": kind, "curves": components}
+                if kind == "euler":
+                    track["rotationOrder"] = euler_order(item.get("curve", {}).get("m_RotationOrder", DEFAULT_EULER_ORDER))
+                tracks.append(track)
     for item in tree.get("m_FloatCurves", []):
         attribute = str(item.get("attribute", ""))
         visibility = ("renderer" if attribute == "m_Enabled" and int(item.get("classID", 0)) in (23, 25, 137)
@@ -380,8 +619,12 @@ def decode_clip(tree, deadline=None):
                                                      or (typ == 1 and attribute == 2086281974)):
                 kind = "visibility"
             if kind:
-                tracks.append({"path": int(binding.get("path", 0)), "kind": kind, "attribute": attribute,
-                               "visibilityType": "gameObject" if typ == 1 else "renderer", "curves": selected})
+                track = {"path": int(binding.get("path", 0)), "kind": kind, "attribute": attribute,
+                         "visibilityType": "gameObject" if typ == 1 else "renderer", "curves": selected}
+                if kind == "euler":
+                    # A Transform Euler binding keeps its Unity RotationOrder in customType.
+                    track["rotationOrder"] = euler_order(binding.get("customType", DEFAULT_EULER_ORDER))
+                tracks.append(track)
             else:
                 unsupported += 1
                 key = typ, attribute, int(binding.get("customType", 0))
@@ -402,7 +645,7 @@ def decode_clip(tree, deadline=None):
             "unsupported": unsupported,
             "unsupportedKinds": [{"typeID": key[0], "attribute": key[1], "customType": key[2], "count": count}
                                  for key, count in sorted(unsupported_kinds.items())],
-            "sampling": "source_curves_at_most_60_hz"}
+            "sampling": "cubic_source_keys_else_curves_at_most_60_hz"}
 
 
 def _nodes(bindings, path):
@@ -489,16 +732,208 @@ def _multiply(a, b):
     return (w*X+x*W+y*Z-z*Y, w*Y-x*Z+y*W+z*X, w*Z+x*Y-y*X+z*W, w*W-x*X-y*Y-z*Z)
 
 
-def _quaternion(values, euler=False):
+# Unity math::RotationOrder, as an animated Euler rotation stores it: the
+# customType of a Transform Euler GenericBinding (attribute 4) and the
+# m_RotationOrder of an editor m_EulerCurves AnimationCurve. Each name lists the
+# axes in the order they are applied, so OrderXYZ is q = qZ * qY * qX. ZXY
+# (q = qY * qX * qZ, the Transform.eulerAngles convention) is Unity's default.
+EULER_ORDERS = {0: "xyz", 1: "xzy", 2: "yzx", 3: "yxz", 4: "zxy", 5: "zyx"}
+DEFAULT_EULER_ORDER = 4
+
+
+def euler_order(value):
+    """Validate a Unity RotationOrder value; reject what the preview cannot reproduce."""
+    if type(value) is bool or type(value) not in (int, float) or value != int(value) or int(value) not in EULER_ORDERS:
+        raise AnimationError("An animated Euler rotation has an unknown rotation order.")
+    return int(value)
+
+
+def _axis_quaternion(axis, half):
+    values = [0., 0., 0., math.cos(half)]
+    values["xyz".index(axis)] = math.sin(half)
+    return tuple(values)
+
+
+def unity_euler_quaternion(values, order=DEFAULT_EULER_ORDER):
+    """Unity Euler degrees -> unnormalized Unity-handed quaternion (x, y, z, w) in `order`."""
+    half = dict(zip("xyz", (math.radians(value) * .5 for value in values)))
+    result = (0., 0., 0., 1.)
+    for axis in EULER_ORDERS[euler_order(order)]:
+        result = _multiply(_axis_quaternion(axis, half[axis]), result)  # A later axis applies on the left.
+    return result
+
+
+# The inverse direction, for writing Euler samples (camera point edits). These live here, not
+# only in live_timeline.sifas_timeline_inject, so the webtools import cannot be shadowed by an
+# older top-level live_timeline package (for example an elichika checkout's pinned modtools).
+def quat_to_unity_euler(q, order=4):
+    """Unity quaternion -> Unity Euler degrees in rotation `order` (default ZXY).
+
+    Applying axes a, b, c in this order gives R = Rc * Rb * Ra; the middle axis b is
+    the asin one. Even permutations (xyz, yzx, zxy) and odd ones differ only in sign.
+    """
+    if order not in EULER_ORDERS:
+        raise ValueError(f"unknown Unity rotation order {order!r}")
+    x, y, z, w = q
+    n = math.sqrt(x * x + y * y + z * z + w * w) or 1.0
+    x, y, z, w = x / n, y / n, z / n, w / n
+    m = ((1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
+         (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
+         (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)))
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    s = 1.0 if EULER_ORDERS[order] in ("xyz", "yzx", "zxy") else -1.0
+    cb = math.hypot(m[c][b], m[c][c])  # |cos b|: atan2 instead of asin stays exact near +-90 deg.
+    angles = [0.0, 0.0, 0.0]
+    angles[b] = math.atan2(-s * m[c][a], cb)
+    if cb > 1e-9:
+        angles[a] = math.atan2(s * m[c][b], m[c][c])
+        angles[c] = math.atan2(s * m[b][a], m[a][a])
+    else:  # Gimbal lock: keep the first axis at 0 and put the rest on the last axis.
+        angles[c] = math.atan2(-s * m[a][b], m[b][b])
+    return tuple(math.degrees(value) for value in angles)
+
+
+def unity_euler_branches(euler, order=4):
+    """The two Euler solutions of the same rotation: as is, and (a+180, 180-b, c+180)."""
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    other = list(euler)
+    other[a] += 180.0
+    other[b] = 180.0 - other[b]
+    other[c] += 180.0
+    return [list(euler), other]
+
+
+def _euler_qmul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw, aw * bw - ax * bx - ay * by - az * bz)
+
+
+def unity_euler_near(q, order=4, reference=None):
+    """The Euler angles (degrees) of the same rotation nearest to `reference`.
+
+    A DenseClip interpolates Euler values linearly between samples, so pick the
+    solution nearest the previous sample, unwrapped by whole turns. At the middle-axis
+    +-90 deg gimbal (yaw +-90 for XYZ cameras), pin the first axis to the previous
+    value and solve the last one.
+    """
+    euler = quat_to_unity_euler(q, order)
+    if reference is None:
+        return list(euler)
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    candidates = unity_euler_branches(euler, order)
+    if abs(math.cos(math.radians(euler[b]))) < 1e-6:
+        # q = qc * qb * qa: with the first axis a pinned, qc = q * (qb * qa)^-1.
+        half_a, half_b = math.radians(reference[a]) / 2, math.radians(euler[b]) / 2
+        qa, qb = [0.0, 0.0, 0.0, math.cos(half_a)], [0.0, 0.0, 0.0, math.cos(half_b)]
+        qa[a], qb[b] = math.sin(half_a), math.sin(half_b)
+        x, y, z, w = _euler_qmul(qb, qa)
+        qc = _euler_qmul(q, (-x, -y, -z, w))
+        pinned = list(euler)
+        pinned[a], pinned[c] = reference[a], math.degrees(2 * math.atan2(qc[c], qc[3]))
+        candidates.append(pinned)
+    candidates = [[value + 360.0 * round((previous - value) / 360.0) for value, previous in zip(branch, reference)]
+                  for branch in candidates]
+    return min(candidates, key=lambda branch: sum((value - previous) ** 2 for value, previous in zip(branch, reference)))
+
+
+def _quaternion(values, euler=False, order=DEFAULT_EULER_ORDER):
     if euler:
-        x, y, z = (math.radians(value) * .5 for value in values)
-        values = _multiply(_multiply((0, math.sin(y), 0, math.cos(y)), (math.sin(x), 0, 0, math.cos(x))),
-                           (0, 0, math.sin(z), math.cos(z)))  # Unity intrinsic Z-X-Y
-    length = math.sqrt(sum(value * value for value in values))
+        values = unity_euler_quaternion(values, order)
+    if len(values) == 4:
+        # sum() of the same four products in the same order (no generator).
+        x, y, z, w = values
+        length = math.sqrt(sum((x * x, y * y, z * z, w * w)))
+    else:
+        length = math.sqrt(sum(value * value for value in values))
     if not math.isfinite(length) or length < 1e-12:
         raise AnimationError("An animated rotation is invalid.")
     x, y, z, w = (value / length for value in values)
     return [x, -y, -z, w]
+
+
+def _sum4(a, b, c, d):
+    """Element-wise ``sum((a, b, c, d))`` of float64 arrays, as this interpreter's sum() computes it.
+
+    Python 3.12+ adds floats with Neumaier compensation (start 0 + a, then a
+    running compensation added once at the end when it is finite and
+    nonzero); older interpreters add left to right. Every step is one IEEE
+    operation, and _array_sum_matches proves the replica against sum().
+    """
+    import numpy as np
+    total = 0. + a
+    if not _NEUMAIER:
+        return ((total + b) + c) + d
+    compensation = np.zeros_like(total)
+    for item in (b, c, d):
+        step = total + item
+        compensation = compensation + np.where(np.abs(total) >= np.abs(item), (total - step) + item, (item - step) + total)
+        total = step
+    return np.where((compensation != 0.) & np.isfinite(compensation), total + compensation, total)
+
+
+_NEUMAIER = sys.version_info >= (3, 12)
+_SUM_CHECK = None
+
+
+def _array_sum_matches():
+    """True when _sum4 reproduces sum() bit for bit on cases where compensation matters."""
+    global _SUM_CHECK
+    if _SUM_CHECK is None:
+        try:
+            import numpy as np
+            rows = [(1., 1e100, 1., -1e100), (.1, .2, .3, .4), (1e16, 1., -1e16, 1.), (0., -0., 0., -0.),
+                    (-0., -0., -0., -0.), (1e308, 1e308, -1e308, 1.), (3., 1e-16, 1e-16, 1e-16), (-1., 1e-17, 1., 1e-17),
+                    (.7, -.3, 1e-9, -.4), (2. ** -1074, -(2. ** -1074), 1., -1.)]
+            columns = [np.array(column, dtype=np.float64) for column in zip(*rows)]
+            with np.errstate(all="ignore"):
+                found = _sum4(*columns).tolist()
+            _SUM_CHECK = all(struct.pack("<d", value) == struct.pack("<d", sum(row)) for value, row in zip(found, rows))
+        except Exception:
+            _SUM_CHECK = False
+    return _SUM_CHECK
+
+
+def _rotation_rows(columns, euler, order, deadline=None):
+    """``[_quaternion(row, euler, order) for row in rows]`` plus the sign continuity pass.
+
+    The norm and the dot products use _sum4, so they are sum() bit for bit.
+    Negating a row negates each dot product with it exactly (rounding is
+    symmetric), so whether row i flips depends only on its original dot with
+    row i - 1 and whether row i - 1 flipped.
+    """
+    rows = zip(*columns)
+    if euler:
+        rows = [unity_euler_quaternion(row, order) for row in rows]
+    else:
+        rows = list(rows)
+    if len(rows) < _ARRAY_SAMPLES or any(len(row) != 4 for row in rows[:1]) or not _array_sum_matches():
+        values = [_quaternion(row) for row in rows]
+        for previous, current in zip(values, values[1:]):
+            if sum((previous[0]*current[0], previous[1]*current[1],
+                    previous[2]*current[2], previous[3]*current[3])) < 0:
+                current[:] = [-current[0], -current[1], -current[2], -current[3]]
+        return values
+    import numpy as np
+    _check(deadline)
+    x, y, z, w = np.array(rows, dtype=np.float64).reshape(len(rows), 4).T
+    with np.errstate(all="ignore"):
+        length = np.sqrt(_sum4(x * x, y * y, z * z, w * w))
+        if not (np.isfinite(length) & (length >= 1e-12)).all():
+            raise AnimationError("An animated rotation is invalid.")
+        x, y, z, w = x / length, -(y / length), -(z / length), w / length
+        dots = _sum4(x[:-1] * x[1:], y[:-1] * y[1:], z[:-1] * z[1:], w[:-1] * w[1:]).tolist()
+    _check(deadline)
+    signs, flipped, any_flipped = [1.], False, False
+    for dot in dots:
+        flipped = (dot > 0. and flipped) or (dot < 0. and not flipped)
+        signs.append(-1. if flipped else 1.)
+        any_flipped = any_flipped or flipped
+    if any_flipped:
+        factor = np.array(signs, dtype=np.float64)
+        x, y, z, w = x * factor, y * factor, z * factor, w * factor
+    return np.stack((x, y, z, w), axis=1).tolist()
 
 
 def _attribute(glb, values, kind, cache, bounds=False):
@@ -633,18 +1068,29 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
     clips = [obj for obj in scene.env.objects if obj.type.name == "AnimationClip"]
     if len(clips) > MAX_CLIPS:
         warn("animation_limit", "", f"Only the first {MAX_CLIPS} supplied animation clips are available in this preview; {len(clips) - MAX_CLIPS} clips were omitted.")
-    for obj in clips[:MAX_CLIPS]:
+    # Progress in source bytes: a full dance outweighs a facial pose.
+    sizes = [max(1, int(getattr(obj, "byte_size", 1) or 1)) for obj in clips[:MAX_CLIPS]]
+    total_size, done_size = sum(sizes), 0
+    from .mv_studio_progress import tick
+    for obj, size in zip(clips[:MAX_CLIPS], sizes):
         _check(deadline)
+        tick("animation", round(100 * done_size / total_size), 100)
+        done_size += size
         name = scene.name(obj)
         checkpoint = (len(glb.data), len(glb.doc["accessors"]), len(glb.doc["bufferViews"]))
         try:
             clip = decode_clip(scene.tree(obj), deadline)
             source_role = source_roles.get(_object_key(obj), "unknown") if hasattr(obj, "assets_file") else "unknown"
             times, outputs, morph_outputs, rebound, unbound, ambiguous = clip["times"], [], {}, False, 0, False
+            ascending = _ascending(times)
+            # A glTF weights channel carries every target of its mesh; the
+            # source clip binds only these indices (the rest stay at rest).
+            morph_indices = {}
             visibility_tracks = []
             planned_frames, planned_values = 0, 0
-            for track in clip["tracks"]:
+            for track_index, track in enumerate(clip["tracks"]):
                 _check(deadline)
+                tick("animation", round(100 * (done_size - size + size * track_index / len(clip["tracks"])) / total_size), 100)
                 if track["kind"] == "visibility":
                     mode = track.get("visibilityType", "renderer")
                     targets = _nodes(visibility_bindings.get(mode, {}), track["path"])
@@ -655,10 +1101,9 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                     if used_frames + planned_frames > MAX_KEYFRAMES or used_values + planned_values > MAX_VALUES:
                         raise AnimationError("Visibility animation exceeds the mobile preview keyframe limit.")
                     stamps, states = [], []
-                    for sample_index, stamp in enumerate(times):
-                        if sample_index % 128 == 0:
-                            _check(deadline)
-                        state = _evaluate(track["curves"][0], stamp) >= .5
+                    column = _columns([track["curves"][0]], times, deadline, ascending)[0] if times else []
+                    for stamp, sampled in zip(times, column):
+                        state = sampled >= .5
                         if not states or state != states[-1]:
                             stamps.append(stamp - clip["start"])
                             states.append(state)
@@ -683,6 +1128,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                     rebound |= moved
                     if not matches:
                         unbound += 1
+                    column = None
                     for entry, index in matches:
                         count = len(entry["names"])
                         if not 0 < count <= MAX_MORPHS:
@@ -697,72 +1143,113 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                             if len(rest) != count:
                                 raise AnimationError("An animated mesh has invalid rest morph weights.")
                             morph_outputs[node] = [rest.copy() for _ in times]
-                        for sample_index, (row, stamp) in enumerate(zip(morph_outputs[node], times)):
-                            if sample_index % 128 == 0:
-                                _check(deadline)
-                            row[index] = _evaluate(track["curves"][0], stamp) / 100.
+                        morph_indices.setdefault(node, set()).add(index)
+                        if times and column is None:
+                            # Sampled where the first evaluation used to happen, so
+                            # errors keep their order.
+                            column = _columns([track["curves"][0]], times, deadline, ascending)[0]
+                        for row, sampled in zip(morph_outputs[node], column or ()):
+                            row[index] = sampled / 100.
                     continue
                 targets = _nodes(node_bindings, track["path"])
                 ambiguous |= len(set(targets)) > 1
                 if not targets:
                     unbound += 1
                     continue
-                planned_frames += len(times) * len(targets)
-                planned_values += len(times) * len(track["curves"]) * len(targets)
+                cubic = _cubic_channel(track, times[0], times[-1], deadline)
+                euler = None
+                if cubic is not None and track["kind"] == "euler":
+                    # Unity evaluates the three Euler cubics, then converts the angles to a
+                    # quaternion, which no glTF sampler interpolates. The LINEAR quaternion
+                    # grid below stays the standard channel; the exact Euler cubic rides along
+                    # in the clip's extras (ViewerMotionTimeline.loadUnityEuler evaluates it).
+                    euler, cubic = cubic, None
+                    planned_values += 9 * len(euler[0]) * len(targets)
+                if cubic is not None:
+                    stamps, rows = cubic
+                    planned_frames += len(stamps) * len(targets)
+                    planned_values += 3 * len(stamps) * len(track["curves"]) * len(targets)
+                    if used_frames + planned_frames > MAX_KEYFRAMES or used_values + planned_values > MAX_VALUES:
+                        raise AnimationError("The supplied animations exceed the mobile preview keyframe limit.")
+                    # glTF CUBICSPLINE output: in-tangent, value, out-tangent per input stamp.
+                    values = [_mirror(track["kind"], part) for row in rows for part in row]
+                    for node in targets:
+                        outputs.append((int(node), track["kind"], values, stamps, "CUBICSPLINE", None))
+                    continue
+                # A constant channel needs only its two end samples, not the clip's grid.
+                constant = all(mode == "constant" for mode, _ in track["curves"])
+                samples = sorted({times[0], times[-1]}) if constant else times
+                planned_frames += len(samples) * len(targets)
+                planned_values += len(samples) * len(track["curves"]) * len(targets)
                 if used_frames + planned_frames > MAX_KEYFRAMES or used_values + planned_values > MAX_VALUES:
                     raise AnimationError("The supplied animations exceed the mobile preview keyframe limit.")
-                values = []
-                for sample_index, stamp in enumerate(times):
-                    if sample_index % 128 == 0:
-                        _check(deadline)
-                    values.append([_evaluate(curve, stamp) for curve in track["curves"]])
+                columns = _columns(track["curves"], samples, deadline, None if constant else ascending)
                 kind = track["kind"]
-                if kind in ("rotation", "euler"):
-                    values = [_quaternion(row, kind == "euler") for row in values]
-                    for previous, current in zip(values, values[1:]):
-                        if sum(a*b for a, b in zip(previous, current)) < 0:
-                            current[:] = [-value for value in current]
+                if kind in ("rotation", "euler") and columns:
+                    order = track.get("rotationOrder", DEFAULT_EULER_ORDER)
+                    values = _rotation_rows(columns, kind == "euler", order, deadline)
                     kind = "rotation"
-                elif kind == "translation":
+                elif kind in ("rotation", "euler"):
+                    order = track.get("rotationOrder", DEFAULT_EULER_ORDER)
+                    values = [_quaternion([], kind == "euler", order) for _ in samples]
+                    kind = "rotation"
+                else:
+                    values = [list(row) for row in zip(*columns)] if columns else [[] for _ in samples]
+                if kind == "translation":
                     values = [[-row[0], row[1], row[2]] for row in values]
+                stamps = [stamp - clip["start"] for stamp in samples] if constant else None
                 for node in targets:
-                    outputs.append((int(node), kind, values))
+                    outputs.append((int(node), kind, values, stamps, "LINEAR", euler and (
+                        euler[0], [part for row in euler[1] for part in row], track.get("rotationOrder", DEFAULT_EULER_ORDER))))
             # Unity may retain editor Euler and quaternion curves for the same
             # target. glTF permits one channel per node/property; prefer the
             # first authored quaternion track (editor order places it first).
             unique = {}
-            for node, kind, rows in outputs:
-                unique.setdefault((node, kind), rows)
-            outputs = [(node, kind, rows) for (node, kind), rows in unique.items()]
-            outputs.extend((node, "weights", rows) for node, rows in morph_outputs.items())
+            for node, kind, *rest in outputs:
+                unique.setdefault((node, kind), rest)
+            outputs = [(node, kind, *rest) for (node, kind), rest in unique.items()]
+            outputs.extend((node, "weights", rows, None, "LINEAR", None) for node, rows in morph_outputs.items())
             visibility_tracks = _merge_visibility(visibility_tracks, deadline)
             channels = len(outputs) + len(visibility_tracks)
             if used_channels + channels > MAX_CHANNELS:
                 raise AnimationError("The supplied animations exceed the preview channel limit.")
-            frames = len(times) * len(outputs) + sum(len(row["times"]) for row in visibility_tracks)
-            values = sum(len(row) for _, _, rows in outputs for row in rows) + sum(
+            frames = sum(len(times if stamps is None else stamps) + (len(euler[0]) if euler else 0)
+                         for _, _, _, stamps, _, euler in outputs) + sum(len(row["times"]) for row in visibility_tracks)
+            values = sum(len(row) for _, _, rows, _, _, _ in outputs for row in rows) + sum(
+                len(euler[1]) * 3 for *_, euler in outputs if euler) + sum(
                 len(row["values"]) + 5 * len(row.get("sourceScalarKeys", ())) for row in visibility_tracks)
             if used_frames + frames > MAX_KEYFRAMES or used_values + values > MAX_VALUES:
                 raise AnimationError("The supplied animations exceed the mobile preview keyframe limit.")
-            if any(not 0 <= node < len(glb.doc["nodes"]) for node, _, _ in outputs):
+            if any(not 0 <= node < len(glb.doc["nodes"]) for node, *_ in outputs):
                 raise AnimationError("An animation points to an unavailable rig node.")
             if not outputs and not visibility_tracks:
                 warn("animation_unbound", name, "This clip has no supported channels bound to the displayed rig.")
                 continue
-            relative_times = [stamp - clip["start"] for stamp in times]
-            input_accessor = _attribute(glb, relative_times, "SCALAR", accessors, bounds=True) if outputs else None
+            grid_accessor = None
             exported_name, suffix = clip["name"], 2
             while exported_name in used_names:
                 exported_name = clip["name"] + "__" + str(suffix)
                 suffix += 1
             animation = {"name": exported_name, "samplers": [], "channels": [],
                          "extras": {"loop": clip["loop"], "sourceSampling": clip["sampling"]}}
-            for node, kind, rows in outputs:
+            for node, kind, rows, stamps, interpolation, euler in outputs:
+                if stamps is None:
+                    if grid_accessor is None:
+                        grid_accessor = _attribute(glb, [stamp - clip["start"] for stamp in times], "SCALAR", accessors, bounds=True)
+                    input_accessor = grid_accessor
+                else:
+                    input_accessor = _attribute(glb, stamps, "SCALAR", accessors, bounds=True)
                 accessor = _attribute(glb, [value for row in rows for value in row] if kind == "weights" else rows,
                                       "SCALAR" if kind == "weights" else ("VEC4" if kind == "rotation" else "VEC3"), accessors)
                 sampler = len(animation["samplers"])
-                animation["samplers"].append({"input": input_accessor, "output": accessor, "interpolation": "LINEAR"})
+                animation["samplers"].append({"input": input_accessor, "output": accessor, "interpolation": interpolation})
                 animation["channels"].append({"sampler": sampler, "target": {"node": node, "path": kind}})
+                if euler:
+                    # Raw Unity Euler degrees as CUBICSPLINE rows (in, value, out), before mirroring.
+                    animation["extras"].setdefault("unityEuler", []).append({
+                        "channel": len(animation["channels"]) - 1, "rotationOrder": euler[2],
+                        "input": _attribute(glb, euler[0], "SCALAR", accessors, bounds=True),
+                        "output": _attribute(glb, euler[1], "VEC3", accessors)})
             index = len(glb.doc.setdefault("animations", [])) if outputs else None
             if outputs:
                 glb.doc["animations"].append(animation)
@@ -779,6 +1266,9 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                              "unsupportedTracks": clip["unsupported"], "unboundTracks": unbound,
                              "unsupportedKinds": clip["unsupportedKinds"],
                              "bindingComplete": not (clip["unsupported"] or unbound or ambiguous)})
+            if morph_indices:
+                metadata[-1]["morphTargets"] = [{"node": node, "indices": sorted(indices)}
+                                                for node, indices in sorted(morph_indices.items())]
             used_frames += frames
             used_values += values
             used_channels += channels
@@ -795,6 +1285,8 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             if rebound:
                 warn("animation_morph_path_rebound", name, "A facial curve used its unique original morph name because its legacy transform path differs.")
         except Exception as error:
+            from .transient_failures import note_if_environmental
+            note_if_environmental(error)  # a clip lost to memory or stack may import next time
             del glb.data[checkpoint[0]:]
             del glb.doc["accessors"][checkpoint[1]:]
             del glb.doc["bufferViews"][checkpoint[2]:]

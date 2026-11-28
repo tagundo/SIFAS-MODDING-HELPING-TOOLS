@@ -6,11 +6,16 @@
   <title data-i18n="SIFAS Modding Tools">SIFAS Modding Tools</title>
   <link rel="stylesheet" href="/static/style.css"/>
   <link rel="stylesheet" href="/static/viewer-transplants.css"/>
+  <link rel="stylesheet" href="/static/mv-studio-event-fields.css"/>
   <link rel="stylesheet" href="/static/viewer-texture-tools.css"/>
   <link rel="stylesheet" href="/static/texture-panel-expand.css"/>
+  <link rel="stylesheet" href="/static/mv-studio-camera-editor.css"/>
+  <link rel="stylesheet" href="/static/mv-studio-free-camera.css"/>
   <link rel="stylesheet" href="/static/viewer-interaction-tools.css"/>
   <link rel="stylesheet" href="/static/viewer-signed-inputs.css"/>
   <link rel="stylesheet" href="/static/mv-studio.css"/>
+  <link rel="stylesheet" href="/static/mv-studio-editor.css"/>
+  <link rel="stylesheet" href="/static/mv-studio-camera-follow.css"/>
 </head>
 <body>
   <header id="asset-tools-header">
@@ -172,7 +177,7 @@
             <div class="viewer-mod-form">
               <label for="viewer-mod-name" data-i18n="Mod name">Mod name</label>
               <div class="viewer-mod-name-row">
-                <input id="viewer-mod-name" type="text" maxlength="120" autocomplete="off" disabled aria-describedby="viewer-mod-name-help">
+                <textarea id="viewer-mod-name" rows="2" maxlength="120" autocomplete="off" spellcheck="false" disabled aria-describedby="viewer-mod-name-help"></textarea>
                 <button id="viewer-mod-name-auto" type="button" data-i18n="Automatic name" disabled>Automatic name</button>
               </div>
               <p id="viewer-mod-name-help" class="viewer-render-note" data-i18n="The same name is used for the mod ZIP and the game costume. You can edit the suggested name.">The same name is used for the mod ZIP and the game costume. You can edit the suggested name.</p>
@@ -208,6 +213,7 @@
             </div>
             <p id="viewer-save-status" class="viewer-render-note" role="status" aria-live="polite"></p>
             <p id="viewer-save-result-note" class="viewer-render-note" hidden></p>
+            <p id="viewer-save-held-note" class="viewer-render-note" hidden></p>
             <progress id="viewer-save-progress" aria-label="Save progress" hidden></progress>
             <ul id="viewer-save-output-list" class="viewer-save-output-list" hidden></ul>
             <div class="viewer-save-actions">
@@ -443,12 +449,13 @@
       <div class="mv-toolbar">
         <h2 id="mv-project-title" data-i18n="3D MV">3D MV</h2>
         <div class="mv-controls">
-          <button id="mv-import-game" type="button" data-i18n="Load MV from game">Load MV from game</button>
-          <button id="mv-open" type="button" data-i18n="Open mod or project">Open mod or project</button>
-          <button id="mv-save" type="button" data-i18n="Save MV project" disabled>Save MV project</button>
-          <button id="mv-export-timeline" type="button" data-i18n="Export native timeline" hidden>Export native timeline</button>
+          <button id="mv-import-game" class="mv-icon-btn mv-icon-text" type="button" title="Load MV from game" data-i18n-title="Load MV from game"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4-4m4 4 4-4"/><path d="M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/></svg><span class="mv-label" data-i18n="Load MV from game">Load MV from game</span></button>
+          <button id="mv-open" class="mv-icon-btn" type="button" title="Open mod or project" data-i18n-title="Open mod or project"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg><span class="mv-label" data-i18n="Open mod or project">Open mod or project</span></button>
+          <button id="mv-save" class="mv-icon-btn" type="button" title="Save MV project" data-i18n-title="Save MV project" disabled><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11l3 3v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/></svg><span class="mv-label" data-i18n="Save MV project">Save MV project</span></button>
+          <button id="mv-export-timeline" class="mv-icon-btn" type="button" title="Export native timeline" data-i18n-title="Export native timeline" hidden><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/></svg><span class="mv-label" data-i18n="Export native timeline">Export native timeline</span></button>
+          <button id="mv-inspector-toggle" class="mv-icon-btn" type="button" title="Side panel" data-i18n-title="Side panel" aria-controls="mv-inspector" aria-expanded="true"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg><span class="mv-label" data-i18n="Side panel">Side panel</span></button>
           <details class="mv-panel-menu" id="mv-panel-menu">
-            <summary data-i18n="Panel settings">Panel settings</summary>
+            <summary title="Panel settings" data-i18n-title="Panel settings"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg><span class="mv-label" data-i18n="Panel settings">Panel settings</span></summary>
             <div id="mv-panel-options"></div>
           </details>
         </div>
@@ -459,14 +466,35 @@
         <div class="mv-preview">
           <div id="mv-scene" class="mv-scene"></div>
           <p id="mv-empty-preview" class="mv-empty-preview" data-i18n="Open an MV to preview its stage and timeline.">Open an MV to preview its stage and timeline.</p>
+          <div id="mv-import-progress" class="mv-import-progress" role="group" aria-labelledby="mv-import-step" hidden>
+            <div class="mv-import-head">
+              <span id="mv-import-step" class="mv-import-step"></span>
+              <span id="mv-import-percent" class="mv-import-percent" aria-hidden="true"></span>
+            </div>
+            <progress id="mv-import-bar" class="mv-import-bar" max="100" aria-labelledby="mv-import-step"></progress>
+            <div class="mv-import-foot">
+              <span id="mv-import-detail" class="mv-import-detail"></span>
+              <button id="mv-import-cancel" type="button" data-i18n="Cancel import">Cancel import</button>
+            </div>
+          </div>
           <div class="mv-preview-controls" id="mv-preview-controls" hidden>
             <label><span class="sr-only" data-i18n="Preview camera">Preview camera</span><select id="mv-camera-mode">
               <option value="live" data-i18n="Game camera">Game camera</option>
               <option value="orbit" data-i18n="Free camera">Free camera</option>
             </select></label>
-            <button id="mv-frame-scene" type="button" data-i18n="Frame scene">Frame scene</button>
+            <label class="mv-check"><input id="mv-screen-fade" type="checkbox" checked><span data-i18n="Start and end fade">Start and end fade</span></label>
+            <button id="mv-frame-scene" class="mv-icon-btn" type="button" title="Frame scene" data-i18n-title="Frame scene"><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg><span class="mv-label" data-i18n="Frame scene">Frame scene</span></button>
           </div>
         </div>
+        <div id="mv-inspector-resizer" class="mv-inspector-resizer" role="separator" tabindex="0"
+             aria-orientation="vertical" aria-controls="mv-inspector"
+             aria-labelledby="mv-inspector-width-label" aria-describedby="mv-inspector-resize-help">
+          <span class="mv-split-grip" aria-hidden="true"></span>
+          <span class="mv-inspector-reopen" aria-hidden="true"><span>▴</span><span data-i18n="Side panel">Side panel</span></span>
+        </div>
+        <span id="mv-inspector-width-label" class="sr-only" data-i18n="Panel width">Panel width</span>
+        <span id="mv-inspector-height-label" class="sr-only" data-i18n="Panel height">Panel height</span>
+        <span id="mv-inspector-resize-help" class="sr-only" data-i18n="Drag, or use the arrow keys, to share the room between the stage and the panel. Home restores the default, End gives the panel its largest size, Enter hides or shows the panel.">Drag, or use the arrow keys, to share the room between the stage and the panel. Home restores the default, End gives the panel its largest size, Enter hides or shows the panel.</span>
         <aside class="mv-inspector" id="mv-inspector">
           <details open id="mv-assets" data-mv-panel="assets">
             <summary data-i18n="MV assets">MV assets</summary>
@@ -492,10 +520,6 @@
             <summary data-i18n="MV quality settings">MV quality settings</summary>
             <div class="mv-panel-content" id="mv-quality-fields"></div>
           </details>
-          <details id="mv-registration" data-mv-panel="registration" hidden>
-            <summary data-i18n="Register in game">Register in game</summary>
-            <div class="mv-panel-content" id="mv-registration-fields"></div>
-          </details>
           <details id="mv-warnings" data-mv-panel="warnings" hidden>
             <summary data-i18n="Import notes">Import notes</summary>
             <ul class="mv-panel-content" id="mv-warning-list"></ul>
@@ -509,18 +533,28 @@
           </div>
           <span id="mv-timeline-height-label" class="sr-only" data-i18n="Timeline height">Timeline height</span>
           <span id="mv-timeline-resize-help" class="sr-only" data-i18n="Drag upward or press the Up arrow to make the timeline taller. Home restores the default. End sets the maximum.">Drag upward or press the Up arrow to make the timeline taller. Home restores the default. End sets the maximum.</span>
+          <span id="mv-clip-help" class="sr-only" data-i18n="Drag a clip to move it and its right edge to change its length. Alt+Left or Alt+Right moves the clip by one frame, with Shift by ten frames.">Drag a clip to move it and its right edge to change its length. Alt+Left or Alt+Right moves the clip by one frame, with Shift by ten frames.</span>
           <div class="mv-timeline-toolbar">
             <h3 id="mv-timeline-label" data-i18n="MV timeline">MV timeline</h3>
             <div class="mv-controls">
-              <button id="mv-rewind" type="button" data-i18n="Go to start" disabled>Go to start</button>
+              <button id="mv-rewind" class="mv-icon-btn" type="button" title="Go to start" data-i18n-title="Go to start" disabled><svg class="mv-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 5v14"/><path d="M18 6v12l-9-6z" fill="currentColor"/></svg><span class="mv-label" data-i18n="Go to start">Go to start</span></button>
               <button id="mv-play" type="button" data-i18n="Play" disabled>Play</button>
               <output id="mv-time">0:00.00 / 0:00.00</output>
             </div>
             <label class="mv-seek-label"><span data-i18n="Playhead">Playhead</span><input id="mv-seek" type="range" min="0" max="0" value="0" step="0.001" disabled></label>
-            <label><span data-i18n="Timeline scale">Timeline scale</span><select id="mv-zoom">
+            <label class="mv-zoom-label"><span data-i18n="Timeline scale">Timeline scale</span><select id="mv-zoom">
               <option value="fit" data-i18n="Fit to width">Fit to width</option>
               <option value="16">16 px/s</option><option value="48">48 px/s</option><option value="96">96 px/s</option>
             </select></label>
+            <div id="mv-timeline-nav" class="mv-timeline-nav" hidden>
+              <div class="mv-history-controls">
+                <button id="mv-undo" class="mv-history-button" type="button" aria-keyshortcuts="Control+Z Meta+Z" aria-label="Undo" disabled><span aria-hidden="true">↶</span><span class="mv-history-text" aria-hidden="true" data-i18n="Undo">Undo</span></button>
+                <button id="mv-redo" class="mv-history-button" type="button" aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y" aria-label="Redo" disabled><span aria-hidden="true">↷</span><span class="mv-history-text" aria-hidden="true" data-i18n="Redo">Redo</span></button>
+              </div>
+              <div id="mv-timeline-tabs" class="mv-timeline-tabs" role="tablist" aria-label="Timeline categories" data-i18n-aria-label="Timeline categories"></div>
+              <label class="mv-track-search"><span class="sr-only" data-i18n="Search tracks">Search tracks</span><input id="mv-track-search" type="search" maxlength="120" autocomplete="off" placeholder="Search tracks" data-i18n-ph="Search tracks"></label>
+              <div id="mv-member-filter" class="mv-member-filter" role="radiogroup" aria-label="Members" data-i18n-aria-label="Members" hidden></div>
+            </div>
           </div>
           <div class="mv-timeline-scroll" id="mv-timeline-scroll">
             <div class="mv-timeline-grid" id="mv-timeline-grid"></div>
@@ -557,6 +591,8 @@
       <label><span data-i18n="Search MVs">Search MVs</span><input id="mv-game-search" type="search" maxlength="120"></label>
       <label><span data-i18n="Song">Song</span><select id="mv-game-song"></select></label>
       <label><span data-i18n="MV variant">MV variant</span><select id="mv-game-variant"></select></label>
+      <label><span data-i18n="MV deck">MV deck</span><select id="mv-game-deck"><option value="2" data-i18n="Customize">Customize</option><option value="1" data-i18n="Original">Original</option></select></label>
+      <label id="mv-game-player-field" hidden><span data-i18n="Player">Player</span><select id="mv-game-player"></select></label>
     </div>
     <label class="mv-check"><input id="mv-game-download" type="checkbox"><span data-i18n="Download missing assets">Download missing assets</span></label>
     <p id="mv-game-status" class="mv-status" role="status"></p>
@@ -614,13 +650,16 @@
   <script src="/static/texture-color-math.js"></script>
   <script src="/static/texture-paint-engine.js"></script>
   <script src="/static/texture-uv-selection.js"></script>
+  <script src="/static/texture-blush.js"></script>
   <script src="/static/viewer-texture-tools.js"></script>
   <script src="/static/viewer-interaction-tools.js"></script>
   <script src="/static/mv-studio-props.js"></script>
   <script src="/static/model-viewer.js"></script>
   <script src="/static/mv-studio-lighting.js"></script>
+  <script src="/static/mv-studio-mixer.js"></script>
   <script src="/static/mv-studio-prop-light.js"></script>
   <script src="/static/mv-studio-dof-focus.js"></script>
+  <script src="/static/mv-studio-event-fields.js"></script>
   <script src="/static/mv-studio-penlight.js"></script>
   <script src="/static/mv-studio-stage-flash.js"></script>
   <script src="/static/mv-studio-stage-material.js"></script>
@@ -650,12 +689,18 @@
   <script src="/static/mv-studio-confetti-air-simulation.js"></script>
   <script src="/static/mv-studio-confetti-floor-simulation.js"></script>
   <script src="/static/mv-studio-confetti.js"></script>
+  <script src="/static/mv-studio-camera-math.js"></script>
+  <script src="/static/mv-studio-camera-curves.js"></script>
+  <script src="/static/mv-studio-camera-keys.js"></script>
+  <script src="/static/mv-studio-free-camera.js"></script>
   <script src="/static/mv-studio-speed-back.js"></script>
   <script src="/static/mv-studio-display-lights.js"></script>
   <script src="/static/mv-studio-stage-glow-simulation.js"></script>
   <script src="/static/mv-studio-stage-glow.js"></script>
   <script src="/static/mv-studio-stage-lens-simulation.js"></script>
   <script src="/static/mv-studio-stage-dust-simulation.js"></script>
+  <script src="/static/mv-studio-particle-systems.js"></script>
+  <script src="/static/mv-studio-control-prefabs.js"></script>
   <script src="/static/mv-studio-stage-burst-simulation.js"></script>
   <script src="/static/mv-studio-stage-lens.js"></script>
   <script src="/static/mv-studio-momiji-leaves-simulation.js"></script>
@@ -673,6 +718,7 @@
   <script src="/static/mv-studio-sparks-a-smoke-simulation.js"></script>
   <script src="/static/mv-studio-sparks-roop-simulation.js"></script>
   <script src="/static/mv-studio-stage-sparks.js"></script>
+  <script src="/static/mv-studio-camera-follow.js"></script>
   <script src="/static/mv-studio-stage-overlay.js"></script>
   <script src="/static/mv-studio-soft-billboards.js"></script>
   <script src="/static/mv-studio-stage-beam.js"></script>
@@ -680,19 +726,32 @@
   <script src="/static/mv-studio-stage-laser-cores.js"></script>
   <script src="/static/mv-studio-moving-burst-simulation.js"></script>
   <script src="/static/mv-studio-stationary-bursts.js"></script>
+  <script src="/static/mv-studio-axis-billboard.js"></script>
+  <script src="/static/mv-studio-lossy-scale.js"></script>
   <script src="/static/mv-studio-shaft.js"></script>
   <script src="/static/mv-studio-spotlight-area.js"></script>
   <script src="/static/mv-studio-stage-display.js"></script>
   <script src="/static/mv-studio-split.js"></script>
   <script src="/static/mv-studio-physics.js"></script>
+  <script src="/static/viewer-constraints.js"></script>
   <script src="/static/mv-studio-member-shadow.js"></script>
+  <script src="/static/mv-studio-screen-fade.js"></script>
   <script src="/static/mv-studio-hdr.js"></script>
   <script src="/static/mv-studio-dof.js"></script>
   <script src="/static/mv-studio-flare.js"></script>
   <script src="/static/mv-studio-post.js"></script>
   <script src="/static/mv-studio-camera-depth.js"></script>
   <script src="/static/mv-studio-transparent-sort.js"></script>
+  <script src="/static/mv-studio-opaque-sort.js"></script>
+  <script src="/static/mv-studio-asset-dump.js"></script>
+  <script src="/static/mv-studio-edit-history.js"></script>
+  <script src="/static/mv-studio-timeline-tabs.js"></script>
+  <script src="/static/mv-studio-timeline-interact.js"></script>
   <script src="/static/mv-studio-scene.js"></script>
+  <script src="/static/mv-studio-import-progress.js"></script>
+  <script src="/static/mv-studio-register.js"></script>
+  <script src="/static/mv-studio-apply.js"></script>
+  <script src="/static/mv-studio-playback-clock.js"></script>
   <script src="/static/mv-studio.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/viewer-game-assets.js"></script>

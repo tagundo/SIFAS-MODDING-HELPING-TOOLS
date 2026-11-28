@@ -10,10 +10,10 @@
     "Costume transplant": ["코스튬 이식", "衣装移植"],
     "Costume part transplant": ["코스튬 부분 이식", "衣装パーツ移植"],
     "Lower body replacement": ["하체 교체", "下半身の交換"],
-    "Donor model": ["Donor 모델", "ドナーモデル"],
-    "Choose donor costume": ["Donor 의상 불러오기", "ドナー衣装を選択"],
-    "Load donor from game": ["게임에서 Donor 가져오기", "ゲームからドナーを選択"],
-    "No donor selected.": ["Donor 의상을 선택해 주세요.", "ドナー衣装を選択してください。"],
+    "Donor model": ["도너 모델", "ドナーモデル"],
+    "Choose donor costume": ["도너 의상 불러오기", "ドナー衣装を選択"],
+    "Load donor from game": ["게임에서 도너 가져오기", "ゲームからドナーを選択"],
+    "No donor selected.": ["도너 의상을 선택해 주세요.", "ドナー衣装を選択してください。"],
     "Transplant": ["이식", "移植"], "Replace lower body": ["하체 교체", "下半身を交換"],
     "Part root bone": ["이식할 부분의 루트 본", "パーツのルートボーン"],
     "Choose a part": ["부분 선택", "パーツを選択"],
@@ -30,27 +30,27 @@
     "The mesh between the blue lower plane and orange upper plane is replaced.": ["파란 하단 절단면과 주황 상단 절단면 사이의 메시를 교체합니다.", "青い下側の面とオレンジ色の上側の面の間のメッシュを交換します。"],
     "Uses the displayed wearer and preserves its current body edits in a new copy.": ["현재 표시된 모델에 이식하고 체형 편집을 반영한 새 복사본을 만듭니다.", "表示中のモデルに移植し、現在の体型編集を反映したコピーを作ります。"],
     "Use a single Unity model or a ZIP containing one model for transplanting.": ["이식에는 단일 Unity 모델이나 모델이 하나 들어 있는 ZIP을 사용하세요.", "移植には単独のUnityモデルか、モデルが1つのZIPを使用してください。"],
-    "Preparing donor…": ["Donor 준비 중…", "ドナーを準備中…"],
+    "Preparing donor…": ["도너 준비 중…", "ドナーを準備中…"],
     "Open a wearer model first.": ["먼저 이식받을 모델을 열어 주세요.", "先に移植先モデルを開いてください。"],
     "Transplanting…": ["이식 중…", "移植中…"],
     "Transplanted. The result is now displayed.": ["이식이 완료되어 결과를 표시합니다.", "移植が完了し、結果を表示しています。"],
     "The result was saved. Open it to inspect the transplant.": ["결과를 저장했습니다. 결과 열기로 이식 상태를 확인하세요.", "結果を保存しました。開いて移植を確認してください。"],
     "Open transplant result": ["이식 결과 열기", "移植結果を開く"],
     "The lower cut must be below the upper cut.": ["하단 절단면은 상단보다 낮아야 합니다.", "下側の切断面は上側より低くしてください。"],
-    "The donor preview could not be displayed.": ["Donor 미리보기를 표시할 수 없습니다.", "ドナープレビューを表示できませんでした。"],
+    "The donor preview could not be displayed.": ["도너 미리보기를 표시할 수 없습니다.", "ドナープレビューを表示できませんでした。"],
     "Correct invalid body values before transplanting.": ["유효하지 않은 체형 값을 수정한 뒤 이식해 주세요.", "体型の入力値を修正してから移植してください。"],
     "Save mesh edits before transplanting.": ["메시 편집을 저장한 뒤 이식해 주세요.", "メッシュの編集を保存してから移植してください。"]
   };
   Object.assign(TEXT, {
-    "Donor inspection": ["Donor 검사", "ドナーの検査"], "Donor preview preparation": ["Donor 미리보기 준비", "ドナープレビューの準備"],
-    "Donor preview download": ["Donor 미리보기 다운로드", "ドナープレビューの取得"], "Donor preview parsing": ["Donor 미리보기 해석", "ドナープレビューの解析"],
-    "Donor preview display": ["Donor 미리보기 표시", "ドナープレビューの表示"], "Start transplant job": ["이식 작업 시작", "移植ジョブの開始"], "Cancel transplant job": ["이식 작업 취소", "移植ジョブのキャンセル"],
+    "Donor inspection": ["도너 검사", "ドナーの検査"], "Donor preview preparation": ["도너 미리보기 준비", "ドナープレビューの準備"],
+    "Donor preview download": ["도너 미리보기 다운로드", "ドナープレビューの取得"], "Donor preview parsing": ["도너 미리보기 해석", "ドナープレビューの解析"],
+    "Donor preview display": ["도너 미리보기 표시", "ドナープレビューの表示"], "Start transplant job": ["이식 작업 시작", "移植ジョブの開始"], "Cancel transplant job": ["이식 작업 취소", "移植ジョブのキャンセル"],
     "Transplant progress stream": ["이식 진행 연결", "移植の進行状況接続"], "Open transplant result": ["이식 결과 열기", "移植結果を開く"],
     "Restore transplant history": ["이식 기록 복원", "移植履歴の復元"], "Capture current model": ["현재 모델 상태 보관", "現在のモデル状態の保存"],
     "Validate wearer": ["현재 모델 검증", "移植先の検証"], "Prepare output folders": ["출력 폴더 준비", "出力フォルダーの準備"],
     "Save current edits": ["현재 편집 저장", "現在の編集を保存"], "Locate edited wearer": ["편집한 현재 모델 찾기", "編集済みモデルの確認"],
-    "Prepare transplant files": ["이식 파일 준비", "移植ファイルの準備"], "Expand donor archive": ["Donor 압축 풀기", "ドナーアーカイブの展開"],
-    "Select donor model": ["Donor 모델 확인", "ドナーモデルの確認"], "Extract wearer model": ["현재 모델 추출", "移植先モデルの抽出"],
+    "Prepare transplant files": ["이식 파일 준비", "移植ファイルの準備"], "Expand donor archive": ["도너 압축 풀기", "ドナーアーカイブの展開"],
+    "Select donor model": ["도너 모델 확인", "ドナーモデルの確認"], "Extract wearer model": ["현재 모델 추출", "移植先モデルの抽出"],
     "Check Unity platforms": ["Unity 플랫폼 확인", "Unityプラットフォームの確認"], "Graft model": ["모델 이식 실행", "モデル移植の実行"],
     "Validate output model": ["출력 모델 검증", "出力モデルの検証"], "Package output model": ["출력 모델 묶기", "出力モデルの梱包"],
     "Preserve face companions": ["얼굴 파일 보존", "顔ファイルの保持"], "Record runtime receipt": ["실행 정보 기록", "実行情報の記録"],
@@ -62,13 +62,13 @@
     "Exclude separate accessories": ["분리된 작은 액세서리 제외", "分離した小さいアクセサリーを除外"],
     "Replacement selection": ["교체할 메시 범위", "交換するメッシュ範囲"],
     "Body skin": ["피부 메시", "肌メッシュ"],
-    "Donor mesh": ["Donor 메시", "ドナーメッシュ"],
+    "Donor mesh": ["도너 메시", "ドナーメッシュ"],
     "Wearer mesh": ["현재 모델의 교체할 메시", "移植先で交換するメッシュ"],
     "Whole mesh (include outfit)": ["전체 메시 (의상 포함)", "メッシュ全体（衣装を含む）"],
     "Whole lower body": ["하체 전체", "下半身全体"],
     "Preview height": ["미리보기 높이", "プレビューの高さ"],
-    "Click a part on the donor model to select its bone subtree.": ["Donor 모델의 이식할 부분을 클릭하면 해당 부분의 본 묶음을 선택합니다.", "ドナーモデルの移植する部分をクリックしてボーン群を選択します。"],
-    "Highlighted donor faces are inserted. Wearer faces crossing either cut are retained to prevent gaps.": ["강조된 Donor 면을 이식합니다. 절단면에 걸친 착용자 면은 틈이 생기지 않도록 유지합니다.", "強調されたドナー面を移植します。切断面をまたぐ着用者の面は隙間を防ぐため残します。"],
+    "Click a part on the donor model to select its bone subtree.": ["도너 모델의 이식할 부분을 클릭하면 해당 부분의 본 묶음을 선택합니다.", "ドナーモデルの移植する部分をクリックしてボーン群を選択します。"],
+    "Highlighted donor faces are inserted. Wearer faces crossing either cut are retained to prevent gaps.": ["강조된 도너 면을 이식합니다. 절단면에 걸친 착용자 면은 틈이 생기지 않도록 유지합니다.", "強調されたドナー面を移植します。切断面をまたぐ着用者の面は隙間を防ぐため残します。"],
     "No selectable costume part at this point.": ["이 지점에서 선택할 수 있는 의상 부분이 없습니다.", "この位置に選択可能な衣装パーツがありません。"]
   });
   Object.assign(TEXT, {
@@ -77,43 +77,128 @@
     "Model / texture faces": ["모델·텍스처에서 면 선택", "モデル・テクスチャの面を選択"],
     "Add a bone": ["본 추가", "ボーンを追加"],
     "Include child bones": ["하위 본 함께 선택", "子ボーンも選択"],
-    "Find a donor bone": ["Donor 본 검색", "ドナーボーンを検索"],
+    "Find a donor bone": ["도너 본 검색", "ドナーボーンを検索"],
     "Clear part selection": ["부위 선택 해제", "パーツ選択を解除"],
     "Undo selection": ["선택 되돌리기", "選択を元に戻す"],
     "Redo selection": ["선택 다시 실행", "選択をやり直す"],
     "Start from selected bones": ["선택한 본의 면으로 시작", "選択ボーンの面から開始"],
-    "Donor editing": ["Donor에서 선택", "ドナー上で選択"],
+    "Donor editing": ["도너에서 선택", "ドナー上で選択"],
     "Orbit model": ["모델 회전", "モデルを回転"],
     "Paint faces": ["면 칠해서 선택", "面を塗って選択"],
     "Erase faces": ["면 선택 지우기", "面の選択を消す"],
     "Connected faces": ["연결된 면 선택", "つながった面を選択"],
     "Brush radius": ["브러시 크기", "ブラシ半径"],
-    "Donor texture": ["Donor 텍스처", "ドナーテクスチャ"],
+    "Donor texture": ["도너 텍스처", "ドナーテクスチャ"],
     "Material / submesh": ["머티리얼·하위 메시", "マテリアル・サブメッシュ"],
     "Texture zoom": ["텍스처 확대", "テクスチャ拡大"],
     "Move texture": ["텍스처 이동", "テクスチャを移動"],
     "Fit texture": ["텍스처 맞춤", "テクスチャを合わせる"],
     "Select multiple bones; selecting a parent also selects its descendants. Click the model to add a bone.": ["여러 본을 함께 선택할 수 있습니다. 하위 본 함께 선택을 켜면 부모와 자손을 선택합니다. 모델을 클릭해 본을 추가하세요.", "複数のボーンを選択できます。子ボーン選択を有効にすると親と子孫を選択します。モデルをクリックしてボーンを追加します。"],
-    "Paint on the donor model or its UV texture. Green faces are transplanted together. Alt or right-drag rotates the model.": ["Donor 모델이나 UV 텍스처에 칠해 선택하세요. 초록색 면을 함께 이식합니다. Alt 또는 오른쪽 드래그로 모델을 회전합니다.", "ドナーモデルまたはUVテクスチャを塗って選択します。緑の面をまとめて移植します。Altまたは右ドラッグでモデルを回転します。"],
+    "Paint on the donor model or its UV texture. Green faces are transplanted together. Alt or right-drag rotates the model.": ["도너 모델이나 UV 텍스처에 칠해 선택하세요. 초록색 면을 함께 이식합니다. Alt 또는 오른쪽 드래그로 모델을 회전합니다.", "ドナーモデルまたはUVテクスチャを塗って選択します。緑の面をまとめて移植します。Altまたは右ドラッグでモデルを回転します。"],
     "UV overlaps select every face at that texture position. Use the 3D model to select only the visible surface.": ["UV가 겹치면 같은 텍스처 위치의 면이 함께 선택됩니다. 보이는 표면만 선택하려면 3D 모델을 사용하세요.", "UVが重なる位置では全ての面を選択します。見えている表面だけを選ぶ場合は3Dモデルを使ってください。"],
     "No UV texture is available for this material.": ["이 머티리얼에는 표시할 UV 텍스처가 없습니다.", "このマテリアルには表示できるUVテクスチャがありません。"],
-    "Select a donor region first.": ["먼저 이식할 Donor 부위를 선택하세요.", "移植するドナー領域を選択してください。"]
+    "Select a donor region first.": ["먼저 이식할 도너 부위를 선택하세요.", "移植するドナー領域を選択してください。"]
   });
   Object.assign(TEXT, {
     "Reuse empty UV areas": ["빈 UV 영역 재사용", "空きUV領域を再利用"],
-    "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.": ["Donor의 원래 UV 위치를 먼저 사용합니다. 겹치면 아틀라스로 합치거나 다른 빈 UV 영역으로 옮기기를 켜세요. 패딩은 추가하지 않습니다.", "ドナーの元のUV位置を優先します。重なる場合はアトラスに結合するか、別の空きUV領域への移動を有効にしてください。パディングは追加しません。"],
+    "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.": ["도너의 원래 UV 위치를 먼저 사용합니다. 겹치면 아틀라스로 합치거나 다른 빈 UV 영역으로 옮기기를 켜세요. 패딩은 추가하지 않습니다.", "ドナーの元のUV位置を優先します。重なる場合はアトラスに結合するか、別の空きUV領域への移動を有効にしてください。パディングは追加しません。"],
     "Move to another empty UV area": ["다른 빈 UV 영역으로 옮기기", "別の空きUV領域へ移動"],
     "Match smaller textures to larger ones": ["작은 이미지를 큰 이미지에 맞추기", "小さい画像を大きい画像に合わせる"],
     "Texture and UV placement": ["텍스처·UV 배치 방식", "テクスチャ・UVの配置方法"],
     "Reuse original UV positions": ["원래 UV 위치 재사용", "元のUV位置を再利用"],
-    "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.": ["메인·림라이트 등 대응 이미지를 각각 큰 쪽 해상도로 맞추고 원래 UV 위치를 유지합니다. 원래 위치가 사용 중이면 새 아틀라스로 합칩니다. 패딩은 추가하지 않습니다.", "メイン・リムライトなど対応する画像をそれぞれ大きい方の解像度に合わせ、元のUV位置を維持します。その位置が使用中なら新しいアトラスに結合します。パディングは追加しません。"],
+    "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. Head meshes are never combined into an atlas. No padding is added.": ["메인·림라이트 등 대응 이미지를 각각 큰 쪽 해상도로 맞추고 원래 UV 위치를 유지합니다. 원래 위치가 사용 중이면 새 아틀라스로 합칩니다. 머리 메시는 아틀라스로 합치지 않습니다. 패딩은 추가하지 않습니다.", "メイン・リムライトなど対応する画像をそれぞれ大きい方の解像度に合わせ、元のUV位置を維持します。その位置が使用中なら新しいアトラスに結合します。頭のメッシュはアトラスに結合しません。パディングは追加しません。"],
     "Move into empty UV areas": ["빈 UV 영역으로 이동", "空きUV領域へ移動"],
-    "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added.": ["메인 텍스처 해상도는 유지하고 보조 맵의 비율을 맞춘 뒤, 선택 영역의 텍스처와 UV를 함께 빈 공간으로 옮깁니다. 들어갈 공간이 없으면 새 아틀라스로 합칩니다. 패딩은 추가하지 않습니다.", "メインテクスチャの解像度を維持し、補助マップの比率を合わせて、選択領域のテクスチャとUVを一緒に空き領域へ移動します。収まる空間がなければ新しいアトラスに結合します。パディングは追加しません。"],
+    "Keep main-texture resolution, match auxiliary-map ratios, and move each selected UV island with its textures into unused space. If no space fits, use a new atlas. Head meshes are never combined into an atlas. No padding is added.": ["메인 텍스처 해상도는 유지하고 보조 맵의 비율을 맞춘 뒤, 선택한 UV 섬마다 텍스처와 함께 빈 공간으로 옮깁니다. 들어갈 공간이 없으면 새 아틀라스로 합칩니다. 머리 메시는 아틀라스로 합치지 않습니다. 패딩은 추가하지 않습니다.", "メインテクスチャの解像度を維持し、補助マップの比率を合わせて、選択したUVアイランドごとにテクスチャと一緒に空き領域へ移動します。収まる空間がなければ新しいアトラスに結合します。頭のメッシュはアトラスに結合しません。パディングは追加しません。"],
     "Build a new texture atlas": ["새 아틀라스로 합치기", "新しいテクスチャアトラスを作成"],
-    "Combine textures into a new atlas and remap UVs. No padding is added.": ["텍스처를 새 아틀라스로 합치고 UV를 다시 배치합니다. 패딩은 추가하지 않습니다.", "テクスチャを新しいアトラスに結合し、UVを再配置します。パディングは追加しません。"],
+    "Combine textures into a new atlas and remap UVs. Not available for head meshes. No padding is added.": ["텍스처를 새 아틀라스로 합치고 UV를 다시 배치합니다. 머리 메시에는 사용할 수 없습니다. 패딩은 추가하지 않습니다.", "テクスチャを新しいアトラスに結合し、UVを再配置します。頭のメッシュには使用できません。パディングは追加しません。"],
     "Before either UV reuse method, enlarge corresponding main, rimlight and other UV textures to the larger resolution. No padding is added.": ["두 UV 재사용 방식에 앞서 메인·림라이트 등 대응하는 UV 텍스처를 큰 쪽 해상도로 확대합니다. 패딩은 추가하지 않습니다.", "どちらのUV再利用方式でも、メイン・リムライトなど対応するUVテクスチャを大きい方の解像度に先に拡大します。パディングは追加しません。"],
     "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added.": ["원래 UV 위치가 사용 중이면 원본 픽셀의 세부 표현을 유지한 채 다른 빈 영역을 찾습니다. 패딩은 추가하지 않습니다.", "元のUV位置が使用中なら、元画像の細部を維持して別の空き領域を探します。パディングは追加しません。"]
   });
+  // Part-transplant target choice and the core's fixed refusal sentences
+  // (graft_game_compat / graft_texture_atlas); keep these keys identical.
+  var REASONS = [
+    "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head material, so an atlas would never be shown and would move the blush. Choose Body as the receiving mesh, or use original or empty UV positions.",
+    "Load the costume together with its face before transplanting onto a head mesh. The game draws the face's eyes and mouth from the same head texture, and their areas must be protected.",
+    "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the receiving mesh, or select a smaller part.",
+    "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the receiving mesh.",
+    "One game material holds one culling setting, so the donor's and the receiving mesh's materials must match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.",
+    "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.",
+    "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.",
+    "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh.",
+    "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.",
+    "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.",
+    "A head-texture mesh is compressed; its texture area cannot be protected.",
+    "A head-texture mesh has triangles without UV0 coordinates.",
+    "A head-texture mesh has invalid UV0 coordinates.",
+    "A head-texture mesh references an invalid vertex.",
+    "A head-texture surface references a mesh outside its bundle; its texture area cannot be protected."
+  ];
+  Object.assign(TEXT, {
+    "Receiving mesh": ["이식받을 메시", "移植先のメッシュ"],
+    "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.": [
+      "Body 등 머리 밖의 메시: 이식한 부분은 원래 본을 그대로 따라가므로 머리 장식은 계속 머리에 붙어 있습니다. 텍스처는 그 메시의 텍스처에 들어가며 아틀라스도 사용할 수 있고, 홍조에는 영향이 없습니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
+      "Bodyなど頭の外のメッシュ：移植したパーツは元のボーンに従うため、頭のアクセサリーは頭に付いたままです。テクスチャはそのメッシュのテクスチャに入り、アトラスも使えます。チークには影響しません。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。"],
+    "Meshes under the head (such as Hair): the game draws every head mesh with the shared head material. The part's texture must fit in free head-texture space outside the face, eyes, mouth and blush; no atlas is made, and the face must be loaded. Body and head meshes draw in the same order with the same outline.": [
+      "머리 아래 메시(Hair 등): 게임은 머리 아래의 모든 메시를 공용 머리 머티리얼로 그립니다. 이식한 부분의 텍스처는 얼굴·눈·입·홍조 영역을 피해 머리 텍스처의 빈 곳에 들어가야 하며, 아틀라스는 만들지 않고 얼굴도 함께 불러와야 합니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
+      "頭の下のメッシュ（Hairなど）：ゲームは頭の下のすべてのメッシュを共通の頭マテリアルで描画します。パーツのテクスチャは顔・目・口・チークの領域を避けて頭テクスチャの空きに収める必要があり、アトラスは作らず、顔も一緒に読み込む必要があります。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。"]
+  });
+  TEXT[REASONS[0]] = ["머리 메시에는 새 텍스처 아틀라스를 사용할 수 없습니다. 게임은 머리 아래의 모든 메시를 원래 머리 머티리얼로 그리므로 아틀라스는 표시되지 않고 홍조 위치도 틀어집니다. 이식받을 메시로 Body를 고르거나, 원래 UV 위치 또는 빈 UV 영역을 사용하세요.",
+    "頭のメッシュには新しいテクスチャアトラスを使えません。ゲームは頭の下のすべてのメッシュを元の頭マテリアルで描画するため、アトラスは表示されず、チークの位置もずれます。移植先のメッシュにBodyを選ぶか、元のUV位置または空きUV領域を使ってください。"];
+  TEXT[REASONS[1]] = ["머리 메시에 이식하려면 의상을 얼굴과 함께 불러오세요. 게임은 얼굴의 눈과 입도 같은 머리 텍스처로 그리므로 그 영역을 보호해야 합니다.",
+    "頭のメッシュに移植するには、衣装を顔と一緒に読み込んでください。ゲームは顔の目と口も同じ頭テクスチャで描画するため、その領域を保護する必要があります。"];
+  TEXT[REASONS[2]] = ["머리 텍스처에 얼굴·눈·입·홍조와 기존 머리 메시를 피해 선택한 부분을 넣을 빈 곳이 없습니다. 이식받을 메시로 Body를 고르거나 더 작은 부분을 선택하세요.",
+    "頭テクスチャに、顔・目・口・チークと既存の頭メッシュを避けて選択パーツを入れる空きがありません。移植先のメッシュにBodyを選ぶか、より小さいパーツを選択してください。"];
+  TEXT[REASONS[3]] = ["얼굴 메시에는 부분을 이식할 수 없습니다. 게임은 얼굴 메시를 원래 머리 머티리얼과 고정된 홍조 위치로 다시 합쳐 그립니다. 이식받을 메시로 Body나 Hair를 고르세요.",
+    "顔のメッシュにはパーツを移植できません。ゲームは顔のメッシュを元の頭マテリアルと固定のチーク位置で結合し直して描画します。移植先のメッシュにBodyかHairを選んでください。"];
+  TEXT[REASONS[4]] = ["게임 머티리얼 하나에는 컬링 설정이 하나뿐이므로 도너 머티리얼과 이식받을 메시의 머티리얼이 같아야 합니다. 같은 컬링을 쓰는 머티리얼의 메시(Body나 Hair 등)를 이식받을 메시로 고르세요.",
+    "ゲームのマテリアル1つにはカリング設定が1つしかないため、ドナーと移植先のメッシュのマテリアルが一致する必要があります。同じカリングを使うマテリアルのメッシュ（BodyやHairなど）を移植先に選んでください。"];
+  TEXT[REASONS[5]] = ["선택한 부분의 텍스처가 같은 UV 면적에 대해 대응하는 머리 텍스처보다 더 촘촘한 픽셀을 씁니다. 얼굴·눈·입이 머리 텍스처로 그려지므로 머리 텍스처의 크기는 바꾸지 않습니다. 이식받을 메시로 Body를 고르세요.",
+    "選択したパーツのテクスチャは、同じUV面積に対して対応する頭テクスチャより細かいピクセルを使っています。顔・目・口は頭テクスチャで描画されるため、頭テクスチャのサイズは変更しません。移植先のメッシュにBodyを選んでください。"];
+  TEXT[REASONS[6]] = ["선택한 부분의 원래 UV 위치는 머리 텍스처에서 이미 얼굴·눈·입·홍조 또는 다른 머리 메시가 쓰고 있습니다. '빈 UV 영역으로 이동'을 고르거나, 이식받을 메시로 Body를 고르세요.",
+    "選択したパーツの元のUV位置は、頭テクスチャ上ですでに顔・目・口・チークまたは別の頭メッシュが使っています。「空きUV領域へ移動」を選ぶか、移植先のメッシュにBodyを選んでください。"];
+  TEXT[REASONS[7]] = ["선택한 부분의 텍스처를 원래 픽셀 그대로 머리 텍스처에 넣을 수 없습니다. 이유는 로그에 있습니다. 이식받을 메시로 Body를 고르세요.",
+    "選択したパーツのテクスチャを元のピクセルのまま頭テクスチャに書き込めません。理由はログに記録されています。移植先のメッシュにBodyを選んでください。"];
+  TEXT[REASONS[8]] = ["머리 메시에 이식하려면 머리의 BodyPartManager.headMaterial이 의상 파일 안에 저장되어 있어야 합니다.",
+    "頭のメッシュに移植するには、頭のBodyPartManager.headMaterialが衣装ファイル内に保存されている必要があります。"];
+  TEXT[REASONS[9]] = ["머리 텍스처를 쓰는 메시의 정점 데이터가 번들 밖에 저장되어 있습니다. 원래 의상과 얼굴을 다시 여세요.",
+    "頭テクスチャを使うメッシュの頂点データがバンドルの外に保存されています。元の衣装と顔を開き直してください。"];
+  TEXT[REASONS[10]] = ["머리 텍스처를 쓰는 메시가 압축되어 있어 그 텍스처 영역을 보호할 수 없습니다.",
+    "頭テクスチャを使うメッシュが圧縮されているため、そのテクスチャ領域を保護できません。"];
+  TEXT[REASONS[11]] = ["머리 텍스처를 쓰는 메시에 UV0 좌표가 없는 삼각형이 있습니다.",
+    "頭テクスチャを使うメッシュに、UV0座標のない三角形があります。"];
+  TEXT[REASONS[12]] = ["머리 텍스처를 쓰는 메시의 UV0 좌표가 올바르지 않습니다.",
+    "頭テクスチャを使うメッシュのUV0座標が不正です。"];
+  TEXT[REASONS[13]] = ["머리 텍스처를 쓰는 메시가 잘못된 정점을 참조합니다.",
+    "頭テクスチャを使うメッシュが無効な頂点を参照しています。"];
+  TEXT[REASONS[14]] = ["머리 텍스처를 쓰는 표면이 번들 밖의 메시를 참조하므로 그 텍스처 영역을 보호할 수 없습니다.",
+    "頭テクスチャを使う面がバンドル外のメッシュを参照しているため、そのテクスチャ領域を保護できません。"];
+  // Detail sentences with values ({slot}, sizes, counts) kept in translation.
+  var REASON_TEMPLATES = [
+    "{slot}: the part uses {part} for a {part_main} main texture; the head uses {head} for {head_main}.",
+    "{slot}: the part uses {part}; the head uses {head}.",
+    "{slot} is already used at the part's original UV position.",
+    "Island {island} of {islands} ({width}×{height} px) found no free texels in {slot}.",
+    "The search stopped after {count} positions for island {island} of {islands}.",
+    "{donor}: _CullMode is {donor_value}, while {receiver} uses {receiver_value}.",
+    "{donor} (_CullMode {donor_value}) is drawn from both sides like {receiver} (_CullMode 0); its back faces can show.",
+    "{donor} (_CullMode {donor_value}) keeps its culling: it becomes its own submesh drawn by {copy}, a copy of {receiver} (_CullMode 0) with _CullMode {donor_value}."
+  ];
+  TEXT[REASON_TEMPLATES[0]] = ["{slot} — 이식할 부분: {part} (메인 텍스처 {part_main} 기준), 머리 텍스처: {head} (메인 텍스처 {head_main} 기준).",
+    "{slot}：パーツは{part_main}のメインテクスチャに対して{part}、頭は{head_main}に対して{head}を使います。"];
+  TEXT[REASON_TEMPLATES[1]] = ["{slot} — 이식할 부분: {part}, 머리 텍스처: {head}.",
+    "{slot}：パーツは{part}、頭は{head}を使います。"];
+  TEXT[REASON_TEMPLATES[2]] = ["{slot}에서 이 부분의 원래 UV 위치는 이미 사용 중입니다.",
+    "{slot}では、このパーツの元のUV位置はすでに使われています。"];
+  TEXT[REASON_TEMPLATES[3]] = ["UV 섬 {islands}개 중 {island}번째({width}×{height} px)가 {slot}에서 빈 텍셀을 찾지 못했습니다.",
+    "UVアイランド{islands}個中{island}番目（{width}×{height} px）は{slot}で空きテクセルを見つけられませんでした。"];
+  TEXT[REASON_TEMPLATES[4]] = ["UV 섬 {islands}개 중 {island}번째의 위치를 {count}곳까지 찾아보고 멈췄습니다.",
+    "UVアイランド{islands}個中{island}番目の位置を{count}か所まで探して停止しました。"];
+  TEXT[REASON_TEMPLATES[5]] = ["{donor}의 _CullMode: {donor_value}, {receiver}의 _CullMode: {receiver_value}.",
+    "{donor}：_CullModeは{donor_value}ですが、{receiver}は{receiver_value}です。"];
+  TEXT[REASON_TEMPLATES[6]] = ["{donor}(_CullMode {donor_value})는 {receiver}(_CullMode 0)처럼 앞뒷면 모두 그려지므로 뒷면이 보일 수 있습니다.",
+    "{donor}（_CullMode {donor_value}）は{receiver}（_CullMode 0）と同じく両面が描画されるため、裏面が見えることがあります。"];
+  TEXT[REASON_TEMPLATES[7]] = ["{donor}(_CullMode {donor_value}) — 컬링 유지: 별도 서브메시로 나뉘어 {receiver}(_CullMode 0)의 복사본인 {copy}(_CullMode {donor_value}) 머티리얼로 그려집니다.",
+    "{donor}（_CullMode {donor_value}）はカリングを保ちます。別のサブメッシュに分かれ、{receiver}（_CullMode 0）を複製して_CullMode {donor_value}にした{copy}で描画されます。"];
   TEXT["Selected bones"] = ["선택 본", "選択ボーン"];
   TEXT["Selected faces"] = ["이식할 면", "移植する面"];
   function selectedBoneManifest(parts, selected) {
@@ -142,6 +227,29 @@
     "The original model files changed. The displayed model was kept.": ["원본 모델 파일이 변경되어 현재 표시 모델을 유지했습니다.", "元のモデルファイルが変更されたため、表示中のモデルを保持しました。"],
     "The original face could not be restored. The displayed model was kept.": ["원래 얼굴을 복원할 수 없어 현재 표시 모델을 유지했습니다.", "元の顔を復元できないため、表示中のモデルを保持しました。"]
   });
+  // Fixed refusal sentences and detail templates from the Python core, in the
+  // page language; template values (slots, sizes, counts) are kept.
+  function reasonText(text, lang) {
+    function tr(key) { var value = TEXT[key]; return value && (lang === "ko" || lang === "ja") ? value[lang === "ko" ? 0 : 1] : key; }
+    text = String(text || "");
+    REASONS.forEach(function (key) { if (text.indexOf(key) >= 0) text = text.split(key).join(tr(key)); });
+    REASON_TEMPLATES.forEach(function (key) {
+      var names = [], pattern = key.split(/\{(\w+)\}/).map(function (part, index) {
+        if (index % 2) { names.push(part); return "(.+?)"; }
+        return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }).join("");
+      text = text.replace(new RegExp(pattern, "g"), function () {
+        var values = arguments;
+        return tr(key).replace(/\{(\w+)\}/g, function (whole, name) { var at = names.indexOf(name); return at < 0 ? whole : values[at + 1]; });
+      });
+    });
+    return text;
+  }
+  // The model marks meshes below a merged head's headAll (drawn with the head
+  // material in game); the label alone never decides it.
+  function receivingMeshKind(value, option) {
+    return value && option && option.getAttribute("data-head-mesh") === "true" ? "head" : "body";
+  }
   function create(options) {
     options = options || {};
     var disposed = false, busy = false, jobId = "", events = null, entries = [];
@@ -193,6 +301,15 @@
       (children || []).forEach(function (child) { node.appendChild(child); }); return node;
     }
     function label(key, control) { return element("label", {}, [element("span", { "data-transplant-label": key, text: key }), control]); }
+    function localizeReason(text) { return reasonText(text, (document.documentElement.lang || "en").split("-")[0]); }
+    function targetHint(entry) {
+      if (!entry.targetHint) return;
+      var body = receivingMeshKind(entry.targetMesh.value, entry.targetMesh.selectedOptions && entry.targetMesh.selectedOptions[0]) === "body";
+      var key = body ? "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline."
+        : "Meshes under the head (such as Hair): the game draws every head mesh with the shared head material. The part's texture must fit in free head-texture space outside the face, eyes, mouth and blush; no atlas is made, and the face must be loaded. Body and head meshes draw in the same order with the same outline.";
+      entry.targetHint.dataset.transplantLabel = key; entry.targetHint.dataset.targetKind = body ? "body" : "head";
+      if (entry.targetHint.textContent !== t(key)) entry.targetHint.textContent = t(key);
+    }
     function context() {
       if (options.context) return options.context() || {};
       var state = global.ModelViewer && global.ModelViewer.getState();
@@ -276,9 +393,10 @@
         if (entry.targetMesh && entry.targetMeshKey !== targetKey) {
           entry.targetMeshKey = targetKey; var previous = entry.targetMesh.value;
           entry.targetMesh.replaceChildren(element("option", { value: "", text: "Body" }));
-          targets.forEach(function (mesh) { entry.targetMesh.appendChild(element("option", { value: mesh.value, text: mesh.label })); });
+          targets.forEach(function (mesh) { entry.targetMesh.appendChild(element("option", { value: mesh.value, text: mesh.label, "data-head-mesh": mesh.head ? "true" : "false" })); });
           if (targets.some(function (mesh) { return mesh.value === previous; })) entry.targetMesh.value = previous;
           else { var bodyMesh = targets.find(function (mesh) { return /^Body(?:_|$)/i.test(mesh.label); }); entry.targetMesh.value = bodyMesh ? bodyMesh.value : ""; }
+          targetHint(entry);
         }
         if (entry.pick.disabled !== locked) entry.pick.disabled = locked;
         if (entry.game.disabled !== locked) entry.game.disabled = locked;
@@ -614,13 +732,17 @@
         dispose: function () { observer.disconnect(); entry.panel.removeEventListener("toggle", draw); if (entry.operation === "part") entry.textureCanvas.removeEventListener("texturepanechange", drawTexture); controls.dispose(); disposeObject(model); planes.forEach(disposeObject); disposeObject(band); disposeObject(selection); if (cursor) cursor.remove(); renderer.dispose(); renderer.forceContextLoss(); }
       }; return entry.preview;
     }
+    // The Game assets cache keeps the game's body file name; people see the
+    // member and costume it is.
+    function donorLabel(path) { return options.labelFor ? options.labelFor(path) : String(path).replace(/\\/g, "/").split("/").pop(); }
     async function chooseDonor(entry, paths, variants) {
       if (busy || disposed || !paths || paths.length !== 1) return;
       var token = ++entry.generation;
       if (entry.request) entry.request.abort();
       var controller = new AbortController(); entry.request = controller;
       entry.donor = paths[0]; entry.variant = variants && variants[0] || variants && variants["0"] || "primary";
-      entry.file.value = String(paths[0]).replace(/\\/g, "/").split("/").pop();
+      entry.file.value = donorLabel(paths[0]); entry.file.title = paths[0];
+      if (options.loadLabel) options.loadLabel(paths[0]).then(function () { if (!disposed && entry.donor === paths[0]) entry.file.value = donorLabel(paths[0]); });
       entry.inspecting = true; entry.stage.hidden = true; if (entry.operation === "part") entry.texturePanel.hidden = true; status(entry, "Preparing donor…"); refresh();
       var stage = "Donor inspection";
       try {
@@ -704,7 +826,7 @@
             if (item.type === "transplant") entry.resultVariant = item.variant || "primary";
             if (item.type !== "done") return;
             if (events) events.close(); events = null; jobId = "";
-            if (item.status !== "done") { finish(entry); status(entry, item.status === "error" ? diagnostic(new Error(item.summary || "The transplant job failed without a reason."), entry, entry.lastStage || "Transplant progress stream", entry.stageFilename).message : item.summary || "Cancelled", item.status === "error"); return; }
+            if (item.status !== "done") { finish(entry); status(entry, item.status === "error" ? diagnostic(new Error(localizeReason(item.summary) || "The transplant job failed without a reason."), entry, entry.lastStage || "Transplant progress stream", entry.stageFilename).message : item.summary || "Cancelled", item.status === "error"); return; }
             var paths = item.output_paths;
             if (!Array.isArray(paths) || paths.length !== 1 || typeof paths[0] !== "string") throw new Error("The costume operation did not publish a model.");
             entry.resultPaths = paths; entry.result.hidden = false;
@@ -893,9 +1015,9 @@
       if (operation === "part" || operation === "lower") {
         entry.uvPlacement = element("select", { id: id + "-uv-placement" });
         var placementChoices = [
-          { value: 'same_position', label: 'Reuse original UV positions', help: 'Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.' },
-          { value: 'move_to_empty', label: 'Move into empty UV areas', help: 'Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added.' },
-          { value: 'atlas', label: 'Build a new texture atlas', help: 'Combine textures into a new atlas and remap UVs. No padding is added.' },
+          { value: 'same_position', label: 'Reuse original UV positions', help: 'Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. Head meshes are never combined into an atlas. No padding is added.' },
+          { value: 'move_to_empty', label: 'Move into empty UV areas', help: 'Keep main-texture resolution, match auxiliary-map ratios, and move each selected UV island with its textures into unused space. If no space fits, use a new atlas. Head meshes are never combined into an atlas. No padding is added.' },
+          { value: 'atlas', label: 'Build a new texture atlas', help: 'Combine textures into a new atlas and remap UVs. Not available for head meshes. No padding is added.' },
         ];
         placementChoices.forEach(function (choice) {
           entry.uvPlacement.appendChild(element("option", { value: choice.value, "data-transplant-label": choice.label, text: choice.label }));
@@ -925,7 +1047,14 @@
       entry.donorMesh = element("select", { id: id + "-donor-mesh" });
       entry.targetMesh = element("select", { id: id + "-target-mesh" });
       var cuts = element("div", { className: "viewer-transplant-cuts" }, [label("Cut preset", entry.preset), label("Upper cut Y", entry.high), label("Lower cut Y", entry.low), label("Replacement region", entry.region), label("Donor mesh", entry.donorMesh), label("Wearer mesh", entry.targetMesh), label("Replacement selection", entry.scope), label("Exclude separate accessories", entry.exclude)]); cuts.hidden = operation !== "lower"; entry.panel.appendChild(cuts);
-      if (operation === "part") entry.panel.insertBefore(element("div", { className: "viewer-transplant-cuts" }, [label("Donor mesh", entry.donorMesh), label("Wearer mesh", entry.targetMesh)]), entry.boneControls);
+      if (operation === "part") {
+        entry.targetHint = element("p", { className: "viewer-render-note", id: id + "-target-mesh-help" });
+        entry.targetMesh.setAttribute("aria-describedby", entry.targetHint.id);
+        entry.panel.insertBefore(element("div", { className: "viewer-transplant-cuts" }, [label("Donor mesh", entry.donorMesh), label("Receiving mesh", entry.targetMesh)]), entry.boneControls);
+        entry.panel.insertBefore(entry.targetHint, entry.boneControls);
+        entry.targetMesh.addEventListener("change", function () { targetHint(entry); });
+        targetHint(entry);
+      }
       var hint = element("p", { className: "viewer-render-note", "data-transplant-label": "The mesh between the blue lower plane and orange upper plane is replaced.", text: "The mesh between the blue lower plane and orange upper plane is replaced." }); hint.hidden = operation !== "lower"; entry.panel.appendChild(hint);
       var selectedHint = element("p", { className: "viewer-render-note", "data-transplant-label": "Highlighted donor faces are inserted. Wearer faces crossing either cut are retained to prevent gaps.", text: "Highlighted donor faces are inserted. Wearer faces crossing either cut are retained to prevent gaps." }); selectedHint.hidden = operation !== "lower"; entry.panel.appendChild(selectedHint);
       entry.run = element("button", { type: "button", className: "viewer-primary", "data-transplant-label": operation === "lower" ? "Replace lower body" : "Transplant", text: operation === "lower" ? "Replace lower body" : "Transplant", disabled: "" });
@@ -979,7 +1108,7 @@
       refresh: refresh,
       getEditHistory: function () { return undoHistory.map(function (entry) { return entry.title; }); },
       updateLanguage: function () {
-        entries.forEach(function (entry) { entry.panel.querySelectorAll("[data-transplant-label]").forEach(function (node) { node.textContent = t(node.dataset.transplantLabel); }); if (entry.uvColor) entry.uvColor.updateLanguage(); if (entry.operation === "part") updatePartUI(entry); status(entry, entry.statusKey || ""); }); refresh();
+        entries.forEach(function (entry) { entry.panel.querySelectorAll("[data-transplant-label]").forEach(function (node) { node.textContent = t(node.dataset.transplantLabel); }); if (entry.donor && entry.file) entry.file.value = donorLabel(entry.donor); if (entry.uvColor) entry.uvColor.updateLanguage(); if (entry.operation === "part") updatePartUI(entry); status(entry, entry.statusKey || ""); }); refresh();
       },
       getState: function () { return { busy: busy, jobId: jobId, undoCount: undoHistory.length, redoCount: redoHistory.length, historyLimit: MAX_HISTORY, donors: entries.map(function (entry) { var manifest = selectedBoneManifest(entry.partOptions, entry.selectedBones), result = { operation: entry.operation, donor: entry.donor, part: entry.parts.value, cutLow: Number(entry.low.value), cutHigh: Number(entry.high.value), matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, selectionScope: entry.scope.value, excludeAccessories: entry.exclude.checked, selectedTriangles: entry.selectedTriangles || 0 };
         if (entry.uvPlacement) result.uvPlacement = entry.uvPlacement.value;
@@ -987,5 +1116,6 @@
       dispose: function () { disposed = true; if (events) events.close(); if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }).catch(function () {}); entries.forEach(function (entry) { if (entry.request) entry.request.abort(); if (entry.uvColor) entry.uvColor.dispose(); if (entry.preview) entry.preview.dispose(); entry.panel.remove(); }); }
     };
   }
-  global.ViewerTransplants = { create: create, selectedBoneManifest: selectedBoneManifest, setBoneSelection: setBoneSelection };
+  global.ViewerTransplants = { create: create, selectedBoneManifest: selectedBoneManifest, setBoneSelection: setBoneSelection,
+    reasonText: reasonText, receivingMeshKind: receivingMeshKind };
 }(window));

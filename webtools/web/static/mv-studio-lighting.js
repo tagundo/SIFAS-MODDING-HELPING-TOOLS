@@ -32,7 +32,15 @@
     return Math.max(0, Math.min(1, global.ViewerMotionTimeline?.curve(keys, t, fallback) ?? fallback));
   }
 
+  // A Live* mixer input's weight at `time`: 0 for an input the scene's mixer walk left out
+  // (MVStudioMixer: LiveMixerBase`2.ProcessWithoutSeek during playback), else clipWeight.
   function nativeWeight(event, time) {
+    if (global.MVStudioMixer?.skipped(event, time)) return 0;
+    return clipWeight(event, time);
+  }
+
+  // The input weight Timeline gives a clip at `time` (blend or ease curves, extrapolation).
+  function clipWeight(event, time) {
     const v = event.values;
     let local = time - event.start;
     if (local < 0) {
@@ -48,6 +56,79 @@
     const right = outgoing > 0 && local > event.duration - outgoing
       ? fade(v.mixOut, (local - event.duration + outgoing) / outgoing, false) : 1;
     return left * right;
+  }
+
+  // UtilColor.CheckSame (0x2960e4c) is true when the squared RGBA distance of two
+  // colors is below 1e-5 (the float at 0x56f60fc). The ambient components
+  // (LiveCoreMemberAmbient.ApplyAmbientColor 0x2f670cc and ApplyTintColor,
+  // LiveCoreStageAmbient.ApplyAmbientColor/ApplyTintColor 0x2f70788/ApplyBlendColor,
+  // and their ApplyDefault* writers) compare the new color with the one they last
+  // wrote and skip Material.SetColor when CheckSame holds, so a slowly changing
+  // color stays at the last written value until it moves by sqrt(1e-5). The
+  // material therefore depends on the rendered frames: `frames` is the scene's
+  // frame clock ({advancing, history}); an advancing frame continues the held
+  // color, otherwise the history (earlier rendered frame times, ascending) is
+  // replayed from an unwritten component and an empty history writes the exact
+  // color. valueAt(time) returns the component's color at that time or null when
+  // it writes nothing (the hold then restarts).
+  const HOLD_EPSILON = Math.fround(1e-5);
+
+  function holdStep(hold, color) {
+    if (!rgba(color)) {
+      hold.color = null;
+      return color;
+    }
+    let distance = 0;
+    if (hold.color) for (let channel = 0; channel < 4; channel++) distance += (color[channel] - hold.color[channel]) ** 2;
+    if (!hold.color || distance >= HOLD_EPSILON) hold.color = color.slice(0, 4);
+    return hold.color;
+  }
+
+  function heldColor(hold, valueAt, seconds, frames) {
+    if (!frames?.advancing) {
+      hold.color = null;
+      for (const time of frames?.history || []) holdStep(hold, valueAt(time));
+    }
+    return holdStep(hold, valueAt(seconds));
+  }
+
+  // UnityEngine.Mathf.Approximately (0x34ab0ac): |b - a| < max(1e-6 * max(|a|, |b|),
+  // Mathf.Epsilon * 8), the 1e-6 being the float at 0x56f60f8 and Mathf.Epsilon read from the
+  // Mathf statics at run time. Mathf..cctor (0x34ab480) stores Epsilon =
+  // MathfInternal.IsFlushToZeroEnabled ? FloatMinNormal : FloatMinDenormal; MathfInternal..cctor
+  // (0x441442c) stores FloatMinNormal = 0x00800000 and FloatMinDenormal = 0x00000001 and sets
+  // IsFlushToZeroEnabled = (FloatMinDenormal == 0) with a scalar fcmp, which is true only when
+  // FPCR.FZ flushes the denormal input. No arm64 library of the client APK writes FPCR (no msr
+  // fpcr in libil2cpp, libunity or any plugin; the few fpcr accesses are reads in compiler-rt
+  // and SQLite), so the threads keep the AArch64 Linux default FZ = 0: IsFlushToZeroEnabled is
+  // false and Mathf.Epsilon is FloatMinDenormal, 2^-149. Shared with MVStudioMixer.
+  const MATHF_EPSILON = 1.401298464324817e-45;
+  const APPROXIMATELY_FLOOR = Math.fround(MATHF_EPSILON * 8);
+  // LiveCoreStageEmissive.ApplyEmissiveIntensity (0x2f74f5c) skips Material.SetFloat while
+  // Approximately holds for the intensity it last wrote.
+  const APPROXIMATELY_SCALE = Math.fround(1e-6);
+
+  function approximately(a, b) {
+    return Math.abs(b - a) < Math.max(Math.fround(APPROXIMATELY_SCALE * Math.max(Math.abs(a), Math.abs(b))), APPROXIMATELY_FLOOR);
+  }
+
+  function holdScalarStep(hold, value) {
+    if (!Number.isFinite(value)) {
+      hold.value = null;
+      return value;
+    }
+    if (hold.value == null || !approximately(value, hold.value)) hold.value = value;
+    return hold.value;
+  }
+
+  // heldColor for a float written behind Mathf.Approximately: valueAt(time) returns the
+  // float or null when nothing is written (the hold then restarts).
+  function heldScalar(hold, valueAt, seconds, frames) {
+    if (!frames?.advancing) {
+      hold.value = null;
+      for (const time of frames?.history || []) holdScalarStep(hold, valueAt(time));
+    }
+    return holdScalarStep(hold, valueAt(seconds));
   }
 
   function multiply(a, b) { return a.map((channel, index) => channel * b[index]); }
@@ -156,6 +237,11 @@
       }
     }
     return {
+      // LiveBaseLightReciever also writes the ambient components (through the same
+      // CheckSame-gated ApplyBase*Color). Which mixer writes last in a frame is not
+      // established, so the holds are not applied while a base light track exists
+      // (an unevidenced choice: the colors stay exact).
+      baseTrack: !!baseTrack,
       baseAmbient: base?.ambient ?? null, baseTint: base?.tint || white,
       member(position) {
         if (!base && !ambient.has(position) && !rim.has(position)) return null;
@@ -166,5 +252,6 @@
     };
   }
 
-  global.MVStudioLighting = { nativeWeight, memberColor, sample };
+  global.MVStudioLighting = { nativeWeight, clipWeight, memberColor, sample, heldColor, heldScalar, approximately, HOLD_EPSILON,
+    APPROXIMATELY_FLOOR };
 })(typeof window !== "undefined" ? window : globalThis);

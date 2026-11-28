@@ -70,6 +70,8 @@
     material.name = "Native member spotlight shaft";
     const mesh = new T.Mesh(template.geometry, material);
     mesh.name = "Native member spotlight shaft";
+    // The renderer's GameObject below the performer (fx_spo_sha_0N/root/spotlight_0N) for the runtime value dump.
+    mesh.userData.mvGameObjectPath = template.nodes.map(source => source.name).join("/");
     mesh.renderOrder = template.material.queue;
     mesh.visible = false;
     // The mesh is the AxisBillboard rotation target. Its parent preserves the
@@ -127,21 +129,17 @@
     position.add(target);
   }
 
-  function worldRotation(object, target) {
-    target.identity();
-    for (let node = object; node; node = node.parent) target.premultiply(node.quaternion);
-    return target;
-  }
-
   function create(T, prepared, memberRoot, moveNode) {
-    if (!prepared?.templates.size || !memberRoot?.isObject3D || !moveNode?.isObject3D || !global.MVStudioLighting) return null;
+    const axis = global.MVStudioAxisBillboard;
+    if (!prepared?.templates.size || !memberRoot?.isObject3D || !moveNode?.isObject3D || !global.MVStudioLighting || !axis) return null;
     const variants = new Map();
     for (const template of prepared.templates.values()) variants.set(template.index, instance(T, template, memberRoot));
     const parameters = { color: new T.Vector4(), scale: new T.Vector3() };
     const colorCache = new T.Vector4(), lastPosition = new T.Vector3(), moveVelocity = new T.Vector3();
     const position = new T.Vector3(), target = new T.Vector3(), change = new T.Vector3(), impulse = new T.Vector3();
+    const look = new T.Vector3();
     const up = new T.Vector3(), worldUp = new T.Vector3(0, 1, 0);
-    const right = new T.Vector3(), forward = new T.Vector3(), basis = new T.Matrix4(), rotation = new T.Quaternion();
+    const work = axis.scratch(T), rotation = new T.Quaternion();
     const parentRotation = new T.Quaternion(), cacheDifference = new T.Vector4();
     let selected = variants.get(0), index = 0, force = false, cacheValid = false;
 
@@ -160,18 +158,66 @@
       moveVelocity.set(0, 0, 0);
     }
 
+    // The shared AxisBillboard basis; Transform.rotation sets parent^-1 * R.
     function point(object, direction, vertical) {
-      right.crossVectors(vertical, direction);
-      if (right.lengthSq() <= 1e-12) return;
-      right.normalize();
-      forward.crossVectors(right, vertical).normalize();
-      rotation.setFromRotationMatrix(basis.makeBasis(right, vertical, forward));
-      // Unity Transform.rotation composes quaternions independently of parent scale.
-      worldRotation(object.parent, parentRotation);
+      if (!axis.axisRotation(vertical, direction, rotation, work)) return;
+      axis.worldRotation(object.parent, parentRotation);
       object.quaternion.copy(parentRotation.invert()).multiply(rotation);
     }
 
-    function frame(events, time, deltaTime, mainCamera, project, resetClock = false) {
+    // The latest frame before `time` in which the selected variant was drawn:
+    // the game's rendered frames (context.history, ascending director times)
+    // or, without them, a grid at context.rate ending at `time`. A frame
+    // counts as drawn when its mixed color alpha reaches visibleAlpha for this
+    // variant's drawObjectIndex. Unevidenced simplification: the colorChange
+    // gate that can keep the renderer's previous state for a change below
+    // 1e-5 is not replayed here.
+    function lastDrawnFrame(events, time, project, context) {
+      let earliest = Infinity;
+      for (const event of events) if (Number.isFinite(event.start)) earliest = Math.min(earliest, event.start);
+      if (!Number.isFinite(earliest)) return null;
+      const history = Array.isArray(context?.history) && context.history.length ? context.history : null;
+      const rate = Number.isFinite(context?.rate) && context.rate > 0 ? context.rate : 30;
+      const probe = { color: new T.Vector4(), scale: new T.Vector3() };
+      let cursor = history ? history.length : 0;
+      for (let step = 1; step <= 100000; step++) {
+        let at;
+        if (history) {
+          do cursor--; while (cursor >= 0 && !(history[cursor] < time - 1e-9));
+          if (cursor < 0) return null;
+          at = history[cursor];
+        } else at = time - step / rate;
+        if (at < earliest - 1e-9) return null;
+        mix(events, at, project, probe, index);
+        if (probe.index === index && Math.fround(probe.color.w) >= visibleAlpha) return at;
+      }
+      return null;
+    }
+
+    // LiveCoreMemberSpotLightShaft.UpdateSpotlightShaft (0x2f6d380) returns
+    // at 0x2f6d44c while the renderer is disabled, before its LookAt and move,
+    // so a hidden shaft keeps the transform its last drawn frame gave it. A
+    // reset (a seek) restores the prefab transform; it then rebuilds that
+    // frame instead: settled on the member's Move anchor of that frame (as the
+    // drawn reset below) and turned level toward that frame's main camera.
+    // The height stays the one written in this frame.
+    function placeHidden(events, time, project, context) {
+      const drawn = lastDrawnFrame(events, time, project, context);
+      if (drawn === null || !context.anchorAt?.(drawn, target)) return;
+      const shaft = selected.root;
+      shaft.getWorldPosition(position);
+      position.x = target.x;
+      position.z = target.z;
+      if (context.cameraAt?.(drawn, look)) {
+        look.sub(position);
+        look.y = 0;
+        point(shaft, look, worldUp);
+      }
+      lastPosition.copy(position);
+      shaft.position.copy(memberRoot.worldToLocal(position));
+    }
+
+    function frame(events, time, deltaTime, mainCamera, project, resetClock = false, context = null) {
       if (resetClock) reset();
       if (!events?.length) {
         if (selected) selected.mesh.visible = false;
@@ -203,16 +249,29 @@
       const shaft = selected.root;
       shaft.position.y = height;
       shaft.scale.copy(scale);
-      if (!selected.mesh.visible) return false;
-
-      shaft.getWorldPosition(position);
-      if (mainCamera) {
-        mainCamera.getWorldPosition(target).sub(position);
-        target.y = 0;
-        point(shaft, target, worldUp);
+      if (!selected.mesh.visible) {
+        if (resetClock && context) placeHidden(events, time, project, context);
+        return false;
       }
+
+      // LiveCoreMemberSpotLightShaft.UpdateSpotlightShaft (0x2f6d380): the
+      // shaft root LookAt()s (0x2f6d4f4) the camera, level with itself, from
+      // the position the previous frame moved it to, and only then moves
+      // toward (Move.x, root.y, Move.z), by SmoothDamp or a snap. The
+      // AxisBillboard child then turns at draw time from the moved position,
+      // so in a playing frame the two turns agree to within one frame of
+      // motion. A reset (a seek) has no previous frame: the snap below takes
+      // the shaft as settled on its anchor, so the look-at starts there too,
+      // not from the restored prefab position.
+      shaft.getWorldPosition(position);
       moveNode.getWorldPosition(target);
       target.y = position.y;
+      if (resetClock) position.copy(target);
+      if (mainCamera) {
+        mainCamera.getWorldPosition(look).sub(position);
+        look.y = 0;
+        point(shaft, look, worldUp);
+      }
       if (force || lastPosition.distanceToSquared(target) >= 1) {
         position.copy(target);
         force = false;
@@ -226,11 +285,24 @@
 
     return {
       frame,
+      // Read-only: the local rotation billboard() would give the shown shaft for an eye position (no
+      // node, matrix or camera is written); empty when no shaft is shown.
+      preview(eye) {
+        const result = new Map();
+        if (!selected?.mesh.visible || !eye) return result;
+        const mesh = selected.mesh, turned = new T.Quaternion(), parent = new T.Quaternion(), direction = new T.Vector3();
+        const upAxis = new T.Vector3(0, 1, 0).applyQuaternion(axis.worldRotation(mesh, new T.Quaternion())).normalize();
+        direction.copy(eye).sub(new T.Vector3().setFromMatrixPosition(mesh.matrixWorld));
+        if (axis.axisRotation(upAxis, direction, turned, axis.scratch(T))) {
+          result.set(mesh, axis.worldRotation(mesh.parent, parent).invert().multiply(turned));
+        }
+        return result;
+      },
       billboard(camera) {
         if (!selected?.mesh.visible || !camera) return;
         const mesh = selected.mesh;
         mesh.getWorldPosition(position);
-        up.copy(worldUp).applyQuaternion(worldRotation(mesh, rotation)).normalize();
+        up.copy(worldUp).applyQuaternion(axis.worldRotation(mesh, rotation)).normalize();
         camera.getWorldPosition(target).sub(position);
         point(mesh, target, up);
       },

@@ -1,18 +1,20 @@
 """Read a selected 3D MV from the game's regional master and asset indexes."""
 
 from collections import deque
-from contextlib import closing
+from contextlib import closing, contextmanager
 import html
 import os
 from pathlib import Path
 import re
 import sqlite3
 import stat
+import threading
 import time
 from urllib.error import HTTPError
 
 from . import game_models as game
-from .game_motions import _rows
+from . import mv_studio_suits
+from .game_motions import _columns, _rows
 
 
 PLATFORMS = {"android": "Android", "ios": "iOS"}
@@ -28,6 +30,9 @@ MAX_ASSET_BYTES = 64 * 1024 * 1024
 MAX_PACK_BYTES = 2 * 1024 * 1024 * 1024
 _ID = re.compile(r"[1-9][0-9]{0,11}\Z")
 _PACK = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
+# Downloaded packs an import keeps for its other sections (shared_downloads).
+_SHARED_PACK_BYTES = 192 * 1024 * 1024
+_SHARED = threading.local()
 
 
 def _identity(value):
@@ -58,28 +63,32 @@ def _asset_catalogs(root, region, platform, language):
 
 
 def _variant_rows(db, selected=None):
+    # The client's MV stage picker lists m_live_mv rows by their live_stage_master_id
+    # (SelectableStageVO), but Live3DDM.GetMvLive3DAssetVO loads the stage scene and
+    # model from m_live_3d_asset.live_stage_master_id of the row's 3D asset. The
+    # m_live_mv stage id is only the picker key and never chooses the stage.
     condition = " AND live.live_id=? AND asset.id=?" if selected else ""
     common = "FROM m_live AS live JOIN {table} AS mv ON mv.live_id=live.live_id " \
              "JOIN m_live_3d_asset AS asset ON asset.id=mv.live_3d_asset_master_id " \
-             "LEFT JOIN m_live_stage AS stage ON stage.id={stage} " \
+             "LEFT JOIN m_live_stage AS stage ON stage.id=asset.live_stage_master_id " \
              "WHERE asset.timeline IS NOT NULL AND asset.timeline<>''{condition} "
     rows = []
     for table, priority in (("m_live_mv", 0), ("m_live_difficulty", 1)):
-        stage = "COALESCE(mv.live_stage_master_id,asset.live_stage_master_id)" if not priority else "asset.live_stage_master_id"
         position = "mv.position" if not priority else "0"
+        picker = "mv.live_stage_master_id" if not priority else "NULL"
         columns = (
             "live.live_id,asset.id,live.name,stage.stage_name,stage.scene_name,"
-            f"{stage}, {position} AS position,"
+            f"asset.live_stage_master_id, {position} AS position,"
             "NOT EXISTS(SELECT 1 FROM m_live_difficulty d WHERE d.live_id=live.live_id) AS mv_only,"
-            f"{priority} AS priority, ({stage}=asset.live_stage_master_id) AS native_stage"
+            f"{priority} AS priority, {picker} AS picker_stage"
         )
-        query = "SELECT DISTINCT " + columns + " " + common.format(table=table, stage=stage, condition=condition)
+        query = "SELECT DISTINCT " + columns + " " + common.format(table=table, condition=condition)
         # No silent partial catalogs. These tables normally return hundreds of rows.
         found = _rows(db, query + "LIMIT ?", (*selected, MAX_ROWS+1) if selected else (MAX_ROWS+1,))
         if len(found) > MAX_ROWS:
             raise ValueError("The game contains too many 3D MV catalog rows.")
         rows.extend(found)
-    return sorted(rows, key=lambda row: (row[0], row[8], -int(bool(row[9])), row[6] or 0, row[1]))
+    return sorted(rows, key=lambda row: (row[0], row[8], row[6] or 0, row[1]))
 
 
 def _display(extractor, dictionary, raw, fallback):
@@ -97,7 +106,7 @@ def catalog(repo_root, *, region="", platform="android", language="en", search="
     by_song, variants = {}, set()
     dictionary = game._dictionary(root, region, language)
     try:
-        for live, asset, title, stage, scene, stage_id, position, mv_only, priority, _ in rows:
+        for live, asset, title, stage, scene, stage_id, position, mv_only, priority, picker_stage in rows:
             if (live, asset) in variants:
                 continue
             variants.add((live, asset))
@@ -106,8 +115,13 @@ def catalog(repo_root, *, region="", platform="android", language="en", search="
                                  "variants": [], "mvOnly": bool(mv_only)}
             label = _display(extractor, dictionary, stage, scene or str(asset))
             by_song[live]["variants"].append({"id": asset, "label": label, "stageId": stage_id,
+                                               "pickerStageId": picker_stage,
                                                "sceneName": scene, "position": position,
+                                               # bg0018_02_s1 -> bg0018_02: tells same-named stages apart.
+                                               "scene": re.sub(r"_s\d+$", "", scene) if isinstance(scene, str) else None,
                                                "source": "difficulty" if priority else "mv"})
+            # Only m_live_mv rows appear in the client's MV screen; the others are live (rhythm game) 3D.
+            by_song[live]["inMvList"] = by_song[live].get("inMvList", False) or not priority
     finally:
         if dictionary is not None:
             dictionary.close()
@@ -117,7 +131,7 @@ def catalog(repo_root, *, region="", platform="android", language="en", search="
         songs = [song for song in songs if query in song["title"].casefold() or query in str(song["id"]) or
                  any(query in variant["label"].casefold() or query in str(variant["id"]) for variant in song["variants"])]
     available = {value: bool(_asset_catalogs(root, region, value, language)) for value in PLATFORMS}
-    return {"region": region, "platform": platform, "songs": songs,
+    return {"region": region, "platform": platform, "songs": songs, "players": mv_studio_suits.users(root),
             "regions": [{"value": value, "label": REGIONS[value]} for value in regions],
             "platforms": [{"value": value, "label": label, "available": available[value]}
                           for value, label in PLATFORMS.items()]}
@@ -261,15 +275,55 @@ def _sound(db, cue, missing, role):
     return {"cue": cue, **sheets[0], "candidates": sheets}
 
 
-def _performers(master, db, mapping, dictionary, extractor, missing):
-    fields = "position,member_master_id,is_center,suit_master_id"
-    args = (mapping,)
-    source = _rows(master, f"SELECT {fields} FROM m_live_member_mapping WHERE mapping_id=? ORDER BY position", args)
-    non_playable = {}
-    if not source:
-        source = _rows(master, f"SELECT {fields} FROM m_live_override_member_mapping WHERE mapping_id=? ORDER BY position", args)
-        non_playable = dict(_rows(master, "SELECT position,member_non_playable_master_id FROM m_live_override_member_mapping "
-                                          "WHERE mapping_id=? AND member_master_id IS NULL AND position BETWEEN 1 AND 64", args))
+def _pinned_costumes(costumes):
+    """{position: (suit id, view status or None)} from an explicit request; None when nothing is pinned.
+
+    A pin is a suit id, or {"suit": id, "viewStatus": n} for an m_suit_view model."""
+    if costumes is None:
+        return None
+    if not isinstance(costumes, dict) or len(costumes) > 64:
+        raise ValueError("Choose valid costumes for the MV members.")
+    pinned = {}
+    for position, value in costumes.items():
+        position = int(position) if isinstance(position, str) and position.isdigit() else position
+        suit, view = (value.get("suit"), value.get("viewStatus")) if isinstance(value, dict) else (value, None)
+        if (type(position) is not int or not 1 <= position <= 64 or type(suit) is not int or not 0 < suit < 1 << 31 or
+                isinstance(value, dict) and set(value) - {"suit", "viewStatus"} or
+                view is not None and (type(view) is not int or not 0 < view < 64)):
+            raise ValueError("Choose valid costumes for the MV members.")
+        pinned[position] = (suit, view)
+    return pinned
+
+
+_CHOICE_LIMIT = 96
+
+
+def _choices(master, dictionary, extractor, member, non_playable, first):
+    """Costume override choices: the resolved/mapping/initial suits first, then the member's other
+    suits; every suit followed by its m_suit_view models."""
+    if non_playable:
+        rows = _rows(master, "SELECT id,name,model_asset_path FROM m_suit_non_playable WHERE member_m_id=? ORDER BY rowid",
+                     (member,))
+    else:
+        order = "display_order DESC,id" if "display_order" in _columns(master, "m_suit") else "id"
+        rows = _rows(master, f"SELECT id,name,model_asset_path FROM m_suit WHERE member_m_id=? ORDER BY {order}", (member,))
+    known = {row[0]: row for row in rows}
+    order = [suit for suit in dict.fromkeys([*first, *known]) if suit in known][:_CHOICE_LIMIT]
+    choices = []
+    for suit in order:
+        _, name, _ = known[suit]
+        label = _display(extractor, dictionary, name, suit)
+        choices.append({"id": suit, "name": label, "asset": mv_studio_suits.costume(master, suit)[0]})
+        for status in mv_studio_suits.views(master, suit):
+            model, _ = mv_studio_suits.costume(master, suit, status)
+            choices.append({"id": suit, "name": label, "asset": model, "viewStatus": status})
+    return choices
+
+
+def _performers(master, db, mapping, dictionary, extractor, missing, costumes=None, deck=None):
+    deck_type = (deck or {}).get("deckType", mv_studio_suits.DEFAULT_DECK)
+    by_position = mv_studio_suits.members_by_position(mv_studio_suits.mapping(master, mapping), deck_type, deck)
+    cache = mv_studio_suits._Master(master)
     names = game._names(extractor)
 
     def themes_for(table, ids):
@@ -279,37 +333,46 @@ def _performers(master, db, mapping, dictionary, extractor, missing):
         slots = ",".join("?" for _ in keys)
         return dict(_rows(master, f"SELECT id,theme_color FROM {table} WHERE id IN ({slots})", keys))
 
-    themes = themes_for("m_member", (member for position, member, _, _ in source
-                                     if type(position) is int and 1 <= position <= 64))
-    non_playable_themes = themes_for("m_member_non_playable", non_playable.values())
+    rows = [row for _, row in sorted(by_position.items())]
+    themes = themes_for("m_member", (row["member"] for row in rows if not row["nonPlayable"]))
+    non_playable_themes = themes_for("m_member_non_playable", (row["member"] for row in rows if row["nonPlayable"]))
     performers = []
-    for position, member, center, suit in source:
-        if type(position) is not int or not 1 <= position <= 64:
-            continue
-        suggestions = []
-        if suit:
-            suggestions.append(suit)
-        suggestions.extend(row[0] for row in _rows(master, "SELECT suit_m_id FROM m_member_init WHERE member_m_id=?", (member,)))
-        choices = []
-        for candidate in dict.fromkeys(suggestions):
-            row = _rows(master, "SELECT id,name,model_asset_path FROM m_suit WHERE id=? AND member_m_id=?", (candidate, member))
-            if row:
-                choice_id, choice_name, choice_asset = row[0]
-                choices.append({"id": choice_id, "name": _display(extractor, dictionary, choice_name, choice_id),
-                                "asset": choice_asset})
-        chosen = choices[0] if choices else None
-        model = _required(db, ("member_model",), chosen["asset"], "costume", missing) if chosen else None
+    for row in rows:
+        position, member = row["position"], row["member"]
+        resolved, source = mv_studio_suits.suit_for(master, row, deck_type, deck, cache)
+        suit, view = resolved, mv_studio_suits.view_status(deck, member)
+        if costumes and position in costumes:
+            # An explicit costume (e.g. the suit a recorded game performance wore) must
+            # belong to this member; it is never silently replaced by the resolved suit.
+            suit, pinned_view = costumes[position]
+            table = "m_suit_non_playable" if row["nonPlayable"] else "m_suit"
+            if not _rows(master, f"SELECT 1 FROM {table} WHERE id=? AND member_m_id=?", (suit, member)):
+                raise ValueError(f"Costume {suit} is not a costume of the member at position {position}.")
+            if pinned_view is not None:
+                if pinned_view != mv_studio_suits.VIEW_DEFAULT and pinned_view not in mv_studio_suits.views(master, suit):
+                    raise ValueError(f"Costume {suit} has no view status {pinned_view} model.")
+                view = pinned_view
+            source = "pinned"
+        asset, effective_view = mv_studio_suits.costume(master, suit, view) if suit else (None, mv_studio_suits.VIEW_DEFAULT)
+        choices = _choices(master, dictionary, extractor, member, row["nonPlayable"],
+                           [suit, resolved, row.get("suit"), cache.member_init(member)])
+        chosen = next((choice for choice in choices if choice["id"] == suit), None)
+        model = _required(db, ("member_model",), asset, "costume", missing) if asset else None
         performers.append({"position": position, "memberId": member, "memberName": names.get(member, str(member or "")),
-                           "isCenter": bool(center), "costumeId": chosen["id"] if chosen else None,
-                           "costumeName": chosen["name"] if chosen else None, "costumes": choices, "model": model})
-        color = themes.get(member) if member is not None else non_playable_themes.get(non_playable.get(position))
+                           "isCenter": bool(row["isCenter"]), "costumeId": suit,
+                           "costumeName": chosen["name"] if chosen else None, "costumes": choices, "model": model,
+                           "viewStatus": effective_view, "suitSource": source, "nonPlayable": row["nonPlayable"],
+                           "attachKey": mv_studio_suits.attach_key(master, suit) if suit else ""})
+        color = (non_playable_themes if row["nonPlayable"] else themes).get(member)
         if type(color) is int and -(1 << 31) <= color < 1 << 32:
             # ColorVO stores signed SQLite integers as packed RGBA bytes.
             performers[-1]["themeColor"] = [((color >> shift) & 255) / 255 for shift in (24, 16, 8, 0)]
+    if costumes and set(costumes) - {row["position"] for row in performers}:
+        raise ValueError("A requested costume has no member at its position in this MV.")
     return performers
 
 
-def _resolve_assets(db, master, variant, song, asset, dictionary, extractor):
+def _resolve_assets(db, master, variant, song, asset, dictionary, extractor, costumes=None, deck=None):
     live_id, asset_id, title, stage_title, scene, stage_id, _, mv_only, _, _ = variant
     name = _display(extractor, dictionary, title, live_id)
     music_id, cue, chorus, member_mapping, song_background = song
@@ -328,13 +391,16 @@ def _resolve_assets(db, master, variant, song, asset, dictionary, extractor):
     thumbnail = _required(db, ("texture", "background"), thumb_key, "stageThumbnail", missing)
     song_background = _required(db, ("background", "texture"), song_background, "songBackground", missing)
     shader = _required(db, ("shader",), shader_key, "shader", missing)
-    performers = _performers(master, db, member_mapping, dictionary, extractor, missing)
+    performers = _performers(master, db, member_mapping, dictionary, extractor, missing, costumes, deck)
     for performer in performers:
         member = performer["memberId"]
         if member is None:
             continue
+        # MemberOverrideFacialAnimationMaster.Get(member, view status, type 1 / 2): the
+        # effective view status of the loaded model (GetMvLiveMember3DAssetVOs b__1).
         overrides = _rows(master, "SELECT animation_asset_path FROM m_member_override_facial_animation "
-                                 "WHERE member_id=? ORDER BY view_status,animation_type", (member,))
+                                 "WHERE member_id=? AND view_status=? AND animation_type IN (1,2) ORDER BY animation_type",
+                          (member, performer.get("viewStatus", mv_studio_suits.VIEW_DEFAULT)))
         performer["facial"] = [descriptor for key in dict.fromkeys(row[0] for row in overrides if row[0])
                                if (descriptor := _resource(db, "member_facial_animation", key, "face")) is not None]
         if performer_model := performer["model"]:
@@ -364,7 +430,7 @@ def _resolve_assets(db, master, variant, song, asset, dictionary, extractor):
                               for item in row.get(field, [])), movie and movie["background"]])
     return {"name": name, "title": name, "liveId": live_id, "assetId": asset_id, "mvOnly": bool(mv_only),
             "qualitySet": quality, "stage": stage, "stageModel": model, "stageEffect": effect,
-            "timeline": timeline, "cameras": {"timeline": timeline_key},
+            "timeline": timeline, "timelineKey": timeline_key, "cameras": {"timeline": timeline_key},
             "lighting": {"timeline": timeline_key, "stageEffect": effect_key},
             "screens": {"timeline": timeline_key, "stageEffect": effect_key, "movie": movie},
             "songBackground": song_background, "performers": performers, "audio": audio, "movie": movie,
@@ -374,9 +440,25 @@ def _resolve_assets(db, master, variant, song, asset, dictionary, extractor):
             "dependencies": dependencies, "missing": missing}
 
 
-def resolve(repo_root, *, region, platform, live_id, asset_id, language="en"):
+def _deck(root, deck, live_id):
+    """The player MV state: a new player's when absent, the local Elichika player's for {"userId": id}."""
+    deck = mv_studio_suits.normalize_deck(deck)
+    if deck is not None and "userId" in deck:
+        deck = mv_studio_suits.read_user(root, deck["userId"], live_id, deck["deckType"])
+    return deck
+
+
+def resolve(repo_root, *, region, platform, live_id, asset_id, language="en", costumes=None, deck=None):
+    """Performers follow the client's MV deck chain (mv_studio_suits).
+
+    `deck` optionally gives the player state: {"deckType": 1 (Original) | 2 (Customize, the
+    client's first tab), "userId": local Elichika player} or the same state read elsewhere
+    ({"original"/"custom": {"members", "suits"}, "ownedSuits", "members": {id: {"viewStatus"}}}).
+    `costumes` optionally pins {position: suit id or {"suit", "viewStatus"}} over the chain."""
+    costumes = _pinned_costumes(costumes)
     root, region, _, language = _selection(repo_root, region, platform, language)
     ids = _identity(live_id), _identity(asset_id)
+    deck = _deck(root, deck, ids[0])
     catalogs = _asset_catalogs(root, region, platform, language)
     if not catalogs:
         raise ValueError("The selected region has no " + PLATFORMS[platform] + " asset catalog.")
@@ -388,7 +470,9 @@ def resolve(repo_root, *, region, platform, live_id, asset_id, language="en"):
             raise ValueError("The selected game MV and stage are no longer available. Refresh the list.")
         song = master.execute("SELECT music_id,bgm_path,chorus_bgm_path,live_member_mapping_id,background_asset_path "
                               "FROM m_live WHERE live_id=?", ids[:1]).fetchone()
-        registered = bool(_rows(master, "SELECT 1 FROM _elichika_mv_studio_song WHERE live_id=?", ids[:1]))
+        registered_song = _registered_song(master, ids[0])
+        registered = registered_song is not None
+        override = _timeline_override(master, ids[1])
         asset = master.execute("SELECT timeline,stage_effect_asset_path,live_prop_skeleton_asset_path,"
                                "quality_setitng_set_id,shader_variant_asset_path FROM m_live_3d_asset WHERE id=?", ids[1:]).fetchone()
         chosen = catalogs[0]
@@ -401,11 +485,48 @@ def resolve(repo_root, *, region, platform, live_id, asset_id, language="en"):
         try:
             with closing(game._readonly(chosen)) as db:
                 db.execute("BEGIN")
-                result = _resolve_assets(db, master, variants[0], song, asset, dictionary, extractor)
+                result = _resolve_assets(db, master, variants[0], song, asset, dictionary, extractor, costumes, deck)
         finally:
             if dictionary is not None:
                 dictionary.close()
-    return dict(result, region=region, platform=platform, assetCatalog=chosen.name, registered=registered)
+    deck_state = {"deckType": (deck or {}).get("deckType", mv_studio_suits.DEFAULT_DECK),
+                  "userId": (deck or {}).get("userId"),
+                  "saved": any(name in (deck or {}) for name in ("original", "custom"))}
+    return dict(result, region=region, platform=platform, assetCatalog=chosen.name, registered=registered,
+                **({"registeredSong": registered_song} if registered else {}),
+                **({"timelineOverride": override} if override else {}), deck=deck_state)
+
+
+def _registered_song(master, live_id):
+    """The MV Studio song registered under ``live_id`` (Elichika's _elichika_mv_studio_song row), or None.
+
+    Its revision, last update and base song, as the store describes them: the store reuses the IDs
+    of removed songs, so a project opened from this song keeps them to tell it from a later song
+    registered under the same ID. Rows from before the store's revisions have revision 0."""
+    columns = _columns(master, "_elichika_mv_studio_song")
+    if not {"live_id", "source_live_id"} <= columns:
+        return None
+    fields = ["source_live_id"] + [name for name in ("revision", "updated_at") if name in columns]
+    rows = _rows(master, f"SELECT {','.join(fields)} FROM _elichika_mv_studio_song WHERE live_id=?", (live_id,))
+    if not rows:
+        return None
+    row = dict(zip(fields, rows[0]))
+    return {"revision": row.get("revision") or 0, "updatedAt": row.get("updated_at"),
+            "templateLiveId": row["source_live_id"]}
+
+
+def _timeline_override(master, asset_id):
+    """{revision, updatedAt} of the timeline MV Studio applied to this stock 3D MV (Elichika's
+    _elichika_mv_studio_timeline row), or None while it plays its original timeline."""
+    columns = _columns(master, "_elichika_mv_studio_timeline")
+    if not {"asset_id", "revision"} <= columns:
+        return None
+    fields = ["revision"] + (["updated_at"] if "updated_at" in columns else [])
+    rows = _rows(master, f"SELECT {','.join(fields)} FROM _elichika_mv_studio_timeline WHERE asset_id=?", (asset_id,))
+    if not rows:
+        return None
+    row = dict(zip(fields, rows[0]))
+    return {"revision": row.get("revision") or 0, "updatedAt": row.get("updated_at")}
 
 
 def _cached_pack(extractor, root, name):
@@ -464,7 +585,39 @@ class _ReadJob:
 
 def _check_deadline(deadline):
     if time.monotonic() >= deadline:
+        from .transient_failures import note
+        note()
         raise ValueError("Reading the selected MV assets took too long. Try again.")
+
+
+@contextmanager
+def shared_downloads():
+    """Within this block, on this thread, a missing pack is downloaded once.
+
+    Several sections of one import often live in the same pack (a group MV
+    downloaded 50 packs, 32 of them distinct: 107 MB instead of 44 MB). The
+    whole pack is kept for the block's other sections, up to _SHARED_PACK_BYTES.
+    """
+    previous = getattr(_SHARED, "packs", None)
+    if previous is None:
+        _SHARED.packs = {}
+    try:
+        yield
+    finally:
+        if previous is None:
+            _SHARED.packs = None
+
+
+def _remote_pack(descriptor, extractor, deadline):
+    held = getattr(_SHARED, "packs", None)
+    meta = descriptor.get("metapack")
+    key = (descriptor["pack_name"], descriptor.get("pack_size"), meta and (meta["name"], meta["offset"], meta.get("size")))
+    if held is not None and key in held:
+        return held[key]
+    pack = game._remote_pack(descriptor, extractor, _ReadJob(), deadline)
+    if held is not None and isinstance(pack, bytes) and sum(map(len, held.values())) + len(pack) <= _SHARED_PACK_BYTES:
+        held[key] = pack
+    return pack
 
 
 def load_asset(repo_root, descriptor, *, download=False, deadline=None):
@@ -489,7 +642,7 @@ def load_asset(repo_root, descriptor, *, download=False, deadline=None):
     payload = _local_section(extractor, Path(repo_root).resolve(), descriptor, deadline)
     if payload is None and download:
         try:
-            pack = game._remote_pack(descriptor, extractor, _ReadJob(), deadline)
+            pack = _remote_pack(descriptor, extractor, deadline)
         except HTTPError as error:
             if error.code in (404, 410):
                 return None

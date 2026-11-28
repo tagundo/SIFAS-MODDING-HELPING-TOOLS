@@ -14,6 +14,8 @@ const { spawn, spawnSync } = require('child_process');
 const { chromium } = require('playwright');
 const product = path.resolve(__dirname, '..');
 const python = process.env.VIEWER_PYTHON || 'python3';
+// A folder made here (no EVIDENCE_DIR) is removed after a passing run and kept after a failing one.
+const madeEvidence = !process.env.EVIDENCE_DIR;
 const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-mod-evidence-'));
 const library = fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-mod-library-'));
 const inputs = path.join(library, 'extracted/3d_model');
@@ -23,6 +25,17 @@ const frontendFiles = ['webtools/web/index.html', 'webtools/web/static/viewer-pe
 const frontendHashes = () => Object.fromEntries(frontendFiles.map(name => [name, sha(fs.readFileSync(path.join(product, name)))]));
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const frames = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+// A route for one endpoint whatever its query: the page sends its language
+// with a package request (/api/viewer/edit/package?lang=ko), which a glob
+// such as '**/api/viewer/edit/package' does not match.
+const endpoint = name => url => url.pathname === name;
+// A request the test waits for fails the run when it never comes, instead
+// of leaving the run waiting with its product server running.
+function within(promise, ms, what) {
+  let timer;
+  const late = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(what + ' was not seen within ' + ms / 1000 + ' s')), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
 function py(code, args = []) {
   const result = spawnSync(python, ['-c', code, ...args], { cwd: product, encoding: 'utf8', maxBuffer: 8*1024*1024 });
   assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout);
@@ -80,6 +93,13 @@ async function startServer() {
   }
   child.kill(); throw new Error('Product server was not ready');
 }
+function stopped(child) {
+  return new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    child.once('exit', () => resolve());
+    child.kill();
+  });
+}
 async function show(page, selector) {
   const target = typeof selector === 'string' ? page.locator(selector) : selector; await target.evaluate(element => { for (let p = element.parentElement; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true; });
   await target.scrollIntoViewIfNeeded(); return target;
@@ -119,6 +139,10 @@ async function downloads(page, modPath, locale) {
   assert.deepStrictEqual(items.map(item => item.path).sort(), saved.outputPaths.slice().sort(), 'Every output path remains available');
   assert(items.some(item => item.path === saved.recipePath && item.label.startsWith(locale === 'ko' ? '편집 기록 · ' : '編集レシピ · ')));
   assert(items.some(item => saved.previewPaths.includes(item.path) && item.label.startsWith(locale === 'ko' ? '편집한 미리보기 사본 · ' : '編集したプレビュー用コピー · ')));
+  // The Mod ZIP row names its folder, since phones have no Finder button.
+  const folders = await page.locator('#viewer-save-output-list .viewer-save-folder').allInnerTexts();
+  assert.deepStrictEqual(folders, [(locale === 'ko' ? '저장 폴더' : '保存フォルダー') + ': ' + path.dirname(modPath)]);
+  assert.equal(await page.locator('#viewer-save-output-list li').first().locator('.viewer-save-folder').count(), 1);
   return items;
 }
 (async () => {
@@ -193,6 +217,10 @@ async function downloads(page, modPath, locale) {
       assert.equal(saved.status, 'done', saved.error); assert.equal(packages.length, 1); assert.equal(installs.length, 0); assert.equal(raw.length, 0);
       const inspected = inspectPackage(saved.modPackage.packagePath);
       const savedDownloads = await downloads(page, saved.modPackage.packagePath, profile.locale);
+      // Every Mod ZIP sits in <library>/modded/viewer/mods/saved under a date-first
+      // name, then Rina's number and given name before the typed name.
+      assert.equal(path.dirname(saved.modPackage.packagePath), path.join(fs.realpathSync(library), 'modded/viewer/mods/saved'));
+      assert(/^\d{4}-\d{2}-\d{2}_\d{4}_209_Rina_Named_/.test(path.basename(saved.modPackage.packagePath)), saved.modPackage.packagePath);
       assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getState().camera), initial.camera, 'Packaging leaves the current camera unchanged');
       assert.equal(inspected.config.costume_name_en, 'Named ' + profile.variant); assert.equal(inspected.config.chara_id, 209);
       assert.equal(inspected.notes, 'Keep this companion exactly.');
@@ -210,14 +238,15 @@ async function downloads(page, modPath, locale) {
       let releaseInstall, installReceived;
       const installGate = new Promise(resolve => { releaseInstall = resolve; });
       const installStarted = new Promise(resolve => { installReceived = resolve; });
-      await page.route('**/api/viewer/edit/install', async route => { const response = await route.fetch(); installReceived(); await installGate; await route.fulfill({ response }); });
+      const installRoute = endpoint('/api/viewer/edit/install');
+      await page.route(installRoute, async route => { const response = await route.fetch(); installReceived(); await installGate; await route.fulfill({ response }); });
       await breast(page, addFactor);
       await downloads(page, oldPackagePath, profile.locale); // Current edits do not relabel an older completed file.
-      await (await show(page, '#viewer-add-to-game')).click(); await installStarted;
+      await (await show(page, '#viewer-add-to-game')).click(); await within(installStarted, 120000, 'The Add to game install request');
       assert(await page.locator('#viewer-save-cancel').isHidden()); assert(await page.locator('#viewer-save-cancel').isDisabled());
       await page.locator('#viewer-save-cancel').dispatchEvent('click');
       assert.equal(cancellations.length, 0, 'A submitted install is tracked to completion instead of falsely reporting cancellation');
-      releaseInstall(); const added = await finished(page, 120000); await page.unroute('**/api/viewer/edit/install');
+      releaseInstall(); const added = await finished(page, 120000); await page.unroute(installRoute);
       assert.equal(packages.length, 2, 'Direct Add packages the current edit instead of reusing the old ZIP');
       assert.equal(installs.length, 1); assert.deepStrictEqual(Object.keys(installs[0]), ['package_token']);
       assert.notEqual(added.modPackage.packagePath, oldPackagePath);
@@ -237,6 +266,11 @@ async function downloads(page, modPath, locale) {
         const installedModels = inspectPackage(receipt.installed_package_path);
         assert.equal(installedModels.config.costume_name_en, 'Named ' + profile.variant);
         for (const role of ['primary', 'unmasked']) assert(Math.abs(installedModels.models[role].scales.BreastSize[0] - addFactor) < 1e-6, 'Both actually installed Rina variants use the fresh edit');
+        // The added ZIP moved from mods/saved to mods/added and the page follows it.
+        assert.equal(path.basename(path.dirname(receipt.installed_package_path)), 'added');
+        assert.equal(added.modPackage.packagePath, receipt.installed_package_path);
+        assert(!fs.existsSync(path.join(path.dirname(path.dirname(receipt.installed_package_path)), 'saved', path.basename(receipt.installed_package_path))));
+        await downloads(page, receipt.installed_package_path, profile.locale);
         installedEvidence = { packagePath: receipt.installed_package_path, sha256: sha(installedBytes), bytes: installedBytes.length,
           models: installedModels.models, displayName: receipt.mod_package.display_name };
       }
@@ -245,14 +279,18 @@ async function downloads(page, modPath, locale) {
       // Delay only the delivery of a successful, real background-job response.
       let release, received; const gate = new Promise(resolve => { release = resolve; });
       const started = new Promise(resolve => { received = resolve; });
-      await page.route('**/api/viewer/edit/package', async route => { const response = await route.fetch(); received(); await gate; await route.fulfill({ response }); });
-      await (await show(page, '#viewer-add-to-game')).click(); await started;
-      await open(page, fixture.board); release(); const stale = await finished(page);
+      const packageRoute = endpoint('/api/viewer/edit/package'), gatedQueries = [];
+      await page.route(packageRoute, async route => { gatedQueries.push(new URL(route.request().url()).search); const response = await route.fetch(); received(); await gate; await route.fulfill({ response }); });
+      await (await show(page, '#viewer-add-to-game')).click(); await within(started, 120000, 'The Add to game package request');
+      // The page asks for the Mod ZIP names in its own language.
+      assert.deepStrictEqual(gatedQueries, ['?lang=' + profile.locale]);
+      await open(page, fixture.board); release(); const stale = await finished(page); await page.unroute(packageRoute);
       assert.equal(stale.status, 'error'); assert(stale.error.includes('model, body edits or mod settings changed'), stale.error);
       assert.equal(installs.length, 1, 'A package that finishes after a model switch is never installed');
       const previousResult = await (await fetch(server.url + '/api/viewer/edit/result/' + encodeURIComponent(stale.jobId))).json();
       const staleDownloads = await downloads(page, previousResult.mod_package.package_path, profile.locale);
-      assert.equal(await page.locator('#viewer-mod-name').inputValue(), 'board', 'A new source resets manual name to its own suggestion');
+      // Its own suggestion: Rina's number and name, then the file name (nothing else names it).
+      assert.match(await page.locator('#viewer-mod-name').inputValue(), /^209 \S.* · board$/, 'A new source resets manual name to its own suggestion');
       // Reopen the actual saved scene envelope; restoring its canonical
       // recipe during variant reload must preserve a user's manual folds.
       await open(page, oldPackagePath);
@@ -276,9 +314,16 @@ async function downloads(page, modPath, locale) {
     }
     report.frontendAfter = frontendHashes(); assert.deepStrictEqual(report.frontendAfter, report.frontendBefore, 'The tested shared UI source stayed unchanged');
     report.status = 'PASS'; fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n');
-    console.log(JSON.stringify({ status: report.status, cases: report.cases.length, evidence }));
+    console.log(JSON.stringify({ status: report.status, cases: report.cases.length, evidence: madeEvidence ? null : evidence }));
   } finally {
     if (browser) await browser.close();
-    if (server) { server.child.kill(); server.child.stdout.unpipe(server.stream); server.child.stderr.unpipe(server.stream); server.stream.end(); }
+    if (server) {
+      server.child.stdout.unpipe(server.stream); server.child.stderr.unpipe(server.stream);
+      await stopped(server.child); await new Promise(resolve => server.stream.end(resolve));
+    }
+    // The product server has ended: its library (about 4 MB) goes with this run.
+    fs.rmSync(library, { recursive: true, force: true });
+    if (madeEvidence && report.status === 'PASS') fs.rmSync(evidence, { recursive: true, force: true });
+    else if (madeEvidence) console.error('Evidence kept: ' + evidence);
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });

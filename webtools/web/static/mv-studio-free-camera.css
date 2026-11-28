@@ -1,0 +1,64 @@
+/* MV Studio free camera views (mv-studio-free-camera.js): a compact bar over the bottom of
+   the preview, shown while the preview draws the free camera. It never covers the preview
+   controls: in a preview too short for both it sits beside them (.mv-freecam-beside, placed
+   by the script) when its toggle, target list and every view button fit there whole, or,
+   without that room, the script keeps the preview tall enough. A short
+   preview (.mv-freecam-short) folds it behind its Views toggle (.mv-freecam-folded). One row: a
+   bar that does not fit gets more compact (.mv-freecam-compact, .mv-freecam-tight), then
+   scrolls sideways. The view buttons are a segmented group like the 3D model tab's camera
+   buttons. */
+
+.mv-freecam {
+  position: absolute;
+  inset: auto auto 8px 8px;
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  color: var(--text);
+  font-size: .78rem;
+  overflow: auto hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+.mv-freecam.mv-freecam-beside {
+  inset: var(--mv-freecam-top, 8px) auto auto var(--mv-freecam-start, 8px);
+  max-width: calc(100% - var(--mv-freecam-start, 8px) - 8px);
+}
+.mv-freecam > * { flex: none; }
+.mv-freecam[hidden], .mv-preview-controls[hidden] ~ .mv-freecam { display: none; }
+.mv-freecam-field { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.mv-freecam-field > span:first-child { color: var(--muted); }
+.mv-freecam-views { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+#mv-free-camera .mv-freecam-views button { border: 0; border-radius: 0; }
+#mv-free-camera .mv-freecam-views button + button { border-inline-start: 1px solid var(--line); }
+#mv-free-camera .mv-freecam-views button:hover { background: color-mix(in srgb, var(--accent) 16%, var(--panel2)); }
+#mv-free-camera .mv-freecam-toggle { display: none; }
+#mv-free-camera.mv-freecam-short > .mv-freecam-toggle { display: inline-block; }
+#mv-free-camera.mv-freecam-folded { padding-inline: 3px; }
+#mv-free-camera.mv-freecam-folded > :not(.mv-freecam-toggle) { display: none; }
+#mv-free-camera .mv-freecam-toggle[aria-expanded="true"] { background: color-mix(in srgb, var(--accent) 16%, var(--panel2)); }
+/* The bar clips its overflow: focus rings stay inside the controls. */
+#tab-mv #mv-free-camera :focus-visible { outline-offset: -2px; }
+.mv-freecam-range input[type=range] { width: 88px; margin: 0; }
+#mv-free-camera .mv-freecam-range input[type=number] { width: 4.6em; padding-inline: 5px; font-variant-numeric: tabular-nums; }
+.mv-freecam-unit { color: var(--muted); }
+.mv-freecam .mv-freecam-follow { min-height: 0; white-space: nowrap; }
+/* Too narrow: no sliders (the number boxes and the wheel stay), then no visible captions
+   (they still name the controls) and a narrower target list. */
+.mv-freecam-compact .mv-freecam-range input[type=range] { display: none; }
+.mv-freecam-tight .mv-freecam-field > span:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+#mv-free-camera.mv-freecam-tight { column-gap: 6px; }
+/* 7em keeps a 390 px phone's bar in one row with every view button; the stage centre label
+   (무대 중앙) needs the inline padding (the arrow keeps its own room) to show whole in it. */
+#mv-free-camera.mv-freecam-tight select { max-width: 7em; padding-inline: 4px 2px; }
+#mv-free-camera.mv-freecam-tight .mv-freecam-toggle { padding-inline: 6px; }
+@media (pointer: fine) {
+  #tab-mv #mv-free-camera :is(button, select, input[type=number]) { min-height: 30px; padding-block: 3px; font-size: .76rem; }
+}

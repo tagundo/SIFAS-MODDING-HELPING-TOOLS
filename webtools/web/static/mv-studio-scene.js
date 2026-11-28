@@ -90,6 +90,14 @@
       time <= event.start + event.duration && (!current || event.start >= current.start) ? event : current, null);
   }
 
+  // TimelineClip extrapolation modes: None 0, Hold 1, Loop 2, PingPong 3, Continue 4. A camera
+  // shot is an AnimationPlayableAsset, whose ClipCaps include Extrapolation: all four play.
+  const extrapolates = (mode) => mode === 1 || mode === 2 || mode === 3 || mode === 4;
+  // How far a mode's stored window reaches. A JSON null is an infinite time in the bundle (a last
+  // shot): Loop, PingPong and Continue then go on to the end, as Unity's do. Hold keeps the rule
+  // original MVs always played with (null: no window; mainCameraAt holds a game source's last shot).
+  const reach = (mode, seconds) => seconds === null && mode !== 1 ? Infinity : seconds;
+
   function activeCameraEvent(track, time) {
     const active = activeEvent(track, time);
     if (active) return active;
@@ -99,12 +107,45 @@
     for (const event of track.events) {
       const values = event.values || {};
       const end = event.start + event.duration;
-      if (time > end && values.postExtrapolationMode === 1 && time <= end + values.postExtrapolationTime &&
+      if (time > end && extrapolates(values.postExtrapolationMode) && time <= end + reach(values.postExtrapolationMode, values.postExtrapolationTime) &&
           (!previous || event.start > previous.start)) previous = event;
-      if (time < event.start && values.preExtrapolationMode === 1 && time >= event.start - values.preExtrapolationTime &&
+      if (time < event.start && extrapolates(values.preExtrapolationMode) && time >= event.start - reach(values.preExtrapolationMode, values.preExtrapolationTime) &&
           (!next || event.start < next.start)) next = event;
     }
     return previous || next;
+  }
+
+  // Seconds into a camera shot's own samples at `time`: Unity's TimelineClip.ToLocalTime
+  // (GetExtrapolatedTime) before clipIn and timeScale, which the samples already hold. Outside
+  // the shot, Loop wraps and PingPong bounces over its length; Hold and Continue keep the first or
+  // last pose (Continue plays the source on, and a SIFAS camera source is not looping and ends
+  // with its shot: its last pose holds).
+  function cameraLocalTime(event, time) {
+    const duration = event.duration, local = time - event.start;
+    if (local >= 0 && local <= duration) return local;
+    const values = event.values || {}, mode = local < 0 ? values.preExtrapolationMode : values.postExtrapolationMode;
+    if (duration > 0 && mode === 2) return local < 0 ? duration - (-local % duration) : local % duration;
+    if (duration > 0 && mode === 3) {
+      const wrapped = local < 0 ? duration * 2 - (-local % (duration * 2)) : local % (duration * 2);
+      return duration - Math.abs(wrapped - duration);
+    }
+    return Math.min(duration, Math.max(0, local));
+  }
+
+  // The camera clip that ends last, when `time` is past its end: an original MV
+  // holds that shot's final pose (see frameTracks).
+  function endedCameraEvent(track, time) {
+    let last = null;
+    for (const event of track.events) if (!last || event.start + event.duration > last.start + last.duration) last = event;
+    return last && time > last.start + last.duration ? last : null;
+  }
+
+  // The director time the music ends at: the audio plays at director time + the
+  // soundtrack offset (MVStudio seek), so FinishLiveMv runs at duration - offset.
+  function musicEnd(project) {
+    const soundtrack = project?.soundtrack;
+    if (!Number.isFinite(soundtrack?.duration)) return project?.duration;
+    return Math.max(0, soundtrack.duration - (Number.isFinite(soundtrack.offset) ? soundtrack.offset : 0));
   }
 
   // Camera frames from the native importer are ordered. Continue to accept
@@ -305,20 +346,36 @@
     if (!T || !T.GLTFLoader || !T.OrbitControls) throw new Error("The 3D preview could not start.");
     const renderer = new T.WebGLRenderer({ antialias: true, alpha: false, stencil: true, powerPreference: "high-performance" });
     renderer.outputEncoding = T.sRGBEncoding;
-    renderer.setClearColor(0x111522);
+    // Editor backdrop; a game project uses the native MainCamera clear (see applyProject).
+    const editorClear = 0x111522;
+    renderer.setClearColor(editorClear);
     renderer.shadowMap.type = T.PCFSoftShadowMap;
     renderer.domElement.setAttribute("aria-label", "MV stage preview");
     mount.appendChild(renderer.domElement);
     const split = global.MVStudioSplit?.create(T, renderer);
     const physicsClock = global.MVStudioPhysics?.createClock();
+    let physicsTiming = global.MVStudioPhysics?.normalizeTiming?.() ?? null;
     const post = global.MVStudioPost?.create(T, renderer);
+    // LiveMvDarkFilterField and the live-end overlay blur (see mv-studio-screen-fade.js).
+    const screenFade = global.MVStudioScreenFade?.create(T, renderer);
+    let screenFadeEnabled = options?.screenFade !== false;
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
     const transparentSort = global.MVStudioTransparentSort?.create(T, renderer);
+    const opaqueSort = global.MVStudioOpaqueSort?.create(T, renderer);
+    // The Live* mixers' input walk over the frame clock (LiveMixerBase`2.ProcessWithoutSeek):
+    // MVStudioLighting.nativeWeight leaves out the inputs it skipped.
+    const mixers = global.MVStudioMixer?.controller((event, time) => global.MVStudioLighting.clipWeight(event, time)) ?? null;
+    global.MVStudioMixer?.activate(mixers);
 
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const liveCamera = new T.PerspectiveCamera(42, 1, 0.02, 1000);
+    // The game main camera's culling frustum at past frames (particle culling).
+    const cullingCamera = new T.PerspectiveCamera(30, 1, 0.1, 1000);
+    // Scratch for the shaft anchor sample (shaftAnchorAt).
+    const anchorSample = [0, 0, 0];
+    let cullingView = null;
     const stageCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const controls = new T.OrbitControls(editorCamera, renderer.domElement);
     const stage = new T.Group(), actors = new T.Group(), effects = new T.Group(), memberShadows = new T.Group();
@@ -352,16 +409,35 @@
     let stageButterfly = null, stageRain = null, stageLeaves = null, stageMomiji = null, stageConfetti = null, stageGlow = null, stageLens = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
+    let stageParticleSystems = null, stageControlPrefabs = null;
     let activeSplitGazeCameras = null;
-    let loadedProjectToken = null, defaultMemberShadows = false;
+    let loadedProjectToken = null, defaultMemberShadows = false, memberShadowTracks = [], memberShadowPrefabs = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
-    let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
+    let liveCameraEvent = null;
+    let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1, adaptivePreview = true;
     let lastShaftFrame = null, resetShafts = true;
+    // Client state that changes only on rendered frames (the director's beat
+    // origin, the ambient components' last written colors, the cheek floats
+    // MemberCheekMixer leaves after a clip): an advancing playback frame
+    // continues it; a seek replays the rendered frame times it is given (seek's
+    // `history`) or, without them, uses exact values. One frame clock serves all.
+    let pendingHistory = null, frameClock = { advancing: false, history: [] }, historyLighting = new Map();
+    // The game's Time.time as a function of director time (setGameClock; null: the director's clock).
+    // Original particle systems advance on it (MVStudioParticleSystems.gameClock), or on the run's
+    // own device frames where it gave them (particleFrames, MVStudioParticleSystems.frameGrid).
+    let particleClock = null, particleFrames = null;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
+    // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
+    let antiAliasing = options?.antiAliasing === true;
     let nativeMainLens = false, authoredMainFov = liveCamera.fov;
     const cameraOffsets = new Map();
     const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap(), memberScaleTracks = new Map();
     const memberCullingTracks = new Map();
+    // A LiveMemberCullerClip moves the member to the Invisible layer, which both
+    // native camera paths exclude; the editor hides the member's root instead.
+    function memberCulledAt(position, time) {
+      return Boolean(memberCullingTracks.get(position)?.some(event => time >= event.start && time < event.start + event.duration));
+    }
     const memberShaftTracks = new Map(), memberAreaTracks = new Map();
     const releasedSkeletons = new WeakSet();
     const size = new T.Vector2();
@@ -370,6 +446,29 @@
     const culled = [];
     const position = new T.Vector3(), otherPosition = new T.Vector3();
     const mainCameraPosition = new T.Vector3(), focusPosition = new T.Vector3();
+    // MainCamera rig view axis (-transform.forward), read by DOF cameraAutoDistanceMode 2.
+    const mainCameraDirection = new T.Vector3(0, 0, -1), focusOffset = new T.Vector3();
+    // LiveDepthOfFieldMixer runs in the director's script pass, before this
+    // frame's Animator writes the camera and members. Its focus distances read
+    // the transforms the previous frame left (Max 3D: every first frame after a
+    // cut keeps the old shot's focus). Snapshot those at the start of each
+    // continuing playback frame; a seek evaluates the current pose.
+    const focusLag = { valid: false, camera: new T.Vector3(), direction: new T.Vector3(), points: new Map(), pool: new Map() };
+    // The mixer's transition fields advance once per evaluated frame (dofState);
+    // draws and the asset dump re-evaluate the frame from a copy of the state
+    // it started with (dofFrameState).
+    let dofState = global.MVStudioDofFocus?.createState?.() ?? null, dofFrameState = dofState && { ...dofState };
+    // The depth of field the last evaluated frame applied, and the one the
+    // frame before it left. A frame on the client's exception path (a missing
+    // member or a body part partMap lacks) keeps dofPrevious's settings and
+    // resolves its lens at the current camera FOV, as
+    // DepthOfFieldComponent.CalculateFocalLength does at render time. With no
+    // earlier evaluated frame (after a load, or a seek, which cannot replay the
+    // frames before it) the preview draws none; the client's only writer
+    // besides the mixer's PostProcess, LiveCoreCameraPostProcess.SetDisabledAll
+    // on the director's reset path, only turns the depth of field off.
+    let dofApplied = null, dofPrevious = null;
+    const dofWarnings = new Set();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
     const gaze = { camera: [0, 0, 0], members: {} }, gazeEyePosition = new T.Vector3();
 
@@ -386,8 +485,13 @@
           drawWorld(preparation.scene, stageCamera, preparation.records, preparation.preview.quality?.mode);
           return;
         }
+        // Drags move the free camera only while it is the camera drawn (camera editor).
+        controls.enabled = !(useLive && hasShot);
         if (!(useLive && split?.draw(renderView, hasShot ? liveCamera : null))) {
+          // The game camera's frustum, only while the free camera draws (never in captures).
+          const helper = !useLive && hasShot ? showGameCameraHelper() : null;
           renderView(useLive && hasShot ? liveCamera : editorCamera);
+          if (helper) scene.remove(helper);
         }
         if (useLive && settings.stage_overlay_effect !== false) {
           const particles = stageLens?.sortEntries(20);
@@ -395,12 +499,17 @@
             overlay?.draw(scene, particles?.length ? camera => sortTransparentParticles(camera, particles) : undefined);
           }
         }
+        if (useLive && screenFadeEnabled && project?.source?.kind === "game") {
+          // FinishLiveMv runs on LiveMusicMachine.OnFinishMusic, at the music end.
+          screenFade?.draw(global.MVStudioScreenFade.state(currentTime, musicEnd(project)));
+        }
       }
     }
 
     function renderView(camera) {
       if (camera === liveCamera && post) {
-        const focus = global.MVStudioDofFocus?.sample(project, currentTime, camera.fov, focusDistance);
+        const source = focusSource();
+        const focus = global.MVStudioDofFocus?.sample(project, currentTime, camera.fov, source.distance, source.options);
         const preserveDepth = useLive && settings.stage_overlay_effect !== false &&
           records.some(record => record.stageOverlay?.hasDepthTest());
         if (post.draw(() => renderScene(camera), Boolean(focus), focus, camera, preserveDepth)) return;
@@ -418,13 +527,193 @@
 
     function drawWorld(source, camera, sceneRecords, qualityMode) {
       prepareSoftDepth(source, camera, sceneRecords, qualityMode);
-      if (transparentSort) transparentSort.draw(source, camera, sceneRecords);
-      else renderer.render(source, camera);
+      // The native front-to-back order of the opaque stage renderers (coplanar surfaces).
+      const opaque = opaqueSort?.begin(source, camera, sceneRecords) === true;
+      try {
+        if (transparentSort) transparentSort.draw(source, camera, sceneRecords);
+        else renderer.render(source, camera);
+      } finally {
+        if (opaque) opaqueSort.end();
+      }
     }
 
-    function focusDistance(slot, part) {
-      const point = records.find(record => record.group === actors && record.position === slot)?.focusParts?.[part];
-      return point?.getWorldPosition(focusPosition).distanceTo(mainCameraPosition);
+    // A focus part is an exported node, or a fixed world point (BodyPartManager.face
+    // keeps the uninstantiated facial prefab asset).
+    function focusPoint(record, part, target, readOnly = false) {
+      const point = record?.focusParts?.[part];
+      if (!point) return null;
+      if (point.isVector3) return target.copy(point);
+      return readOnly ? target.setFromMatrixPosition(point.matrixWorld) : point.getWorldPosition(target);
+    }
+
+    // ---- Follow camera (mv-studio-camera-follow.js): the member target sampler ----
+    // Only the follow camera calls these; nothing here runs for a project without a rig.
+    // memberTargets: every loaded member, the BodyPartType targets it has, and whether its
+    // hips are a node (a fixed world point has no facing).
+    function memberTargets() {
+      return records.filter((record) => record.group === actors && Number.isInteger(record.position) && record.focusParts)
+        .map((record) => ({ slot: record.position, id: record.id ?? null,
+          parts: Object.keys(record.focusParts).map(Number).filter(Number.isInteger).sort((a, b) => a - b),
+          facing: !!record.focusParts[3] && !record.focusParts[3].isVector3 }))
+        .sort((a, b) => a.slot - b.slot);
+    }
+
+    // The hips' rest rotation below the member root, from the pose captured at actor load
+    // before any motion (record.initialPose); identity where that pose is not known.
+    const followRest = new WeakMap();
+    function followHipsRest(record, hips) {
+      const cached = followRest.get(record);
+      if (cached && cached.node === hips) return cached.inverse;
+      const saved = new Map((record.initialPose || []).map((item) => [item.node, item.rotation]));
+      const chain = [];
+      for (let node = hips; node && node !== record.root; node = node.parent) chain.push(node);
+      const rest = new T.Quaternion(), local = new T.Quaternion();
+      if (chain.length && chain[chain.length - 1].parent === record.root) {
+        for (let index = chain.length - 1; index >= 0; index--) {
+          const rotation = saved.get(chain[index]);
+          if (rotation) rest.multiply(local.fromArray(rotation));
+        }
+      }
+      const inverse = rest.normalize().invert();
+      followRest.set(record, { node: hips, inverse });
+      return inverse;
+    }
+
+    // One member's pose at `time` as playbackFrame poses it (pose restore, transform, the
+    // dance as a pure function of time, member scaling); nothing else in the scene moves.
+    function poseFollowedMember(record, time) {
+      record.physics?.restorePose();
+      record.constraints?.restorePose();
+      record.nodeScaling?.resetHeight();
+      const performer = performers.get(record.id);
+      if (performer) actorPose(record, performer);
+      if (record.motion) record.motion.evaluatePose(time, { split: false });
+      else if (record.mixer) record.mixer.setTime(time);
+      record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), time);
+    }
+
+    // The path of one member's body part at `times` (director seconds): Unity positions and the
+    // member's facing yaw (deg, Unity; null without hips). Time-sliced (budgetMs per slice);
+    // before each slice the spring job keeps the playhead's pose, and after it the playhead's
+    // own frame is evaluated again, so the visible frame and the physics state stay the
+    // playhead's. Physics is never reset.
+    async function sampleMemberPath({ slot, part, times, signal, onProgress, budgetMs = 8 } = {}) {
+      const list = times instanceof Float64Array ? times : Float64Array.from(times || []);
+      const count = list.length;
+      const find = () => records.find((record) => record.group === actors && record.position === slot);
+      const record = find();
+      const target = record?.focusParts?.[part];
+      if (!record || !target) throw new Error("The member to follow is not loaded.");
+      const hips = record.focusParts[3] && !record.focusParts[3].isVector3 ? record.focusParts[3] : null;
+      const positions = new Float64Array(3 * count), yaw = hips ? new Float64Array(count) : null;
+      const inverse = hips ? followHipsRest(record, hips) : null;
+      const point = new T.Vector3(), turn = new T.Quaternion(), forward = new T.Vector3();
+      const ticket = generation, budget = Number.isFinite(budgetMs) && budgetMs > 0 ? budgetMs : 8;
+      const clock = () => global.performance?.now?.() ?? Date.now();
+      const idle = () => new Promise((resolve) => {
+        if (typeof global.requestIdleCallback === "function") global.requestIdleCallback(() => resolve(), { timeout: 50 });
+        else setTimeout(resolve, 0);
+      });
+      const cancelled = () => new DOMException("The member path sampling was cancelled.", "AbortError");
+      let index = 0, heading = 0;
+      while (index < count) {
+        if (signal?.aborted || disposed || ticket !== generation) throw cancelled();
+        if (find() !== record) throw new Error("The member to follow is not loaded.");
+        // A displayed frame without a spring job keeps the pose the last game frame ended with
+        // for the next job (the physics update hook with no step, which playbackFrame runs before
+        // it poses the members). Run that hook before this slice poses the member at other times,
+        // so the pose kept is the playhead's, not a sampled one; in the playbackFrame after the
+        // slice it then keeps nothing new.
+        record.physics?.frame?.("update", currentTime, 0, settings, record.motion, physicsTiming?.order);
+        const started = clock();
+        try {
+          do {
+            poseFollowedMember(record, list[index]);
+            focusPoint(record, part, point);
+            positions[3 * index] = -point.x;
+            positions[3 * index + 1] = point.y;
+            positions[3 * index + 2] = point.z;
+            if (yaw) {
+              hips.getWorldQuaternion(turn).multiply(inverse);
+              forward.set(0, 0, 1).applyQuaternion(turn);
+              if (forward.x * forward.x + forward.z * forward.z > 1e-12) heading = Math.atan2(-forward.x, forward.z) * 180 / Math.PI;
+              yaw[index] = heading;
+            }
+            index++;
+          } while (index < count && clock() - started < budget);
+        } finally {
+          if (!disposed) playbackFrame(currentTime, undefined, true);
+        }
+        onProgress?.(index, count);
+        if (index < count) await idle();
+      }
+      return { positions, yaw };
+    }
+
+    function captureFocusLag(valid) {
+      focusLag.valid = valid;
+      focusLag.points.clear();
+      if (!valid) return;
+      focusLag.camera.copy(mainCameraPosition);
+      focusLag.direction.copy(mainCameraDirection);
+      for (const record of records) {
+        if (record.group !== actors || !record.focusParts) continue;
+        for (const part of Object.keys(record.focusParts)) {
+          const key = record.position + ":" + part;
+          let point = focusLag.pool.get(key);
+          if (!point) focusLag.pool.set(key, point = new T.Vector3());
+          if (focusPoint(record, part, point)) focusLag.points.set(key, point);
+        }
+      }
+    }
+
+    function focusMembers() {
+      return records.filter(record => record.group === actors && Number.isInteger(record.position))
+        .map(record => record.position).sort((a, b) => a - b);
+    }
+
+    // Every performer slot of the MV, loaded or not (LiveCoreMemberManager.MemberMax 12).
+    function focusPerformers() {
+      return (project?.performers || []).slice(0, 12).map(performer => performer?.position).filter(Number.isInteger);
+    }
+
+    // Distance/angle sources for MVStudioDofFocus.sample: the lagged snapshot
+    // while playback continues, else the current pose.
+    function focusSource(readOnly = false) {
+      const lagged = focusLag.valid;
+      const camera = lagged ? focusLag.camera : mainCameraPosition;
+      const direction = lagged ? focusLag.direction : mainCameraDirection;
+      const point = (slot, part) => lagged ? focusLag.points.get(slot + ":" + part) || null :
+        focusPoint(records.find(record => record.group === actors && record.position === slot), part, focusPosition, readOnly);
+      const distance = (slot, part) => point(slot, part)?.distanceTo(camera);
+      const sampleOptions = {
+        members: focusMembers(),
+        performers: focusPerformers(),
+        angle: (slot, part) => {
+          const target = point(slot, part);
+          return target ? global.MVStudioDofFocus.vectorAngle(direction, focusOffset.subVectors(target, camera)) : undefined;
+        },
+        state: dofFrameState && { ...dofFrameState },
+        previous: dofPrevious,
+        // Each distinct message reaches the console and the studio's warning
+        // list once per loaded project.
+        warn: readOnly ? undefined : (message) => {
+          if (dofWarnings.has(message)) return;
+          dofWarnings.add(message);
+          global.console?.warn?.(message);
+          options?.onWarning?.(message);
+        },
+      };
+      return { distance, options: sampleOptions };
+    }
+
+    function advanceFocus() {
+      if (!dofState || !global.MVStudioDofFocus) return;
+      dofFrameState = { ...dofState };
+      dofPrevious = dofApplied;
+      const source = focusSource();
+      dofApplied = global.MVStudioDofFocus.sample(project, currentTime, liveCamera.fov, source.distance,
+        { ...source.options, state: dofState }) ?? null;
     }
 
     function sortRibbonDisplay(camera) {
@@ -485,7 +774,11 @@
       sortControlParticles(camera);
       for (const record of records) record.stageStationaryBursts?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
-      for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
+      const billboardCamera = camera === editorCamera ? liveCamera : camera;
+      for (const record of records) {
+        record.shaft?.billboard(billboardCamera);
+        record.axisBillboard?.apply(billboardCamera);
+      }
       const projection = camera.projectionMatrix.elements;
       const { width, height } = renderer.domElement;
       if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
@@ -522,14 +815,66 @@
       if (!disposed && visible && !queuedDraw) queuedDraw = global.requestAnimationFrame(draw);
     }
 
+    // The first frame that shows a material links its program, and the first that samples a
+    // texture uploads it (30-130 ms inside a playback frame on desktop, more on phones). After a
+    // load has drawn its first frame, the rest are prepared at once: renderer.compile links a
+    // program for every material of the scene, hidden ones included, with the same parameters
+    // a draw uses, and every plain 2D texture those materials hold is uploaded. This only moves
+    // work earlier: a failure (for example on a hidden material no frame draws) never fails the
+    // load; whatever was not prepared is prepared at its first draw, as before.
+    function warmScene() {
+      if (disposed || typeof renderer.compile !== "function" || renderer.getContext?.().isContextLost?.()) return;
+      // A material a record swaps in later (a stage display's program of another variant) joins
+      // the scene for this warm-up only, on a hidden stand-in that shares its mesh's geometry.
+      const standIns = [];
+      for (const record of records) {
+        for (const { node, material } of record.stageDisplay?.programs?.() || []) {
+          if (node.material === material) continue;
+          const standIn = new T.Mesh(node.geometry, material);
+          standIn.visible = false;
+          node.add(standIn);
+          standIns.push(standIn);
+        }
+      }
+      try {
+        renderer.compile(scene, liveCamera);
+        const textures = new Set();
+        const take = (value) => {
+          if (Array.isArray(value)) value.forEach(take);
+          else if (value?.isTexture && !value.isCubeTexture && !value.isDepthTexture && !value.isDataTexture3D &&
+              !value.isDataTexture2DArray && !value.isVideoTexture && value.version > 0 && value.image &&
+              value.image.complete !== false) textures.add(value);
+        };
+        scene.traverse((node) => {
+          for (const material of materials(node)) {
+            if (!material) continue;
+            for (const value of Object.values(material)) take(value);
+            if (material.uniforms) for (const uniform of Object.values(material.uniforms)) take(uniform?.value);
+          }
+        });
+        if (typeof renderer.initTexture === "function") for (const texture of textures) renderer.initTexture(texture);
+      } catch (error) {
+        global.console?.warn?.(error);
+        options?.onWarning?.("The 3D preview could not prepare its materials before playback. They are prepared when first shown.");
+      } finally {
+        for (const standIn of standIns) standIn.parent?.remove(standIn);
+      }
+    }
+
     function resize(forceDraw = true) {
       const width = mount.clientWidth, height = mount.clientHeight;
       if (disposed || !visible || !width || !height) return;
       const displayed = preparation?.shown ? preparation.preview : project;
       const values = displayed?.quality?.values || {};
       const nativeHeight = values.rendering_resolution;
-      const resolution = Number.isFinite(nativeHeight) && nativeHeight > 0
-        ? Math.min(nativeHeight / height, 2) : Math.min(global.devicePixelRatio || 1, 2);
+      // The view's device pixels are the game's screen: the 3D cameras draw at the height the
+      // client derives from RenderingResolution, the screen height and the anti-aliasing option
+      // (nativeRenderHeight).
+      const target = Number.isFinite(nativeHeight) && nativeHeight > 0
+        ? nativeRenderHeight(nativeHeight, Math.floor(height * (global.devicePixelRatio || 1)), values.quality_mode, antiAliasing) : null;
+      let resolution = target === null ? Math.min(global.devicePixelRatio || 1, 2) : Math.min(target / height, 2);
+      // three.js floors height * ratio: keep the exact integer height.
+      if (target !== null && resolution < 2 && Math.floor(height * resolution) < target) resolution = Math.min((target + 1e-6) / height, 2);
       const previewResolution = resolution * (preparation?.shown ? 1 : previewScale);
       const changedRatio = renderer.getPixelRatio() !== previewResolution;
       renderer.getSize(size);
@@ -589,6 +934,7 @@
       record.penlight?.dispose();
       record.stageFlash?.dispose();
       record.stageMaterial?.dispose();
+      record.stagePropLight?.dispose();
       record.stageColoring?.dispose();
       record.stageDisplay?.dispose();
       record.stageOverlay?.dispose();
@@ -597,7 +943,16 @@
       record.stageLaserCores?.dispose();
       record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
+      if (record.memberShadowPrefabs) {
+        // Performers instance these templates under their anchors: drop those
+        // meshes (and the scene's reference) before the templates are disposed.
+        for (const item of records) item.memberShadow?.releasePrefabs?.(record.memberShadowPrefabs);
+        if (memberShadowPrefabs === record.memberShadowPrefabs) memberShadowPrefabs = null;
+        record.memberShadowPrefabs.dispose();
+      }
+      record.lossyScale?.dispose();
       record.physics?.dispose();
+      record.constraints?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
       release(record.root);
@@ -632,6 +987,10 @@
       stageButterfly = null;
       stageSparksRoop?.dispose();
       stageSparksRoop = null;
+      stageParticleSystems?.dispose();
+      stageParticleSystems = null;
+      stageControlPrefabs?.dispose();
+      stageControlPrefabs = null;
       stageSparksA?.dispose();
       stageSparksA = null;
       stageSparksB?.dispose();
@@ -696,8 +1055,11 @@
       if (vector(move.scale, 3)) record.root.scale.fromArray(move.scale);
     }
 
+    // How game_motion_timeline imports a MemberLipSyncClip index 0: the vowel of its paramName.
+    const lipSyncVowels = { a: 1, i: 2, u: 3, e: 4, o: 5, n: 6, m: 6 };
+
     function updateMotion(record) {
-      let changed = false;
+      let changed = false, facialChanged = false;
       const assign = (object, key, value) => {
         if (object[key] === value) return;
         object[key] = value;
@@ -707,6 +1069,23 @@
         const bound = nativeEvents.get(segment.nativeEventId);
         if (!bound) continue;
         const event = bound.event, values = event.values;
+        if (segment.kind === "eyes" || segment.kind === "mouth") {
+          // Facial clips are bound once per controller. An edited eye or mouth index
+          // (the clip's index differs from its native one, kept in project.editor.originals
+          // once edited) rebuilds the controller below; the imported index is used otherwise.
+          if (!("importIndex" in segment)) {
+            const native = project?.editor?.originals?.[event.id]?.values?.index;
+            segment.nativeIndex = Number.isInteger(native) ? native : values.index;
+            segment.importIndex = segment.index;
+          }
+          const edited = Number.isInteger(values.index) && values.index !== segment.nativeIndex;
+          const index = !edited ? segment.importIndex : segment.kind === "mouth" && values.index === 0
+            ? lipSyncVowels[String(values.paramName ?? "").toLowerCase()] ?? 0 : values.index;
+          if (segment.index !== index) {
+            segment.index = index;
+            facialChanged = true;
+          }
+        }
         assign(segment, "start", event.start);
         assign(segment, "duration", event.duration);
         const weight = segment.kind === "gaze" ? values.weightForDirection : values.weight;
@@ -718,6 +1097,16 @@
             Number.isInteger(alternate.Target) && Number.isFinite(alternate.WeightForDirection);
           assign(segment, "splitTarget", usesAlternate ? alternate.Target : null);
           assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.WeightForDirection)) : 0);
+        } else if (segment.kind === "eyes" && Number.isInteger(segment.splitIndex)) {
+          // MemberEyeMixer.Process swaps in splitScreenSetting.Index/Weight
+          // while the split screen is enabled (see ViewerMotionTimeline).
+          const alternate = values.splitScreenSetting;
+          const usesAlternate = (alternate?.UseSetting === 1 || alternate?.UseSetting === true) && Number.isFinite(alternate.Weight);
+          assign(segment, "splitUse", usesAlternate);
+          assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.Weight)) : 0);
+        } else if (segment.kind === "cheek") {
+          if (Number.isInteger(values.cheekType)) assign(segment, "index", values.cheekType);
+          if (Number.isFinite(values.intensity)) assign(segment, "intensity", Math.min(1, Math.max(0, values.intensity)));
         }
         if (Number.isFinite(values.clipIn)) assign(segment, "clipIn", values.clipIn);
         if (Number.isFinite(values.timeScale) && values.timeScale > 0) assign(segment, "timeScale", values.timeScale);
@@ -731,7 +1120,27 @@
           }
         }
       }
+      if (facialChanged && record.motionSource) {
+        // The controller holds interpolants and no mixer: a new one over the loaded pose
+        // (as the first was created) replaces it, then takes the current timing.
+        const source = record.motionSource;
+        if (record.initialPose) restoreActorPose(record.initialPose);
+        record.motion = global.ViewerMotionTimeline.create(source.scene, source.animations, source.rig,
+          { ...source.motion, bodySegments: record.segments, facial: { ...source.motion.facial, events: record.facialEvents } },
+          { indexTiming: true });
+        updateMotion(record);
+        return;
+      }
       if (changed && record.motion.invalidateTiming) record.motion.invalidateTiming();
+    }
+
+    // MemberEyeClip.splitScreenSetting {UseSetting, Index, Weight}: the alternate
+    // clip index is fixed when the actor's facial inputs are bound.
+    function eyeSplitIndex(event) {
+      const alternate = event.kind === "eyes" && nativeEvents.get(event.nativeEventId)?.event.values.splitScreenSetting;
+      if (alternate && (alternate.UseSetting === 1 || alternate.UseSetting === true) &&
+          Number.isInteger(alternate.Index) && alternate.Index >= 0) event.splitIndex = alternate.Index;
+      return event;
     }
 
     function gazeContext() {
@@ -787,7 +1196,8 @@
         }
       }
       if (stageOnly) return entries;
-      for (const performer of (value.performers || []).slice(0, 9)) {
+      // LiveCoreMemberManager.MemberMax: an MV has up to 12 performers.
+      for (const performer of (value.performers || []).slice(0, 12)) {
         if (performer.glb) entries.push({ spec: performer, group: actors });
       }
       entries.push(...attachments);
@@ -820,9 +1230,13 @@
 
     async function buildRecord(entry, bytes, active) {
       const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
+      await global.ViewerMotionTimeline?.loadUnityEuler?.(gltf);
       const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
-        identity: entry.identity, visibility: [], rig: entry.spec.rig };
-      if (entry.group === effects) record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
+        identity: entry.identity, visibility: [], rig: entry.spec.rig, role: entry.role };
+      if (entry.group === effects) {
+        record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
+        record.memberShadowPrefabs = await global.MVStudioMemberShadow?.prefabs?.(T, gltf.scene, gltf.parser);
+      }
       const audience = gltf.scene.userData?.mvAudiencePoint;
       if (entry.group === stage && vector(audience, 3)) record.audience = audience;
       let ready = false;
@@ -866,6 +1280,8 @@
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
           if (!active()) return null;
+          record.stagePropLight = await global.MVStudioPropLight?.apply?.(T, record.root, gltf.parser, { active });
+          if (!active()) return null;
           record.stageColoring = await global.MVStudioStageColoring?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
           record.stageDisplay = await global.MVStudioStageDisplay?.apply(T, record.root, gltf.parser);
@@ -885,6 +1301,8 @@
           record.areaTemplate = await global.MVStudioSpotlightArea?.prepare(T, gltf);
           if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
+          record.axisBillboard = global.MVStudioAxisBillboard?.create(T, record.root);
+          record.lossyScale = global.MVStudioLossyScale?.create(T, record.root);
           record.stageLaserCores = await global.MVStudioStageLaserCores?.apply(T, record.root, gltf.parser, {
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
@@ -910,20 +1328,28 @@
           record.actorVisible = record.root.visible;
           actorPose(record, entry.spec);
           record.nodeScaling = savedNodeScaling(T, gltf.scene, entry.spec.rig);
-          const parts = entry.spec.rig?.focusParts;
+          // focusParts: BodyPartType value -> exported node id, or {world} in Unity space.
+          const parts = entry.spec.rig?.focusParts && typeof entry.spec.rig.focusParts === "object" ? entry.spec.rig.focusParts : {};
           const shaftAnchor = entry.spec.rig?.shaftAnchor;
-          const boneIds = new Set([parts?.head, parts?.hips, shaftAnchor].filter(Number.isInteger));
+          const boneIds = new Set([...Object.values(parts), shaftAnchor].filter(Number.isInteger));
+          const nodes = new Map();
           if (boneIds.size) {
-            const nodes = new Map();
             gltf.scene.traverse(node => {
               const id = node.userData.elichika_node;
               if (boneIds.has(id)) nodes.set(id, nodes.has(id) ? null : node);
             });
-            record.focusParts = { 0: nodes.get(parts?.head), 3: nodes.get(parts?.hips) };
             record.shaftAnchor = nodes.get(shaftAnchor);
           }
+          record.focusParts = {};
+          for (const [part, value] of Object.entries(parts)) {
+            const world = value?.world;
+            const point = Number.isInteger(value) ? nodes.get(value) :
+              Array.isArray(world) && world.length === 3 && world.every(Number.isFinite)
+                ? new T.Vector3(-world[0], world[1], world[2]) : null;
+            if (point) record.focusParts[part] = point;
+          }
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
-            parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
+            parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw, liveMember: true,
             mouthCentroidDepth: renderer.capabilities.isWebGL2 === true, nativeMemberDepth: true, releaseParserAfterLoad: true
           });
           if (record.materials && record.materials.ready) await record.materials.ready;
@@ -934,21 +1360,28 @@
             record.segments = (entry.spec.motion.bodySegments || []).map((segment) => ({
               ...segment, timing: { ...segment.timing }
             }));
-            record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => ({
+            record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => eyeSplitIndex({
               ...event, timing: { ...event.timing }
             }));
             record.motionEvents = record.segments.concat(record.facialEvents);
+            record.motionSource = { scene: gltf.scene, animations: gltf.animations, rig: entry.spec.rig || {}, motion: entry.spec.motion };
             record.motion = global.ViewerMotionTimeline.create(gltf.scene, gltf.animations,
               entry.spec.rig || {}, { ...entry.spec.motion, bodySegments: record.segments,
                 facial: { ...entry.spec.motion.facial, events: record.facialEvents } },
               { indexTiming: true });
+            // LiveCoreMemberHead.InitializeDefault binds MemberCheekBase to the
+            // merged face's material; a masked head has no cheek component.
+            const cheekMaterial = entry.spec.rig?.memberHead?.cheekMaterial;
+            if (typeof cheekMaterial === "string" && cheekMaterial) record.cheekMaterial = cheekMaterial;
             updateMotion(record);
           } else if (gltf.animations.length) {
+            global.ViewerMotionTimeline?.prepareAnimations?.(gltf.animations);
             record.mixer = new T.AnimationMixer(gltf.scene);
             record.mixer.clipAction(gltf.animations[0]).play();
           }
           record.physics = global.MVStudioPhysics?.create(record.root, entry.spec.rig?.physics,
             entry.spec.motion?.physics ?? project?.motionPhysics);
+          record.constraints = global.ViewerConstraints?.create(record.root, entry.spec.rig?.constraints);
           record.memberShadow = await global.MVStudioMemberShadow?.apply(T, record.root, gltf.parser, memberShadows);
           if (!active()) return null;
         }
@@ -983,12 +1416,14 @@
       for (const record of records) {
         if (record.group !== actors) continue;
         record.physics?.restorePose();
+        record.constraints?.restorePose();
         if (record.initialPose) restoreActorPose(record.initialPose);
         actors.add(record.root);
       }
       gaze.members = {};
       frameAll();
       seek(currentTime, project);
+      notifyFreeView();
     }
 
     function cancelStagePreparation(redraw = true) {
@@ -1040,6 +1475,8 @@
           record.stageStationaryBursts?.update(0, preview, record.stageMotion);
           record.penlight?.update(0, preview);
           record.stageMaterial?.update(0, preview, lighting);
+          record.stagePropLight?.setProject(preview);
+          record.stagePropLight?.update(0);
           record.stageColoring?.update(0, preview);
           record.stageDisplay?.update(0, preview);
           pending.records.push(record);
@@ -1081,6 +1518,8 @@
       const pendingStage = reusableStage(entries, replacement < 0 && preferences?.reuseStage);
       if (!pendingStage) cancelStagePreparation(false);
       project = value;
+      dofWarnings.clear();
+      dofApplied = dofPrevious = null;
       if (request) request.abort();
       request = new AbortController();
       const signal = request.signal, ticket = ++generation;
@@ -1117,6 +1556,12 @@
         }
       }
 
+      // Optional loading progress for the caller: models done/total, then effects.
+      const report = (update) => {
+        try { if (active()) preferences?.onProgress?.(update); } catch (_) {}
+      };
+      report({ done: start, total: entries.length });
+
       // Fetch the next GLB while the current one decodes. Only one model is
       // decoded at a time so concurrent texture uploads stay bounded on mobile.
       function fetchEntry(entry) {
@@ -1138,6 +1583,8 @@
           }
           if (!record.prop) entry.group.add(record.root);
           records.push(record);
+          // The free camera's targets follow the members as they load.
+          if (entry.group === actors) notifyFreeView();
           if (entry.group === stage) {
             grid.visible = false;
             frameAll();
@@ -1146,8 +1593,10 @@
         } catch (error) {
           if (!signal.aborted && !disposed && options && options.onError) options.onError(error.message);
         }
+        report({ done: index + 1, total: entries.length });
       }
       if (!active()) return;
+      report({ phase: "effects" });
       const title = await global.MVStudioTitle?.apply(T, scene, value.stageTitle);
       if (!active()) {
         title?.dispose();
@@ -1267,15 +1716,29 @@
         return;
       }
       stageSparksRoop = sparksRoop;
+      const particleSystems = await global.MVStudioParticleSystems?.apply(T, scene, value.stageParticleSystems);
+      if (!active()) {
+        particleSystems?.dispose();
+        return;
+      }
+      stageParticleSystems = particleSystems;
+      const controlPrefabs = await global.MVStudioControlPrefabs?.apply(T, scene, value.stageControlPrefabs,
+        value.stageParticleSystems);
+      if (!active()) {
+        controlPrefabs?.dispose();
+        return;
+      }
+      stageControlPrefabs = controlPrefabs;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
       seek(currentTime, project);
+      warmScene();
     }
 
     function poseCamera(event, time, track, camera = liveCamera) {
       const value = event.values || {};
-      const local = Math.min(event.duration, Math.max(0, time - event.start));
+      const local = cameraLocalTime(event, time);
       const frames = value.keyframes;
       if (Array.isArray(frames) && !sortedCameraFrames.has(frames)) {
         sortedCameraFrames.set(frames, frames.every((frame, index) => !index || frame.time >= frames[index - 1].time));
@@ -1313,6 +1776,83 @@
       return true;
     }
 
+    // The shot frameTracks gives the live camera at `time`, posed on a scratch
+    // camera with the game's clip planes (near 0.1, far 1000) and the live
+    // camera's aspect and lens correction (liveFov); null with no shot.
+    function mainCameraAt(time) {
+      let shot = null, ended = null;
+      const hold = project?.source?.kind === "game";
+      for (const track of renderTracks) {
+        if (track.kind !== "camera") continue;
+        const event = activeCameraEvent(track, time);
+        if (event) {
+          shot = { event, track, at: time };
+          continue;
+        }
+        const last = hold ? endedCameraEvent(track, time) : null;
+        if (last && (!ended || last.start + last.duration > ended.event.start + ended.event.duration)) ended = { event: last, track };
+      }
+      if (!shot && ended) shot = { event: ended.event, track: ended.track, at: ended.event.start + ended.event.duration };
+      if (!shot || !poseCamera(shot.event, shot.at, shot.track, cullingCamera)) return null;
+      const native = shot.track.nativeClass === "AnimationTrack" && /(?:^|\/)MainCamera$/i.test(shot.track.binding || "");
+      const correction = native ? global.MVStudioSplit?.aspectCorrection(liveCamera.aspect) ?? 1 : 1;
+      cullingCamera.fov = Math.min(170, cullingCamera.fov / correction);
+      cullingCamera.aspect = liveCamera.aspect;
+      cullingCamera.near = 0.1;
+      cullingCamera.far = 1000;
+      cullingCamera.updateProjectionMatrix();
+      applyCameraOffsets(cullingCamera, shot.track.binding, time);
+      cullingCamera.updateMatrixWorld(true);
+      return cullingCamera;
+    }
+
+    // The main camera's world position at `time` (mainCameraAt), or false with no shot.
+    function mainCameraPositionAt(time, out) {
+      const camera = mainCameraAt(time);
+      if (!camera) return false;
+      out.setFromMatrixPosition(camera.matrixWorld);
+      return true;
+    }
+
+    // The world position of a member's Move node (the shaft anchor) at `time`
+    // from the dance alone (ViewerMotionTimeline sampleLocal): nothing is posed.
+    // Its ancestors keep their current transforms, which the timeline does not
+    // animate below the member root.
+    function shaftAnchorAt(record, time, out) {
+      const node = record.shaftAnchor;
+      const local = record.motion?.sampleLocal?.(node, "position", time, anchorSample);
+      out.fromArray(local || node.position.toArray(anchorSample));
+      if (node.parent) {
+        node.parent.updateWorldMatrix(true, false);
+        out.applyMatrix4(node.parent.matrixWorld);
+      }
+      return true;
+    }
+
+    // Every camera that draws the particle layers at `time`: the main camera,
+    // or while a LiveSplitScreenClip is active the enabled sub cameras plus
+    // the main camera when the clip keeps it on (mv-studio-split.js camerasAt).
+    function cullingCamerasAt(time) {
+      const views = split?.camerasAt?.(time, sampleSplitCamera) ?? null;
+      const main = !views || views.main ? mainCameraAt(time) : null;
+      return [...(views?.cameras || []), ...(main ? [main] : [])];
+    }
+
+    // Recreated when the camera tracks or the aspect change, so the particle
+    // visibility pass starts over.
+    function particleCullingView() {
+      // applyProject rebuilds renderTracks on every seek; its source array changes only with an edit.
+      const cameras = renderTracks.filter((track) => track.kind === "camera").map((track) => track.id).join("|");
+      if (!cullingView || cullingView.tracks !== trackSource || cullingView.cameras !== cameras ||
+          cullingView.aspect !== liveCamera.aspect || cullingView.hold !== (project?.source?.kind === "game") ||
+          cullingView.split !== project?.splitScreen || cullingView.splitQuality !== settings?.split_screen) {
+        cullingView = { tracks: trackSource, cameras, aspect: liveCamera.aspect, hold: project?.source?.kind === "game",
+          split: project?.splitScreen, splitQuality: settings?.split_screen, cameraAt: mainCameraAt, camerasAt: cullingCamerasAt };
+        cullingView.key = cullingView;
+      }
+      return cullingView;
+    }
+
     function lightValue(event, keys) {
       const values = event.values || {};
       for (const key of keys) if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
@@ -1325,17 +1865,28 @@
       else target.setHex(fallback);
     }
 
-    function frameTracks(time, tracks, quality, [ambient, key, rim], onCamera) {
+    // holdLastShot (original MVs): past the end of every camera clip the game
+    // keeps the last shot. Nothing moves the 3D camera after its final key, and at
+    // the music end LiveCoreCameraManager.StartBlur (0x2f63180) turns the 3D
+    // cameras off one frame later (AnimationBlurIntensity), so the overlay camera
+    // keeps blurring that frame. The editor camera is never shown in its place.
+    function frameTracks(time, tracks, quality, [ambient, key, rim], onCamera, holdLastShot = false) {
       ambient.color.setHex(0xe4edff);
       ambient.intensity = 1.2;
       key.color.setHex(0xffffff);
       key.intensity = 2.1;
       rim.color.setHex(0x8bb6ff);
       rim.intensity = 1.0;
+      let sampledCamera = false, ended = null;
       for (const track of tracks) {
         const event = track.kind === "camera" ? activeCameraEvent(track, time) : activeEvent(track, time);
-        if (!event) continue;
+        if (!event) {
+          const last = holdLastShot && onCamera && track.kind === "camera" ? endedCameraEvent(track, time) : null;
+          if (last && (!ended || last.start + last.duration > ended.event.start + ended.event.duration)) ended = { event: last, track };
+          continue;
+        }
         if (track.kind === "camera") {
+          sampledCamera = true;
           onCamera?.(event, time, track);
         } else {
           const label = event.values.playableClass;
@@ -1354,12 +1905,16 @@
       if (quality.stage_ambient === false) ambient.intensity = 0.6;
       if (quality.base_light === false) key.intensity = 0.8;
       if (quality.member_rim_light === false) rim.intensity = 0;
+      if (!sampledCamera && ended) onCamera(ended.event, ended.event.start + ended.event.duration, ended.track, true);
     }
 
-    function useCameraEvent(event, time, track) {
+    function useCameraEvent(event, time, track, held = false) {
       if (!poseCamera(event, time, track)) return;
       hasShot = true;
+      liveCameraEvent = { track: track.id ?? null, event: event.id ?? null, start: event.start, duration: event.duration };
+      if (held) liveCameraEvent.held = true;
       mainCameraPosition.copy(liveCamera.position);
+      mainCameraDirection.set(0, 0, -1).applyQuaternion(liveCamera.quaternion);
       applyCameraOffsets(liveCamera, track.binding, time);
     }
 
@@ -1385,9 +1940,17 @@
     function applyProject() {
       const tracks = project && project.tracks || [];
       settings = project && project.quality && project.quality.values || {};
+      // level35 MainCamera/Offset/Camera clears SolidColor (0, 0, 0, 0); the
+      // RenderSettings skybox is never drawn and fog is off on every MV stage.
+      if (project?.source?.kind === "game") renderer.setClearColor(0x000000, 0);
+      else renderer.setClearColor(editorClear, 1);
       const shadowStages = records.filter(record => typeof record.memberShadowDefaults === "boolean");
-      defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults &&
-        !tracks.some(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted && track.events.length);
+      // ShadowComponent.Initialize deletes the costume's shadows only for a stage
+      // with memberShadowPrefabs; a LiveMemberShadowTrack then only scales them.
+      defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults;
+      memberShadowPrefabs = shadowStages.length === 1 && !shadowStages[0].memberShadowDefaults
+        ? shadowStages[0].memberShadowPrefabs ?? null : null;
+      memberShadowTracks = tracks.filter(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted);
       if (trackSource !== tracks) {
         trackSource = tracks;
         nativeEvents.clear();
@@ -1409,7 +1972,7 @@
       cameraOffsets.clear();
       for (const track of tracks) {
         if (!track.muted && track.nativeClass === "LiveMemberSpotLightShaftTrack") {
-          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)$/.exec(track.binding || "");
           const slot = track.shaftSlot ?? (bound ? Number(bound[1]) : null);
           if (bound && slot === Number(bound[1])) {
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberSpotLightShaftClip");
@@ -1418,7 +1981,7 @@
           continue;
         }
         if (!track.muted && track.nativeClass === "LiveMemberSpotLightAreaTrack") {
-          const binding = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const binding = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)$/.exec(track.binding || "");
           if (binding) {
             const slot = Number(binding[1]);
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberSpotLightAreaClip");
@@ -1427,7 +1990,7 @@
           continue;
         }
         if (!track.muted && track.nativeClass === "LiveMemberCullerTrack") {
-          const slot = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const slot = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)$/.exec(track.binding || "");
           if (slot) {
             const position = Number(slot[1]);
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberCullerClip" && event.duration > 0);
@@ -1436,7 +1999,7 @@
           continue;
         }
         if (!track.muted && track.nativeClass === "LiveMemberScalingTrack") {
-          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9])\/Model$/.exec(track.binding || "");
+          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)\/Model$/.exec(track.binding || "");
           if (!bound) continue;
           const slot = Number(bound[1]);
           const clips = memberScaleTracks.get(slot) || [];
@@ -1490,14 +2053,29 @@
         record.stageColoring?.invalidate();
         record.stageDisplay?.invalidate();
         if (record.motion) updateMotion(record);
-        record.materials?.setRimlight?.(settings.member_rim_light !== false);
+        // member_rim_light never reaches a member material: the game only mutes
+        // the "Member Rim Light" tracks (LiveQualityOperator.
+        // ApplyLiveQualityToMemberEffectTrack 0x20f3164), which sample() skips.
+        // The base light still writes the rim (LiveBaseLightReciever.
+        // ApplyBaseLightColor 0x2f5fac0 -> LiveCoreMemberRimlight.
+        // ApplyBaseIntensity 0x2f607fc: intensity = base, ApplyEnable(base > 0))
+        // and every AS/Member variant draws it, so the rim term stays on.
         if (record.prop) record.prop.setTracks(tracks);
         record.propLight?.setProject(project);
+        record.stagePropLight?.setProject(project);
       }
+    }
+
+    // The spring rate the original frame-rate rule gives (MVStudioPhysics.frameRate).
+    function physicsRate() {
+      return global.MVStudioPhysics?.frameRate?.(settings, physicsTiming) ?? (settings.frame_rate_60fps === true ? 60 : 30);
     }
 
     function resetPhysics(reason) {
       physicsClock?.reset();
+      // A seek cannot replay the frames the game would have applied before it.
+      dofState = global.MVStudioDofFocus?.createState?.() ?? null;
+      dofApplied = dofPrevious = null;
       resetShafts = true;
       lastShaftFrame = null;
       for (const record of records) {
@@ -1506,12 +2084,82 @@
       }
     }
 
-    function seek(time, value, deferDraw = false) {
+    // `history`: optional ascending director times of the frames the game rendered
+    // before `time` (a runtime dump's frame grid); only frame-stepped client state
+    // reads them.
+    function seek(time, value, deferDraw = false, history = null) {
       if (disposed) return;
       if ((value && value !== project) || (Number.isFinite(time) && Math.abs(time - currentTime) > 1e-9)) resetPhysics("seek");
       project = value || project;
       applyProject();
-      playbackFrame(time, undefined, deferDraw);
+      pendingHistory = Array.isArray(history) ? history : [];
+      try {
+        playbackFrame(time, undefined, deferDraw);
+      } finally {
+        pendingHistory = null;
+      }
+    }
+
+    function nextFrameClock(time) {
+      const advancing = pendingHistory === null && playing && Number.isFinite(time) && time >= currentTime - 1e-9;
+      if (advancing) return { advancing, history: [] };
+      const history = (pendingHistory || []).filter((value) => Number.isFinite(value) && value < time - 1e-9);
+      for (let index = 1; index < history.length; index++) {
+        if (history[index] < history[index - 1]) return { advancing: false, history: history.sort((a, b) => a - b) };
+      }
+      return { advancing: false, history };
+    }
+
+    // MVStudioLighting.sample at an earlier rendered frame of the frame clock.
+    function lightingAt(time, lighting) {
+      if (time === currentTime) return lighting;
+      if (!historyLighting.has(time)) historyLighting.set(time, global.MVStudioLighting?.sample(project, time) ?? null);
+      return historyLighting.get(time);
+    }
+
+    // LiveCoreMemberAmbient's ambient and tint writes (MVStudioLighting.heldColor)
+    // for a member or a member prop. With a base light track LiveBaseLightReciever
+    // also writes these components (ApplyBase*Color, CheckSame-gated as well); the
+    // write order of the two mixers within a frame is not established, so the
+    // colors stay exact there (unevidenced choice).
+    function heldLiveLighting(record, slot, value, valueAt, lighting) {
+      const holds = (record.lightingHolds ||= {})[slot] ||= { ambient: {}, tint: {} };
+      value = heldRim(holds, value, valueAt);
+      if (!value || lighting?.baseTrack || !global.MVStudioLighting?.heldColor) {
+        holds.ambient.color = holds.tint.color = null;
+        return value;
+      }
+      const held = { ...value };
+      for (const key of ["ambient", "tint"]) {
+        held[key] = value[key] ? global.MVStudioLighting.heldColor(holds[key], (time) => valueAt(time)?.[key] ?? null,
+          currentTime, frameClock) : (holds[key].color = null, value[key]);
+      }
+      return held;
+    }
+
+    // LiveRimlightMixer / LivePropRimlightMixer.PostProcess apply colour,
+    // sharpness and direction only in a frame an input ran; otherwise they
+    // only ApplyIntensity(0) (mv_studio_member_rim_test). The rimlight keeps
+    // the colour, power and direction of the last frame a clip wrote (the
+    // previous playing frame, or after a seek the last frame of the frame
+    // clock's history with an active clip), and LiveCoreMemberRimlight.ResetAll's
+    // state (SifasMaterial's live default) before any.
+    function heldRim(holds, value, valueAt) {
+      const written = (rim) => Array.isArray(rim?.color) && Array.isArray(rim?.direction) && Number.isFinite(rim?.power);
+      if (written(value?.rim)) {
+        holds.rim = value.rim;
+        return value;
+      }
+      if (!frameClock.advancing) {
+        holds.rim = null;
+        for (let index = frameClock.history.length - 1; index >= 0 && !holds.rim; index--) {
+          const rim = valueAt(frameClock.history[index])?.rim;
+          if (written(rim)) holds.rim = rim;
+        }
+      }
+      if (!holds.rim) return value;
+      return { ...(value || {}), rim: { color: holds.rim.color, direction: holds.rim.direction, power: holds.rim.power,
+        intensity: value?.rim?.intensity ?? 0 } };
     }
 
     function setPlaying(value) {
@@ -1529,11 +2177,17 @@
 
     function playbackFrame(time, frameTimestamp, deferDraw = false) {
       if (disposed) return;
+      // A continuing playback frame follows the frame evaluated before it.
+      const continuing = Number.isFinite(frameTimestamp) && Number.isFinite(time) && time > currentTime + 1e-9;
+      captureFocusLag(continuing);
       if (Number.isFinite(frameTimestamp) && time < currentTime - 1e-9) resetPhysics("clock-rewind");
+      frameClock = nextFrameClock(Number.isFinite(frameTimestamp) || pendingHistory !== null ? time : NaN);
+      historyLighting = new Map();
       currentTime = Number.isFinite(time) ? time : 0;
+      mixers?.update(project, currentTime, frameClock);
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
-      if (playing && Number.isFinite(frameTimestamp) && previewScale > 0.5) {
+      if (adaptivePreview && playing && Number.isFinite(frameTimestamp) && previewScale > 0.5) {
         if (lastPlaybackFrame !== null && frameTimestamp - lastPlaybackFrame > 40) slowFrames++;
         else slowFrames = 0;
         lastPlaybackFrame = frameTimestamp;
@@ -1544,7 +2198,8 @@
         }
       }
       hasShot = false;
-      frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent);
+      liveCameraEvent = null;
+      frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent, project?.source?.kind === "game");
       post?.evaluate(project, currentTime);
       activeSplitGazeCameras = split?.sample(currentTime, sampleSplitCamera) ?? null;
       const lighting = global.MVStudioLighting?.sample(project, currentTime);
@@ -1568,43 +2223,66 @@
       stageSparksA?.update(currentTime, project);
       stageSparksB?.update(currentTime, project);
       stageSparksRoop?.update(currentTime, project);
+      stageParticleSystems?.update(currentTime, project, particleCullingView(), particleClock, particleFrames);
+      stageControlPrefabs?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
+      // LiveCoreLossyScale.LateUpdate follows the animators.
+      for (const record of records) record.lossyScale?.apply();
       for (const record of records) record.stageSoftBillboards?.update(currentTime);
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
-      for (const record of records) record.penlight?.update(currentTime, project);
-      for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
+      for (const record of records) record.penlight?.update(currentTime, project, frameClock);
+      for (const record of records) {
+        record.stageMaterial?.update(currentTime, project, lighting, frameClock);
+        record.stagePropLight?.update(currentTime, frameClock, !!lighting?.baseTrack);
+      }
+      // The _AUTO_PLAY_ON coloring programs read _Time.y: the game run's clock when one is set.
+      for (const record of records) record.stageColoring?.useClock?.(particleClock);
       for (const record of records) record.stageColoring?.update(currentTime, project);
-      for (const record of records) record.stageDisplay?.update(currentTime, project);
+      // The wave screens read _Time.y: the game run's clock when one is set.
+      for (const record of records) record.stageDisplay?.update(currentTime, project, particleClock);
+      // LiveCoreMemberManager.Update steps the springs before the director evaluates.
+      const physicsStep = playing && visible && records.some((record) => record.physics)
+        ? physicsClock?.step(frameTimestamp, physicsRate()) || 0 : 0;
+      for (const record of records) record.physics?.frame?.("update", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       for (const record of records) {
         if (record.group !== actors) continue;
         // Both native camera paths exclude the member's Invisible layer.
         // Keep sampling its transforms so other actors can still track it.
-        const culled = memberCullingTracks.get(record.position)?.some(event =>
-          currentTime >= event.start && currentTime < event.start + event.duration);
+        const culled = memberCulledAt(record.position, currentTime);
         record.root.visible = record.actorVisible && !culled;
-        record.materials?.setLiveLighting?.(lighting?.member(record.position));
+        record.materials?.setLiveLighting?.(heldLiveLighting(record, "member", lighting?.member(record.position),
+          (time) => lightingAt(time, lighting)?.member(record.position), lighting));
         record.physics?.restorePose();
+        record.constraints?.restorePose();
         record.nodeScaling?.resetHeight();
         const performer = performers.get(record.id);
         if (performer) actorPose(record, performer);
         if (record.motion) {
-          record.motion.evaluatePose(currentTime);
+          record.motion.evaluatePose(currentTime, { split: activeSplitGazeCameras !== null });
           record.motion.applyVisibility(currentTime);
+          if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime, frameClock));
         } else if (record.mixer) record.mixer.setTime(currentTime);
         record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), currentTime);
       }
+      // Unity's ConstraintManagerUpdate (PreLateUpdate) runs after the Animator
+      // and before every LateUpdate script: LiveMemberEyeContact, ShadowComponent
+      // and the member manager's AllSafeCorrect. A swing-bone source holds the
+      // local rotation this frame's Update job wrote (simulatedPose), unless the
+      // timeline animates it. The targets keep the result until the next update
+      // hook, whose job reads them as the parents of their swing chains.
+      for (const record of records) record.constraints?.apply(record.physics?.simulatedPose?.() || null,
+        () => record.motion?.animatedProperties?.(currentTime));
       // Native performers look at the other actor's animated Eye_Root, so
       // prepare every actor at this timestamp before resolving any gaze.
       const targets = gazeContext();
-      for (const record of records) if (record.motion) record.motion.evaluateGaze(currentTime, targets);
+      for (const record of records) if (record.motion) record.motion.evaluateGaze(currentTime, targets, { continuing });
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
-      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow);
-      const physicsStep = playing && visible && records.some((record) => record.physics)
-        ? physicsClock?.step(frameTimestamp, settings.frame_rate_60fps === true ? 60 : 30) || 0 : 0;
-      for (const record of records) record.physics?.apply(currentTime, physicsStep, settings, record.motion);
+      const shadowParameters = global.MVStudioMemberShadow?.sample?.(memberShadowTracks, currentTime) ?? null;
+      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow, shadowParameters, memberShadowPrefabs);
+      for (const record of records) record.physics?.frame?.("late", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       // Unity gates both native member spot light tracks on the Area quality value.
       const shaftTemplates = records.find(record => record.shaftTemplates)?.shaftTemplates;
       if (shaftTemplates) {
@@ -1616,8 +2294,12 @@
           if (!record.shaft && clips) {
             record.shaft = global.MVStudioShaft?.create(T, shaftTemplates, record.root, record.shaftAnchor);
           }
+          // A reset rebuilds a hidden shaft from its last drawn frame: the game's
+          // frame history when a seek handed one, else the spring clock's grid.
           record.shaft?.frame(settings.member_spot_light_area !== false ? clips : null,
-            currentTime, Math.max(0, elapsed), liveCamera, project, resetShafts || elapsed < 0 || elapsed > 0.25);
+            currentTime, Math.max(0, elapsed), liveCamera, project, resetShafts || elapsed < 0 || elapsed > 0.25,
+            { history: frameClock.advancing ? null : frameClock.history, rate: physicsRate(),
+              anchorAt: (time, out) => shaftAnchorAt(record, time, out), cameraAt: mainCameraPositionAt });
         }
         lastShaftFrame = timestamp;
         resetShafts = false;
@@ -1634,8 +2316,16 @@
       for (const record of records) if (record.prop) {
         record.prop.bind(records.find((actor) => actor.group === actors && actor.position === record.propMember) || null);
         record.prop.evaluate(currentTime);
-        if (record.root.visible) record.propMaterial?.setLiveLighting?.(record.propLight?.sample(currentTime));
+        if (record.propMaterial) {
+          // The prop's ambient mixer writes its component every frame, shown or not: the
+          // hold steps on every frame and the material takes it while the prop is shown.
+          const live = heldLiveLighting(record, "prop", record.propLight?.sample(currentTime),
+            (time) => record.propLight?.sample(time), lighting);
+          if (record.root.visible) record.propMaterial.setLiveLighting?.(live);
+        }
       }
+      advanceFocus();
+      followFreeView();
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
       else if (deferDraw && visible) {
         // Motion sampling is still synchronous. Preserve the world matrices
@@ -1648,15 +2338,742 @@
       } else draw();
     }
 
+    // Runtime value dump of the last evaluated frame (sifas-mv-runtime-dump/1,
+    // editor columns, three-rh-mirror-x space). Strictly read-only: it never
+    // seeks, resizes, draws or updates a matrix, and copies every value into
+    // plain arrays. Call seek(t, undefined, true) first; the deferred seek has
+    // already updated the world matrices this reads.
+    const defaultGlobals = ["_Beat", "_MusicTime", "_SelfTime", "_ColorsLength", "_RenderTextureResolution", "_Time"];
+    const anchorBones = ["Hips", "Head", "LeftHand", "RightHand"];
+
+    function assetDump(request = {}) {
+      const D = global.MVStudioAssetDump;
+      if (!D) throw new Error("The MV asset dump helpers are not loaded.");
+      const clock = global.performance?.now ? () => global.performance.now() : () => Date.now();
+      const started = clock();
+      const sections = new Set(Array.isArray(request.sections) ? request.sections : ["clock", "cameras"]);
+      const limit = (value, fallback) => Number.isInteger(value) && value > 0 ? value : fallback;
+      const maxNodes = limit(request.maxNodes, 4000), maxMaterials = limit(request.maxMaterials, 1024);
+      const maxBones = limit(request.maxBones, 256);
+      const filter = request.filter || {}, keys = request.keys || {};
+      const temp = D.temporaries(T), out = {}, errors = [], truncated = [];
+      const cache = {};
+
+      function read(section, key, reader) {
+        if (!sections.has(section)) return;
+        try {
+          out[key] = reader();
+        } catch (error) {
+          out[key] = null;
+          errors.push({ at: section, error: String(error?.message || error).slice(0, 160) });
+        }
+      }
+
+      function viewOf(camera) {
+        // An unparented camera's world matrix is its local TRS; compose it into
+        // a temporary so a camera that was not drawn yet is still current.
+        const world = camera.parent ? camera.matrixWorld : temp.matrix.compose(camera.position, camera.quaternion, camera.scale);
+        const current = camera.matrixWorld.elements.every((value, index) => Math.abs(value - world.elements[index]) <= 1e-9);
+        return { world: Array.from(world.elements), view: Array.from(temp.inverse.copy(world).invert().elements), current };
+      }
+
+      function cameraEvent() {
+        if (!liveCameraEvent) return null;
+        const track = (project?.tracks || []).find((item) => item.id === liveCameraEvent.track);
+        const clipIndex = track ? track.events.findIndex((event) => event.id === liveCameraEvent.event) : -1;
+        return { track: liveCameraEvent.track, label: track?.label ?? null, nativeClass: track?.nativeClass ?? null,
+          binding: track?.binding ?? null, clipIndex: clipIndex >= 0 ? clipIndex : null,
+          start: liveCameraEvent.start, duration: liveCameraEvent.duration, ...(liveCameraEvent.held ? { held: true } : {}) };
+      }
+
+      function cameraEntry(camera, base) {
+        const matrices = viewOf(camera);
+        const world = D.decompose(temp.matrix.fromArray(matrices.world), temp);
+        const expectedY = 1 / Math.tan(camera.fov * Math.PI / 360);
+        return { ...base, fieldOfView: camera.fov, aspect: camera.aspect, nearClipPlane: camera.near, farClipPlane: camera.far,
+          projection: Array.from(camera.projectionMatrix.elements), worldToCamera: matrices.view,
+          transform: { position: world.position, rotation: camera.parent ? world.rotation : camera.quaternion.toArray() },
+          checks: { matrixWorldCurrent: matrices.current,
+            projectionMatchesFov: Math.abs(camera.projectionMatrix.elements[5] - expectedY) <= 1e-6 * Math.max(1, expectedY) } };
+      }
+
+      function boneIndex(record) {
+        cache.bones ||= new Map();
+        if (cache.bones.has(record)) return cache.bones.get(record);
+        const paths = new Map(), nodes = new Map();
+        for (const bone of Array.isArray(record.rig?.bones) ? record.rig.bones : []) {
+          if (Number.isInteger(bone?.node) && typeof bone.path === "string") paths.set(bone.node, bone.path);
+        }
+        record.root.traverse((node) => {
+          const path = paths.get(node.userData?.elichika_node);
+          if (path !== undefined && !node.userData.viewerHelper) nodes.set(path, nodes.has(path) ? null : node);
+        });
+        for (const [path, node] of nodes) if (!node) nodes.delete(path);
+        cache.bones.set(record, nodes);
+        return nodes;
+      }
+
+      function namedBone(record, name) {
+        let best = null;
+        for (const [path, node] of boneIndex(record)) {
+          if (path.split("/").at(-1) === name && (!best || path.length < best[0].length)) best = [path, node];
+        }
+        return best ? best[1] : null;
+      }
+
+      // A renderer the editor builds at runtime for a game GameObject: its path below the record root
+      // (the first segment stands for the record root), from the node's own path or its name below a rig bone.
+      function runtimeObjectPath(owner, record) {
+        const data = owner.userData || {};
+        if (typeof data.mvGameObjectPath === "string") return { path: `${D.nodeName(record.root) || "root"}/${data.mvGameObjectPath}`, pathSource: "runtime" };
+        if (typeof data.mvGameObjectName !== "string" || record.group !== actors) return null;
+        for (const [path, node] of boneIndex(record)) {
+          if (node === owner.parent) return { path: `${D.nodeName(record.root) || "root"}/${path}/${data.mvGameObjectName}`, pathSource: "runtime" };
+        }
+        return null;
+      }
+
+      function rendererEntries() {
+        if (cache.renderers) return cache.renderers;
+        const entries = [], counts = new Map();
+        for (const record of records) {
+          const scope = D.rendererScope(record, actors);
+          for (const [owner, meshes] of D.renderersOf(record.root)) {
+            const mesh = D.nodeName(owner), count = (counts.get(scope + "\n" + mesh) || 0) + 1;
+            counts.set(scope + "\n" + mesh, count);
+            const { path, pathSource } = runtimeObjectPath(owner, record) || D.gameObjectPath(owner, record.root);
+            entries.push({ key: D.keyFor("renderer", { scope, mesh, index: count }), scope, mesh, path, pathSource, owner, meshes, record });
+          }
+        }
+        return (cache.renderers = entries);
+      }
+
+      // A requested game renderer selects its editor counterparts by key, by
+      // GameObject path (the editor path below its prefab root is a suffix of
+      // the game path) or by mesh name in the same scope. This is a superset;
+      // the comparator makes the actual join.
+      // AxisBillboard turns its nodes in renderScene(); a deferred seek never draws, so
+      // the transforms hold the rest (or last drawn) rotation. Report what the live
+      // camera's draw gives, computed read-only from the rest rotation.
+      function billboardOf(entry) {
+        if (!cache.billboards) {
+          cache.billboards = new Map();
+          const world = viewOf(liveCamera).world, eye = new T.Vector3(world[12], world[13], world[14]);
+          for (const record of records) {
+            for (const [node, rotation] of record.axisBillboard?.preview?.(eye) || []) cache.billboards.set(node, rotation);
+            for (const [node, rotation] of record.shaft?.preview?.(eye) || []) cache.billboards.set(node, rotation);
+          }
+        }
+        let node = entry.owner;
+        while (node && !cache.billboards.has(node)) node = node.parent;
+        return node || null;
+      }
+
+      function rendererWorld(entry) {
+        const node = billboardOf(entry);
+        if (!node) return entry.owner.matrixWorld;
+        const turned = new T.Matrix4().multiplyMatrices(node.parent.matrixWorld,
+          new T.Matrix4().compose(node.position, cache.billboards.get(node), node.scale));
+        return node === entry.owner ? turned : turned.multiply(new T.Matrix4().copy(node.matrixWorld).invert().multiply(entry.owner.matrixWorld));
+      }
+
+      function rendererWanted(item, entry) {
+        if (item.key === entry.key) return true;
+        if (item.scope !== entry.scope) return false;
+        const below = entry.path === null ? "" : entry.path.split("/").slice(1).join("/");
+        if (below && typeof item.path === "string" && (item.path === below || item.path.endsWith("/" + below))) return true;
+        return item.mesh === entry.mesh;
+      }
+
+      function selectedRenderers() {
+        const wanted = Array.isArray(filter.renderers) ? filter.renderers : null;
+        const entries = rendererEntries().filter((entry) => !wanted || wanted.some((item) => rendererWanted(item, entry)));
+        if (entries.length > maxNodes) truncated.push("renderers");
+        return entries.slice(0, maxNodes);
+      }
+
+      // Node visibility without the member culler: the culler hides an actor's
+      // root (record.root.visible = actorVisible && !culled), which the game
+      // does through the camera culling mask instead; "culled" reports it.
+      function nodeVisible(node, record) {
+        for (let current = node; current; current = current.parent) {
+          const shown = current === record.root && record.group === actors ? Boolean(record.actorVisible) : current.visible;
+          if (!shown) return false;
+        }
+        return true;
+      }
+
+      function slots(entry) {
+        const result = [];
+        for (const mesh of entry.meshes) for (const material of [mesh.material].flat()) result.push({ mesh, material });
+        return result;
+      }
+
+      const focusReadOnly = focusSource(true);
+
+      read("clock", "clock", () => ({ directorTime: currentTime, rate: physicsRate() }));
+      read("directors", "directors", () => [{ key: "director:main", time: currentTime,
+        duration: Number.isFinite(project?.duration) ? project.duration : null }]);
+      read("cameras", "cameras", () => {
+        const main = cameraEntry(liveCamera, { key: D.keyFor("camera", { role: "main" }), role: "main", liveShot: hasShot,
+          authoredFov: authoredMainFov, nativeLens: nativeMainLens, event: cameraEvent() });
+        if (!hasShot) main.errors = [{ at: "camera", error: "no live camera shot at this time" }];
+        const cameras = [main];
+        for (const view of split?.inspect?.() || []) {
+          const camera = { fov: view.fov, aspect: view.aspect, near: view.near, far: view.far,
+            position: new T.Vector3().fromArray(view.position), quaternion: new T.Quaternion().fromArray(view.quaternion),
+            scale: new T.Vector3(1, 1, 1), parent: null, matrixWorld: new T.Matrix4(),
+            projectionMatrix: new T.Matrix4().fromArray(view.projection) };
+          cameras.push({ ...cameraEntry(camera, { key: D.keyFor("camera", { role: "split" + view.slot }), role: "split",
+            inView: view.inView, maskBounds: view.maskBounds }), checks: undefined });
+        }
+        return cameras;
+      });
+      read("correctors", "correctors", () => {
+        const bounds = { min: 0.75, max: 1 };
+        const correction = nativeMainLens ? global.MVStudioSplit?.aspectCorrection(liveCamera.aspect) ?? 1 : 1;
+        return [{ key: "corrector:camera:main", correction, aspectInput: liveCamera.aspect, bounds, nativeLens: nativeMainLens,
+          mode: { modeled: false } }];
+      });
+      read("cameraWork", "cameraWork", () => [{ key: "cameraWork:/EntryPoint/Live/Cameras/MainCamera", authoredFov: authoredMainFov }]);
+      read("globals", "globals", () => {
+        const names = Array.isArray(keys.globals) ? keys.globals : defaultGlobals;
+        const found = {}, seen = new Set();
+        const take = (name, value, from, extra) => {
+          if (!(name in found) && Number.isFinite(value)) found[name] = { f: value, from, ...extra };
+        };
+        scene.traverse((node) => {
+          for (const material of node.isMesh ? [node.material].flat() : []) {
+            // A hidden material (a penlight shader with no active clip) keeps stale uniforms.
+            if (!material?.uniforms || seen.has(material) || material.visible === false) continue;
+            seen.add(material);
+            const u = material.uniforms, where = "@" + (material.name || node.name || "material");
+            if (u.uMode && u.uMusicTime && u.uBeat) {
+              take("_MusicTime", u.uMusicTime.value, "uMusicTime" + where);
+              // Penlight mode 0 does not read the beat clock.
+              if (u.uMode.value !== 0) take("_Beat", u.uBeat.value, "uBeat" + where);
+            }
+            if (u._MusicTime) take("_MusicTime", u._MusicTime.value, "_MusicTime" + where);
+            // LiveColoringTrack clip-local time on one material, not a shader
+            // global: the comparator lists it as a note and never scores it.
+            if (u.uSelfTime) take("_SelfTime", u.uSelfTime.value, "uSelfTime" + where + " (per material)", { perMaterial: true });
+          }
+        });
+        const buffer = renderer.getDrawingBufferSize(new T.Vector2());
+        take("_RenderTextureResolution", 0, "renderer.getDrawingBufferSize", { v: [buffer.x, buffer.y, 0, 0] });
+        return Object.fromEntries(names.map((name) => [`global:${name}`, found[name] || null]));
+      });
+      read("renderSettings", "renderSettings", () => ({ modeled: false }));
+      read("lights", "lights", () => ({ modeled: false }));
+      // Frame records carry member identity under "members"; the members part carries bones.
+      read("memberIdentity", sections.has("members") ? "memberIdentity" : "members", () => (project?.performers || []).map((performer) => ({
+        slot: performer.position, memberId: performer.memberId ?? null, costumeId: performer.costumeId ?? null })));
+      read("anchors", "anchors", () => {
+        const anchors = [];
+        for (const record of records) if (record.group === actors) {
+          for (const name of anchorBones) {
+            const node = namedBone(record, name);
+            if (node) anchors.push({ key: D.keyFor("anchor", { slot: record.position, name }), position: D.worldPosition(node, temp) });
+          }
+        }
+        const stageRecord = records.find((record) => record.role === "stage");
+        if (stageRecord) anchors.push({ key: "anchor:stageOrigin", position: D.worldPosition(stageRecord.root, temp) });
+        return anchors;
+      });
+      read("renderers", "renderers", () => selectedRenderers().map((entry) => ({
+        key: entry.key, scope: entry.scope, mesh: entry.mesh, path: entry.path, pathSource: entry.pathSource,
+        class: entry.meshes.some((mesh) => mesh.isSkinnedMesh) ? "SkinnedMeshRenderer" : "MeshRenderer",
+        visible: entry.meshes.some((mesh) => nodeVisible(mesh, entry.record)),
+        culled: entry.record.group === actors && memberCulledAt(entry.record.position, currentTime),
+        materialVisible: slots(entry).every(({ material }) => material?.visible !== false),
+        transform: D.decompose(rendererWorld(entry), temp), axisBillboard: billboardOf(entry) !== null,
+        materials: slots(entry).map(({ material }, slot) => {
+          // The drawn AS/Member variant, as the game reads Material.shaderKeywords per renderer slot.
+          const { kind, keywords } = D.materialProperties(material);
+          return { slot, name: D.materialName(material), editorName: material?.name ?? null, kind, visible: material?.visible !== false,
+            ...(Array.isArray(keywords) ? { keywords } : {}) };
+        }),
+      })));
+      // Uniforms an AnimationTrack curve drives (MVStudioStageMotion material channels): the game applies those
+      // through a MaterialPropertyBlock, which its dump does not read, so the comparator never scores them.
+      function curveDriven(material) {
+        if (!cache.curveTargets) {
+          cache.curveTargets = new Set();
+          for (const record of records) for (const value of record.stageMotion?.curveTargets?.() || []) cache.curveTargets.add(value);
+        }
+        return Object.entries(material?.uniforms || {}).filter(([, holder]) =>
+          cache.curveTargets.has(holder) || (holder?.value !== null && typeof holder?.value === "object" && cache.curveTargets.has(holder.value)))
+          .map(([name]) => name).sort();
+      }
+      read("materials", "materials", () => {
+        const materials = [];
+        for (const entry of selectedRenderers()) {
+          for (const [slot, { material }] of slots(entry).entries()) {
+            if (materials.length >= maxMaterials) { truncated.push("materials"); return materials; }
+            const properties = D.materialProperties(material);
+            // A hidden material draws nothing; its uniforms are the module's current state unless the
+            // module marks them stale (mvHiddenUniforms, e.g. a penlight without clip input).
+            const hidden = material?.visible === false;
+            materials.push({ key: D.keyFor("material", { renderer: entry.key, slot }), renderer: entry.key, slot,
+              name: D.materialName(material), editorName: material?.name ?? null, visible: !hidden,
+              ...(hidden ? { hiddenUniforms: material.userData?.mvHiddenUniforms === "stale" ? "stale" : "current" } : {}),
+              curveDriven: curveDriven(material), ...properties });
+          }
+        }
+        return materials;
+      });
+      read("stageNodes", "stageNodes", () => {
+        const wanted = Array.isArray(filter.stageNodes) ? new Set(filter.stageNodes) : null;
+        const nodes = [];
+        for (const record of records) record.root.traverse((node) => {
+          const tag = node.userData?.mvStageNode;
+          if (typeof tag?.binding !== "string" || !Number.isInteger(tag.path)) return;
+          const key = D.keyFor("stageNode", { binding: tag.binding, path: tag.path });
+          if (wanted && !wanted.has(key)) return;
+          if (nodes.length >= maxNodes) { if (!truncated.includes("stageNodes")) truncated.push("stageNodes"); return; }
+          // An AxisBillboard node (or a child of one) reports the live camera's turn, as renderers do,
+          // and whether the live camera draws that billboard (axisBillboardDrawn, when known).
+          const billboard = billboardOf({ owner: node });
+          const drawn = billboard ? billboardDrawn(billboard) : null;
+          nodes.push({ key, binding: tag.binding, crc: tag.path, name: D.nodeName(node), activeSelf: node.visible,
+            visible: D.effectiveVisible(node), ...D.decompose(rendererWorld({ owner: node }), temp),
+            ...(billboard ? { axisBillboard: true } : {}), ...(typeof drawn === "boolean" ? { axisBillboardDrawn: drawn } : {}) });
+        });
+        return nodes;
+      });
+
+      // Whether the live camera draws an AxisBillboard, so that its OnWillRenderObject (0x27bf944) turned it toward
+      // that camera in the frame the dump shows: the node is shown, has a renderer, and its AxisBillboard.Start
+      // bounds (0x27bf774: the mesh bounds widened to (max(sx, sz), sy, max(sx, sz)) about their center) under the
+      // reported turn meet the live camera's frustum (Unity culls a renderer by its world bounds). null (unknown)
+      // while a split clip is active, since the sub cameras turn it too and the frame's last draw is not modelled,
+      // and for billboards the editor turns by another rule (the member shaft). The camera culling mask is not
+      // checked: the 12035 cones are on layer 14, which the main camera's mask 0x0C0BC013 draws (dump4 renderer
+      // and camera records); other stages are assumed alike (unevidenced).
+      function billboardDrawn(node) {
+        cache.billboardDrawn ||= new Map();
+        if (cache.billboardDrawn.has(node)) return cache.billboardDrawn.get(node);
+        let drawn = null;
+        const tagged = records.some((record) => record.axisBillboard?.nodes?.includes(node));
+        if (tagged && activeSplitGazeCameras === null) {
+          drawn = false;
+          // The GameObject's own renderer: the node itself, or the child mesh node the exporter gives it (same name).
+          const name = D.nodeName(node);
+          const meshes = rendererEntries().filter((entry) => entry.owner === node ||
+            (entry.owner.parent === node && D.nodeName(entry.owner) === name)).flatMap((entry) => entry.meshes);
+          if (D.effectiveVisible(node) && meshes.length) {
+            const box = new T.Box3(), part = new T.Box3(), local = new T.Matrix4(), inverse = new T.Matrix4().copy(node.matrixWorld).invert();
+            for (const mesh of meshes) {
+              if (!mesh.geometry) continue;
+              if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+              part.copy(mesh.geometry.boundingBox);
+              if (mesh !== node) part.applyMatrix4(local.multiplyMatrices(inverse, mesh.matrixWorld));
+              box.union(part);
+            }
+            if (!box.isEmpty()) {
+              const center = box.getCenter(new T.Vector3()), size = box.getSize(new T.Vector3()), side = Math.max(size.x, size.z);
+              box.setFromCenterAndSize(center, size.set(side, size.y, side)).applyMatrix4(rendererWorld({ owner: node }));
+              const view = new T.Matrix4().fromArray(viewOf(liveCamera).view);
+              drawn = new T.Frustum().setFromProjectionMatrix(new T.Matrix4().multiplyMatrices(liveCamera.projectionMatrix, view))
+                .intersectsBox(box);
+            }
+          }
+        }
+        cache.billboardDrawn.set(node, drawn);
+        return drawn;
+      }
+      read("members", "members", () => {
+        const wanted = Array.isArray(filter.bones) ? new Set(filter.bones) : null;
+        const result = [];
+        for (const record of records) if (record.group === actors) {
+          const bones = [];
+          for (const [path, node] of boneIndex(record)) {
+            const key = D.keyFor("bone", { slot: record.position, path });
+            if (wanted && !wanted.has(key)) continue;
+            if (bones.length >= maxBones) { truncated.push("members"); break; }
+            bones.push({ key, ...D.decompose(node.matrixWorld, temp),
+              localPosition: node.position.toArray(), localRotation: node.quaternion.toArray() });
+          }
+          const morphs = [];
+          for (const entry of rendererEntries()) if (entry.record === record) {
+            for (const mesh of entry.meshes) {
+              const dictionary = mesh.morphTargetDictionary, influences = mesh.morphTargetInfluences;
+              if (!dictionary || !influences) continue;
+              const weights = {};
+              for (const [name, index] of Object.entries(dictionary)) {
+                if (influences[index] && Object.keys(weights).length < 24) weights[name] = influences[index];
+              }
+              if (Object.keys(weights).length) morphs.push({ rendererKey: entry.key, unit: "influence01", weights });
+            }
+          }
+          result.push({ slot: record.position, bones, morphs, physics: Boolean(record.physics) });
+        }
+        return result;
+      });
+      read("springs", "springs", () => {
+        const result = [];
+        for (const record of records) if (record.group === actors && record.physics) {
+          const bones = [];
+          for (const [path, node] of boneIndex(record)) {
+            if (!/_Dyna$/.test(path) || bones.length >= 64) continue;
+            bones.push({ key: D.keyFor("bone", { slot: record.position, path }), localRotation: node.quaternion.toArray(),
+              rotation: D.decompose(node.matrixWorld, temp).rotation });
+          }
+          result.push({ managerKey: `springs:member${record.position}`, bones });
+        }
+        return result.length ? result : { modeled: false };
+      });
+      read("post", "post", () => ({
+        bloom: global.MVStudioPost?.sample?.(project, currentTime) ?? null,
+        dof: global.MVStudioDofFocus?.sample?.(project, currentTime, liveCamera.fov, focusReadOnly.distance, focusReadOnly.options) ?? null,
+        flare: global.MVStudioFlare?.sample?.(project, currentTime) ?? null,
+        applied: settings.posteffect === true, enablePostEffect: settings.posteffect === true,
+      }));
+      read("quality", "quality", () => ({ mode: project?.quality?.mode ?? null, values: { ...settings } }));
+      read("tracks", "tracks", () => (project?.tracks || []).filter((track) => track.nativeClass && track.binding).map((track) => ({
+        key: D.keyFor("track", track), label: track.label ?? null, nativeClass: track.nativeClass, binding: track.binding,
+        kind: track.kind ?? null, muted: Boolean(track.muted),
+        active: track.events.flatMap((event, clipIndex) => {
+          const inside = currentTime >= event.start && currentTime < event.start + event.duration;
+          const weight = event.values && global.MVStudioLighting?.nativeWeight ? global.MVStudioLighting.nativeWeight(event, currentTime) : null;
+          return inside || weight > 0 ? [{ clipIndex, start: event.start, duration: event.duration, weight }] : [];
+        }),
+      })));
+      read("census", "census", () => {
+        const nodes = [];
+        const push = (key, kind, extra) => {
+          if (nodes.length < maxNodes) nodes.push({ key, kind, ...extra }); else if (!truncated.includes("census")) truncated.push("census");
+        };
+        for (const entry of rendererEntries()) push(entry.key, "renderer", { scope: entry.scope, mesh: entry.mesh, path: entry.path });
+        for (const record of records) record.root.traverse((node) => {
+          const tag = node.userData?.mvStageNode;
+          if (typeof tag?.binding === "string" && Number.isInteger(tag.path)) push(D.keyFor("stageNode", { binding: tag.binding, path: tag.path }), "stageNode");
+        });
+        for (const record of records) if (record.group === actors) {
+          for (const path of boneIndex(record).keys()) push(D.keyFor("bone", { slot: record.position, path }), "bone");
+        }
+        return { nodes };
+      });
+      read("particles", "particles", () => stageParticleSystems?.inspect() ?? { modeled: false });
+      for (const name of ["lightingRefs", "fovmodNative", "propertyBlocks"]) read(name, name, () => ({ modeled: false }));
+
+      const nonFinite = [];
+      const result = D.finalize(out, nonFinite);
+      result.nonFinite = nonFinite;
+      result.errors = errors;
+      result.truncatedSections = truncated;
+      result.cost = { elapsedMs: clock() - started };
+      return result;
+    }
+
+    // ---- Camera editor (mv-studio-camera-keys.js): the free view and the game camera ----
+    // A short CameraHelper of a scratch copy of the game camera, added only around the
+    // free camera's render in draw(); the asset dump and inspect() never see it.
+    let gameCameraHelper = null, gameHelperEnabled = false;
+    const helperCamera = new T.PerspectiveCamera(), alignTarget = new T.Vector3();
+    function showGameCameraHelper() {
+      if (!gameHelperEnabled || typeof T.CameraHelper !== "function") return null;
+      helperCamera.position.copy(liveCamera.position);
+      helperCamera.quaternion.copy(liveCamera.quaternion);
+      helperCamera.fov = liveCamera.fov;
+      helperCamera.aspect = liveCamera.aspect;
+      helperCamera.near = .1;
+      helperCamera.far = Math.max(.6, Math.min(4, editorCamera.position.distanceTo(liveCamera.position) * .3));
+      helperCamera.updateProjectionMatrix();
+      helperCamera.updateMatrixWorld(true);
+      if (!gameCameraHelper) gameCameraHelper = new T.CameraHelper(helperCamera);
+      gameCameraHelper.update();
+      scene.add(gameCameraHelper);
+      gameCameraHelper.updateMatrixWorld(true);
+      return gameCameraHelper;
+    }
+
+    // The LiveCameraOffset Y (rig up, metres) the preview adds at `time` to a camera track
+    // with `binding` (applyCameraOffsets).
+    function cameraOffsetAt(time, binding) {
+      const weight = global.ViewerMotionTimeline?.weight, clips = cameraOffsets.get(binding);
+      if (!weight || !clips || !Number.isFinite(time)) return 0;
+      let offset = 0;
+      for (const clip of clips) {
+        if (time >= clip.start && time < clip.start + clip.duration) offset += clip.offset * weight(clip, time);
+      }
+      return offset;
+    }
+
+    // ---- Free camera views (mv-studio-free-camera.js): presets around a target ----
+    // Preview only: these move the free (orbit) camera and its lens, never the game camera,
+    // the project or a timeline. Views are yaws on Unity's stage axes (three space mirrors x):
+    // front is the audience side (+Z, the side members face), right the members' right (+X).
+    const FREE_VIEW_YAW = Object.freeze({ front: 0, right: 90, back: 180, left: -90 });
+    const FREE_DISTANCE = [.05, 900], FREE_FOV = [1, 170];
+    // The stage centre: the stage origin at about a member's chest height.
+    const FREE_STAGE_HEIGHT = 1;
+    const freeView = { target: "stage", follow: false, last: new T.Vector3(), listeners: new Set() };
+    const freePoint = new T.Vector3(), freeOffset = new T.Vector3(), freeHips = new T.Vector3(), freeBounds = new T.Box3();
+    const freeClamp = (value, [min, max]) => Math.min(max, Math.max(min, value));
+
+    function freeMember(target) {
+      const slot = typeof target === "string" && /^member:\d+$/.test(target) ? Number(target.slice(7)) : null;
+      return slot === null ? null : records.find((record) => record.group === actors && record.position === slot) || null;
+    }
+
+    // A member's chest: halfway between its neck and hips (BodyPartType 4, 3), else its head,
+    // neck, hips or face, else the middle of its bounds.
+    function freeTargetPoint(target, out) {
+      if (target === "stage") return out.set(0, FREE_STAGE_HEIGHT, 0);
+      const record = freeMember(target);
+      if (!record) return null;
+      if (focusPoint(record, 4, out) && focusPoint(record, 3, freeHips)) return out.add(freeHips).multiplyScalar(.5);
+      for (const part of [0, 1, 4, 3, 2]) if (focusPoint(record, part, out)) return out;
+      freeBounds.setFromObject(record.root);
+      return freeBounds.isEmpty() ? null : freeBounds.getCenter(out);
+    }
+
+    function notifyFreeView() {
+      for (const listener of freeView.listeners) {
+        try { listener(); } catch (error) { console.error(error); }
+      }
+    }
+
+    // Each evaluated frame (seek or playback), before it is drawn: a followed member carries the
+    // free camera and its orbit target by the distance it moved, so the view keeps its offset.
+    function followFreeView() {
+      if (!freeView.follow || freeView.target === "stage") return;
+      const point = freeTargetPoint(freeView.target, freePoint);
+      if (!point) return;
+      freeOffset.copy(point).sub(freeView.last);
+      freeView.last.copy(point);
+      if (freeOffset.lengthSq() === 0) return;
+      controls.target.add(freeOffset);
+      editorCamera.position.add(freeOffset);
+      editorCamera.updateMatrixWorld();
+    }
+
+    const freeViewApi = Object.freeze({
+      // [{ id: "stage" }, { id: "member:<slot>", slot, performer }] of the loaded members.
+      targets() {
+        return [{ id: "stage", kind: "stage" }, ...records.filter((record) => record.group === actors && Number.isInteger(record.position))
+          .sort((a, b) => a.position - b.position)
+          .map((record) => ({ id: `member:${record.position}`, kind: "member", slot: record.position, performer: record.id ?? null }))];
+      },
+      state() {
+        return { target: freeView.target, follow: freeView.follow, mode: useLive ? "live" : "orbit",
+          distance: editorCamera.position.distanceTo(controls.target), fov: editorCamera.fov, orbitTarget: controls.target.toArray() };
+      },
+      // The target's point now (three space), or null when it is not loaded.
+      targetPoint(id = freeView.target) {
+        const point = freeTargetPoint(id, new T.Vector3());
+        return point ? point.toArray() : null;
+      },
+      // A new target; recentre moves the orbit target onto it and carries the camera along
+      // (same offset, same direction), so the view turns around it from where it was. The stage
+      // centre has nothing to follow: it turns Follow member off.
+      setTarget(id, { recentre = true } = {}) {
+        const point = freeTargetPoint(id, freePoint);
+        if (!point) return false;
+        freeView.target = id;
+        if (id === "stage") freeView.follow = false;
+        freeView.last.copy(point);
+        if (recentre) {
+          freeOffset.copy(point).sub(controls.target);
+          controls.target.copy(point);
+          editorCamera.position.add(freeOffset);
+          controls.update();
+        }
+        notifyFreeView();
+        return true;
+      },
+      setFollow(enabled) {
+        freeView.follow = enabled === true;
+        if (freeView.follow && !freeTargetPoint(freeView.target, freeView.last)) freeView.last.copy(controls.target);
+        notifyFreeView();
+        return freeView.follow;
+      },
+      // Orbits the camera around the target to a preset yaw, keeping its distance, its height
+      // angle and its FOV; the target ends up at the screen centre.
+      orbit(view) {
+        const yaw = FREE_VIEW_YAW[view];
+        const point = yaw === undefined ? null : freeTargetPoint(freeView.target, freePoint);
+        if (!point) return false;
+        freeOffset.copy(editorCamera.position).sub(controls.target);
+        const distance = freeClamp(freeOffset.length() || 4, FREE_DISTANCE);
+        const elevation = Math.asin(Math.min(1, Math.max(-1, freeOffset.y / (freeOffset.length() || 1))));
+        const turn = yaw * Math.PI / 180, flat = Math.cos(elevation);
+        controls.target.copy(point);
+        freeView.last.copy(point);
+        editorCamera.position.set(-Math.sin(turn) * flat, Math.sin(elevation), Math.cos(turn) * flat).multiplyScalar(distance).add(point);
+        controls.update();
+        return true;
+      },
+      // Dolly: the camera moves along its view to `metres` from the orbit target.
+      setDistance(metres) {
+        if (!Number.isFinite(metres)) return false;
+        freeOffset.copy(editorCamera.position).sub(controls.target);
+        if (freeOffset.lengthSq() < 1e-12) freeOffset.set(0, 0, 1);
+        editorCamera.position.copy(controls.target).addScaledVector(freeOffset.normalize(), freeClamp(metres, FREE_DISTANCE));
+        controls.update();
+        return true;
+      },
+      // The free camera's vertical FOV (°); its position and direction stay.
+      setFov(degrees) {
+        if (!Number.isFinite(degrees)) return false;
+        editorCamera.fov = freeClamp(degrees, FREE_FOV);
+        editorCamera.updateProjectionMatrix();
+        requestDraw();
+        notifyFreeView();
+        return true;
+      },
+      // A finished free-camera change made outside a drag: listeners of onViewChange (auto key) run.
+      commit() { controls.dispatchEvent({ type: "end" }); },
+      // listener() after any change of the free view (drags, wheel, presets, lens); returns the remover.
+      onChange(listener) {
+        if (typeof listener !== "function") return () => {};
+        freeView.listeners.add(listener);
+        return () => freeView.listeners.delete(listener);
+      },
+    });
+
     const observer = global.ResizeObserver ? new global.ResizeObserver(() => resize(false)) : null;
     if (observer) observer.observe(mount);
     controls.addEventListener("change", requestDraw);
+    controls.addEventListener("change", notifyFreeView);
     resize();
     return {
       load, prepareStage, cancelStagePreparation, seek, playbackFrame, setPlaying, resize,
       flushSeekDraw() { if (seekDrawPending) draw(); },
-      setCamera(mode) { useLive = mode !== "orbit"; draw(); },
+      setCamera(mode) { useLive = mode !== "orbit"; controls.enabled = !(useLive && hasShot); draw(); },
+      setScreenFade(enabled) { screenFadeEnabled = enabled !== false; requestDraw(); },
+      // Fixed-step captures play on slow timestamps: with the adaptive preview off, the slow-frame
+      // downscale is undone and not applied again. Playback, the physics clock and the shaft
+      // damping clock are left as they are.
+      setAdaptivePreview(enabled) {
+        adaptivePreview = enabled !== false;
+        slowFrames = 0;
+        if (!adaptivePreview && previewScale !== 1) {
+          previewScale = 1;
+          viewportDirty = true;
+        }
+      },
+      // The player's anti-aliasing option (default off): with it, Max and High 3D draw at the
+      // screen height (nativeRenderHeight).
+      setAntiAliasing(enabled) {
+        const value = enabled === true;
+        if (value === antiAliasing) return;
+        antiAliasing = value;
+        viewportDirty = true;
+        resize();
+      },
+      // A game run's clock for the original particle systems: [directorTime, Time.time] of its
+      // rendered frames (a runtime dump's frame clock or record clocks), or null for the
+      // director's clock, and optionally every rendered frame of the run in frame order,
+      // [directorTime, Time.deltaTime, frameCount] (a runtime dump's complete frame clock): the
+      // systems then step each of the run's own frames (MVStudioParticleSystems.frameGrid).
+      // Returns the number of samples used (0: director's clock).
+      setGameClock(samples, frames = null) {
+        const particles = global.MVStudioParticleSystems;
+        particleClock = Array.isArray(samples) ? particles?.gameClock?.(samples) ?? null : null;
+        particleFrames = Array.isArray(frames) ? particles?.frameGrid?.(frames) ?? null : null;
+        requestDraw();
+        return particleClock ? particleClock.samples : 0;
+      },
+      // The number of device frames the original particle systems step on (setGameClock), 0 without.
+      gameFrames() {
+        return particleFrames ? particleFrames.length : 0;
+      },
+      // Which of several game frames at one director time a seek shows (frameCount, the
+      // song-end hold), or null for the last one (MVStudioParticleSystems.frameGrid pin).
+      setGameFrame(frameCount = null) {
+        if (particleFrames) particleFrames.pin = Number.isInteger(frameCount) ? frameCount : null;
+        return particleFrames ? particleFrames.pin : null;
+      },
+      // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
+      setPhysicsTiming(value) {
+        physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
+        resetPhysics("physics-timing");
+        return physicsTiming && { ...physicsTiming, rate: physicsRate() };
+      },
+      // The next game frame's LiveCoreMemberManager.Update on its own, for a runtime value
+      // dump: the springs step once on the pose the last evaluated frame ended with and
+      // nothing else runs, as a reader between the Update scripts and that frame's deferred
+      // director evaluation (LiveTimeSynchronizer.SyncMusicPlayingTime sets the time, then
+      // DeferredEvaluate) sees the members. Playing frames only; returns the step taken
+      // (0: none, e.g. paused or the same-frame order, whose job runs after the timeline).
+      // The next seek or playback frame continues as usual.
+      stepPhysicsUpdate(frameTimestamp) {
+        if (disposed || !playing || !visible || !records.some((record) => record.physics)) return 0;
+        const physicsStep = physicsClock?.step(frameTimestamp, physicsRate()) || 0;
+        for (const record of records) record.physics?.frame?.("update", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
+        if (scene.autoUpdate) scene.updateMatrixWorld();
+        return physicsTiming?.order === "same-frame" ? 0 : physicsStep;
+      },
       frameAll,
+      // Camera editor: the free (orbit) view in three.js space, its mode, lens and orbit target.
+      getViewPose() {
+        editorCamera.updateMatrixWorld();
+        return { mode: useLive ? "live" : "orbit", position: editorCamera.position.toArray(), quaternion: editorCamera.quaternion.toArray(),
+          fov: editorCamera.fov, aspect: editorCamera.aspect, target: controls.target.toArray() };
+      },
+      // Puts the free camera at the game camera's pose and lens (its orbit target ahead of it).
+      alignViewToGame() {
+        if (!hasShot) return false;
+        const distance = Math.max(.5, editorCamera.position.distanceTo(controls.target));
+        editorCamera.position.copy(liveCamera.position);
+        editorCamera.quaternion.copy(liveCamera.quaternion);
+        if (editorCamera.fov !== liveCamera.fov) { editorCamera.fov = liveCamera.fov; editorCamera.updateProjectionMatrix(); }
+        controls.target.copy(alignTarget.set(0, 0, -1).applyQuaternion(liveCamera.quaternion).multiplyScalar(distance).add(liveCamera.position));
+        editorCamera.updateMatrixWorld();
+        requestDraw();
+        notifyFreeView();
+        return true;
+      },
+      cameraOffsetAt(time = currentTime, binding) { return cameraOffsetAt(time, binding); },
+      // The game camera's lens: its aspect, the vertical FOV shown, the authored FOV and the correction.
+      gameCameraLens() {
+        return { aspect: liveCamera.aspect, fov: liveCamera.fov, authoredFov: authoredMainFov, nativeLens: nativeMainLens,
+          correction: nativeMainLens ? global.MVStudioSplit?.aspectCorrection(liveCamera.aspect) ?? 1 : 1 };
+      },
+      // listener() after each finished free-camera drag (OrbitControls "end"); returns the remover.
+      onViewChange(listener) {
+        if (typeof listener !== "function") return () => {};
+        const handler = () => listener();
+        controls.addEventListener("end", handler);
+        return () => controls.removeEventListener("end", handler);
+      },
+      setGameCameraHelper(enabled) {
+        const value = enabled === true;
+        if (value === gameHelperEnabled) return;
+        gameHelperEnabled = value;
+        if (!useLive) requestDraw();
+      },
+      // Free camera views (mv-studio-free-camera.js): target, preset views, distance and FOV.
+      freeView: freeViewApi,
+      // Read-only state of the last evaluated frame for frame comparisons.
+      inspect() {
+        const live = useLive && hasShot, camera = live ? liveCamera : editorCamera;
+        camera.updateMatrixWorld();
+        const { width, height } = renderer.domElement;
+        return {
+          time: currentTime, cameraMode: useLive ? "live" : "orbit", liveShot: live,
+          cameraEvent: live && liveCameraEvent ? { ...liveCameraEvent } : null,
+          splitCameras: activeSplitGazeCameras ? Object.keys(activeSplitGazeCameras).length : 0,
+          camera: {
+            position: camera.getWorldPosition(new T.Vector3()).toArray(),
+            quaternion: camera.getWorldQuaternion(new T.Quaternion()).toArray(),
+            fov: camera.fov, aspect: camera.aspect, near: camera.near, far: camera.far,
+            projection: Array.from(camera.projectionMatrix.elements),
+            authoredFov: live ? authoredMainFov : null, nativeLens: live ? nativeMainLens : null,
+            aspectCorrection: live ? (nativeMainLens ? global.MVStudioSplit?.aspectCorrection(camera.aspect) ?? 1 : 1) : null,
+          },
+          canvas: { width, height, pixelRatio: renderer.getPixelRatio() },
+          renderHeight, previewScale, adaptivePreview, playing, antiAliasing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
+          constraints: records.filter((record) => record.constraints)
+            .map((record) => ({ slot: record.position, ...record.constraints.getState() })),
+          controlPrefabs: stageControlPrefabs?.inspect() ?? null,
+        };
+      },
+      assetDump,
+      // Follow camera (mv-studio-camera-follow.js): member targets and their time-sliced path.
+      memberTargets, sampleMemberPath,
       setVisible(value) {
         const changed = visible !== Boolean(value);
         visible = Boolean(value);
@@ -1672,6 +3089,11 @@
         clear();
         split?.dispose();
         post?.dispose();
+        screenFade?.dispose();
+        if (mixers) {
+          mixers.reset();
+          global.MVStudioMixer?.release(mixers);
+        }
         cameraDepth?.dispose();
         release(grid);
         controls.dispose();
@@ -1681,5 +3103,21 @@
     };
   }
 
-  global.MVStudioScene = { create };
+  // LiveCoreCameraManager.Update3DCameraRenderTextures (GL 3.12.0, 0x2f61b18): the 3D cameras
+  // render at RenderingResolution (1080 when it is below 1), never above Screen.height. When
+  // needAntiAliasing (field 0x72) is set, the height is raised to Mathf.Max(height, Screen.height).
+  // Initialize (0x2f61710) sets needAntiAliasing = antiAliasing && Quality < 21; its only caller
+  // (<PostprocessInitializeAsync>d__9) passes GameSettingsDM.GetAntiAliasingMode(), the player's
+  // option, which is false unless ASLocalStorage holds AntiAliasingMode. The same flag selects
+  // MSAA (MSAAUtility.GetMSAALevel). The render texture width is Screen.width / Screen.height *
+  // height, and _RenderTextureResolution is (width, height). Max 3D (1080) on a 1280x720 screen
+  // therefore draws 1280x720, Performance 3D (640) 1138x640; on a 1440-line screen Max 3D draws
+  // 1080 lines, or 1440 with anti-aliasing on.
+  function nativeRenderHeight(renderingResolution, screenHeight, qualityMode, antiAliasing = false) {
+    let height = renderingResolution >= 1 ? Math.min(renderingResolution, screenHeight) : 1080;
+    if (antiAliasing === true && Number.isFinite(qualityMode) && qualityMode < 21) height = Math.max(height, screenHeight);
+    return height;
+  }
+
+  global.MVStudioScene = { create, nativeRenderHeight, activeCameraEvent, cameraLocalTime };
 }(window));

@@ -32,6 +32,9 @@ MAX_SESSIONS = 3
 SESSION_SECONDS = 30 * 60
 MAX_EDITS = 1024
 MAX_STATE_BYTES = 512 * 1024
+# A save of a reopened Rina scene keeps the scene beside its originals copy
+# (viewer_scene_roles.remember_saved_originals).
+SCENE_BINDING = "viewer-scene.json"
 MAX_VERTICES = 250_000
 MAX_MORPH_VERTICES = 500_000
 MAX_VALUE = 1_000_000
@@ -459,6 +462,8 @@ def mod_source_context(token):
             "outlines": copy.deepcopy(session.get("outlines", {})),
             "textures": copy.deepcopy(session.get("textures", {})),
             "outline_only_sources": sorted(session.get("outlineOnlySources", set())),
+            # The other Rina variant's own rows of a reopened scene (viewer_scene_roles.hold_counterpart).
+            "held_counterpart": copy.deepcopy(session.get("heldCounterpart", [])),
             "nodes": [{key: copy.deepcopy(target[key]) for key in
                        ("node", "name", "sourceIndex", "transformId", "serializedFile", "baseline", "authored", "methods")}
                       for target in session["targets"].values()],
@@ -1005,6 +1010,83 @@ def accessory_preview(token, state):
         session["busy"].release()
 
 
+def held_outlines(session, index=None):
+    """Face outline rows a masked Rina view carries but cannot edit."""
+    rows = session.get("heldFaceOutlines") or []
+    return [row for row in rows if index is None or row["id"].split(":", 1)[0] == str(index)]
+
+
+def with_held(session, state):
+    """``state`` with the held face outline rows, as every saved recipe has it."""
+    held = held_outlines(session)
+    if not held:
+        return state
+    result = copy.deepcopy(state)
+    result["outlines"] = sorted(result.get("outlines", []) + copy.deepcopy(held), key=lambda row: row["id"])
+    return result
+
+
+# Why a restore released held face rows: the recipe's own rows for that face
+# are outlines, textures, or other (Node/physics) edits.
+HELD_RELEASED = "This recipe sets the face outlines itself; {count} face outline edits made in the Normal face view were released."
+HELD_RELEASED_ONE = "This recipe sets the face outlines itself; 1 face outline edit made in the Normal face view was released."
+HELD_RELEASED_TEXTURES = "This recipe edits the face textures itself; {count} face outline edits made in the Normal face view were released."
+HELD_RELEASED_TEXTURES_ONE = "This recipe edits the face textures itself; 1 face outline edit made in the Normal face view was released."
+HELD_RELEASED_EDITS = "This recipe edits the face itself; {count} face outline edits made in the Normal face view were released."
+HELD_RELEASED_EDITS_ONE = "This recipe edits the face itself; 1 face outline edit made in the Normal face view was released."
+_RELEASE_NOTICES = {"outlines": (HELD_RELEASED_ONE, HELD_RELEASED), "textures": (HELD_RELEASED_TEXTURES_ONE, HELD_RELEASED_TEXTURES),
+                    "edits": (HELD_RELEASED_EDITS_ONE, HELD_RELEASED_EDITS)}
+
+
+def held_summary(session):
+    """The held face rows a masked Rina view shows: count, mesh names, rows."""
+    rows = held_outlines(session)
+    names = {row["id"]: row.get("name") for row in (session.get("heldFaceProof") or {}).get("meshes", [])}
+    return {"count": len(rows), "meshes": sorted({names.get(row["id"]) or row["id"] for row in rows}),
+            "rows": copy.deepcopy(rows)}
+
+
+def held_snapshot(token):
+    """The held face rows of a session, before a restore (held_response)."""
+    return copy.deepcopy(held_outlines(_session(token)))
+
+
+def held_response(token, before):
+    """Restore-response fields: the held rows now, and a notice for released rows.
+
+    ``before`` is held_snapshot() taken before the restore. A row is released
+    when it is no longer held with the same values.
+    """
+    session = _session(token)
+    released = [row for row in before if row not in held_outlines(session)]
+    result = {"heldFaceOutlines": held_summary(session)}
+    if released:
+        one, many = _RELEASE_NOTICES.get(session.get("heldReleaseCause"), _RELEASE_NOTICES["outlines"])
+        result["notice"] = ({"text": one, "values": {}} if len(released) == 1 else
+                            {"text": many, "values": {"count": len(released)}})
+    return result
+
+
+def _authored_sources(session, state):
+    """Each source index a restored state's own rows set -> the kinds of rows
+    ("edits" for Node rows, "physics", "outlines", "textures")."""
+    kinds = {}
+    for row in state.get("edits", []) if isinstance(state.get("edits"), list) else []:
+        target = session["targets"].get(row.get("node")) if isinstance(row, dict) else None
+        if target is not None:
+            kinds.setdefault(target["sourceIndex"], set()).add("edits")
+    for field in ("physics", "outlines"):
+        for row in state.get(field, []) if isinstance(state.get(field), list) else []:
+            index = row.get("id", "").split(":", 1)[0] if isinstance(row, dict) and isinstance(row.get("id"), str) else ""
+            if index.isdigit():
+                kinds.setdefault(int(index), set()).add(field)
+    for row in state.get("textures", []) if isinstance(state.get("textures"), list) else []:
+        source = row.get("texture", {}).get("source") if isinstance(row, dict) and isinstance(row.get("texture"), dict) else None
+        if type(source) is int:
+            kinds.setdefault(source, set()).add("textures")
+    return kinds
+
+
 def _source_signature(session):
     return [{"name": s["name"], "sha256": s["sha256"], "container": s["container"], "member": s["member"]}
             for s in session["sources"]]
@@ -1084,7 +1166,45 @@ def restore(token, recipe, *, allow_empty=False):
             row["node"] = mapping[row["node"]]
     except (TypeError, KeyError):
         _fail("The recipe contains an unbound body node.")
-    return validate_state(token, state, allow_empty=allow_empty)
+    held, proof = [], None
+    authored = _authored_sources(session, state)
+    if isinstance(state.get("outlines"), list) and state["outlines"]:
+        # A masked Rina view lists its face meshes but cannot edit them. Rows
+        # for that face which the costume's unmasked body proves are held and
+        # written unchanged by every save; any other row is validated below.
+        from . import viewer_scene_roles
+        try:
+            state["outlines"], held, proof = viewer_scene_roles.split_held_face_outlines(session, state["outlines"])
+        except ValueError as error:
+            _fail(str(error))
+    previous = held_outlines(session)
+    kinds = set().union(*(authored.get(int(row["id"].split(":", 1)[0]), set()) for row in previous))
+    if previous and not held and not kinds:
+        # The view cannot edit these face rows, so a recipe that sets nothing
+        # for their face (no outline, texture or other row of that source)
+        # keeps them held. A recipe with rows for that face sets the face
+        # itself, outline rows included, and releases them (held_response
+        # names which kind of rows did).
+        held, proof = copy.deepcopy(previous), session.get("heldFaceProof")
+    cause = "outlines" if held or "outlines" in kinds else "textures" if "textures" in kinds else "edits"
+    restored = validate_state(token, state, allow_empty=allow_empty or bool(held))
+    # Only a recipe that validated replaces what is held.
+    session["heldFaceOutlines"], session["heldFaceProof"], session["heldReleaseCause"] = held, proof, cause
+    return restored
+
+
+def write_companion_hint(directory, body, companions):
+    """Name a saved body's face companions beside it for automatic face completion.
+
+    ``body`` and each companion are (file name in ``directory``, sha256 of its
+    bytes): model_faces reads this file (COMPANION_HINT) and completes exactly
+    these faces first, after checking every name and digest again.
+    """
+    import unicodedata
+    from .model_faces import COMPANION_HINT
+    hint = {"version": 1, "body": {"file": unicodedata.normalize("NFC", body[0]), "sha256": body[1]},
+            "companions": [{"file": name, "sha256": digest} for name, digest in companions]}
+    (Path(directory) / COMPANION_HINT).write_text(json.dumps(hint, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _safe_root(directory):
@@ -1118,9 +1238,17 @@ def edit_source_state(session, index, state):
     if state.get("outlines"):
         from . import model_outlines
         blob = model_outlines.apply_edits(blob, index, state["outlines"], session["outlines"], original_raw=source["raw"])
+    held = held_outlines(session, index)
+    if held:
+        # Proven by the costume's unmasked body (viewer_scene_roles), with the
+        # same writer: the face gets exactly the bytes that view would save.
+        from . import model_outlines
+        blob = model_outlines.apply_edits(blob, index, held, session["heldFaceProof"], original_raw=source["raw"])
     if state.get("textures"):
         from . import viewer_texture_tools
-        blob, texture_changes = viewer_texture_tools.apply_edits(blob, index, state["textures"], session["textures"])
+        cheek = (viewer_texture_tools.cheek_payload(session)
+                 if any(row.get("blush") is not None and row["texture"]["source"] == index for row in state["textures"]) else None)
+        blob, texture_changes = viewer_texture_tools.apply_edits(blob, index, state["textures"], session["textures"], cheek=cheek)
         session.setdefault("textureWriteSummary", {})[index] = texture_changes
     return blob, meshes
 
@@ -1151,6 +1279,7 @@ def export(token, state, output_dir, *, log=lambda message: None, allow_empty=Fa
             physics = [row for row in state.get("physics", []) if row["id"].split(":", 1)[0] == str(index)]
             outlines = [row for row in state.get("outlines", []) if row["id"].split(":", 1)[0] == str(index)]
             textures = [row for row in state.get("textures", []) if row["texture"]["source"] == index]
+            outlines += held_outlines(session, index)
             if not selected and not physics and not outlines and not textures and "accessoryUnclip" not in state:
                 continue
             log("Saving body edits: " + source["name"])
@@ -1158,13 +1287,16 @@ def export(token, state, output_dir, *, log=lambda message: None, allow_empty=Fa
             replacements[(source["container"], source["member"])] = blob
             summaries.append({"source": index, "nodes": len(selected), "meshes": meshes, "physics": len(physics), "outlines": len(outlines),
                               "textures": len(textures), "textureEdits": copy.deepcopy(session.get("textureWriteSummary", {}).get(index, []))})
-        recipe = _recipe(session, state)
+        recipe = _recipe(session, with_held(session, state))
         root = _safe_root(output_dir)
         temporary = Path(tempfile.mkdtemp(prefix=".viewer-edit-", dir=root))
         originals_dir, models_dir = temporary / "originals", temporary / "models"
         originals_dir.mkdir(); models_dir.mkdir()
         output_names, preview_names, original_names = [], [], []
-        used = set()
+        from .model_faces import COMPANION_HINT
+        # originals/ also holds the saved face hint and a reopened scene's
+        # binding (viewer_scene_roles.SCENE_BINDING); no original takes their names.
+        used = {COMPANION_HINT.casefold(), SCENE_BINDING.casefold()}
         for index, container in enumerate(session["containers"]):
             original_name = container["name"]
             name, ordinal = original_name, 1
@@ -1204,6 +1336,19 @@ def export(token, state, output_dir, *, log=lambda message: None, allow_empty=Fa
             if changed:
                 output_names.append(name)
         (temporary / "recipe.json").write_text(json.dumps(recipe, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        # Re-edit reopens the selected originals only. A face the preview added
+        # automatically (outline-only source) is completed again beside them:
+        # name it with its body (model_faces COMPANION_HINT) so completion takes
+        # exactly this saved face first, not another face with the same names.
+        # Only a face whose outlines the body proves editable (the face the
+        # body names) is named; a fallback face of the character is not pinned.
+        automatic = session.get("outlineOnlySources", set())
+        selected = sorted({source["container"] for index, source in enumerate(session["sources"]) if index not in automatic})
+        proven = {row["sourceIndex"] for row in session.get("outlines", {}).get("meshes", [])}
+        faces = sorted({session["sources"][index]["container"] for index in automatic & proven} - set(selected))
+        if len(selected) == 1 and 0 < len(faces) <= 4:
+            write_companion_hint(originals_dir, (original_names[selected[0]], session["containers"][selected[0]]["sha256"]),
+                                 [(original_names[index], session["containers"][index]["sha256"]) for index in faces])
         # Detect another process changing the originals during a long save too.
         for original in session["containers"]:
             if _sha(_read(original["path"])) != original["sha256"]:
@@ -1213,7 +1358,13 @@ def export(token, state, output_dir, *, log=lambda message: None, allow_empty=Fa
             _fail("The output folder already exists. Save again to create a new copy.")
         temporary.rename(final); temporary = None
         recipe_path = str(final / "recipe.json")
+        # ``selected``: the face found again beside them is that face companion,
+        # not a second selected model (which a Mod ZIP refuses).
         return {"recipe": recipe, "recipe_path": recipe_path,
+                "reedit_paths": [str(final / "originals" / original_names[index]) for index in selected],
+                "reedit_variants": {str(position): session["variants"][str(index)] for position, index in enumerate(selected)
+                                    if str(index) in session["variants"]},
+                "reedit_auto_face": bool(automatic),
                 "output_paths": [str(final / "models" / name) for name in output_names] + [recipe_path],
                 "preview_paths": [str(final / "models" / name) for name in preview_names],
                 "original_paths": [str(final / "originals" / name) for name in original_names],

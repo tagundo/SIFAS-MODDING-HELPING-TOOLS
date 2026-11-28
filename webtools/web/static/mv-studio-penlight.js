@@ -137,11 +137,14 @@
     return { baseRate, regions };
   }
 
-  function beatAt(seconds, clock) {
+  // The CRI beat-sync callback that is current at `seconds`: its beat count
+  // (barCount * numBeats + beatCount), the time of its beat and its bpm; null
+  // before the first callback.
+  function beatEventAt(seconds, clock) {
     if (!clock) return null;
     const { baseRate, regions } = clock;
     if (regions) {
-      let previousIndex = -1, beat = 0;
+      let previousIndex = -1, event = null;
       const sample = Math.floor(seconds * baseRate);
       for (const region of regions) {
         if (sample < region.startSample) break;
@@ -153,15 +156,54 @@
         // previous clock when the new region begins on the same beat index.
         if (count > 0 || previousIndex !== 0) {
           const onset = count > 0 ? Math.ceil(count * periodMs) / 1000 : 0;
-          const origin = region.startSample / baseRate + onset;
-          beat = count + Math.max(0, seconds - origin) * region.bpm / 60;
+          event = { count, onset: region.startSample / baseRate + onset, bpm: region.bpm };
         }
         if (sample <= region.endSample) break;
         previousIndex = count % region.numBeats;
       }
-      return beat;
+      return event;
     }
-    return Math.max(0, seconds - clock.startSample / baseRate) * clock.bpm / 60;
+    const start = clock.startSample / baseRate;
+    if (seconds < start) return null;
+    const count = Math.floor((seconds - start) * clock.bpm / 60 + 1e-9);
+    return { count, onset: start + count * 60 / clock.bpm, bpm: clock.bpm };
+  }
+
+  // LiveDirectorBase (GL 3.12.0). The constructor (0x2925c88) starts at bpm 120
+  // (0x42f00000), no beat count and origin 0. SyncBeat (0x2926f3c), the CRI
+  // beat-sync callback, stores the callback's bpm, barCount, beatCount and
+  // numBeats and, as the origin, LiveMusicMachine.MusicPlayingTime of the frame
+  // that dispatches the queued callback. Update (0x2926e74) then sets every frame
+  // _Beat = (musicTime - origin) * bpm / 60 + barCount * numBeats + beatCount.
+  // A callback is dispatched by the first rendered frame at or after its beat,
+  // so the beat restarts from its integer count at that frame, not at the beat.
+  // `frames` is the scene's frame clock: an advancing frame continues `state`;
+  // otherwise the earlier rendered frames (frames.history) are replayed, and a
+  // seek without history uses the beat time itself.
+  const DIRECTOR_BPM = 120;
+
+  function dispatchBeat(state, seconds, clock, frames) {
+    const step = (current, time) => {
+      const event = beatEventAt(time, clock);
+      const same = current && (current.event === event || (current.event && event && current.event.count === event.count &&
+        current.event.onset === event.onset && current.event.bpm === event.bpm));
+      if (same) return current;
+      return { event, origin: event ? (current ? time : event.onset) : 0 };
+    };
+    let current = frames?.advancing ? state : null;
+    if (!frames?.advancing) for (const time of frames?.history || []) current = step(current, time);
+    return step(current, seconds);
+  }
+
+  function beatValue(seconds, state) {
+    if (!state) return null;
+    if (!state.event) return Math.max(0, seconds) * DIRECTOR_BPM / 60;
+    return state.event.count + Math.max(0, seconds - state.origin) * state.event.bpm / 60;
+  }
+
+  // Beat value at `seconds` for a seek without frame history.
+  function beatAt(seconds, clock) {
+    return clock ? beatValue(seconds, dispatchBeat(null, seconds, clock, null)) : null;
   }
 
   function paletteFor(values, project) {
@@ -228,17 +270,21 @@
       uGrowthShape: value(new T.Vector3()), uBasicX: value(new T.Vector3()), uSimpleXZ: value(new T.Vector2()),
     };
     const mode = meta.material?.floats?._CullMode;
-    return new T.ShaderMaterial({
+    const material = new T.ShaderMaterial({
       name: original.name, vertexShader, fragmentShader, uniforms, transparent: true, toneMapped: false,
       depthTest: true, depthWrite: false, depthFunc: T.LessEqualDepth,
       side: mode === 2 ? T.FrontSide : mode === 1 ? T.BackSide : T.DoubleSide,
       blending: T.CustomBlending, blendEquation: T.AddEquation, blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor,
     });
+    // Hidden while no LivePenlightClip has weight: the uniforms keep the last mixed clip's values
+    // (read by the runtime value dump, MVStudioScene.assetDump).
+    material.userData.mvHiddenUniforms = "stale";
+    return material;
   }
 
   function apply(T, root) {
     const members = [];
-    let checkedClock, clock = null;
+    let checkedClock, clock = null, beatState = null;
     root.traverse((node) => {
       const meta = node.geometry?.userData?.mvPenlight;
       if (!node.isMesh || !meta?.bindingSuffix || !node.material?.map ||
@@ -253,13 +299,16 @@
     });
     if (!members.length) return null;
 
-    function update(seconds, project) {
+    function update(seconds, project, frames) {
       const timing = project?.stage?.beatSync;
       if (timing !== checkedClock) {
         checkedClock = timing;
         clock = prepareBeatClock(timing);
+        beatState = null;
+        if (frames?.advancing) frames = { advancing: false, history: [] };
       }
-      const beat = beatAt(seconds, clock);
+      beatState = clock ? dispatchBeat(beatState, seconds, clock, frames) : null;
+      const beat = beatValue(seconds, beatState);
       for (const member of members) {
         const { node, original, shader, meta, base, frustumCulled } = member;
         if (member.registration !== project) {
@@ -342,6 +391,7 @@
       invalidate() {
         checkedClock = undefined;
         clock = null;
+        beatState = null;
         for (const member of members) member.registration = null;
       },
       dispose() {
@@ -354,5 +404,5 @@
     };
   }
 
-  global.MVStudioPenlight = { apply };
+  global.MVStudioPenlight = { apply, prepareBeatClock, beatEventAt, dispatchBeat, beatValue, beatAt };
 })(typeof window !== "undefined" ? window : globalThis);

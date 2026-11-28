@@ -3,6 +3,7 @@
 from pathlib import PurePosixPath
 
 from . import model_viewer as viewer
+from .mv_studio_shader_identity import keywords as shader_keywords
 from .mv_studio_stage_materials import _numbers
 
 
@@ -77,14 +78,19 @@ def read_material(scene, material):
         return None
     tree = scene.tree(material)
     queue = tree.get("m_CustomRenderQueue", -1)
-    if tree.get("stringTagMap") or tree.get("disabledShaderPasses") or type(queue) is not int or queue not in (-1, 3000):
+    # -1 keeps the subshader's Transparent (3000) queue; an authored queue keeps the pass in the
+    # transparent range (11060's fog uses 3010).
+    if (tree.get("stringTagMap") or tree.get("disabledShaderPasses") or type(queue) is not int
+            or queue != -1 and not 2501 <= queue <= 5000):
         return None
     shader = _shader_key(material, tree)
-    keywords = set((tree.get("m_ShaderKeywords") or "").split())
+    # AS/SoftParticleBillboard declares no keyword, so a stale saved one (_RIMLIGHT_ON) selects
+    # nothing; AS/Smoke selects its program by _FADE_ON alone (the _FADE toggle only sets it).
+    keywords = shader_keywords(material, tree)
     floats = viewer._properties(tree, "m_Floats")
     if shader == _SOFT_SHADER and not keywords:
         kind, parameters, stencil = "fog", _FOG_FLOATS, _FOG_STENCIL
-    elif shader == _SMOKE_SHADER and keywords == {"_FADE_ON"} and floats.get("_FADE") == 1:
+    elif shader == _SMOKE_SHADER and keywords == {"_FADE_ON"}:
         kind, parameters, stencil = "smoke", _SMOKE_FLOATS, _SMOKE_STENCIL
     else:
         return None
@@ -111,5 +117,5 @@ def read_material(scene, material):
             return None
         values["_LightDirection"] = light
     return {"kind": kind, "texture": texture, "uniforms": values,
-            "queue": 3000, "cull": 2, "stencil": dict(stencil), "alphaBlend": True,
+            "queue": 3000 if queue == -1 else queue, "cull": 2, "stencil": dict(stencil), "alphaBlend": True,
             "depthTest": True, "depthWrite": False}

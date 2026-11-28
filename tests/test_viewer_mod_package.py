@@ -271,6 +271,30 @@ class ViewerModPackageTests(unittest.TestCase):
             config = literals(archive.read("modinstall.txt"))
             self.assertEqual({config[key] for key in packages._NAMES}, {display})
 
+    def test_automatic_name_is_installed_per_language_with_an_inert_source_record(self):
+        names = {"en": "006 Maki Nishikino · Winter · Outlines", "ko": "006 니시키노 마키 · 동복 · 외곽선",
+                 "ja": "006 西木野 真姫 · 冬服 · 輪郭線"}
+        source = {"region": "gl", "suit_id": 100061001, "variant": "primary", "member": 6}
+        result = self.package(self.source, display_name=names["ko"], names=names, source_costume=source)
+        self.assertEqual(result["installed_names"], {"costume_name_en": names["en"], "costume_name_ko": names["ko"],
+            "costume_name_zh": names["en"], "costume_name_ja": names["ja"], "costume_description": names["ko"]})
+        with zipfile.ZipFile(result["package_path"]) as archive:
+            config = literals(archive.read("modinstall.txt"))
+            self.assertEqual({key: config[key] for key in packages._NAMES}, result["installed_names"])
+            records = [name for name in archive.namelist() if name.endswith("/" + packages.SOURCE_COSTUME_MEMBER)]
+            self.assertEqual(len(records), 1)
+            self.assertFalse(records[0].endswith((".txt", ".zip")))
+            self.assertEqual(__import__("json").loads(archive.read(records[0])),
+                             {"format": packages.SOURCE_COSTUME_FORMAT, "version": 1, **source})
+        # Another member's costume is not this Mod's source; a typed name is one name for all.
+        other = self.package(self.source, display_name="내 의상", source_costume=dict(source, member=4))
+        with zipfile.ZipFile(other["package_path"]) as archive:
+            self.assertFalse([name for name in archive.namelist() if name.endswith(packages.SOURCE_COSTUME_MEMBER)])
+            self.assertEqual({literals(archive.read("modinstall.txt"))[key] for key in packages._NAMES}, {"내 의상"})
+        for bad in ({"en": "a", "ko": "b"}, {"en": "a", "ko": "b", "ja": ""}):
+            with self.subTest(bad=bad), self.assertRaises(packages.ModPackageError):
+                self.package(self.source, display_name="a", names=bad)
+
     def test_raw_bundle_name_cannot_collide_with_thumbnail_or_manifest(self):
         for name in ("thumbnail.png", "modinstall.txt"):
             source = self.bundle(name, "ch0006_co0001_body")
@@ -419,6 +443,63 @@ class ViewerModPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "log closed"):
             self.package(self.source, log=failed_log)
         self.assertEqual(list(self.output.iterdir()), [])
+
+    def dependent_face_zip(self, name="face-dependency.zip"):
+        """An installer ZIP whose body depends on the face it includes."""
+        from viewer_scene_fixture import bundle_fixture
+        from webtools.core import bundle_identity
+
+        def edit(raw, texture, bundle=None, dependencies=None):
+            environment = UnityPy.load(raw)
+            for obj in environment.objects:
+                if obj.type.name == "Texture2D":
+                    tree = obj.read_typetree(); tree["m_Name"] = texture; obj.save_typetree(tree)
+                if obj.type.name == "AssetBundle":
+                    tree = obj.read_typetree()
+                    if bundle:
+                        tree["m_Name"] = tree["m_AssetBundleName"] = bundle
+                    if dependencies is not None:
+                        tree["m_Dependencies"] = dependencies
+                    obj.save_typetree(tree)
+            return environment.file.save()
+        face = edit(bundle_fixture(13, "unmasked"), "ch0006_face", bundle="ch0006_facedynamic.prefab.unity3d")
+        body = edit(bundle_fixture(13, "primary"), "ch0006_co0001_body", dependencies=["ch0006_facedynamic.prefab.unity3d"])
+        manifest = "chara_id = 6\ncostume_file = 'body.unity'\ncostume_facedynamic_file = 'face.unity'\n"
+        path = self.archive(name, {"body.unity": body, "face.unity": face, "modinstall.txt": manifest})
+        cabs = {cab.lower() for cab in bundle_identity._cab_names(face)}
+        self.assertFalse(cabs & {cab.lower() for cab in bundle_identity._cab_names(body)})
+        return path, body, face, frozenset(cabs)
+
+    def test_leaving_out_a_face_is_refused_unless_it_is_the_games_own(self):
+        path, body, face, cabs = self.dependent_face_zip()
+        with self.assertRaises(packages.ModPackageError) as refused:
+            packages._check_face_exclusion(path)
+        self.assertEqual(str(refused.exception), packages.FACE_EXCLUSION_REFUSED)
+        # Faces proven to be the game's own catalog originals leave nothing dangling.
+        packages._check_face_exclusion(path, cabs)
+        from webtools.core import bundle_identity
+        for label, proof in (("other face", frozenset({"cab-" + "0" * 32})),
+                             ("body only", frozenset(cab.lower() for cab in bundle_identity._cab_names(body)))):
+            with self.subTest(label), self.assertRaises(packages.ModPackageError):
+                packages._check_face_exclusion(path, proof)
+        # Through packaging: refused without the proof, and with it the face is
+        # left out and the body keeps its original bytes and dependency.
+        with self.assertRaisesRegex(packages.ModPackageError, "cannot be left out"):
+            self.package(path, include_face_edits=False)
+        self.assertEqual(list(self.output.iterdir()), [])
+        result = self.package(path, include_face_edits=False, catalog_face_cabs={cab.upper() for cab in cabs})
+        with zipfile.ZipFile(result["package_path"]) as archive:
+            fields = literals(archive.read("modinstall.txt"))
+            self.assertEqual((fields["costume_facedynamic_file"], fields["costume_facedynamic_file_ios"]), ("", ""))
+            self.assertEqual(archive.read(fields["costume_file"]), body)
+        self.assertEqual(result["face_identity"], [])
+        # Kept, the same face is still the body's private face.
+        kept = self.package(path, catalog_face_cabs=cabs)
+        with zipfile.ZipFile(kept["package_path"]) as archive:
+            self.assertEqual(archive.read(literals(archive.read("modinstall.txt"))["costume_facedynamic_file"]), face)
+        for proof in (["cab"], {1}, "cab"):
+            with self.subTest(proof=proof), self.assertRaisesRegex(packages.ModPackageError, "game face proof"):
+                self.package(path, include_face_edits=False, catalog_face_cabs=proof)
 
 
 if __name__ == "__main__":

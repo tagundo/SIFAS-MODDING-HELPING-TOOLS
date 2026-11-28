@@ -8,6 +8,9 @@ import json
 import mimetypes
 import os
 import posixpath
+import select
+import socket
+import time
 from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,8 +28,71 @@ _MV_STREAM_WRITE_TIMEOUT = 20
 _MV_STREAM_FIRST_RECORD_BYTES = 4096
 
 
+# MV-only song registration (webtools/core/mv_studio_register.py) and apply to game
+# (webtools/core/mv_studio_apply.py): the same local-host, same-origin and job-slot rules.
+_MV_REGISTRATION_ROUTES = {
+    "/api/mv-studio/registration-plan": "plan",
+    "/api/mv-studio/pcm": "pcm",
+    "/api/mv-studio/jacket-preview": "jacket-preview",
+    "/api/mv-studio/register-job": "register-job",
+    "/api/mv-studio/songs/remove-plan": "remove-plan",
+    "/api/mv-studio/songs/remove-job": "remove-job",
+    "/api/mv-studio/apply-plan": "apply-plan",
+    "/api/mv-studio/apply-job": "apply-job",
+    "/api/mv-studio/restore-job": "restore-job",
+    # MV timeline packs (webtools/core/mv_studio_pack.py, Elichika's mv_timeline_pack).
+    "/api/mv-studio/pack-export": "pack-export",
+    "/api/mv-studio/pack-open": "pack-open",
+}
+
+
 class _MVStreamClosed(Exception):
     """Stop the import when the stream can no longer deliver its preview."""
+
+
+def _run_later(tasks):
+    """Run work an MV import deferred until its result was delivered; it only saves time later."""
+    for task in tasks:
+        try:
+            task()
+        except Exception:  # never let deferred cache writes fail a delivered response
+            pass
+
+
+class _PeerWatch:
+    """Notice, without writing, that the client of a long request went away.
+
+    The request body has been read in full, so the socket only turns readable
+    when the peer closes (EOF or reset). A browser never half-closes a
+    request it still reads. Checks run at most every ``interval`` seconds.
+    """
+
+    def __init__(self, connection, interval=.1):
+        self._connection, self._interval, self._next, self.closed = connection, interval, 0., False
+
+    def _readable(self):
+        # poll() has no descriptor limit; select() cannot watch descriptors above
+        # FD_SETSIZE, which a long-running server can reach.
+        if hasattr(select, "poll"):
+            poller = select.poll()
+            poller.register(self._connection, select.POLLIN | select.POLLPRI)
+            return bool(poller.poll(0))
+        readable, _, _ = select.select([self._connection], [], [], 0)
+        return bool(readable)
+
+    def check(self):
+        now = time.monotonic()
+        if self.closed or now < self._next:
+            return self.closed
+        self._next = now + self._interval
+        try:
+            if self._readable():
+                self.closed = not self._connection.recv(1, socket.MSG_PEEK)
+        except OSError:
+            self.closed = True  # reset by the peer
+        except ValueError:
+            pass  # this descriptor cannot be watched: keep importing
+        return self.closed
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -110,6 +176,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_mv_studio_catalog()
             if path == "/api/mv-studio/chart-templates":
                 return self._api_mv_chart_templates()
+            if path == "/api/mv-studio/songs":
+                return self._api_mv_registration("songs")
+            if path == "/api/mv-studio/timelines":
+                return self._api_mv_registration("timelines")
             if path.startswith("/api/mv-studio/media/"):
                 from webtools.core import mv_studio
                 try:
@@ -134,17 +204,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/viewer/prepare":
                 return self._api_viewer_prepare()
+            if path == "/api/viewer/model-labels":
+                return self._api_viewer_model_labels()
             if path == "/api/viewer/game/import":
                 return self._api_viewer_game_import()
             if path == "/api/costume-platform/match":
                 return self._api_costume_platform_match()
             if path == "/api/viewer/game/motions/import":
                 return self._api_viewer_motion_import()
+            if path in _MV_REGISTRATION_ROUTES:
+                return self._api_mv_registration(_MV_REGISTRATION_ROUTES[path])
             if path.startswith("/api/mv-studio/"):
                 return self._api_mv_studio(path.rsplit("/", 1)[1])
             if path in ("/api/viewer/mesh/inspect", "/api/viewer/mesh/data", "/api/viewer/mesh/export"):
                 return self._api_viewer_mesh(path.rsplit("/", 1)[1])
-            if path in ("/api/viewer/texture/inspect", "/api/viewer/texture/data", "/api/viewer/texture/decode"):
+            if path in ("/api/viewer/texture/inspect", "/api/viewer/texture/data", "/api/viewer/texture/decode", "/api/viewer/texture/cheek"):
                 return self._api_viewer_texture(path.rsplit("/", 1)[1])
             if path == "/api/texture/editor/decode":
                 return self._api_viewer_texture("image")
@@ -248,44 +322,88 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, SQLiteError) as error:
             return self._send_json({"error": str(error)}, status=400)
 
+    def _label_mv_costume(self, result, path):
+        """An imported costume asset is listed by its member and costume name."""
+        asset = result.get("asset") if isinstance(result, dict) else None
+        if not isinstance(asset, dict) or asset.get("kind") not in {"performer", "outfit"}:
+            return
+        try:
+            from webtools.core import model_labels
+            real = os.path.realpath(os.path.expanduser(path))
+            if not filebrowser.is_within_allowed(real):
+                return
+            parts = model_labels.describe(real, repo_root=Path.cwd(), cache_root=game_models_dir())
+        except (OSError, ValueError, TypeError):
+            return
+        label = (parts.get("label") or {}).get(self._lang())
+        if isinstance(label, str) and label:
+            asset["label"] = label
+            if isinstance(result.get("performer"), dict):
+                result["performer"]["label"] = label
+
     def _api_mv_studio(self, action):
         from sqlite3 import Error as SQLiteError
         from webtools.core import mv_studio
         try:
             if action in {"game", "game-stream"}:
                 data = self._viewer_feature_request({"region", "platform", "liveId", "assetId"}, token=False,
-                                                    optional_fields={"download"})
+                                                    optional_fields={"download", "costumes", "deck", "pack"})
                 options = {"language": self._lang(), "region": data["region"], "platform": data["platform"],
-                           "live_id": data["liveId"], "asset_id": data["assetId"], "download": data.get("download", False)}
+                           "live_id": data["liveId"], "asset_id": data["assetId"], "download": data.get("download", False),
+                           **{field: data[field] for field in ("costumes", "deck", "pack") if field in data}}
                 if action == "game-stream":
-                    return self._stream_mv_game(mv_studio.load_game, **options)
-                return self._send_json(mv_studio.load_game(Path.cwd(), **options))
+                    # ?progress=1 adds plan/progress records. Older servers ignore the
+                    # query, so a newer page still works with them (without progress).
+                    progress = self._query().get("progress") == ["1"]
+                    return self._stream_mv_game(mv_studio.load_game, progress=progress, **options)
+                from webtools.core.mv_studio_progress import ImportCancelled
+                watch = _PeerWatch(self.connection)
+
+                def cancelled(_event):
+                    if watch.check():
+                        raise ImportCancelled()
+                later = []
+                try:
+                    project = mv_studio.load_game(Path.cwd(), **options, on_progress=cancelled, later=later)
+                except ImportCancelled:
+                    self.close_connection = True
+                    return None
+                try:
+                    return self._send_json(project)
+                finally:
+                    _run_later(later)
             if action == "open":
                 data = self._viewer_feature_request({"path"}, token=False)
                 return self._send_json(mv_studio.open_project(data["path"]))
             if action == "asset":
                 data = self._viewer_feature_request({"path", "kind"}, token=False)
-                return self._send_json(mv_studio.import_asset(data["path"], data["kind"]))
+                result = mv_studio.import_asset(data["path"], data["kind"])
+                self._label_mv_costume(result, data["path"])
+                return self._send_json(result)
             if action in {"save", "export-timeline"}:
                 data = self._viewer_feature_request({"project"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 4096,
                                                     optional_fields={"name"} if action == "save" else ())
                 result = mv_studio.save(data["project"], data.get("name")) if action == "save" else mv_studio.export_timeline(data["project"])
                 return self._send_json(result)
-            if action in {"register", "charts"}:
-                return self._api_mv_song_update(action)
+            if action == "charts":
+                return self._api_mv_charts()
             return self._send_json({"error": "not found"}, status=404)
+        # The fixed MV messages are translated here, in the request's ?lang=: the page shows
+        # this reason inside ElichikaPlatform's wrapped request error, where it cannot match.
         except PermissionError as error:
-            return self._send_json({"error": str(error)}, status=403)
+            return self._send_json({"error": i18n.tr(str(error), self._lang())}, status=403)
         except (OSError, ValueError, TypeError, OverflowError, SQLiteError) as error:
-            return self._send_json({"error": str(error)}, status=400)
+            return self._send_json({"error": i18n.tr(str(error), self._lang())}, status=400)
 
-    def _stream_mv_game(self, load_game, **options):
+    def _stream_mv_game(self, load_game, progress=False, **options):
+        from webtools.core.mv_studio_progress import ImportCancelled
         started = False
+        watch = _PeerWatch(self.connection)
 
         def send(event):
             nonlocal started
             line = json.dumps(event, separators=(",", ":"), allow_nan=False).encode("utf-8")
-            if event["type"] == "stage":
+            if event["type"] == "stage" or (progress and not started):
                 # Let even small previews pass browser response buffering before the cast is ready.
                 line = line.ljust(_MV_STREAM_FIRST_RECORD_BYTES - 1, b" ")
             try:
@@ -304,11 +422,33 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as error:
                 raise _MVStreamClosed() from error
 
+        def on_progress(event):
+            # The import stops at its next report or check (event None) once the client
+            # has gone, also when that client did not ask for progress records.
+            try:
+                if watch.check():
+                    raise _MVStreamClosed()
+                if progress and event is not None:
+                    send(event)
+            except _MVStreamClosed as error:
+                raise ImportCancelled() from error
+
+        # Restart-safe receipt writes of a finished import, run once the project went out.
+        later = []
         try:
-            project = load_game(Path.cwd(), **options,
+            project = load_game(Path.cwd(), **options, on_progress=on_progress, later=later,
                                 on_stage=lambda preview: send({"type": "stage", "preview": preview}))
-            send({"type": "complete", "project": project})
-        except _MVStreamClosed:
+            try:
+                send({"type": "complete", "project": project})
+                # The page reads this stream to its end (Connection: close, no length)
+                # before it shows the project: end it now, not after the receipt writes.
+                try:
+                    self.connection.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+            finally:
+                _run_later(later)
+        except (_MVStreamClosed, ImportCancelled):
             return
         except Exception as error:
             if not started:
@@ -343,48 +483,170 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, SQLiteError) as error:
             return self._send_json({"error": str(error)}, status=400)
 
-    def _api_mv_song_update(self, action):
+    def _api_mv_charts(self):
         from webtools.core import mv_studio
         try:
             import database_maintenance
-            from mv_studio_live import attach_live_charts, register_mv_only
+            from mv_studio_live import attach_live_charts
         except ImportError:
             return self._send_json({"error": "MV registration requires the Elichika server app."}, status=501)
         self._require_local_tools_host("Open 3D MV at the local app address before changing the game catalog.")
         root = Path.cwd()
         try:
-            if action == "register":
-                data = self._viewer_feature_request({"region", "sourceLiveId", "title"}, token=False,
-                                                    optional_fields={"assetId", "timelinePaths", "audioAcbPath", "audioAwbPath"})
-                timelines = data.get("timelinePaths", {})
-                if not isinstance(timelines, dict) or set(timelines) - {"android", "ios"}:
-                    raise ValueError("Choose an Android or iOS timeline file.")
-                overrides = {"timeline_paths": {key: mv_studio._path(value) for key, value in timelines.items()}} if timelines else {}
-                for field, argument in (("audioAcbPath", "audio_acb"), ("audioAwbPath", "audio_awb")):
-                    if field in data:
-                        overrides[argument] = mv_studio._path(data[field])
-                with database_maintenance.guard(root):
-                    result = register_mv_only(root, region=data["region"], source_live_id=data["sourceLiveId"],
-                                              title=data["title"], asset_3d_id=data.get("assetId"), **overrides)
-            else:
-                data = self._viewer_feature_request({"region", "liveId", "charts"}, token=False)
-                entries = data["charts"]
-                if not isinstance(entries, dict) or not 1 <= len(entries) <= 6:
-                    raise ValueError("Provide one or more native chart files.")
-                charts = {}
-                for key, entry in entries.items():
-                    if (not isinstance(entry, dict) or set(entry) != {"path", "template_difficulty_id"}
-                            or not key.isdecimal() or not 1 <= len(key) <= 2 or key.startswith("0")):
-                        raise ValueError("Provide a matching chart and difficulty template.")
-                    charts[int(key)] = {"path": mv_studio._path(entry["path"]),
-                                        "template_difficulty_id": entry["template_difficulty_id"]}
-                with database_maintenance.guard(root):
-                    result = attach_live_charts(root, region=data["region"], live_id=data["liveId"], charts=charts)
+            data = self._viewer_feature_request({"region", "liveId", "charts"}, token=False)
+            entries = data["charts"]
+            if not isinstance(entries, dict) or not 1 <= len(entries) <= 6:
+                raise ValueError("Provide one or more native chart files.")
+            charts = {}
+            for key, entry in entries.items():
+                if (not isinstance(entry, dict) or set(entry) != {"path", "template_difficulty_id"}
+                        or not key.isdecimal() or not 1 <= len(key) <= 2 or key.startswith("0")):
+                    raise ValueError("Provide a matching chart and difficulty template.")
+                charts[int(key)] = {"path": mv_studio._path(entry["path"]),
+                                    "template_difficulty_id": entry["template_difficulty_id"]}
+            with database_maintenance.guard(root):
+                result = attach_live_charts(root, region=data["region"], live_id=data["liveId"], charts=charts)
         except (database_maintenance.BusyError, database_maintenance.LockError) as error:
             return self._send_json({"error": str(error)}, status=409)
         return self._send_json({"liveId": result["live_id"], "assetId": result["asset_3d_id"],
                                 "mvOnly": result["mv_only"], "title": result["title"],
                                 "difficulties": result["difficulties"], "restartRequired": True})
+
+    def _mv_same_origin(self):
+        """Refuse a cross-site page; a same-origin request may omit Origin (GET) or send this host's."""
+        origins = self.headers.get_all("Origin", [])
+        if len(origins) > 1 or self.headers.get("Sec-Fetch-Site") == "cross-site":
+            raise PermissionError("Open the editor from this app before saving changes.")
+        if origins:
+            origin = urlsplit(origins[0])
+            if (origin.scheme not in ("http", "https") or origin.username or origin.password
+                    or origin.path not in ("", "/") or origin.query or origin.fragment
+                    or origin.netloc.lower() != (self.headers.get("Host") or "").lower()):
+                raise PermissionError("Open the editor from this app before saving changes.")
+
+    def _mv_raw_body(self, limit):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("Invalid editing request size.") from None
+        if self.headers.get("Transfer-Encoding") or not 0 < length <= limit:
+            raise ValueError("The converted audio is empty or larger than 96 MiB.")
+        kind = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if kind not in ("audio/wav", "audio/x-wav", "audio/wave", "application/octet-stream"):
+            raise ValueError("Send the converted audio as a WAV file.")
+        chunks, remaining = [], length
+        while remaining:
+            chunk = self.rfile.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                raise ValueError("The converted audio upload was interrupted.")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _api_mv_registration(self, route):
+        """MV-only song registration (songs, plan, PCM upload, jacket preview, register and remove jobs) and
+        apply to game (apply plan, apply and restore jobs, applied timelines)."""
+        from sqlite3 import Error as SQLiteError
+        from webtools.core import mv_studio, mv_studio_apply as apply, mv_studio_register as register
+        try:
+            register.store()
+            import database_maintenance
+        except ImportError:
+            return self._send_json({"error": register.NO_ELICHIKA}, status=501)
+        root = Path.cwd()
+        try:
+            self._require_local_tools_host("Open 3D MV at the local app address before changing the game catalog.")
+            self._mv_same_origin()
+            if route == "songs":
+                query = self._query()
+                if set(query) - {"region", "lang"} or any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Select the GL or JP catalog.")
+                return self._send_json(register.songs(root, region=query.get("region", ["gl"])[0]))
+            if route == "timelines":
+                query = self._query()
+                if set(query) - {"region", "lang"} or any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Select the GL or JP catalog.")
+                return self._send_json(apply.list_timelines(root, region=query.get("region", ["gl"])[0]))
+            if route == "apply-plan":
+                data = self._viewer_feature_request({"project"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                                                    optional_fields={"unbaked", "target"})
+                unbaked = data.get("unbaked", [])
+                if not isinstance(unbaked, list) or len(unbaked) > 4096:
+                    raise ValueError(apply.REQUEST)
+                return self._send_json(apply.plan(root, data["project"], unbaked=unbaked, language=self._lang(),
+                                                  target=data.get("target")))
+            if route == "pack-open":
+                from webtools.core import mv_studio_pack
+                data = self._viewer_feature_request({"path"}, token=False, max_bytes=8192,
+                                                    optional_fields={"region", "platform"})
+                return self._send_json(mv_studio_pack.open_pack(root, data["path"], region=data.get("region"),
+                                                                platform=data.get("platform")))
+            if route == "pack-export":
+                from webtools.core import mv_studio_pack
+                data = self._viewer_feature_request({"project", "name"}, token=False,
+                                                    max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                                                    optional_fields={"note", "target", "platforms", "download"})
+                request = mv_studio_pack.validate_export(data)
+                return self._send_json(mv_studio_pack.export_pack(root, request, language=self._lang()))
+            if route == "pcm":
+                return self._send_json(register.store_pcm(self._mv_raw_body(register.PCM_BYTES)))
+            if route == "jacket-preview":
+                data = self._viewer_feature_request({"path"}, token=False, max_bytes=16 * 1024)
+                return self._send_json(register.jacket_preview(data["path"]))
+            if route == "plan":
+                data = self._viewer_feature_request({"project"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                                                    optional_fields={"template", "target", "unbaked", "soundtrackDuration"})
+                unbaked = data.get("unbaked", [])
+                if not isinstance(unbaked, list) or len(unbaked) > 4096:
+                    raise ValueError(register.REQUEST)
+                return self._send_json(register.plan(root, data["project"], template=data.get("template"),
+                                                     target=data.get("target"), unbaked=unbaked, language=self._lang(),
+                                                     soundtrack_duration=data.get("soundtrackDuration")))
+            if route == "remove-plan":
+                data = self._viewer_feature_request({"region", "liveId"}, token=False, max_bytes=4096)
+                return self._send_json(register.remove_plan(root, region=data["region"], live_id=data["liveId"]))
+            if route == "register-job":
+                data = self._viewer_feature_request(
+                    {"mode"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                    optional_fields={"project", "liveId", "region", "template", "title", "credit", "jacket", "audio",
+                                     "platforms", "download", "unbaked", "addPlaceholder"})
+                request = register.validate_register(root, data)
+                # Read now: the job thread outlives this request (the handler may serve another one).
+                language = self._lang()
+                body, tool = (lambda job: register.run_register(job, root, request, language=language)), "mv_register"
+            elif route == "apply-job":
+                data = self._viewer_feature_request({"mode", "project", "platforms", "expected"}, token=False,
+                                                    max_bytes=mv_studio.PROJECT_BYTES + 65536,
+                                                    optional_fields={"download", "unbaked", "target"})
+                request = apply.validate_apply(root, data)
+                language = self._lang()
+                body, tool = (lambda job: apply.run_apply(job, root, request, language=language)), "mv_apply"
+            elif route == "restore-job":
+                data = self._viewer_feature_request({"assetId"}, token=False, max_bytes=4096,
+                                                    optional_fields={"region", "expected", "regions"})
+                request = apply.validate_restore(data)
+                language = self._lang()
+                body, tool = (lambda job: apply.run_restore(job, root, request, language=language)), "mv_restore"
+            else:
+                data = self._viewer_feature_request({"region", "liveId", "reviewToken"}, token=False, max_bytes=4096)
+                request = register.validate_remove(data)
+                body, tool = (lambda job: register.run_remove(job, root, request)), "mv_remove"
+            # The job body takes the one-job slot itself (a job manager may refuse a job before
+            # calling it); a running job answers 409 here already.
+            if register.busy():
+                return self._send_json({"error": register.BUSY}, status=409)
+            # Another tool holding the database lease answers 409 now instead of failing in the job.
+            with database_maintenance.guard(root):
+                pass
+            job = MANAGER.create(tool)
+            MANAGER.run_async(job, body)
+            return self._send_json({"job_id": job.id})
+        except PermissionError as error:
+            return self._send_json({"error": str(error)}, status=403)
+        except (database_maintenance.BusyError, database_maintenance.LockError) as error:
+            return self._send_json({"error": str(error)}, status=409)
+        except (OSError, ValueError, TypeError, OverflowError, SQLiteError) as error:
+            return self._send_json({"error": str(error)}, status=400)
 
     def _serve_file(self, fpath: Path, content_type=None):
         if not fpath.is_file():
@@ -545,6 +807,9 @@ class Handler(BaseHTTPRequestHandler):
             "library_roots": list(dict.fromkeys(
                 os.path.realpath(root) for root in filebrowser.allowed_roots().values())),
             "cache_dir": cache_dir,
+            # Game-assets import receipts survive a restart; face completion
+            # reads them only for the exact imported model bytes.
+            "game_models_dir": str(game_models_dir()),
         }
         try:
             with ExitStack() as opened:
@@ -615,10 +880,40 @@ class Handler(BaseHTTPRequestHandler):
                                 from webtools.core import viewer_scene_roles
                                 result["editing"]["initialState"] = viewer_scene_roles.register_reopened(
                                     result["id"], expanded.scene_context)
+                                # Face rows a Rina board view holds but cannot edit.
+                                result["editing"]["heldFaceOutlines"] = model_edits.held_summary(
+                                    model_edits._session(result["id"]))
                                 result["editing"]["allowEmptySceneReset"] = True
+                                # A scene package names its own target member
+                                # (Rina's board shared with another member).
+                                # The scene keeps its face for authoring; it is
+                                # included by default only if its Mod ZIP shipped it.
+                                scene_names = viewer_mod_flow.scene_name_bases(Path.cwd(), expanded.scene_context["metadata"])
                                 result["editing"]["modPackaging"].update(
-                                    nameBase=expanded.scene_context["metadata"]["display_name"], characterId=209,
-                                    requiresCounterpart=False, sceneRoles=True)
+                                    nameBase=scene_names.get(self._lang(), scene_names["en"]),
+                                    nameBases=scene_names, nameTexts=None, nameOwner=None,
+                                    characterId=209, requiresCounterpart=False, sceneRoles=True)
+                            else:
+                                # Re-edit from original: the saved copy of a
+                                # reopened scene's canonical originals.
+                                preserved = viewer_scene_roles.register_preserved(result["id"], editing_context)
+                                if preserved is not None:
+                                    result["editing"]["allowEmptySceneReset"] = True
+                                    # Named after the scene's target member, as
+                                    # reopening the scene ZIP is.
+                                    scene_names = viewer_mod_flow.scene_name_bases(Path.cwd(), preserved)
+                                    result["editing"]["modPackaging"].update(
+                                        nameBase=scene_names.get(self._lang(), scene_names["en"]),
+                                        nameBases=scene_names, nameTexts=None, nameOwner=None,
+                                        characterId=209, requiresCounterpart=False, sceneRoles=True)
+                            # The face option as the costume opens (its scene
+                            # registered above): on for a face of its own, and
+                            # whether a kept face could be checked against the
+                            # game's original, read as automatic faces are.
+                            result["editing"]["modPackaging"].update(viewer_mod_flow.face_option(
+                                editing_context, repo_root=Path.cwd(), face_cache_root=cache_dir, face_context=context,
+                                download=bool(context.get("allow_download")),
+                                owner_hint=result["editing"]["modPackaging"].get("characterId")))
                     except (ValueError, OSError) as exc:
                         if getattr(expanded, "scene_context", None):
                             raise
@@ -632,6 +927,35 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": "Model file was not found."}, status=404)
         except TimeoutError:
             return self._send_json({"error": "Model preparation timed out. Try fewer files."}, status=503)
+
+    def _api_viewer_model_labels(self):
+        """Readable member/costume names for chosen model files (display only).
+
+        Labels come from the same verified receipts as the viewer's game
+        bindings, or from a Mod ZIP's own names; identities stay paths/hashes.
+        """
+        try:
+            params = self._viewer_feature_request({"paths"}, max_bytes=128 * 1024, token=False)
+            paths = params["paths"]
+            from webtools.core import model_labels
+            if (not isinstance(paths, list) or not 1 <= len(paths) <= model_labels.MAX_PATHS
+                    or any(not isinstance(path, str) or not path or len(path) > 4096 or "\0" in path for path in paths)):
+                raise ValueError("Choose between one and sixteen model files.")
+            allowed, rows = [], []
+            for path in paths:
+                real = os.path.realpath(os.path.expanduser(path))
+                allowed.append(real if filebrowser.is_within_allowed(real) and os.path.isfile(real) else None)
+            described = model_labels.describe_paths([path for path in allowed if path], repo_root=Path.cwd(),
+                                                    cache_root=game_models_dir())
+            found = iter(described)
+            for path, real in zip(paths, allowed):
+                parts = next(found) if real else {"file": os.path.basename(path)}
+                rows.append({"path": path, **(model_labels.safe_parts(parts) or {})})
+            return self._send_json({"labels": rows})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
 
     def _api_viewer_model(self, name):
         import re
@@ -865,13 +1189,15 @@ class Handler(BaseHTTPRequestHandler):
     def _api_viewer_texture(self, operation):
         from webtools.core import viewer_texture_tools
         try:
-            fields = {"inspect": {"token"}, "data": {"token", "texture"},
+            fields = {"inspect": {"token"}, "data": {"token", "texture"}, "cheek": {"token"},
                       "decode": {"token", "texture", "png"}, "image": {"png"}}[operation]
             params = self._viewer_feature_request(fields, max_bytes=(12 * 1024 * 1024 if operation in ("decode", "image") else 64 * 1024), token=operation != "image")
             if operation == "inspect":
                 result = viewer_texture_tools.inspect(params["token"])
             elif operation == "data":
                 result = viewer_texture_tools.data(params["token"], params["texture"])
+            elif operation == "cheek":
+                result = viewer_texture_tools.cheek(params["token"])
             elif operation == "decode":
                 result = viewer_texture_tools.decode(params["token"], params["texture"], params["png"])
             else:
@@ -1079,7 +1405,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from webtools.core import model_edits, viewer_mod_flow
             from webtools.core.sukusta import default_sukusta_dir
-            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"}, optional_fields={"thumbnail_token", "mesh_state", "include_face_edits"}, max_bytes=32 * 1024 * 1024)
+            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"}, optional_fields={"thumbnail_token", "mesh_state", "include_face_edits", "name_parts"}, max_bytes=32 * 1024 * 1024)
+            name_parts = viewer_mod_flow.validate_name_parts(params.get("name_parts"))
+            language = self._lang()
             include_face_edits = params.get("include_face_edits")
             if "include_face_edits" in params and type(include_face_edits) is not bool:
                 raise ValueError("Choose whether to include face and mouth edits for this costume.")
@@ -1102,6 +1430,14 @@ class Handler(BaseHTTPRequestHandler):
             if not filebrowser.is_within_allowed(output_root) or not filebrowser.is_within_allowed(cache_root):
                 raise PermissionError("The Mod ZIP output folder is outside the allowed folders.")
             runtime_root = Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve()
+            # The face cache prepare completes faces into (catalog originals).
+            face_cache_root = os.path.join(os.path.realpath(default_sukusta_dir("")), ".viewer-cache")
+            # Whether the game provides a face left out is checked again from
+            # that cache and the local packs; opening the costume tried the
+            # asset server already.
+            face_context = {"repo_root": str(runtime_root), "cache_dir": face_cache_root, "allow_download": False,
+                            "library_roots": list(dict.fromkeys(
+                                os.path.realpath(root) for root in filebrowser.allowed_roots().values()))}
             job = MANAGER.create("viewer_body_mod")
 
             def package(current):
@@ -1111,7 +1447,8 @@ class Handler(BaseHTTPRequestHandler):
                     display_name=params["display_name"], character_id=params["character_id"],
                     counterpart_path=counterpart, selected_variant=params["selected_variant"],
                     thumbnail_token=thumbnail_token, mesh_state=mesh_state,
-                    include_face_edits=include_face_edits, job=current)
+                    include_face_edits=include_face_edits, name_parts=name_parts, language=language,
+                    face_cache_root=face_cache_root, face_context=face_context, job=current)
                 current._viewer_edit_result = result
                 for path in result["output_paths"]:
                     current.add_output(path)
@@ -1186,10 +1523,16 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(params["recipe"], dict):
                 raise ValueError("Choose an editing recipe for this original model.")
             from webtools.core import model_edits, viewer_mod_flow
+            snapshot = getattr(model_edits, "held_snapshot", None)
+            before = snapshot(params["token"]) if snapshot is not None else None
             if params["recipe"].get("tool") == "mesh-tools":
                 result = viewer_mod_flow.restore_current(params["token"], params["recipe"])
             else:
                 result = {"state": model_edits.restore(params["token"], params["recipe"])}
+            if before is not None:
+                # Face rows a Rina board view holds (it cannot edit them): what
+                # is held now, and a notice when this recipe released some.
+                result.update(model_edits.held_response(params["token"], before))
             return self._send_json(result)
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)

@@ -264,6 +264,63 @@ class RigBuilder:
         self.scene, self.faces, self.deadline = scene, faces, deadline
         self._path_cache.clear()
 
+    def merge_prop_skeleton(self, nodes):
+        """Merge a member prop skeleton (mv_studio_props.skeleton) into this rig.
+
+        UnityObjectUtility.MergeHierarchy (GL 3.12.0 0x296058c): a skeleton
+        child whose name matches a child of the merged parent recurses into
+        it; any other child is moved below that parent with
+        SetParent(parent, worldPositionStays=false), keeping its authored
+        local TRS and whole subtree. The paths stay relative to the member's
+        Model, so the member's dance clips bind those nodes (chp*/Attach_*)
+        by the same path hash as every rig bone. Returns the merged nodes."""
+        import numpy as np
+        from .model_viewer import _remaining, _trs as authored_matrix
+        candidates = defaultdict(list)
+        for bone in self.bones:
+            if "transformId" in bone:
+                candidates[bone["path"]].append(bone)
+
+        def matched(path):
+            rows = candidates.get(path, ())
+            if len(rows) > 1:
+                rows = [bone for bone in rows if bone.get("sourceIndex") == 0]
+            return rows[0]["node"] if len(rows) == 1 else None
+
+        # The skeleton's Model is the member's Model: the body prefab root.
+        states, plan = {"": ("matched", matched(""))}, []
+        for entry in nodes:
+            _remaining(self.deadline)
+            path = entry["path"]
+            parent_path, _, name = path.rpartition("/")
+            kind, parent = states.get(parent_path, ("skipped", None))
+            if kind == "skipped" or parent is None:
+                states[path] = ("skipped", None)
+            elif kind == "matched" and path in candidates:
+                # IndexOf takes the first child of that name; an ambiguous
+                # editor path cannot say which one, so its subtree is skipped.
+                node = matched(path)
+                states[path] = ("matched", node) if node is not None else ("skipped", None)
+            else:
+                tree = {"m_LocalPosition": dict(zip("xyz", entry["position"])),
+                        "m_LocalRotation": dict(zip("xyzw", entry["rotation"])),
+                        "m_LocalScale": dict(zip("xyz", entry["scale"]))}
+                states[path] = ("merged", path)
+                plan.append((path, name, parent_path, _authored_trs(tree, allow_zero_scale=True), authored_matrix(tree)))
+        if len(self.glb.doc["nodes"]) + len(plan) > MAX_NODES:
+            raise RigError("The member prop skeleton exceeds the rig node limit.")
+        created = {}
+        for path, name, parent_path, local, matrix in plan:
+            kind, parent = states[parent_path]
+            parent = created[parent_path] if kind == "merged" else parent
+            node = self._node(name, local, "bone")
+            self.worlds[node] = self.worlds.get(parent, np.eye(4)) @ matrix
+            self.glb.doc["nodes"][parent].setdefault("children", []).append(node)
+            self.bones.append({"node": node, "name": name, "parent": parent, "path": path, "propSkeleton": True})
+            self._binding(path, node)
+            created[path] = node
+        return list(created.values())
+
     def record_bounds(self, positions):
         import numpy as np
         low, high = positions.min(axis=0), positions.max(axis=0)
@@ -436,11 +493,66 @@ class RigBuilder:
             for key in (path, zlib.crc32(path.encode())):
                 self.morph_bindings[key] = record
 
+    # BodyPartManager.Initialize (GL 3.12.0 libil2cpp 0x27c0170) fills partMap,
+    # which LiveDepthOfFieldMixer.CalcFocusDistance reads with GetPart(bodyPart):
+    # BodyPartType Head 0 = head, HeadAll 1 = headAll, Face 2 = face.gameObject,
+    # Hips 3 = hips, Neck 4 = neck. HeadMaterial 5 is never added.
+    #
+    # face is the costume's serialized reference unless the spawner overrides it.
+    # LiveDirector.SpawnObjectAsync (0x2926a60) calls
+    # BodyPartManager.OverrideFacial(MemberAssetLoader.Facial, ...) (0x27c05d0),
+    # which stores Facial in face only when it is non-null; Initialize runs
+    # later, from PostprocessInitializeAsync -> LiveCoreMemberManager.Initialize.
+    # MemberAssetLoader loads Facial only from LiveMember3DAssetVO.FacialAsset
+    # (LiveAssetLoader 0x2920fbc; LoadAsync skips a null path), and both
+    # GetMvLiveMember3DAssetVOs (0x26298e4) and GetLiveMember3DAssetVOs
+    # (0x2626930) take that path only from m_member_override_facial
+    # (member_id, view_status). The table has no rows in the GL or JP
+    # masterdata, so Facial is null and face stays the costume's reference.
+    # A *_facedynamic companion bundle is that reference's target, not an
+    # override, so it never replaces a face that points inside the prefab.
+    FOCUS_PART_FIELDS = ((0, "head"), (1, "headAll"), (2, "face"), (3, "hips"), (4, "neck"))
+
+    def _root_transform(self, transform):
+        from .model_viewer import _key, _ref
+        seen = set()
+        while transform is not None and _key(transform) not in seen and len(seen) <= 256:
+            seen.add(_key(transform))
+            parent = _ref(transform, self.scene.tree(transform).get("m_Father"))
+            if parent is None:
+                return transform
+            transform = parent
+        return None
+
+    def _focus_part(self, owner, pointer, body_root):
+        """One partMap entry: an exported node, or a fixed world point (Unity space)."""
+        from .model_viewer import _key, _ref
+        target = _ref(owner, pointer)
+        if target is not None and target.type.name != "GameObject":
+            # face is a MemberFace component; partMap keeps its gameObject.
+            target = _ref(target, self.scene.tree(target).get("m_GameObject"))
+        if target is None or target.type.name != "GameObject":
+            return None
+        transform = self.scene.transforms.get(_key(target))
+        if transform is None:
+            return None
+        root = self._root_transform(transform)
+        if root is not None and body_root is not None and _key(root) == _key(body_root):
+            return self.nodes.get(_key(transform))
+        # A reference outside the member prefab (BodyPartManager.face points at
+        # the separate facial prefab asset) survives Instantiate unchanged.
+        # MergeFace (0x27c17f4, after Initialize) instantiates a copy under
+        # Head, but partMap still holds the uninstantiated asset, whose
+        # transform never moves.
+        position = self.scene.world(transform)[:3, 3]
+        values = [float(value) for value in position]
+        return {"world": values} if all(math.isfinite(value) for value in values) else None
+
     def _focus_parts(self):
         from .model_viewer import _key, _ref, _source_path
 
         selected = self.selected - self.facial_sources
-        candidates = set()
+        candidates = {}
         for obj in self.scene.env.objects:
             if obj.type.name != "MonoBehaviour" or _source_path(obj) not in selected:
                 continue
@@ -455,19 +567,19 @@ class RigBuilder:
                 if tuple(source.get(key) for key in ("m_ClassName", "m_Namespace", "m_AssemblyName")) != (
                         "BodyPartManager", "LLAS.Components.Members", "Assembly-CSharp.dll"):
                     continue
-                parts = []
-                for name in ("head", "hips"):
-                    game = _ref(obj, tree[name])
-                    transform = self.scene.transforms.get(_key(game)) if game is not None and game.type.name == "GameObject" else None
-                    parts.append(self.nodes.get(_key(transform)) if transform is not None else None)
-                if all(part is not None for part in parts):
-                    candidates.add(tuple(parts))
+                owner = _ref(obj, tree.get("m_GameObject"))
+                body = self.scene.transforms.get(_key(owner)) if owner is not None else None
+                body_root = self._root_transform(body) if body is not None else None
+                parts = {}
+                for value, name in self.FOCUS_PART_FIELDS:
+                    part = self._focus_part(obj, tree.get(name), body_root) if name in tree else None
+                    if part is not None:
+                        parts[str(value)] = part
+                if parts:
+                    candidates[repr(sorted(parts.items()))] = parts
             except (ValueError, TypeError, KeyError, AttributeError):
                 continue
-        if len(candidates) == 1:
-            head, hips = candidates.pop()
-            return {"head": head, "hips": hips}
-        return {}
+        return next(iter(candidates.values())) if len(candidates) == 1 else {}
 
     def metadata(self):
         import copy
@@ -495,6 +607,13 @@ class RigBuilder:
             move = self.names.get("Move", ())
             if len(move) == 1:
                 result["shaftAnchor"] = move[0]
+            from .model_faces import FaceUnavailable, member_head
+            try:
+                head = member_head(self.scene, self.selected - self.facial_sources)
+            except FaceUnavailable:
+                head = {}
+            if head:
+                result["memberHead"] = head
         # Ordinary auto-faces must be rendered. A saved, digest-bound face also
         # stays in the editing session when a complete native face is shown.
         from .model_viewer import _source_path, _source_hash

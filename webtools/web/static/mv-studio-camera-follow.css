@@ -1,0 +1,82 @@
+/* MV Studio follow camera (mv-studio-camera-follow.js): the rig lane and the Follow camera panel. */
+
+/* Rig clips (the shared .mv-rig-clip base is in mv-studio.css / mv-studio-editor.css). */
+.mv-lane-extra[data-extra="camera-rigs"] { --mv-rig-color: #2b7a6b; }
+#tab-mv .mv-rig-clip {
+  background: var(--mv-rig-color, #2b7a6b);
+  border: 1px solid #ffffff4d;
+  border-radius: 6px;
+  cursor: grab;
+  touch-action: none;
+  text-align: start;
+}
+#tab-mv .mv-rig-clip .mv-rig-name { position: relative; z-index: 1; }
+/* Both edges resize. */
+#tab-mv .mv-rig-clip::before, #tab-mv .mv-rig-clip::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset-block: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+#tab-mv .mv-rig-clip::before { inset-inline-start: 0; background: linear-gradient(to left, transparent 0 3px, #fff3 3px); }
+#tab-mv .mv-rig-clip::after { inset-inline-end: 0; background: linear-gradient(to right, transparent 0 3px, #fff3 3px); }
+/* Blend in / out ramps. */
+#tab-mv .mv-rig-clip .mv-rig-blend { position: absolute; inset-block: 0; pointer-events: none; }
+#tab-mv .mv-rig-clip .mv-rig-blend-in { inset-inline-start: 0; background: linear-gradient(to top right, #0006 50%, transparent 50%); }
+#tab-mv .mv-rig-clip .mv-rig-blend-out { inset-inline-end: 0; background: linear-gradient(to top left, #0006 50%, transparent 50%); }
+#tab-mv .mv-rig-clip.mv-rig-unavailable { background-image: repeating-linear-gradient(135deg, transparent 0 6px, #0000004d 6px 9px); opacity: .75; }
+#tab-mv .mv-rig-clip.mv-dragging[data-drag-time]::after {
+  content: attr(data-drag-time);
+  width: auto;
+  inset-inline-end: 8px;
+  inset-block: auto 1px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #000b;
+  color: #fff;
+  font-size: .62rem;
+  font-variant-numeric: tabular-nums;
+}
+@media (pointer: coarse) {
+  #tab-mv .mv-rig-clip::before, #tab-mv .mv-rig-clip::after { width: 12px; }
+}
+
+/* Panel. */
+.mv-follow { display: grid; gap: 8px; min-width: 0; font-size: .8rem; }
+.mv-follow-top, .mv-follow-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#tab-mv .mv-follow-primary { background: var(--accent2); border-color: var(--accent2); color: #fff; font-weight: 600; }
+#tab-mv .mv-follow-primary::before { content: "+"; margin-inline-end: 5px; font-weight: 700; }
+#tab-mv .mv-follow-tools button { min-height: 30px; padding: 3px 9px; font-size: .74rem; }
+.mv-follow-section {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.mv-follow-section legend { padding: 0 4px; font-size: .76rem; font-weight: 600; color: var(--text); }
+.mv-follow-help { line-height: 1.35; }
+.mv-follow-presets { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
+.mv-follow-preset-label { margin-inline-end: 2px; color: var(--muted); font-size: .72rem; }
+#tab-mv .mv-follow-presets button { min-height: 28px; padding: 2px 10px; border-radius: 999px; font-size: .74rem; }
+#tab-mv .mv-follow-presets button[aria-pressed=true] { border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 30%, var(--panel2)); font-weight: 600; }
+.mv-follow-slider { display: grid; grid-template-columns: minmax(0, 1fr) 4.8em; gap: 4px; align-items: center; min-width: 0; }
+.mv-follow-slider input[type=range] { width: 100%; min-width: 0; margin: 0; }
+#tab-mv .mv-follow .mv-follow-slider input[type=number] { width: 100%; min-width: 0; min-height: 28px; padding: 2px 4px; font-size: .76rem; font-variant-numeric: tabular-nums; }
+#tab-mv .mv-follow .mv-inline-fields input[type=number] { min-height: 28px; padding: 2px 4px; font-variant-numeric: tabular-nums; }
+.mv-follow .mv-form-grid > label > span:first-child, .mv-follow-row > span:first-child { font-size: .74rem; }
+.mv-follow-row { display: contents; }
+.mv-follow-range-field { display: grid; gap: 1px; min-width: 0; }
+#tab-mv .mv-follow .mv-follow-range-field input { width: 100%; min-width: 0; box-sizing: border-box; }
+.mv-follow-caption { color: var(--muted); font-size: .64rem; }
+.mv-follow-status { display: grid; gap: 4px; }
+.mv-follow-status:empty { display: none; }
+.mv-follow-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; font-size: .76rem; }
+.mv-follow-progress progress { flex: 1 1 6em; min-width: 4em; height: 8px; }
+#tab-mv .mv-follow-progress button { min-height: 28px; padding: 2px 10px; font-size: .74rem; }
+.mv-follow-warning { margin: 0; color: #f2b84b; font-size: .74rem; }
+.mv-follow-notice { padding-top: 4px; border-top: 1px dashed var(--line); }

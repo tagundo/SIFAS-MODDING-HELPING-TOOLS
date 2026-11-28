@@ -8,12 +8,89 @@ from . import model_animation, model_materials, model_viewer as viewer, mv_studi
 
 
 _MEMBER_PROP = re.compile(
-    r"/EntryPoint/Live/Members/(ske_[A-Za-z0-9_]+)/(Member[1-9])/Model/"
+    r"/EntryPoint/Live/Members/(ske_[A-Za-z0-9_]+)/(Member[1-9][0-9]*)/Model/"
     r"([A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*)/(chp[0-9]+)\Z"
 )
 _FAN_ANGLE = crc32(b"clipUV2Angle")
 _FAN_SHADER = ("cab-2e396210aff4c20f7175085dc1e3e4e6", -8442881240486637179)
 _FAN_TEXTURES = {"_MainTex": 1024, "_RimlightTex": 256}
+# LiveCoreMemberManager.MemberPropSkeletonPrefix: FindMemberPropSkeleton takes
+# the Members child whose name starts with it.
+_SKELETON_PREFIX = "ske_"
+_SKELETON_MEMBER = re.compile(r"Member([1-9][0-9]*)\Z")
+_SKELETON_NODES = 256
+
+
+def _children(scene, transform):
+    for pointer in scene.tree(transform).get("m_Children", ()):
+        child = viewer._ref(transform, pointer)
+        if child is not None:
+            yield child
+
+
+def _transform_name(scene, transform):
+    game_object = viewer._ref(transform, scene.tree(transform).get("m_GameObject"))
+    return scene.name(game_object) if game_object is not None else ""
+
+
+def _local(tree):
+    values = {"position": [float(tree.get("m_LocalPosition", {}).get(axis, 0)) for axis in "xyz"],
+              "rotation": [float(tree.get("m_LocalRotation", {}).get(axis, 1 if axis == "w" else 0)) for axis in "xyzw"],
+              "scale": [float(tree.get("m_LocalScale", {}).get(axis, 1)) for axis in "xyz"]}
+    if not all(math.isfinite(value) for row in values.values() for value in row):
+        raise ValueError("The member prop skeleton has an invalid transform.")
+    return values
+
+
+def skeleton(path, deadline):
+    """Each member's prop skeleton Model subtree.
+
+    LiveCoreMember.Initialize merges <ske_*>/Member<N> into the member's own
+    hierarchy with UnityObjectUtility.MergeHierarchy (GL 3.12.0 0x296058c),
+    then LiveCoreMemberManager destroys the ske_ root. The merge matches
+    children by name; a child without a match is moved with
+    Transform.SetParent(parent, worldPositionStays=false), so its authored
+    local TRS (and its whole subtree) is kept below the matched parent. The
+    member's Animator then binds those nodes by path like any rig bone: the
+    dance clips animate chp*/Attach_* below the hand.
+
+    Returns {member slot: [{"path", "position", "rotation", "scale"}, ...]}
+    with paths relative to Model (the member Animator's root, the rig root
+    here), each parent before its children, and Unity-space authored local
+    values. Nodes beside Model (e.g. 12087's microphone stands below
+    Member<N>) are outside the rig and the dance clips, so they are not listed.
+    """
+    scene = viewer._Scene(viewer._environment([str(path)], deadline), deadline)
+    roots = [transform for transform in scene.transforms.values()
+             if viewer._ref(transform, scene.tree(transform).get("m_Father")) is None
+             and _transform_name(scene, transform).startswith(_SKELETON_PREFIX)]
+    if len(roots) != 1:
+        return {}
+    result = {}
+    for member in _children(scene, roots[0]):
+        slot = _SKELETON_MEMBER.fullmatch(_transform_name(scene, member))
+        models = [child for child in _children(scene, member) if _transform_name(scene, child) == "Model"]
+        if slot is None or int(slot[1]) in result or len(models) != 1:
+            continue
+        nodes, pending, seen = [], [(models[0], "")], set()
+        try:
+            while pending:
+                transform, prefix = pending.pop()
+                children = []
+                for child in _children(scene, transform):
+                    name = _transform_name(scene, child)
+                    if not name or "/" in name or viewer._key(child) in seen or len(nodes) >= _SKELETON_NODES:
+                        raise ValueError("The member prop skeleton has an unsupported hierarchy.")
+                    seen.add(viewer._key(child))
+                    node = {"path": prefix + name, **_local(scene.tree(child))}
+                    nodes.append(node)
+                    children.append((child, node["path"] + "/"))
+                pending.extend(reversed(children))
+        except ValueError:
+            continue
+        if nodes:
+            result[int(slot[1])] = nodes
+    return result
 
 
 def bindings(tracks):
@@ -154,7 +231,11 @@ def _attach_fan_material(scene, materials, obj, tree, exported):
     try:
         metadata = model_materials.attach_member_metadata(
             scene, obj, tree, {}, materials.texture, mip_resolver=materials.mip_textures)
-        complete = (metadata["features"]["rimlight"] and not metadata["limitations"]
+        # The hand-prop export keeps the rule it was verified with (the fan's
+        # authored rim switch plus a resolved rim texture); it does not follow
+        # the AS/Member rule that exports the rim texture for every material.
+        complete = (model_materials.authored_rimlight(metadata) and metadata["features"]["rimlight"]
+                    and not metadata["limitations"]
                     and all(len(metadata["textures"].get(name, {}).get("mipmaps", ())) == size.bit_length()
                             for name, size in _FAN_TEXTURES.items()))
     finally:
@@ -173,7 +254,21 @@ def _attach_fan_material(scene, materials, obj, tree, exported):
     return True
 
 
-def _mesh(scene, glb, renderer, hand):
+def _renderer_path(scene, renderer, prop, model):
+    """The renderer's GameObject path below Model, through the prop's own node."""
+    game_object = viewer._ref(renderer, scene.tree(renderer).get("m_GameObject"))
+    current = scene.transforms.get(viewer._key(game_object)) if game_object is not None else None
+    names, inside = [], False
+    while current is not None and len(names) < 256:
+        if viewer._key(current) == viewer._key(model):
+            return "/".join(reversed(names)) if inside else None
+        inside |= viewer._key(current) == viewer._key(prop)
+        names.append(_transform_name(scene, current))
+        current = viewer._ref(current, scene.tree(current).get("m_Father"))
+    return None
+
+
+def _mesh(scene, glb, renderer, node_path):
     import numpy as np
     from .model_mesh import PreviewMeshHandler
 
@@ -182,11 +277,8 @@ def _mesh(scene, glb, renderer, hand):
     mesh = scene.filters.get(viewer._key(game_object)) if game_object is not None else None
     if mesh is None or mesh.type.name != "Mesh":
         raise ValueError("The selected fan has no native geometry.")
-    transform = scene.transforms.get(viewer._key(game_object))
-    if transform is None:
-        raise ValueError("The selected fan has no native transform.")
-    # Keep vertex positions in mesh space so the authored UV2 rotation occurs
-    # before applying the fan's original local transform below the hand.
+    # Keep vertex positions in mesh space: the authored UV2 rotation happens
+    # there, and the renderer's own merged node below the hand places it.
     name, positions, normals, uv, parts = viewer._geometry(mesh, np.eye(4))
     handler = PreviewMeshHandler(mesh.read())
     handler.process()
@@ -235,31 +327,36 @@ def _mesh(scene, glb, renderer, hand):
     if not primitives or len(set(limits)) != 1:
         raise ValueError("The selected fan uses incompatible angle settings.")
     glb.doc["meshes"].append({"name": name, "primitives": primitives})
-    mirror = np.diag([-1., 1., 1., 1.])
-    local = mirror @ np.linalg.inv(scene.world(hand)) @ scene.world(transform) @ mirror
-    if not np.isfinite(local).all():
-        raise ValueError("The selected fan has an invalid hand attachment transform.")
-    glb.doc["nodes"].append({"name": name, "mesh": 0, "matrix": local.T.reshape(-1).tolist()})
+    # The runtime asset dump reports this renderer at its merged GameObject path.
+    glb.doc["nodes"].append({"name": name, "mesh": 0, "extras": {"mvGameObjectPath": node_path}})
     glb.doc["scenes"][0]["nodes"].append(0)
     return limits[0]
 
 
 def preview(path, native, source_name, binding, deadline):
-    """Read matching serialized objects and emit one hand-local prop GLB."""
+    """Read matching serialized objects and emit one prop GLB in its renderer's space.
+
+    The member merges the prop skeleton into its own hierarchy (skeleton()),
+    so the renderer follows its merged node (e.g. chp0001/Attach_01/Attach_02/
+    Attach_03/Decor below the hand), which the member's dance clips animate.
+    ``bone`` is that node's path below Model."""
     scene = viewer._Scene(viewer._environment([str(path)], deadline), deadline)
     prop = _find_transform(scene, binding["path"])
-    hand = _find_transform(scene, binding["path"][:-1])
-    if prop is None or hand is None:
+    model = _find_transform(scene, binding["path"][:3])
+    if prop is None or model is None:
         raise ValueError("The timeline's original fan attachment is missing from the prop bundle.")
     target = viewer._ref(prop, scene.tree(prop).get("m_GameObject"))
     renderer, default = _fan(scene, target)
+    node_path = _renderer_path(scene, renderer, prop, model)
+    if not node_path:
+        raise ValueError("The selected fan renderer is outside its prop skeleton.")
     curves = _angle_curves(native, source_name, binding["clips"], deadline)
     if not curves:
         raise ValueError("The selected fan has no playable native opening curve.")
     glb = viewer._Glb()
-    limit = _mesh(scene, glb, renderer, hand)
+    limit = _mesh(scene, glb, renderer, node_path)
     return glb.finish(), {
-        "kind": "fan", "member": binding["member"], "bone": binding["bone"],
+        "kind": "fan", "member": binding["member"], "bone": node_path,
         "binding": "/EntryPoint/Live/Members/" + "/".join(binding["path"]),
         "track": binding["track"], "activation": binding["activation"], "curves": curves,
         "defaultAngle": default, "defaultVisible": scene.active(target), "limit": limit,

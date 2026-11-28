@@ -281,18 +281,26 @@ def inherit_export(context, preview_paths, *, repo_root, cache_root):
         original = _physics_ids(_entry_context(proof)["sources"][0]["raw"])
         current = _physics_ids(raw)
         previous = _read_receipt(cache_root, proof) if result["derived"] else None
+        pair = None
         if previous is not None:
             # Ordinary saves preserve component identities. Reuse their
             # verified original parents instead of adding one receipt layer
             # per click on Save and eventually exhausting the recursion bound.
             parents = previous["parents"]
             components = [dict(row) for row in previous["components"] if row["id"] in current and row["id"] in original]
+            # Reused wearer/donor parents keep the transplant that paired
+            # them (display names only: which parent's costume is worn).
+            from .model_labels import pair_operation
+            pair = pair_operation(previous)
         else:
             parents = [proof]
             components = [{"id": key, "parent": 0, "sourceId": key} for key in current if key in original]
-        grouped.setdefault(str(destination), []).append({"member": proof["member"], "sha256": _digest(raw),
-            "operation": "edit", "operations": list(dict.fromkeys(result["operations"] + ["edit"])),
-            "parents": parents, "components": components})
+        row = {"member": proof["member"], "sha256": _digest(raw),
+               "operation": "edit", "operations": list(dict.fromkeys(result["operations"] + ["edit"])),
+               "parents": parents, "components": components}
+        if pair is not None:
+            row["pairOperation"] = pair
+        grouped.setdefault(str(destination), []).append(row)
     for destination, rows in grouped.items():
         _write_receipts(cache_root, destination, rows)
     return {"derivedOutputs": len(grouped)}

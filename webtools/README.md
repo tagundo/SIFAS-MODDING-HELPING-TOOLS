@@ -352,6 +352,42 @@ This lookup uses the costume's character, across the installed GL/JP and
 Android/iOS catalogs; it is not limited to one member. Users do not need to
 select or upload facial files. Existing game downloads are reused before CDN
 downloads, and subsequent previews reuse the private cache.
+The face that the body's own BodyPartManager names is preferred: the selected
+game costume's own face (an installed costume's private face), a cached
+original, a face saved next to the body file, and the bundled extractor's
+output in a library folder are used at once. Extractor output is a file with
+the extractor's own name (`chNNNN_facedynamic.unity` or `chNNNN_face.unity`) at
+the top of a library folder or in its `3d_model` or `extracted/3d_model`
+folder, or any member model in one of those `3d_model` folders that the
+folder's `_extract_manifest.csv` lists with its size, or whose size is that of
+one of the character's catalog faces. A library made by the extractor therefore
+needs no download when it holds that face. The trade-off: an edited copy saved
+there under such a name, or with the stock size, is trusted as the original,
+as in earlier versions. The face found anywhere else in the library can be an
+edited copy of a stock face with the same Unity names, so the catalog's own
+copy (a local pack first) is tried first; after the first answer from the
+asset server (or none), the library face is used.
+Otherwise the earlier order is kept: local faces, then catalog downloads in
+the earlier order, each with the whole face time while no other face of the
+character is at hand (the selected game costume's own faces, when not local,
+are downloaded first and always measured as below, so they cannot hold up the
+earlier order). Once one is, a further download is made only if it may
+still be the named face, skipping the default costume's body and another
+region's copy of an original already checked. It is measured for a second and
+continues only while its rate brings it in 3 seconds before the face time
+ends; one that has sent nothing in that second, is too slow or meets an asset
+server that does not answer ends these downloads, and the face at hand (the
+earlier order's choice) is used. A download that keeps that pace but turns out
+not to be the named face still costs its time. Each pack is requested at most
+once per preview. An original the viewer downloaded keeps
+the place of a download in later previews of a body that names its face, and
+one downloaded without being used keeps that place for every body until it is
+used, so the face cache does not change which face is chosen.
+Face, Mouth and Eye outlines
+are editable only with the face the body names. Another face of the same character is shown as a fallback, and its
+face meshes are listed as not editable. To reopen a copied body alone, copy
+the face saved beside it as well; Game assets also finds an installed
+costume's private face.
 Original LZMA-compressed facial bundles are decoded with bounded memory; manual
 repacking is unnecessary and the source files remain unchanged.
 
@@ -494,15 +530,54 @@ repacking is unnecessary and the source files remain unchanged.
   still create editable model copies and a recipe.
   The **Mod ZIP** download appears first; the edited preview copy and recipe
   keep separate labels. Use the Mod ZIP for the installer.
-  **Mod name** starts with the costume name and the actual edited parts,
-  relative factors or selected thigh conversion. You can change it; **Automatic
-  name** restores the suggestion. The ZIP, installer manifest and game costume
-  share that name. The optional target settings let you identify an otherwise
+  **Mod name** starts with the member's three-digit number, the member and the
+  costume in the page language (for example `004 소노다 우미 · 오토노키자카 고교
+  교복(동복)`), then the actual edited parts, relative factors or selected thigh
+  conversion. An edited copy keeps the name of the costume it was made from;
+  a costume transplant result is named after its wearer in the donor's costume
+  (`004 소노다 우미 · <donor costume> · 코스튬 이식`), also when the wearer is
+  a Mod ZIP; when the donor can no longer be named, only the member and the
+  operation (never the costume it replaced). A part or lower-body transplant is
+  named after the wearer's costume and that operation; an added costume uses
+  the name it was installed with. Choosing another **Costume character** puts
+  that member's number and name first instead (`101 타카미 치카 · …`). Names
+  read from the game's dictionaries are shown as the game shows them: their
+  HTML entities are decoded (`KOKORO Magic "A to Z"`, never `&quot;`), in the
+  Game assets list, the title chip, the Mod name and the installed names; the
+  saved ZIP's file name keeps only letters, digits, `.`, `-` and `_`. You can
+  change it; **Automatic name** restores the suggestion. An untouched
+  automatic name is installed in English, Korean and Japanese (Chinese uses
+  English); a typed name is installed as typed. A Rina board scene package is
+  the exception: the installer stores one name for every language, so it is
+  installed with the name as shown on the page. The saved ZIP is named
+  date-first, then that name (`2026-11-28_0119_004_소노다_우미_…_android.zip`);
+  a typed name gets the member's number and romanised given name first. Loaded
+  models, the texture and mesh pickers and the transplant donor read the same
+  way; their cache file names (`ch0004_suit<id>_primary.unity`) stay on disk
+  and in each tooltip. The title chip shows the member on a small first line
+  and the costume below it, wrapped rather than cut. Game assets lists one
+  member's costumes by costume name only; search results start with the
+  member's number and are listed by member. A viewer Mod ZIP keeps an inert
+  record of its game costume that platform conversion verifies against the
+  body; a re-save that records its costume replaces it (never a second copy).
+  An older ZIP whose name still contains `ch0004_suit<id>_primary` for its own
+  member reads as that game costume (its edit labels in each language), and a
+  re-save records that costume, so the readable name converts as the code
+  did. The optional target settings let you identify an otherwise
   unknown character or supply the other Rina model and the edited variant.
   Rina mod packages apply the same source-relative body changes to both board
   and unmasked models, including when you edit only one variant. Each variant
   uses its own original transforms and validated editing session. Missing or mismatched counterpart data prevents
-  packaging instead of producing an incomplete installable costume.
+  packaging instead of producing an incomplete installable costume. Outline
+  and physics edits of a part the other variant does not have at all (the
+  board's Mask, HeadSet, eye_* and mouth_* meshes, or the Normal face's hair
+  swing bones) stay on the edited variant, and the other variant keeps its
+  original model; the save status names those parts. A reopened costume keeps
+  them in the other view too: a Mod ZIP made there writes them back unchanged,
+  together with the other variant's own texture edits. A part the other variant
+  has but cannot be matched exactly, a Node edit of a bone it lacks, and any
+  part missing from the same variant's Android/iOS alternative are still
+  refused. These refusals name the part after a fixed, translated sentence.
   Rina **BreastSize/HipsSize Node Scaling** packages also include a separate
   board model for Home/outfit preview, alongside the two MV models. The MV
   body edits are not applied again. Supplied Android/iOS versions each keep
@@ -510,6 +585,41 @@ repacking is unnecessary and the source files remain unchanged.
   source-bound recipes and exact source ZIP metadata stay inside the package
   for later editing, so reopening, changing Node to Mesh, or resetting starts
   from the original shape. Other Node controls retain their existing behavior.
+  A Rina costume reopened with **Rina face: Rina board** draws the board over
+  the face, so its face outlines are not editable there. Its saved face
+  outline edits are kept: the costume's own **Normal face** body proves that
+  face, and **Save** and the Mod ZIP write those edits unchanged and list them
+  in the saved recipe. The save panel says how many face outline edits are
+  kept, and they count in **Model changes**, the suggested mod name and the
+  "already added" check. Loading a recipe keeps them unless that recipe sets
+  the face itself (it has outline, texture or other rows for that face); then
+  its own face rows replace them and the status says how many were released
+  and which kind of rows did it. An outline edit of only the face keeps both
+  board and unmasked bodies original.
+  A costume ZIP that ships its own face (a reopened Mod ZIP saved with
+  **Include face and mouth edits for this costume**, or a Rina scene costume
+  whose Mod ZIP included the face, and their **Re-edit from original**) has the
+  option on by default, so **Save mod ZIP** keeps that face. A Rina scene
+  saved with the option off keeps its face only to author face edits and
+  reopens, also after **Save** and **Re-edit from original**, with the option
+  off: its Mod ZIP uses the game's face unless you tick it. Turning the option
+  off is refused, with a note to tick it again, only where the body uses a
+  face the game does not have: a face the ZIP ships, or one whose bytes are
+  not the game's original. The original is the face cache's copy, or, when
+  the cache has none, the catalog copy read as automatic faces are read (local
+  packs first, then a download when the costume opens with downloads allowed).
+  When it still cannot be read, the option's note and the refusal say that the
+  game's original face could not be checked on this device: opening the
+  costume once with **Load from game assets** lets it be checked, and ticking
+  the option includes the face edits.
+  A face the preview completed automatically stays off by default when it is
+  the game's catalog original (every official costume of a member shares it).
+  An installed costume that was added with its own face (**Add to game** with
+  the option ticked) depends on that private face; reopened from **Load from
+  game assets** it completes that face, whose bytes differ from the game's
+  original, so it counts as the costume's own face: the option starts on with
+  the own-face note and turning it off is refused, since the new costume would
+  otherwise lose those face edits and point at a face it does not have.
   Previously installed Rina mods are not rewritten automatically. Reopen the
   original ZIP or saved edited source, choose **Save mod ZIP** or **Add to game**,
   then select the newly installed costume. Old app versions cannot install
@@ -517,7 +627,17 @@ repacking is unnecessary and the source files remain unchanged.
 - **Open saved result** inspects the actual serialized output. Persistent body
   controls stay locked while inspecting it; pose, motion, camera and expressions
   remain available. **Re-edit from original** restores the saved editing recipe
-  on its preserved original files. Save newer body changes before inspecting an
+  on its preserved original files. It reopens the originals you selected; a
+  face the preview completed automatically is completed again from its saved
+  copy beside the body, so **Save mod ZIP** and **Add to game** still package
+  one costume with its face: the save names that face beside the body
+  (`originals/viewer-companions.json`), so exactly that copy is completed
+  first, not another face with the same Unity names. Re-editing a save of a
+  reopened Rina scene costume (either face view) keeps it a scene costume with
+  its name, source, face edits and the other variant's own edits, also after
+  the app restarts: the save keeps the scene beside its originals copy
+  (`originals/viewer-scene.json`, bound to that file's name and bytes). The same
+  original opened without that file beside it is a new costume. Save newer body changes before inspecting an
   older result so returning to its recipe cannot discard unsaved edits.
 - **Animation priority** shows the loaded clip's own track values after node
   adjustments, including constant scale tracks. It helps expose competing keys;
@@ -570,6 +690,91 @@ resolved automatically from original assets. Missing parts or unsupported
 textures are reported above the model. Supported raw and ASTC texture images
 retain their original dimensions and pixels. Android includes the ASTC decoder;
 desktop users can point `ASTCENC_BIN` at an executable `astcenc`/`astcdec` CLI.
+
+### Bake blush (홍조 굽기)
+
+In Live and Navi the game ignores a costume's own blush settings: it binds the
+APK's shared `cheek_array` and only the song's cheek clips drive the blush
+(median intensity 0.255, maximum 1.0). The per-costume way to get a stronger
+blush is to bake it into that costume's head texture. **Texture and color
+tools → Bake blush** appears when the model has a head material
+(`BodyPartManager.headMaterial`) or a recolour-suit texture bound to it, and
+opens that face texture.
+
+- Pick the blush type by its shape: **Cheeks (Ppo)** / 볼 홍조(Ppo) (the stock
+  default, two round patches on the cheeks; 3105 of 3141 MV clips) or **Cheeks
+  and nose (Akarame)** / 볼·콧등 홍조(Akarame) (one band across both cheeks and the
+  bridge of the nose). The types differ in shape, not strength: strength is
+  only one of the five levels below. The 3D view previews the choice at once;
+  **Show before** toggles it off; **Apply blush** is one undo step (the history
+  buttons, Ctrl+Z / Ctrl+Y and Ctrl+Shift+Z anywhere in the texture tools).
+  **Cancel preview** drops the previewed choice entirely: the next change starts
+  from the applied bake (or the defaults). The two types sit side by side, the
+  five levels in a grid after the "No blush" swatch, and Apply / Show before /
+  Remove in one row right under them, followed by one line that says what Save
+  will write for this face (exact pixels and how much larger the texture data
+  gets, or that keeping ASTC is requested; Save itself reports what it wrote).
+  Above Apply sits only what changes the choice. The notes that ask for more
+  than this choice (bake the other platform's bundle, or the recolour suits'
+  texture) follow the save line in full, and one line above the types counts
+  them and brings them into view (“3 notes — see below” / 알림 3개 — 아래 참고),
+  so no number of notes can push Apply down. At 1366×900 the status, all five
+  levels, Apply and the save line are in view together when the tab opens and
+  with the longest status (Akarame, Very strong and Keep ASTC, or a custom k),
+  in English, Korean and Japanese, also on a costume with recolour suits.
+- Each level shows the texture's own cheek-centre colour. Strength k is a
+  permanent blush of intensity k (k = 1 is the strongest stock clip):
+  Very light 0.5, Light 1.05, Medium 1.65 (default), Strong 2.3, Very strong 3
+  (so Light is the closest to the game's own strongest song blush, which the
+  panel says right under the strength heading).
+  Neighbouring levels differ by CIEDE2000 4.6–5.0 at the darkest stock texel on
+  a typical cheek (4.2 or more on every head sampled); the strongest keeps
+  every channel far from 0. **Advanced** accepts any k up to 4.
+- The bake is the shader's own rule: RGB × (1 + k·(cheek − 1)), cheek sampled
+  bilinearly with Clamp at `uv·2.22 + (0, −1.221)` (Unity v up), alpha
+  untouched. Only texels whose rounded colour changes are written. Every authored
+  mip is baked in place at its own texel centres; mips are never regenerated.
+- Saving, by default **exact pixels**: the face is written as lossless RGBA32
+  at its authored mip count, so every texel the bake does not change keeps its
+  decoded value and every baked texel is exactly the shader result (an ASTC
+  6×6 face's texture data grows about nine times, as with the other texture
+  tools). **Advanced → Keep the game's compression (ASTC)** /
+  게임 압축 형식(ASTC) 유지 is the opt-in alternative: the face keeps its ASTC
+  format, size and mip count; in every level each compressed block without a
+  changed texel keeps its original bytes, and only the blocks that contain one
+  are encoded again from the exact bake (the app's `astcenc` 4.8, LDR,
+  `-exhaustive -decode_unorm8`). ASTC is lossy, so every texel inside those
+  blocks, including ones the bake does not change, approximates the bake (real
+  1024² ASTC 6×6 face with astcenc 4.8.0: 509 of 29 241 blocks re-encoded at full
+  size, mean error 0.14 and at most 4 levels per channel there, up to 25 in the
+  16×16 mip; 532 texels the rule leaves alone change over all levels). Each
+  spliced level is decoded again; the save falls back to exact pixels unless
+  every texel outside the re-encoded blocks and every alpha value is unchanged.
+  Paint on the same texture, a non-ASTC texture, an `astcenc` without an
+  encoder and any other failure of the re-encode (its own 60 s budget, or the
+  decoder failing on a re-encoded level: `astcenc` exiting with an error or
+  timing out, or output it cannot read) also save exact pixels; the save itself
+  never fails because of the ASTC option. After saving, the save status says which mode
+  each baked face used and, for a fallback, why. The tests use a stand-in
+  encoder; `REAL_ASTCENC_BIN=/path/to/astcenc` (4.8.0) runs the astc-keep save
+  with the real CLI as well (with `REAL_MV_SAMPLES`, on a real head too).
+- The recipe stores the bake as `blush: {layer, k, encoding}` with encoding
+  `exact` (default; a row without the field loads as exact) or `astc-keep`.
+  It is an operation on the original pixels, so applying
+  another strength replaces the bake instead of adding to it. **Export PNG**
+  writes the texture as the game shows it (bake included); **Import PNG** treats
+  the file as the final pixels and removes the bake operation in the same undo
+  step, so a retouched export is never baked twice.
+- The blush pattern is read from the costume bundle (or a verified copy cached
+  from a costume you opened before, under `cache/viewer/cheek-array`) and checked
+  against the stock array's SHA-256. No game texture data ships with the tools.
+- Recolour suits (`m_suit_attach`, key `c1`) replace the head texture at runtime:
+  open the attach bundle with the costume and bake its texture too. While the
+  blush tab edits a recolour texture, the 3D view shows it on the head material
+  it replaces; leaving the tab or choosing another texture restores the face. Matcap faces
+  can look slightly different in game; the song blush still appears on top in
+  blush scenes; masked heads never get the song blush. Android and iOS bundles
+  are separate files.
 
 Three.js r128 and its matching controls/loader are bundled under `static/vendor`
 with their MIT license, so rendering scripts work offline. The local server converts

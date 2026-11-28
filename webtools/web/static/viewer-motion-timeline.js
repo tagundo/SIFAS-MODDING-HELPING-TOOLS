@@ -1,6 +1,7 @@
 /* The game's selected dancer and facial tracks share one authored playhead. */
 (function (global) {
   "use strict";
+  var MASK_MIN_RATE = Math.fround(.51);
   function number(value, fallback) { return typeof value === "number" && isFinite(value) ? value : fallback; }
   function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
   function curve(keys, position, fallback) {
@@ -16,6 +17,98 @@
     }
     return keys[keys.length - 1].value;
   }
+  // Exact Unity streamed TRS curves arrive as glTF CUBICSPLINE tracks (model_animation.py). The r128
+  // glTF loader marks their interpolant factory; such a track's values hold an in-tangent, a value and
+  // an out-tangent per key, so its sample is a third of getValueSize().
+  function cubicTrack(track) { return !!(track && track.createInterpolant && track.createInterpolant.isInterpolantFactoryMethodGLTFCubicSpline); }
+  function trackValueSize(track) { return track && track.unityEuler ? 4 : cubicTrack(track) ? track.getValueSize() / 3 : track.getValueSize(); }
+  // Unity evaluates the four rotation components as separate cubics and the client's transforms hold
+  // the normalized result (the GL 3.12.0 runtime dump's localRotation is unit length to 1e-7 where the
+  // raw component cubic is 7e-4 off). r128 does not normalize a CUBICSPLINE quaternion, so every
+  // interpolant of such a track normalizes what it evaluates, including the clamped end keys. Shared
+  // tracks are wrapped once; AnimationMixer, the timeline, gaze poses and rig replay all use the wrap.
+  function prepareAnimations(animations) {
+    (animations || []).forEach(function (clip) {
+      (clip && clip.tracks || []).forEach(function (track) {
+        var factory = track.createInterpolant;
+        if (!cubicTrack(track) || track.ValueTypeName !== "quaternion" || factory.normalizesQuaternion) return;
+        var normalized = function (result) {
+          var interpolant = factory.call(this, result), evaluate = interpolant.evaluate;
+          interpolant.evaluate = function (time) {
+            var value = evaluate.call(this, time), length = Math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3]);
+            if (length > 0 && isFinite(length)) for (var i = 0; i < 4; i += 1) value[i] /= length;
+            return value;
+          };
+          return interpolant;
+        };
+        normalized.isInterpolantFactoryMethodGLTFCubicSpline = true;
+        normalized.normalizesQuaternion = true;
+        track.createInterpolant = normalized;
+      });
+    });
+    return animations;
+  }
+  // An animated Euler rotation (Transform attribute 4) is three cubics the client converts to a
+  // quaternion every frame: unity_euler_quaternion in model_animation.py (q = qc * qb * qa for the
+  // rotation order's axes a, b, c), then the glTF mirror (x, -y, -z, w). The GLB's quaternion channel is
+  // a 60 Hz LINEAR approximation; the clip extras carry the exact Euler cubic, which replaces that track.
+  var EULER_ORDERS = ["xyz", "xzy", "yzx", "yxz", "zxy", "zyx"];
+  function eulerQuaternion(degrees, order, out) {
+    var axes = EULER_ORDERS[order] || EULER_ORDERS[4], x = 0, y = 0, z = 0, w = 1;
+    for (var step = 0; step < 3; step += 1) {
+      var axis = "xyz".indexOf(axes[step]), half = degrees[axis] * Math.PI / 360, s = Math.sin(half), c = Math.cos(half);
+      var ax = axis === 0 ? s : 0, ay = axis === 1 ? s : 0, az = axis === 2 ? s : 0;
+      // A later axis applies on the left: q = axis * q.
+      var nx = c * x + ax * w + ay * z - az * y, ny = c * y - ax * z + ay * w + az * x, nz = c * z + ax * y - ay * x + az * w, nw = c * w - ax * x - ay * y - az * z;
+      x = nx; y = ny; z = nz; w = nw;
+    }
+    var length = Math.sqrt(x * x + y * y + z * z + w * w) || 1;
+    out[0] = x / length; out[1] = -y / length; out[2] = -z / length; out[3] = w / length;
+    return out;
+  }
+  function eulerInterpolant(times, values, order, result) {
+    var degrees = [0, 0, 0], last = times.length - 1;
+    var interpolant = { parameterPositions: times, sampleValues: values, valueSize: 4, settings: null,
+      resultBuffer: result || new Float64Array(4) };
+    interpolant.evaluate = function (time) {
+      var index = 0, high = last;
+      if (!(time > times[0])) index = -1;
+      else if (time >= times[last]) index = -2;
+      else {
+        while (index < high - 1) { var middle = (index + high) >> 1; if (times[middle] <= time) index = middle; else high = middle; }
+      }
+      for (var axis = 0; axis < 3; axis += 1) {
+        if (index < 0) { degrees[axis] = values[9 * (index === -1 ? 0 : last) + 3 + axis]; continue; }
+        var span = times[index + 1] - times[index], s = (time - times[index]) / span, s2 = s * s, s3 = s2 * s;
+        degrees[axis] = (2 * s3 - 3 * s2 + 1) * values[9 * index + 3 + axis] + (s3 - 2 * s2 + s) * span * values[9 * index + 6 + axis] +
+          (-2 * s3 + 3 * s2) * values[9 * index + 12 + axis] + (s3 - s2) * span * values[9 * index + 9 + axis];
+      }
+      return eulerQuaternion(degrees, order, this.resultBuffer);
+    };
+    return interpolant;
+  }
+  function loadUnityEuler(gltf) {
+    var parser = gltf && gltf.parser, definitions = parser && parser.json && parser.json.animations, THREE = global.THREE;
+    if (!Array.isArray(definitions) || !Array.isArray(gltf.animations)) return Promise.resolve(gltf);
+    return Promise.all(definitions.map(function (definition, index) {
+      var rows = definition && definition.extras && definition.extras.unityEuler, clip = gltf.animations[index];
+      if (!Array.isArray(rows) || !clip) return null;
+      return Promise.all(rows.map(function (row) {
+        var channel = definition.channels && definition.channels[row.channel];
+        if (!channel || !channel.target || channel.target.path !== "rotation" || !Number.isInteger(row.input) || !Number.isInteger(row.output)) return null;
+        return Promise.all([parser.getDependency("node", channel.target.node), parser.getDependency("accessor", row.input),
+          parser.getDependency("accessor", row.output)]).then(function (loaded) {
+          var name = (loaded[0].name ? loaded[0].name : loaded[0].uuid) + ".quaternion", times = loaded[1].array, values = loaded[2].array;
+          var position = clip.tracks.findIndex(function (track) { return track.name === name; });
+          if (position < 0 || values.length !== 9 * times.length || !times.length) return;
+          var track = new THREE.QuaternionKeyframeTrack(name, times, values), order = row.rotationOrder;
+          track.unityEuler = true;
+          track.createInterpolant = function (result) { return eulerInterpolant(this.times, this.values, order, result); };
+          clip.tracks[position] = track;
+        });
+      }));
+    })).then(function () { return gltf; });
+  }
   function timing(source) {
     source = source || {};
     function read(short, original, fallback) { return number(source[short], number(source[original], fallback)); }
@@ -26,14 +119,24 @@
       preMode: read("preMode", "m_PreExtrapolationMode", 0), postMode: read("postMode", "m_PostExtrapolationMode", 0),
       preTime: read("preTime", "m_PreExtrapolationTime", 0), postTime: read("postTime", "m_PostExtrapolationTime", 0) };
   }
+  // TimelineClip.get_mixInCurve / get_mixOutCurve (GL 3.12.0 0x35ce834 /
+  // 0x35ce970) replace a serialized curve with fewer than two keys by
+  // AnimationCurve.EaseInOut(0, 0, 1, 1) / EaseInOut(0, 1, 1, 0): flat
+  // tangents, so the Hermite segment is the smoothstep 3t^2 - 2t^3.
+  // EvaluateMixIn/EvaluateMixOut (0x35c75a8 / 0x35c7720) clamp it to [0, 1].
+  function mixCurve(keys, t, rising) {
+    if (keys && keys.length >= 2) return clamp(curve(keys, t, 0), 0, 1);
+    var x = clamp(t, 0, 1), smooth = x * x * (3 - 2 * x);
+    return rising ? smooth : 1 - smooth;
+  }
   function weightWithTiming(segment, time, spec, sourceWeight) {
     var local = time - segment.start, span = segment.duration, value = number(sourceWeight, number(segment.weight, 1));
     if (local < 0) return spec.preMode && local >= -spec.preTime ? value : 0;
     if (local > span) return spec.postMode && local <= span + spec.postTime ? value : 0;
     var incoming = spec.blendIn >= 0 ? spec.blendIn : spec.easeIn;
     var outgoing = spec.blendOut >= 0 ? spec.blendOut : spec.easeOut;
-    if (incoming > 0 && local < incoming) value *= curve(spec.mixIn, local / incoming, local / incoming);
-    if (outgoing > 0 && local > span - outgoing) value *= curve(spec.mixOut, (local - span + outgoing) / outgoing, (span - local) / outgoing);
+    if (incoming > 0 && local < incoming) value *= mixCurve(spec.mixIn, local / incoming, true);
+    if (outgoing > 0 && local > span - outgoing) value *= mixCurve(spec.mixOut, (local - span + outgoing) / outgoing, false);
     return clamp(value, 0, 1);
   }
   function weight(segment, time) { return weightWithTiming(segment, time, timing(segment.timing)); }
@@ -94,6 +197,7 @@
     options = options || {};
     var T = global.THREE, info = metadata || {}, byName = {}, groups = {}, poses = {}, warnings = [], lastWeights = {}, missingTargets = [];
     var gazeWrites = options.restorePose ? [] : null;
+    prepareAnimations(animations);
     var face = null, eyeCandidates = [], faceCandidates = [], headCandidates = [];
     function name(node) { return node.userData && node.userData.originalName || node.name.replace(/__\d+$/, ""); }
     root.traverse(function (node) {
@@ -110,6 +214,35 @@
     else if (!eyeCandidates.length && faceCandidates.length === 1) face = faceCandidates[0];
     else if (!eyeCandidates.length && !faceCandidates.length && headCandidates.length === 1) face = headCandidates[0];
     (animations || []).forEach(function (clip) { byName[clip.name] = clip; });
+    // The six LiveMemberEyeContact clips play whole in the head graph's gaze
+    // mixer, the top override layer of LiveCoreMemberHead.animationLayerMixer
+    // (lip-sync, eye, gaze inputs at weight 1, InitializeDefault 0x2f67e18).
+    // Besides the iris bones they bind the eyelid shape they share with
+    // eye_003 (EyeBlendShape.eye_facial_003_006_011). A glTF weights channel
+    // repeats every target of its mesh, so only the indices the source clip
+    // binds (clip metadata morphTargets) take part; older exports without
+    // that list keep the iris-only gaze.
+    function gazeMorphRecords(entry, clip, track, binding, mesh) {
+      if (!mesh || !mesh.morphTargetInfluences || !Array.isArray(entry.morphTargets) || binding.propertyIndex !== undefined) return [];
+      var owner = mesh, id;
+      while (owner && (!owner.userData || owner.userData.elichika_node === undefined)) owner = owner.parent;
+      id = owner && owner.userData.elichika_node;
+      var bound = entry.morphTargets.filter(function (row) { return row && row.node === id && Array.isArray(row.indices); })[0];
+      var size = mesh.morphTargetInfluences.length;
+      if (!bound || trackValueSize(track) !== size) return [];
+      var value = track.createInterpolant().evaluate(clip.duration), result = [];
+      bound.indices.forEach(function (index) {
+        if (!Number.isInteger(index) || index < 0 || index >= size || typeof value[index] !== "number" || !isFinite(value[index]) ||
+            typeof mesh.morphTargetInfluences[index] !== "number" || !isFinite(mesh.morphTargetInfluences[index])) return;
+        result.push({ key: mesh.uuid + ":morph:" + index, node: mesh, property: "morph", index: index, value: [value[index]] });
+      });
+      return result;
+    }
+    function readGroup(group) { return group.property === "morph" ? [group.node.morphTargetInfluences[group.index]] : group.node[group.property].toArray(); }
+    function writeGroup(group, value) {
+      if (group.property === "morph") group.node.morphTargetInfluences[group.index] = value[0];
+      else group.node[group.property].fromArray(value);
+    }
     var aliases = options.aliases || (info.expressionCatalog && info.expressionCatalog.gaze && info.expressionCatalog.gaze.clips) || [];
     for (var direction = 6; direction <= 11; direction += 1) {
       var candidates = (info.clips || []).filter(function (entry) {
@@ -126,6 +259,10 @@
         clip.tracks.forEach(function (track) {
           var binding = T.PropertyBinding.create(root, track.name); binding.bind();
           var node = binding.targetObject || binding.node, property = binding.parsedPath && binding.parsedPath.propertyName;
+          if (options.morphs && property === "morphTargetInfluences") {
+            gazeMorphRecords(entry, clip, track, binding, node).forEach(function (record) { records.push(record); });
+            return;
+          }
           if (!node || !node.isBone || node.userData && node.userData.viewerHelper || !/^(?:Left|Right)Eye(?:[12]|_Root)$/.test(name(node)) ||
               ["position", "quaternion", "scale"].indexOf(property) < 0) return;
           var value = Array.prototype.slice.call(track.createInterpolant().evaluate(clip.duration));
@@ -142,7 +279,7 @@
       }
       poses[direction] = prepared[0];
       prepared[0].forEach(function (record) {
-        if (!groups[record.key]) groups[record.key] = { node: record.node, property: record.property, base: record.node[record.property].toArray() };
+        if (!groups[record.key]) groups[record.key] = { node: record.node, property: record.property, index: record.index, base: readGroup(record) };
       });
     }
     var rotationPath = [], worldQuaternion = new T.Quaternion(), direction = new T.Vector3(), facePosition = new T.Vector3();
@@ -174,6 +311,14 @@
       var vertical = Math.abs(direction.y) <= .001 ? 0 : Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * 180 / Math.PI / 30;
       return gazeAxes(horizontal, vertical);
     }
+    // LiveMemberEyeContact.LateUpdate (0x29985b0): every input starts at 0
+    // and each active clip adds its direction weights (CalcWeight 0x29987c4).
+    function weights(requests, context) {
+      missingTargets = []; var combined = {};
+      (requests || []).forEach(function (request) { var values = targetWeights(request.target, context); if (!values) return;
+        Object.keys(values).forEach(function (id) { combined[id] = (combined[id] || 0) + values[id] * clamp(number(request.weight, 1), 0, 1); }); });
+      return combined;
+    }
     function apply(weights, neutral) {
       lastWeights = Object.assign({}, weights); var contributions = {}, requested = false;
       Object.keys(weights).forEach(function (id) {
@@ -193,7 +338,7 @@
           group.node.quaternion.copy(q.normalize());
         } else {
           for (var i = 0; i < result.length; i += 1) { result[i] = group.base[i] * remainder; entries.forEach(function (entry) { result[i] += entry.value[i] * entry.weight; }); result[i] /= Math.max(1, total); }
-          group.node[group.property].fromArray(result);
+          writeGroup(group, result);
         }
       });
       return requested && Object.keys(contributions).length > 0 || neutral && Object.keys(groups).length > 0;
@@ -202,18 +347,14 @@
       eyePosition: function (result) { return nativeEye && nativeEye.getWorldPosition(result); },
       restorePose: function () {
         if (!gazeWrites) return;
-        gazeWrites.forEach(function (group) { group.node[group.property].fromArray(group.base); });
+        gazeWrites.forEach(function (group) { writeGroup(group, group.base); });
         gazeWrites.length = 0;
       },
-      evaluate: function (requests, context) {
-        missingTargets = []; var combined = {};
-        (requests || []).forEach(function (request) { var values = targetWeights(request.target, context); if (!values) return;
-          Object.keys(values).forEach(function (id) { combined[id] = (combined[id] || 0) + values[id] * clamp(number(request.weight, 1), 0, 1); }); });
-        return apply(combined, false);
-      },
-      properties: function () { var result = {}; Object.keys(groups).forEach(function (key) { var group = groups[key], id = group.node.userData && group.node.userData.elichika_node;
+      weights: weights,
+      evaluate: function (requests, context) { return apply(weights(requests, context), false); },
+      properties: function () { var result = {}; Object.keys(groups).forEach(function (key) { var group = groups[key], id = group.property === "morph" ? undefined : group.node.userData && group.node.userData.elichika_node;
         if (id !== undefined) { if (!result[String(id)]) result[String(id)] = {}; result[String(id)][group.property] = true; } }); return result; },
-      operations: function () { return Object.keys(groups).map(function (key) { var group = groups[key], node = group.node.userData && group.node.userData.elichika_node;
+      operations: function () { return Object.keys(groups).filter(function (key) { return groups[key].property !== "morph"; }).map(function (key) { var group = groups[key], node = group.node.userData && group.node.userData.elichika_node;
         return { node: node, kind: group.property, value: group.node[group.property].toArray(), source: "expression" }; }).filter(function (operation) { return Number.isInteger(operation.node); }); },
       getState: function () { return { available: Object.keys(poses).length > 0, directions: Object.keys(poses).map(Number), weights: Object.assign({}, lastWeights), missingTargets: missingTargets.slice(), warnings: warnings.slice() }; }
     };
@@ -221,6 +362,7 @@
   function create(root, animations, metadata, descriptor, options) {
     options = options || {};
     var THREE = global.THREE, warnings = [], compatibilityDetails = [], groups = {}, facialGroups = {}, gazeGroups = {}, visibility = [], nativeEvents = new Set(), used = 0;
+    prepareAnimations(animations);
     var info = metadata || {}, clips = info.clips || [], expressions = info.expressionCatalog || {};
     var animationByName = {}, nodeByIndex = {}, faceChannels = {}, facePresets = {}, morphGroups = {}, sampleFrame = 0;
     var clipIdentities = new Map(), bindingsByName = new Map(), staticSamples = new WeakMap(), facialMatches = new Map();
@@ -256,13 +398,57 @@
     function beginSample(time, fresh) {
       if (fresh || sampleTime !== time) { sampleTime = time; sampleRevision += 1; }
     }
+    // A masked head whose timeline has no Rina tracks runs InitializeMask's
+    // LiveMemberAnimationMask instead of the default facial blend. Its eye and
+    // lip mixers sum each index's input weight; ProcessFrameMask ignores sums
+    // below minRateToActive (0x3f028f5c), and UpdateAnimationMask resets every
+    // input and sets the requested clip to 1. The last qualifying index wins;
+    // without one every input stays 0 and the head keeps its default dots.
+    var selection = descriptor.facial && descriptor.facial.trackSelection;
+    var maskEvents = selection && selection.mask === true ? { eyes: [], mouth: [] } : null;
+    var maskMembers = maskEvents ? new Set() : null, maskWinners = {}, maskRevision = -1;
+    function maskWinner(kind, time) {
+      if (maskRevision !== sampleRevision) { maskRevision = sampleRevision; maskWinners = {}; }
+      if (maskWinners[kind]) return maskWinners[kind];
+      var sums = new Map(), first = new Map(), winner = null;
+      timedRecords(maskEvents[kind], time).forEach(function (event) {
+        var amount = splitGate(event) ? weightWithTiming(event, time, getTiming(event)) : 0;
+        if (!(amount > 0)) return;
+        sums.set(event.index, Math.fround(Math.fround(sums.get(event.index) || 0) + Math.fround(amount)));
+        if (!first.has(event.index)) first.set(event.index, event);
+      });
+      sums.forEach(function (rate, index) { if (!(MASK_MIN_RATE > rate)) winner = first.get(index); });
+      return maskWinners[kind] = { event: winner };
+    }
+    // LiveMemberLipSync.Initialize stores WeightRate = MemberFaceData.LipSync.Weight
+    // for AnimationForLipsync (A, I, U, E, O, N = 1..6) and 1 for every other
+    // index; ProcessFrameDefault sets each input weight to w * WeightRate.
+    var head = info.memberHead || {}, lipSyncRate = typeof head.lipSyncWeight === "number" && isFinite(head.lipSyncWeight) ?
+      Math.fround(clamp(head.lipSyncWeight, 0, 1)) : 1;
+    function inputRate(segment) {
+      return lipSyncRate !== 1 && segment.kind === "mouth" && segment.index >= 1 && segment.index <= 6 ? lipSyncRate : 1;
+    }
+    // MemberEyeMixer.Process: when the clip's splitScreenSetting.UseSetting is
+    // set and LiveCoreCameraManager.IsSplitScreenEnabled (the SplitScreenEffect
+    // object is active), the input adds setting.Weight to setting.Index instead
+    // of clip.weight to clip.index. The alternate is a twin input that shares
+    // the clip's timing; exactly one of the pair is live for a split state.
+    var splitActive = false, splitTwins = new WeakMap();
+    function splitGate(segment) {
+      var primary = splitTwins.get(segment);
+      if (primary) return splitActive && primary.splitUse !== false;
+      if (Number.isInteger(segment.splitIndex) && segment.splitUse !== false) return !splitActive;
+      return true;
+    }
     function sampleSegment(segment, time) {
       var sample = sampledSegments.get(segment);
       if (!sample) { sample = {}; sampledSegments.set(segment, sample); }
       if (sample.revision !== sampleRevision) {
         var spec = getTiming(segment);
         sample.revision = sampleRevision;
-        sample.weight = weightWithTiming(segment, time, spec);
+        var rate = inputRate(segment);
+        sample.weight = !splitGate(segment) ? 0 : maskMembers && maskMembers.has(segment) ? (maskWinner(segment.kind, time).event === segment ? 1 : 0) :
+          rate === 1 ? weightWithTiming(segment, time, spec) : Math.fround(Math.fround(weightWithTiming(segment, time, spec)) * rate);
         sample.local = (time - segment.start) * number(segment.timeScale, 1) + number(segment.clipIn, 0);
         sample.mode = time < segment.start ? spec.preMode : time > segment.start + segment.duration ? spec.postMode : 1;
       }
@@ -345,7 +531,7 @@
         var key = track.name, group = collection[key], binding = group && group.binding || bindingsByName.get(key);
         if (!binding) { binding = THREE.PropertyBinding.create(root, key); binding.bind(); bindingsByName.set(key, binding); }
         if (gazeOnly && (!binding.node || !binding.node.isBone || !/^(?:Left|Right)Eye(?:[12]|_Root)$/.test(binding.node.userData.originalName || binding.node.name.replace(/__\d+$/, "")))) return;
-        var base = new Array(track.getValueSize()); binding.getValue(base, 0);
+        var base = new Array(trackValueSize(track)); binding.getValue(base, 0);
         if (!denseFinite(base)) return;
         var node = binding.targetObject || binding.node;
         var morph = collection === facialGroups && binding.parsedPath && binding.parsedPath.propertyName === "morphTargetInfluences";
@@ -388,15 +574,70 @@
       if (register(groups, clip, segment, false)) used += 1;
       else { compatibilityDetails.push({ sourceName: segment.sourceName || "", reason: "The body clip's tracks do not bind to this model's bones." }); warn("A selected body segment is incompatible with this model."); }
     });
-    var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [];
+    var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [], cheekEvents = [];
+    if (events.some(function (event) { return event.kind === "eyes" && Number.isInteger(event.splitIndex); })) {
+      // Each twin directly follows its clip, so the eye mixer's per-index
+      // insertion order (and the mask's last-index rule) stays the original.
+      events = events.slice(0, 12000).reduce(function (list, event) {
+        list.push(event);
+        if (event.kind !== "eyes" || !Number.isInteger(event.splitIndex)) return list;
+        var twin = Object.create(event, {
+          index: { value: event.splitIndex, enumerable: true },
+          weight: { get: function () { return Number.isFinite(event.splitWeight) ? event.splitWeight : 0; }, enumerable: true }
+        });
+        splitTwins.set(twin, event);
+        list.push(twin);
+        return list;
+      }, []);
+    }
+    if (maskEvents) events.slice(0, 12000).forEach(function (event) {
+      if (maskEvents[event.kind]) { maskEvents[event.kind].push(event); maskMembers.add(event); }
+    });
     var modelGaze = info.expressionCatalog && info.expressionCatalog.gaze, retargetedGaze = !!(modelGaze && modelGaze.available &&
       Number.isInteger(modelGaze.owner) && Number.isInteger(descriptor.targetCharacter) && modelGaze.owner !== descriptor.targetCharacter);
+    // LiveCoreMemberHead gives LiveMemberLipSync the face's own
+    // MemberFaceData.animationTableMouth, and LiveMemberEyeAnimation and
+    // LiveMemberEyeContact its animationTableEye (rig memberHead.facialTables,
+    // rows in serialized order). A motion's explicit table for a kind wins.
+    var faceTables = {};
+    ["eyes", "mouth"].forEach(function (kind) {
+      var rows = head.facialTables && head.facialTables[kind];
+      if (!Array.isArray(rows) || (descriptor.facialClips || []).some(function (entry) { return entry.kind === kind; })) return;
+      faceTables[kind] = rows.slice(0, 256).map(function (row) { return Object.assign({ kind: kind }, row); });
+    });
     // Direction indices are the game's common six-pose semantics. When a
     // retained motion belongs to another character, use this face's verified
     // endpoints instead of writing the old character's absolute iris positions.
     var gaze = createGaze(root, animations, info, {
-      aliases: retargetedGaze ? modelGaze.clips : descriptor.facialClips || [], restorePose: restoreFace
+      aliases: retargetedGaze ? modelGaze.clips : (descriptor.facialClips || []).concat(faceTables.eyes || []), restorePose: restoreFace,
+      morphs: true
     });
+    // Live heads create playables only for MemberEyeClip / MemberLipSyncClip
+    // AnimationIndex values (Initialize walks Enum.GetValues of that enum).
+    function liveFacialId(kind, index) {
+      return LIVE_FACIAL_IDS[kind === "mouth" ? "mouth" : "eyes"].indexOf(index) >= 0;
+    }
+    var silentEvents = new Set(), fallbackIndexes = new Map();
+    function resolveFacial(event, kind) {
+      if (descriptor.category === "mv" && !liveFacialId(event.kind, event.index)) return { none: true };
+      var table = faceTables[event.kind], alias;
+      if (table) {
+        // CreateAnimationClip plays the first row with this index (FirstOrDefault),
+        // whatever its customIndex; no row means no playable for the index.
+        alias = table.filter(function (row) { return row.index === event.index; }).slice(0, 1);
+        if (!alias.length) { warn("Some original facial indices are not in this face's animation table and are not played."); return { none: true }; }
+      } else alias = (descriptor.facialClips || []).filter(function (entry) { return entry.kind === event.kind && entry.index === event.index; });
+      // An original row whose clip is null creates no playable either.
+      if (alias.length && alias.every(function (entry) { return !entry.sourceHash; })) return { none: true };
+      var pattern = new RegExp("(?:^|_)LiveFacial_" + kind + "_0*" + event.index + "(?:__\\d+)?$");
+      var matches = clips.filter(function (entry) {
+        return animationByName[entry.name] && (alias.length ? alias.some(function (facial) { return facial.sourceHash === entry.sourceHash && facial.sourceName === entry.sourceName; }) : pattern.test(entry.sourceName || entry.name));
+      });
+      // Should the clip itself be unavailable, a shape fallback follows the
+      // clip the row names (mouth 13 -> mouth_004), not the timeline index.
+      var named = alias.length && /(?:^|_)LiveFacial_(?:eye|mouth)_0*(\d+)(?:__\d+)?$/.exec(alias[0].sourceName || "");
+      return { matches: matches, index: named ? Number(named[1]) : event.index };
+    }
     function getNativeEyePose(event, entry, identity) {
       if (!nativeEyeVisibility.size || event.kind !== "eyes" || typeof event.nativeEventId !== "string" ||
           entry.sourceRole !== "facial" || entry.bindingComplete !== true) return null;
@@ -449,16 +690,16 @@
         gazeEvents.push(event);
         return;
       }
-      if (event.kind !== "eyes" && event.kind !== "mouth") return;
-      var kind = event.kind === "eyes" ? "eye" : "mouth", identity = event.kind + ":" + event.index, matches = facialMatches.get(identity);
-      if (!matches) {
-        var pattern = new RegExp("(?:^|_)LiveFacial_" + kind + "_0*" + event.index + "(?:__\\d+)?$");
-        var alias = (descriptor.facialClips || []).filter(function (entry) { return entry.kind === event.kind && entry.index === event.index; });
-        matches = clips.filter(function (entry) {
-          return animationByName[entry.name] && (alias.length ? alias.some(function (facial) { return facial.sourceHash === entry.sourceHash && facial.sourceName === entry.sourceName; }) : pattern.test(entry.sourceName || entry.name));
-        });
-        facialMatches.set(identity, matches);
+      if (event.kind === "cheek") {
+        cheekEvents.push(event);
+        return;
       }
+      if (event.kind !== "eyes" && event.kind !== "mouth") return;
+      var kind = event.kind === "eyes" ? "eye" : "mouth", identity = event.kind + ":" + event.index, resolution = facialMatches.get(identity);
+      if (!resolution) facialMatches.set(identity, resolution = resolveFacial(event, kind));
+      if (resolution.none) { silentEvents.add(event); return; }
+      if (resolution.index !== event.index) fallbackIndexes.set(event, resolution.index);
+      var matches = resolution.matches;
       var entry = matches.length === 1 ? matches[0] : null, eyePose = entry && getNativeEyePose(event, entry, identity);
       if (entry && register(facialGroups, animationByName[entry.name], event, true, false, eyePose)) {
         if (eyePose) nativeEyeEvents.push({ event: event, pose: eyePose });
@@ -467,10 +708,10 @@
         });
         nativeEvents.add(event);
       } else {
-        var preset = facePresets[(kind === "mouth" ? 10000 : 0) + event.index];
+        var preset = facePresets[(kind === "mouth" ? 10000 : 0) + resolution.index];
         var presetBound = preset && (preset.targets || []).some(function (target) { return !!faceChannels[target.node + ":" + target.index]; });
         var rawMatch = (expressions.rawChannels || []).some(function (channel) {
-          var expected = (kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + event.index).slice(-3);
+          var expected = (kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + resolution.index).slice(-3);
           return channel.name.toLowerCase() === expected.toLowerCase() && !!faceChannels[channel.node + ":" + channel.index];
         });
         if (!presetBound && !rawMatch) warn("Some original facial shapes are unavailable for this model.");
@@ -482,57 +723,85 @@
     var faceGroups = Object.keys(facialGroups).map(function (key) { return facialGroups[key]; });
     var gazeTrackGroups = Object.keys(gazeGroups).map(function (key) { return gazeGroups[key]; });
     var shapeGroups = Object.keys(morphGroups).map(function (key) { return morphGroups[key]; });
+    // The blended value of one group at `time` into `result` (false when no
+    // segment contributes). Nothing is written to the bound property.
+    function blendGroup(group, time, result) {
+      var values = group.values, total = 0; values.length = 0;
+      timedRecords(group.tracks, time, trackSegment).forEach(function (record) {
+        var sample = sampleSegment(record.segment, time), amount = sample.weight;
+        if (amount <= 0) return;
+        var local = sample.local;
+        // Facial clips are original poses (many have one key at the end).
+        if (record.staticPose) local = record.duration;
+        else {
+          var mode = sample.mode;
+          if (mode === 2 && record.duration) local = ((local % record.duration) + record.duration) % record.duration;
+          else if (mode === 3 && record.duration) { var phase = ((local % (2 * record.duration)) + 2 * record.duration) % (2 * record.duration); local = phase <= record.duration ? phase : 2 * record.duration - phase; }
+          else local = clamp(local, 0, record.duration);
+        }
+        // Each record owns an interpolant and its result buffer, so another
+        // track cannot overwrite this sample before this group is blended.
+        var entry = record.weightedSample;
+        entry.value = record.staticPose ? record.staticValue : record.interpolant.evaluate(local); entry.weight = amount;
+        values.push(entry); total += amount;
+      });
+      if (!values.length) return false;
+      var remainder = Math.max(0, 1 - total), denominator = total + remainder;
+      if (group.quaternion) {
+        var q = group.rotation.fromArray(group.base), next = group.nextRotation, accumulated = remainder;
+        values.forEach(function (entry) {
+          next.fromArray(entry.value);
+          if (!accumulated) q.copy(next); else q.slerp(next, entry.weight / (accumulated + entry.weight));
+          accumulated += entry.weight;
+        }); q.normalize().toArray(result);
+      } else {
+        for (var i = 0; i < result.length; i += 1) {
+          result[i] = group.base[i] * remainder;
+          values.forEach(function (entry) { result[i] += entry.value[i] * entry.weight; });
+          result[i] /= denominator;
+        }
+      }
+      return true;
+    }
     function evaluateGroups(collection, time, writes) {
       collection.forEach(function (group) {
-        var values = group.values, total = 0; values.length = 0;
-        timedRecords(group.tracks, time, trackSegment).forEach(function (record) {
-          var sample = sampleSegment(record.segment, time), amount = sample.weight;
-          if (amount <= 0) return;
-          var local = sample.local;
-          // Facial clips are original poses (many have one key at the end).
-          if (record.staticPose) local = record.duration;
-          else {
-            var mode = sample.mode;
-            if (mode === 2 && record.duration) local = ((local % record.duration) + record.duration) % record.duration;
-            else if (mode === 3 && record.duration) { var phase = ((local % (2 * record.duration)) + 2 * record.duration) % (2 * record.duration); local = phase <= record.duration ? phase : 2 * record.duration - phase; }
-            else local = clamp(local, 0, record.duration);
-          }
-          // Each record owns an interpolant and its result buffer, so another
-          // track cannot overwrite this sample before this group is blended.
-          var entry = record.weightedSample;
-          entry.value = record.staticPose ? record.staticValue : record.interpolant.evaluate(local); entry.weight = amount;
-          values.push(entry); total += amount;
-        });
-        if (!values.length) return;
-        var result = group.result, remainder = Math.max(0, 1 - total), denominator = total + remainder;
-        if (group.quaternion) {
-          var q = group.rotation.fromArray(group.base), next = group.nextRotation, accumulated = remainder;
-          values.forEach(function (entry) {
-            next.fromArray(entry.value);
-            if (!accumulated) q.copy(next); else q.slerp(next, entry.weight / (accumulated + entry.weight));
-            accumulated += entry.weight;
-          }); q.normalize().toArray(result);
-        } else {
-          for (var i = 0; i < result.length; i += 1) {
-            result[i] = group.base[i] * remainder;
-            values.forEach(function (entry) { result[i] += entry.value[i] * entry.weight; });
-            result[i] /= denominator;
-          }
-        }
-        group.binding.setValue(result, 0);
+        if (!blendGroup(group, time, group.result)) return;
+        group.binding.setValue(group.result, 0);
         if (writes) writes.push(group);
       });
+    }
+    // The dance's local position/quaternion/scale of `node` at `time`, without
+    // writing the pose (a side-effect-free sample for client state that a
+    // frame before the evaluated one left, e.g. a hidden member shaft). Null
+    // when no body segment animates that property at that time.
+    function sampleLocal(node, property, time, out) {
+      var group = null;
+      for (var index = 0; index < bodyGroups.length && !group; index += 1) {
+        var binding = bodyGroups[index].binding;
+        if ((binding.targetObject || binding.node) === node && binding.parsedPath && binding.parsedPath.propertyName === property) group = bodyGroups[index];
+      }
+      if (!group) return null;
+      var previous = sampleTime, result = out || new Array(group.base.length);
+      beginSample(time, true);
+      try {
+        return blendGroup(group, time, result) ? result : null;
+      } finally {
+        if (previous !== null) beginSample(previous, true);
+      }
     }
     var fallbackTargets = {};
     function targetsFor(kind, index) {
       var semantic = (kind === "mouth" ? 10000 : 0) + index;
       if (fallbackTargets[semantic]) return fallbackTargets[semantic];
       var preset = facePresets[semantic];
-      return fallbackTargets[semantic] = preset && preset.targets || (expressions.rawChannels || []).filter(function (channel) {
-        return channel.group === kind;
-      }).map(function (channel) {
-        var expected = (kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + index).slice(-3);
-        return { node: channel.node, index: channel.index, value: channel.name.toLowerCase() === expected.toLowerCase() ? 1 : 0 };
+      if (preset && preset.targets) return fallbackTargets[semantic] = preset.targets;
+      var expected = ((kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + index).slice(-3)).toLowerCase();
+      var channels = (expressions.rawChannels || []).filter(function (channel) { return channel.group === kind; });
+      // An index without a shape of its own is unresolved: it contributes
+      // nothing, rather than a zero pose that closes every other channel.
+      if (!channels.some(function (channel) { return channel.name.toLowerCase() === expected; })) return fallbackTargets[semantic] = [];
+      return fallbackTargets[semantic] = channels.map(function (channel) {
+        return { node: channel.node, index: channel.index, value: channel.name.toLowerCase() === expected ? 1 : 0 };
       });
     }
     function applyShapes(time) {
@@ -556,7 +825,7 @@
         });
       });
       var activeEvents = timedRecords(events, time);
-      activeEvents.forEach(function (event) { if (active[event.kind] && !nativeEvents.has(event)) { var w = sampleWeight(event, time); if (w > 0) active[event.kind].push({ event: event, weight: w }); } });
+      activeEvents.forEach(function (event) { if (active[event.kind] && !nativeEvents.has(event) && !silentEvents.has(event)) { var w = sampleWeight(event, time); if (w > 0) active[event.kind].push({ event: event, weight: w }); } });
       // Navi speech follows decoded voice amplitude between authored mouth
       // poses. MV songs always use their original vowel timeline.
       var hasAuthoredMouth = (!indexTiming || descriptor.category !== "mv") && activeEvents.some(function (event) {
@@ -574,7 +843,7 @@
       }
       Object.keys(active).forEach(function (kind) {
         active[kind].forEach(function (record) {
-          var targets = targetsFor(kind, record.event.index);
+          var targets = targetsFor(kind, fallbackIndexes.has(record.event) ? fallbackIndexes.get(record.event) : record.event.index);
           targets.forEach(function (target) {
             (faceChannels[target.node + ":" + target.index] || []).forEach(function (channel) {
               var key = channel.node.uuid + ":" + channel.index;
@@ -600,7 +869,8 @@
         if (morphWrites) morphWrites.push(group);
       });
     }
-    function evaluatePose(time) {
+    function evaluatePose(time, context) {
+      splitActive = !!(context && context.split);
       beginSample(time, true);
       if (restoreFace) {
         faceWrites.forEach(function (group) { group.binding.setValue(group.base, 0); });
@@ -613,7 +883,74 @@
       evaluateGroups(faceGroups, time, faceWrites);
       applyShapes(time);
     }
-    function evaluateGaze(time, context) {
+    // LiveCoreMemberHead.Initialize sets its PlayableGraph to game time and
+    // plays it (SetTimeUpdateMode(1) 0x2f65fb0, Play 0x2f660dc), so Unity
+    // evaluates the head in PreLateUpdate, before LiveMemberEyeContact.LateUpdate
+    // recomputes the gaze inputs from that frame's pose and sets them with
+    // ApplyAll (0x2998950). An evaluated frame shows the gaze weights of the
+    // frame before it. A continuing playback frame keeps that lag; a seek
+    // cannot know its previous frame and applies the weights of its own pose.
+    var laggedGaze = null;
+    // The cheek floats and keyword the last cheek() call left (undefined before
+    // the first one; null is ResetAll's state).
+    var lastCheek;
+    function cheekApplied(event, amount, enabled) {
+      return { index: event.index, intensity: Math.fround(Math.fround(number(event.intensity, 0)) * Math.fround(amount)), enabled: enabled };
+    }
+    function cheekOff(state) { return { index: state.index, intensity: state.intensity, enabled: false }; }
+    function cheekWeight(event, time) { return weightWithTiming(event, time, getTiming(event)); }
+    // One MemberCheekMixer.Process pass at `time`: every input with a non-zero
+    // weight applies in input order, so the last one wins; null when none ran.
+    function cheekAt(time, weightOf) {
+      var state = null;
+      timedRecords(cheekEvents, time).forEach(function (event) {
+        var amount = weightOf(event);
+        if (amount > 0) state = cheekApplied(event, amount, true);
+      });
+      return state;
+    }
+    // Index of the last frame time below `limit` in an ascending list.
+    function lastFrameBelow(frames, limit) {
+      var low = 0, high = frames.length;
+      while (low < high) {
+        var mid = (low + high) >>> 1;
+        if (frames[mid] < limit) low = mid + 1;
+        else high = mid;
+      }
+      return low - 1;
+    }
+    // The floats a seek to `time` finds when no cheek input is active there:
+    // those of the last rendered frame (history, ascending director times
+    // before `time`) in which a clip was processed, with _CHEEK_ON off. That
+    // frame is known when the history covers the clip from its start, or when
+    // a listed frame follows the last listed frame inside it. Otherwise (the
+    // history starts inside the clip and ends there too, or starts after it)
+    // the clip's end is used: an unevidenced choice, as for a seek without
+    // frames, since the game never seeks an MV.
+    function replayedCheek(time, history) {
+      var frames = history.filter(function (value) { return Number.isFinite(value) && value < time - 1e-9; });
+      var first = frames.length ? frames[0] : Infinity, latest = -Infinity, state = null;
+      cheekEvents.forEach(function (event) {
+        var end = event.start + event.duration;
+        if (!(event.start < time)) return;
+        var index = lastFrameBelow(frames, Math.min(time - 1e-9, end + 1e-9));
+        while (index >= 0 && frames[index] >= event.start && !(cheekWeight(event, frames[index]) > 0)) index -= 1;
+        var inside = index >= 0 && frames[index] >= event.start;
+        if (first <= event.start || (inside && index < frames.length - 1)) {
+          if (inside && frames[index] > latest) {
+            var frame = frames[index];
+            latest = frame;
+            state = cheekOff(cheekAt(frame, function (other) { return cheekWeight(other, frame); }));
+          }
+          return;
+        }
+        if (!(end <= time) || end < latest || !(number(event.weight, 1) > 0)) return;
+        latest = end;
+        state = cheekApplied(event, cheekWeight(event, end), false);
+      });
+      return state;
+    }
+    function evaluateGaze(time, context, frame) {
       context = context || (options.getGazeContext ? options.getGazeContext() : {});
       var requests = [];
       timedRecords(gazeEvents, time).forEach(function (event) {
@@ -621,13 +958,15 @@
         var amount = alternate ? weightWithTiming(event, time, getTiming(event), event.splitWeight) : sampleWeight(event, time);
         if (amount > 0) requests.push({ target: alternate ? event.splitTarget : event.target, weight: amount });
       });
-      gaze.evaluate(requests, context);
+      var computed = gaze.weights(requests, context);
+      gaze.apply(frame && frame.continuing === true && laggedGaze ? laggedGaze : computed, false);
+      laggedGaze = computed;
       gaze.warnings.forEach(warn);
       if (gaze.getState().missingTargets.length) warn(restoreFace ? "The original gaze target is unavailable in this preview." :
         "An original gaze target is unavailable in this single-model preview.");
     }
     return { warnings: warnings, compatibleSegments: used, compatibilityDetails: compatibilityDetails, invalidateTiming: invalidateTiming,
-      evaluatePose: evaluatePose, evaluateGaze: evaluateGaze, eyePosition: gaze.eyePosition,
+      evaluatePose: evaluatePose, evaluateGaze: evaluateGaze, eyePosition: gaze.eyePosition, sampleLocal: sampleLocal,
       animatedProperties: function (time) {
         beginSample(time, false);
         var owned = {};
@@ -653,6 +992,28 @@
       evaluate: function (time) {
         evaluatePose(time);
         evaluateGaze(time);
+      },
+      // MemberCheekMixer.Process (0x26e9214) runs per active input:
+      // ApplyEnable(true), then ApplyCheek(cheekType, intensity * weight)
+      // overwrites the material, so the last active input wins. PostProcess
+      // (0x26e9344) only disables _CHEEK_ON when no input ran: the floats keep
+      // the values of the last frame a clip was processed in, which inside an
+      // eased-out clip is that frame's faded weight, not 0. `clock` is the
+      // scene's frame clock ({ advancing, history }): an advancing playback frame
+      // keeps the floats the previous frame left; a seek given the game's
+      // rendered frame times (history, e.g. a runtime dump's frame grid) replays
+      // the last of them inside a clip. A seek without them uses the end of the
+      // latest finished clip (the game never seeks an MV; no frame grid to
+      // follow). Before any processed clip ResetAll's 0/0 stays (null).
+      cheek: function (time, clock) {
+        beginSample(time, false);
+        var state = cheekAt(time, function (event) { return sampleWeight(event, time); });
+        if (!state) {
+          if (clock && clock.advancing === true && lastCheek !== undefined) state = lastCheek && cheekOff(lastCheek);
+          else state = replayedCheek(time, clock && Array.isArray(clock.history) ? clock.history : []);
+        }
+        lastCheek = state;
+        return state;
       },
       getGazeState: function () { return Object.assign(gaze.getState(), { retargeted: retargetedGaze, sourceOwner: retargetedGaze ? modelGaze.owner : descriptor.targetCharacter || null }); },
       followsGazeTarget: function () { return gazeEvents.some(function (event) { return event.target === 21 || event.target >= 37; }); },
@@ -689,6 +1050,14 @@
       }
     };
   }
+  // MemberLipSyncClip / MemberEyeClip AnimationIndex values a live head creates
+  // playables for (mouth 0-20, 101, 102, 999; eyes 1-5, 12-25, 101, 102, 900, 999).
+  function idRange(first, last) { var ids = []; for (var id = first; id <= last; id += 1) ids.push(id); return ids; }
+  var LIVE_FACIAL_IDS = Object.freeze({
+    mouth: Object.freeze(idRange(0, 20).concat([101, 102, 999])),
+    eyes: Object.freeze(idRange(1, 5).concat(idRange(12, 25), [101, 102, 900, 999]))
+  });
   global.ViewerGaze = { create: createGaze, axes: gazeAxes };
-  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve };
+  global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve, LIVE_FACIAL_IDS: LIVE_FACIAL_IDS,
+    prepareAnimations: prepareAnimations, trackValueSize: trackValueSize, loadUnityEuler: loadUnityEuler };
 }(window));

@@ -1,0 +1,442 @@
+"""Game-vs-editor frame comparison: alignment, geometry and report contract."""
+import json
+import math
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+import wave
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mv_frame_compare as compare  # noqa: E402
+
+FFMPEG = shutil.which("ffmpeg") and shutil.which("ffprobe")
+
+
+def scene(width=320, height=180, seed=7, phase=0.0):
+    """Smooth, structured test frame: gradient, blocks and a moving disc."""
+    rng = np.random.default_rng(seed)
+    y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+    base = np.stack([x / width, y / height, 0.5 + 0.5 * np.sin(x / 17 + y / 23)], -1) * 160
+    image = Image.fromarray(base.astype(np.uint8))
+    draw = ImageDraw.Draw(image)
+    for _ in range(14):
+        x0, y0 = rng.integers(0, width - 30), rng.integers(0, height - 30)
+        draw.rectangle([x0, y0, x0 + rng.integers(8, 30), y0 + rng.integers(8, 30)], fill=tuple(int(v) for v in rng.integers(40, 255, 3)))
+    cx = width / 2 + math.cos(phase) * width / 3
+    cy = height / 2 + math.sin(phase) * height / 4
+    draw.ellipse([cx - 14, cy - 14, cx + 14, cy + 14], fill=(250, 250, 250))
+    return np.asarray(image)
+
+
+def shifted(image, dx, dy):
+    result = np.roll(image, (dy, dx), axis=(0, 1))
+    return result
+
+
+class Geometry(unittest.TestCase):
+    def test_identical_frames(self):
+        frame = scene()
+        result = compare.compare(frame, frame, 30)
+        self.assertAlmostEqual(result["metrics"]["ssim"], 1, places=5)
+        self.assertEqual(result["metrics"]["psnr"], float("inf"))
+        self.assertAlmostEqual(result["geometry"]["scale"], 1, places=3)
+        self.assertLess(abs(result["geometry"]["dx"]) + abs(result["geometry"]["dy"]), 0.5)
+
+    def test_shift_reports_the_move_that_aligns_the_editor(self):
+        game = scene(640, 360)
+        editor = shifted(game, 9, -5)  # editor content sits 9 px right and 5 px up
+        geometry = compare.compare(game, editor, 30)["geometry"]
+        self.assertAlmostEqual(geometry["dx"], -9, delta=1.0)
+        self.assertAlmostEqual(geometry["dy"], 5, delta=1.0)
+
+    def test_zoom_estimates_the_game_fov(self):
+        game = scene(640, 360)
+        # The editor sees a wider view: its content is 5 % smaller than the game's.
+        editor = compare._scaled(game.astype(np.float32).mean(-1), 1 / 1.05)
+        editor = np.repeat(editor[..., None], 3, -1).clip(0, 255).astype(np.uint8)
+        geometry = compare.compare(game, editor, 30)["geometry"]
+        self.assertAlmostEqual(geometry["scale"], 1.05, delta=0.011)
+        expected = math.degrees(2 * math.atan(math.tan(math.radians(15)) / geometry["scale"]))
+        self.assertAlmostEqual(geometry["impliedGameFov"], expected, places=6)
+        self.assertLess(geometry["impliedGameFov"], 30)
+
+    def test_smaller_frame_sets_the_comparison_size(self):
+        game, editor = scene(640, 360), scene(320, 180)
+        result = compare.compare(game, editor)
+        self.assertEqual(result["size"], [320, 180])
+        self.assertGreater(result["metrics"]["ssim"], 0.8)
+
+    def test_aspect_mismatch_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "aspect"):
+            compare.compare(scene(320, 180), scene(320, 240))
+
+    def test_worst_tiles_locate_a_local_difference(self):
+        game = scene(640, 360)
+        editor = game.copy()
+        editor[0:45, 560:640] = 0
+        tile = compare.compare(game, editor)["worstTiles"][0]
+        self.assertEqual((tile["row"], tile["column"]), (0, 7))
+
+
+class AudioAlignment(unittest.TestCase):
+    def test_lag_and_confidence(self):
+        rng = np.random.default_rng(3)
+        soundtrack = rng.standard_normal(compare.AUDIO_RATE * 20).astype(np.float32)
+        lag = 0.75
+        video = soundtrack[int(lag * compare.AUDIO_RATE):] + 0.05 * rng.standard_normal(len(soundtrack) - int(lag * compare.AUDIO_RATE))
+        result = compare.audio_lag(video, soundtrack, max_lag=5)
+        self.assertAlmostEqual(result["lag"], lag, places=3)
+        self.assertTrue(result["confident"])
+        # Video audio that starts before the soundtrack gives a negative lag.
+        early = np.concatenate([np.zeros(compare.AUDIO_RATE // 2, np.float32), soundtrack])
+        self.assertAlmostEqual(compare.audio_lag(early, soundtrack, max_lag=5)["lag"], -0.5, places=3)
+
+    def test_looped_audio_is_ambiguous_and_resolved_toward_the_expected_lag(self):
+        rng = np.random.default_rng(5)
+        bar = rng.standard_normal(compare.AUDIO_RATE * 2).astype(np.float32)
+        soundtrack = np.tile(bar, 8)  # exact two-second loop
+        video = soundtrack[int(0.25 * compare.AUDIO_RATE):]
+        free = compare.audio_lag(video, soundtrack, max_lag=5)
+        self.assertTrue(free["ambiguous"])
+        self.assertFalse(free["confident"])
+        guided = compare.audio_lag(video, soundtrack, max_lag=5, expected=0.25)
+        self.assertAlmostEqual(guided["lag"], 0.25, places=3)
+        self.assertTrue(guided["ambiguous"] and guided["confident"])
+
+    def test_silence_is_not_aligned(self):
+        self.assertIsNone(compare.audio_lag(np.zeros(16000, np.float32), np.zeros(16000, np.float32)))
+
+
+class Baseline(unittest.TestCase):
+    def test_regression_flag(self):
+        now = [{"time": 1.0, "metrics": {"ssim": 0.80}, "geometry": {"structureNCC": 0.5}},
+               {"time": 2.0, "metrics": {"ssim": 0.90}, "geometry": {"structureNCC": 0.6}}]
+        old = {"frames": [{"time": 1.0, "metrics": {"ssim": 0.82}, "geometry": {"structureNCC": 0.5}},
+                          {"time": 2.0, "metrics": {"ssim": 0.899}, "geometry": {"structureNCC": 0.6}}]}
+        deltas = compare.baseline_deltas(now, old, 0.005)
+        self.assertEqual([delta["regressed"] for delta in deltas], [True, False])
+
+
+@unittest.skipUnless(FFMPEG, "FFmpeg is not installed")
+class VideoEndToEnd(unittest.TestCase):
+    """Synthetic game export: 30 fps H.264 + AAC whose audio starts 0.4 s into the soundtrack."""
+
+    fps, frames, lag, offset = 30, 90, 0.4, 0.25
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(tempfile.mkdtemp(prefix="mv-frame-compare-"))
+        rng = np.random.default_rng(11)
+        rate = 48000
+        soundtrack = (0.3 * rng.standard_normal(rate * 6)).astype(np.float32)
+        cls.frames_rgb = [scene(320, 180, seed=5, phase=index * 0.2) for index in range(cls.frames)]
+        raw = b"".join(frame.tobytes() for frame in cls.frames_rgb)
+        audio = cls.root / "game-audio.wav"
+        cls.write_wav(audio, soundtrack[int(cls.lag * rate):], rate)
+        cls.write_wav(cls.root / "soundtrack.wav", soundtrack, rate)
+        cls.video = cls.root / "game.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "320x180",
+                        "-r", str(cls.fps), "-i", "-", "-i", str(audio), "-map", "0:v", "-map", "1:a",
+                        "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+                        "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
+                        "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", "-g", "15", "-c:a", "aac", "-b:a", "192k",
+                        "-shortest", str(cls.video)], input=raw, check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    @staticmethod
+    def write_wav(path, samples, rate):
+        with wave.open(str(path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(rate)
+            handle.writeframes((np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes())
+
+    def capture(self, name, entries):
+        directory = self.root / name
+        directory.mkdir()
+        shutil.copy(self.root / "soundtrack.wav", directory / "soundtrack.wav")
+        frames = []
+        for time, image in entries:
+            file = f"editor-{time:.4f}.png"
+            Image.fromarray(image).save(directory / file)
+            frames.append({"time": time, "image": file, "state": {"camera": {"fov": 30}, "liveShot": True}})
+        manifest = {"source": {"region": "gl", "platform": "ios", "liveId": 1, "assetId": 2}, "quality": {"mode": 30}, "frames": []}
+        capture = {"schema": 1, "kind": "elichika-mv-editor-frames", "manifest": manifest, "soundtrack": "soundtrack.wav",
+                   "project": {"soundtrack": {"offset": self.offset}, "warnings": []},
+                   "environment": {"webgl": {"renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device))"}}, "frames": frames}
+        path = directory / "capture.json"
+        path.write_text(json.dumps(capture))
+        return path
+
+    def run_compare(self, capture, *extra):
+        out = capture.parent / "report"
+        code = compare.run(compare.parser().parse_args(["--capture", str(capture), "--video", str(self.video), "--out", str(out), *extra]))
+        return code, json.loads((out / "report.json").read_text())
+
+    def test_probe_and_exact_frame_decode(self):
+        probe = compare.probe_video(self.video)
+        self.assertEqual((probe["width"], probe["height"], probe["fps"]), (320, 180, 30))
+        decoded = compare.extract_frames(self.video, probe, {0, 44, 45, 89})
+        self.assertEqual(sorted(decoded), [0, 44, 45, 89])
+        for index, frame in decoded.items():
+            scores = {other: compare.quick_ssim(frame, self.frames_rgb[other], 180) for other in (index - 1, index, index + 1) if 0 <= other < self.frames}
+            self.assertEqual(max(scores, key=scores.get), index)
+
+    def test_audio_alignment_maps_timeline_time_to_video_frames(self):
+        # videoTime = time + offset - lag = time - 0.15 s, so t = 1.65 s is video frame 45.
+        entries = [(1.65, self.frames_rgb[45]), (2.0, self.frames_rgb[round((2.0 - 0.15) * 30)])]
+        code, report = self.run_compare(self.capture("aligned", entries))
+        self.assertEqual(code, 0)
+        self.assertEqual(report["alignment"]["method"], "audio")
+        self.assertAlmostEqual(report["alignment"]["lag"], self.lag, delta=0.002)
+        self.assertEqual(report["alignment"]["color"], {"matrix": "bt709", "range": "tv", "assumed": False})
+        self.assertEqual([frame["videoFrame"] for frame in report["frames"]], [45, 56])
+        for frame in report["frames"]:
+            self.assertEqual(frame["bestOffset"], 0)
+            self.assertFalse(frame["timingSuspect"])
+            self.assertGreater(frame["metrics"]["ssim"], 0.95)
+            self.assertLess(max(frame["metrics"]["mae"]), 0.03)
+            self.assertTrue(Path(frame["composite"]).exists())
+        self.assertTrue(report["scope"]["editorFrames"]["software"])
+
+    def test_off_by_one_editor_frame_is_reported_as_timing(self):
+        code, report = self.run_compare(self.capture("late", [(1.65, self.frames_rgb[46])]))
+        frame = report["frames"][0]
+        self.assertEqual(frame["videoFrame"], 45)
+        self.assertEqual(frame["bestOffset"], 1)
+        self.assertTrue(frame["timingSuspect"])
+        self.assertEqual(report["summary"]["timingSuspects"], [1.65])
+
+    def test_manual_offset_and_baseline_regression(self):
+        capture = self.capture("manual", [(1.5, self.frames_rgb[45])])
+        out = capture.parent / "manual"
+        args = ["--capture", str(capture), "--video", str(self.video), "--align", "0", "--out", str(out)]
+        compare.run(compare.parser().parse_args(args))
+        report = json.loads((out / "report.json").read_text())
+        self.assertEqual(report["frames"][0]["videoFrame"], 45)
+        worse = self.capture("worse", [(1.5, np.zeros_like(self.frames_rgb[45]))])
+        code = compare.run(compare.parser().parse_args(["--capture", str(worse), "--video", str(self.video), "--align", "0",
+                                                        "--baseline", str(out / "report.json"), "--fail-on-regression",
+                                                        "--out", str(worse.parent / "report")]))
+        self.assertEqual(code, 2)
+
+
+def runtime_dump(rows):
+    """A runtime dump with frame records (id, frameCount, directorTime, deltaTime)."""
+    return {"records": [{"id": ident, "kind": "frame", "clock": {"frameCount": frame, "directorTime": t, "deltaTime": dt}}
+                        for ident, frame, t, dt in rows]}
+
+
+class ScreencapGameFrames(unittest.TestCase):
+    """Runtime-dump screencaps lag their 'before' record by a few game frames on a software-GPU device."""
+
+    DUMP = runtime_dump([("f1", 100, 10.0, 0.2), ("f2", 104, 11.0, 0.3), ("f3", 106, 11.6, 1 / 3), ("f0", 90, 0.0, 0.1)])
+
+    def test_game_frames_follow_frame_counts_and_unclamped_deltas(self):
+        frames = compare.game_frame_times(self.DUMP)
+        self.assertEqual(sorted(frames), [100, 101, 102, 103, 104, 105, 106])
+        self.assertAlmostEqual(frames[103], 10.7)            # 11.0 - deltaTime 0.3
+        self.assertAlmostEqual(frames[101], 10 + 0.7 / 3)    # the rest spread evenly
+        self.assertAlmostEqual(frames[105], 11.3)            # 1/3 s is clamped: evenly spread
+
+    def test_candidates_are_the_before_frame_and_the_frames_before_it(self):
+        shots = [{"n": 1, "before": {"id": "f3", "directorTime": 11.6}}, {"n": 2, "before": {"id": "f0", "directorTime": 0.0}}]
+        times = compare.shot_candidates(shots, self.DUMP, frames_back=3)
+        self.assertEqual([(item["shot"], item["frame"], item["time"]) for item in times],
+                         [(1, 0, 11.6), (1, 1, 11.3), (1, 2, 11.0), (1, 3, 10.7), (2, 0, 0.0)])
+
+    def test_pinned_director_at_song_end_shows_its_last_time(self):
+        # dump3b shot 48: frames 9870-9878 all at 106.666 while the director holds the song end.
+        dump = runtime_dump([("e0", 196, 19.4, 0.2), ("e1", 199, 20.0, 0.2), ("e2", 200, 20.0, 1 / 3), ("e3", 204, 20.0, 0.12),
+                             ("r1", 300, 30.0, 0.2), ("r2", 302, 29.0, 0.2)])
+        frames = compare.game_frame_times(dump)
+        self.assertEqual([frames[frame] for frame in range(199, 205)], [20.0] * 6)
+        self.assertAlmostEqual(frames[198], 20.0 - 0.2)
+        self.assertNotIn(301, frames, "a director that goes back leaves its frames unknown")
+        self.assertEqual((frames[300], frames[302]), (30.0, 29.0))
+        shots = [{"n": 48, "before": {"id": "e3", "directorTime": 20.0}}, {"n": 47, "before": {"id": "e1", "directorTime": 20.0}},
+                 {"n": 50, "before": {"id": "r2", "directorTime": 29.0}}]
+        times = compare.shot_candidates(shots, dump, frames_back=3)
+        self.assertEqual([(item["shot"], item["frame"], item["time"]) for item in times],
+                         [(48, 0, 20.0), (47, 0, 20.0), (47, 1, 19.8), (47, 2, 19.6), (47, 3, 19.4), (50, 0, 29.0), (50, 2, 30.0), (50, 3, 29.8)],
+                         "no times the game never showed and no repeats; the fallback spacing only before the first frame")
+        times = compare.shot_candidates([{"n": 1, "before": {"id": "e0", "directorTime": 19.4}}], dump, frames_back=2)
+        self.assertEqual([item["time"] for item in times], [19.4, 19.2, 19.0], "before the first reconstructed frame")
+
+    def test_runtime_capture_rebuilds_the_same_frames(self):
+        """mv_runtime_capture.js gameFrames is this map; its gameFrameTimes preroll grid is the map in frame
+        order without the frames that go back in time (a rewound record and what follows it until the
+        director passes the listed time again)."""
+        node = shutil.which("node") or ("/opt/node22/bin/node" if Path("/opt/node22/bin/node").exists() else None)
+        if not node:
+            self.skipTest("node is not installed")
+        dumps = [self.DUMP,
+                 runtime_dump([("e0", 196, 19.4, 0.2), ("e1", 199, 20.0, 0.2), ("e2", 200, 20.0, 1 / 3), ("e3", 204, 20.0, 0.12)]),
+                 runtime_dump([("r0", 300, 30.0, 0.2), ("r1", 302, 29.0, 0.2), ("r2", 304, 29.5, 0.2), ("r3", 306, 31.0, 0.2),
+                               ("r4", 309, 31.0, 0.2), ("r5", 310, 31.2, 0.4)])]
+        capture_js = Path(__file__).resolve().with_name("mv_runtime_capture.js")
+        env = dict(os.environ)
+        env.setdefault("NODE_PATH", "/usr/local/lib/node_modules_global")
+        # Exit 3 only when the runner itself cannot be loaded (e.g. no playwright); any other error fails.
+        script = (f"let m; try {{ m = require({json.dumps(str(capture_js))}); }} catch (error) {{ console.error(error.message); process.exit(3); }}"
+                  "const docs = JSON.parse(process.argv[1]);"
+                  "console.log(JSON.stringify(docs.map((doc) => ({ frames: [...m.gameFrames(doc)], times: m.gameFrameTimes(doc) }))));")
+        result = subprocess.run([node, "-e", script, json.dumps(dumps)], capture_output=True, text=True, env=env)
+        if result.returncode == 3:
+            self.skipTest(f"the capture runner cannot be loaded here: {result.stderr.strip()[:200]}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for dump, js in zip(dumps, json.loads(result.stdout)):
+            frames = compare.game_frame_times(dump)
+            self.assertEqual([frame for frame, _ in js["frames"]], sorted(frames))
+            for frame, time in js["frames"]:
+                self.assertAlmostEqual(time, frames[frame], places=9, msg=f"frame {frame}")
+            grid = []
+            for frame in sorted(frames):
+                if not grid or frames[frame] >= grid[-1] - 1e-9:
+                    grid.append(max(frames[frame], grid[-1]) if grid else frames[frame])
+            self.assertEqual(len(js["times"]), len(grid))
+            for got, want in zip(js["times"], grid):
+                self.assertAlmostEqual(got, want, places=9)
+            self.assertEqual(js["times"], sorted(js["times"]), "the preroll grid is ascending")
+        self.assertIn(302, compare.game_frame_times(dumps[2]), "the rewound record is a frame in the map")
+        self.assertEqual([round(t, 9) for t in json.loads(result.stdout)[2]["times"]], [30.0, 30.8, 31.0, 31.0, 31.0, 31.0, 31.2])
+
+    def test_screencap_mode_compares_only_game_frame_candidates(self):
+        root = Path(tempfile.mkdtemp(prefix="mv-frame-shots-"))
+        try:
+            game = scene(seed=3, phase=1.0)
+            Image.fromarray(game).save(root / "shot-001.png")
+            shots = [{"n": 1, "file": "shot-001.png", "before": {"id": "f3", "directorTime": 11.6},
+                      "after": {"id": "f4", "directorTime": 12.0}}]
+            (root / "shots.json").write_text(json.dumps(shots))
+            (root / "dump.json").write_text(json.dumps(self.DUMP))
+            frames = []
+            # The exact match sits two game frames back; 11.45 is off the game grid and never compared.
+            for time, image in ((11.6, scene(seed=3, phase=1.6)), (11.45, game), (11.0, game), (10.7, scene(seed=3, phase=0.4))):
+                name = f"editor-{time:.4f}.png"
+                Image.fromarray(image).save(root / name)
+                frames.append({"time": time, "image": name, "state": {"camera": {"fov": 30}}})
+            capture = {"schema": 1, "kind": "elichika-mv-editor-frames", "manifest": {"source": {"liveId": 1}}, "project": {"warnings": []},
+                       "frames": frames}
+            (root / "capture.json").write_text(json.dumps(capture))
+            out = root / "report"
+            code = compare.run(compare.parser().parse_args(["--capture", str(root / "capture.json"), "--game-shots", str(root / "shots.json"),
+                                                            "--game-dump", str(root / "dump.json"), "--out", str(out)]))
+            self.assertEqual(code, 0)
+            report = json.loads((out / "report.json").read_text())
+            frame = report["frames"][0]
+            self.assertEqual((frame["time"], frame["gameFramesBack"]), (11.0, 2))
+            self.assertEqual([item["time"] for item in frame["candidates"]], [10.7, 11.0, 11.6])
+            self.assertEqual(report["alignment"]["method"], "screencap-game-frames")
+            self.assertEqual(report["summary"]["gameFramesBack"], {"2": 1})
+            self.assertGreater(frame["metrics"]["ssim"], 0.999)
+            written = root / "times.json"
+            compare.run(compare.parser().parse_args(["--game-shots", str(root / "shots.json"), "--game-dump", str(root / "dump.json"),
+                                                     "--write-shot-times", str(written)]))
+            self.assertEqual([item["time"] for item in json.loads(written.read_text())], [11.6, 11.3, 11.0, 10.7])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def clocked_dump():
+    """A dump5-like run (qa-mvdump sampler 3): frame records with host round trips and a frame clock row for every
+    rendered frame 100-110 (director time, realtimeSinceStartup); host monotonic = device realtime + 350."""
+    ticks = [(100 + k, round(10.0 + 0.2 * k, 3), round(500.0 + 0.2 * k, 3)) for k in range(11)]
+    ticks[5] = (105, 11.05, 501.05)                  # a short frame: the grid rule would spread 104-106 evenly
+    rows = [[frame, t, int(t * 1000), t - 1.5, 0.2, rt, 0] for frame, t, rt in ticks]
+    rows[0][1] = None                                 # the director not reached yet: music time (SyncMusicPlayingTime)
+    records = []
+    for ident, frame in (("f1", 100), ("f2", 104), ("f3", 108)):
+        _, t, rt = ticks[frame - 100]
+        records.append({"id": ident, "kind": "frame", "clock": {"frameCount": frame, "directorTime": t, "deltaTime": 0.2,
+                                                               "realtimeSinceStartup": rt},
+                        "clockEnd": {"realtimeSinceStartup": rt + 0.01},
+                        "host": {"sentMono": rt + 350 - 0.1, "recvMono": rt + 350 + 0.03}})
+    return {"records": records, "trailer": {"frameClocks": {"schema": "sifas-mv-frame-clock/1",
+                                                            "fields": list(compare.FRAME_CLOCK_FIELDS), "rows": rows}}}
+
+
+class ScreencapFrameClockPlacement(unittest.TestCase):
+    """dump5 onwards: every rendered frame's clock, and screencaps placed on the device clock."""
+
+    def test_frame_clock_rows_are_exact_frames(self):
+        dump = clocked_dump()
+        frames = compare.game_frame_times(dump)
+        self.assertAlmostEqual(frames[105], 11.05, places=9, msg="the frame clock row, not the even spread of 104-106")
+        self.assertAlmostEqual(frames[101], 10.2, places=9)
+        self.assertEqual(compare.frame_clocks(dump)[100]["directorTime"], 10.0)
+        self.assertEqual(compare.frame_clocks(dump)[100]["directorFrom"], "musicTime")
+        without = {"records": dump["records"]}
+        self.assertNotAlmostEqual(compare.game_frame_times(without)[105], 11.05, places=3)
+
+    def test_device_clock_offset_is_bounded_by_the_round_trips(self):
+        offset, window = compare.device_clock_offset(clocked_dump())
+        self.assertAlmostEqual(offset, 350 - 0.04, places=9)       # [sent - read, recv - readEnd] = 350 + [-0.1, +0.02]
+        self.assertAlmostEqual(window, 0.12, places=9)
+        self.assertIsNone(compare.device_clock_offset(runtime_dump([("f1", 100, 10.0, 0.2)])))
+
+    def test_shot_shows_the_two_newest_frames_presented_when_the_capture_began(self):
+        dump = clocked_dump()
+        # 'before' read in frame 108 (device 501.6); the capture starts 30 ms later: frame 108's successor has not
+        # ticked, 107 and 106 are the newest frames presented, 105 and older are gone.
+        shots = [{"n": 1, "before": {"id": "f3", "directorTime": 11.6, "frameCount": 108},
+                  "capture": {"startMono": 501.6 + 0.03 + 349.96}}]
+        times = compare.shot_candidates(shots, dump)
+        self.assertEqual([(item["frame"], item["frameCount"], item["time"], item["placement"]) for item in times],
+                         [(1, 107, 11.4, "clock"), (2, 106, 11.2, "clock")])
+        # 150 ms into frame 109: 108 has been presented.
+        late = [{**shots[0], "before": {"id": "f3", "directorTime": 11.6, "frameCount": 108}, "capture": {"startMono": 501.95 + 349.96}}]
+        self.assertEqual([item["frameCount"] for item in compare.shot_candidates(late, dump)], [108, 107])
+        # Without a capture time (dump4 shots) the grid rule applies; 'clock' insists, 'grid' never places.
+        old = [{"n": 2, "before": {"id": "f3", "directorTime": 11.6}}]
+        self.assertEqual([item["time"] for item in compare.shot_candidates(old, dump, frames_back=2)], [11.6, 11.4, 11.2])
+        with self.assertRaises(ValueError):
+            compare.shot_candidates(old, dump, placement="clock")
+        self.assertEqual([item["time"] for item in compare.shot_candidates(shots, dump, frames_back=1, placement="grid")], [11.6, 11.4])
+
+    def test_pinned_director_lists_its_time_once(self):
+        dump = clocked_dump()
+        for row in dump["trailer"]["frameClocks"]["rows"]:
+            if row[0] >= 106:
+                row[1] = 11.2
+        shots = [{"n": 1, "before": {"id": "f3", "directorTime": 11.2, "frameCount": 108}, "capture": {"startMono": 501.6 + 350}}]
+        self.assertEqual([(item["frameCount"], item["time"]) for item in compare.shot_candidates(shots, dump)], [(107, 11.2)])
+
+    def test_runtime_capture_reads_the_same_frame_clocks(self):
+        node = shutil.which("node") or ("/opt/node22/bin/node" if Path("/opt/node22/bin/node").exists() else None)
+        if not node:
+            self.skipTest("node is not installed")
+        dump = clocked_dump()
+        capture_js = Path(__file__).resolve().with_name("mv_runtime_capture.js")
+        env = dict(os.environ)
+        env.setdefault("NODE_PATH", "/usr/local/lib/node_modules_global")
+        script = (f"let m; try {{ m = require({json.dumps(str(capture_js))}); }} catch (error) {{ console.error(error.message); process.exit(3); }}"
+                  "const doc = JSON.parse(process.argv[1]);"
+                  "console.log(JSON.stringify({ frames: [...m.gameFrames(doc)], clocks: [...m.frameClocks(doc)] }));")
+        result = subprocess.run([node, "-e", script, json.dumps(dump)], capture_output=True, text=True, env=env)
+        if result.returncode == 3:
+            self.skipTest(f"the capture runner cannot be loaded here: {result.stderr.strip()[:200]}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        js = json.loads(result.stdout)
+        frames = compare.game_frame_times(dump)
+        self.assertEqual([frame for frame, _ in js["frames"]], sorted(frames))
+        for frame, time in js["frames"]:
+            self.assertAlmostEqual(time, frames[frame], places=9, msg=f"frame {frame}")
+        clocks = compare.frame_clocks(dump)
+        self.assertEqual([frame for frame, _ in js["clocks"]], list(clocks))
+        for frame, clock in js["clocks"]:
+            self.assertAlmostEqual(clock["directorTime"], clocks[frame]["directorTime"], places=9)
+
+
+if __name__ == "__main__":
+    unittest.main()

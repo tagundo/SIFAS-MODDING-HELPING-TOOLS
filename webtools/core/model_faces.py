@@ -5,13 +5,18 @@ comes from the selected Unity assets, never from the app's character picker.
 Only the viewer decides which Face/Eyes renderers from a donor can be exported.
 """
 import ast
+from contextlib import closing, contextmanager
+import csv
 import hashlib
 import json
 from itertools import islice
+import math
+import ntpath
 import os
 from pathlib import Path
 import re
 import sqlite3
+import struct
 import tempfile
 import threading
 import time
@@ -31,6 +36,17 @@ MAX_AUTO_FILES = 4
 COMPANION_HINT = "viewer-companions.json"
 MAX_HINT_BYTES = 64 * 1024
 FACE_SECONDS = 40
+# While another face of the member is already at hand, a download that may
+# still be the face a body references ends this long before the face deadline,
+# so that face can still be added.
+FALLBACK_SECONDS = 3
+# Such a download is measured for this long. Then it goes on only while its
+# rate so far brings the rest in by its end; one that sent nothing has stalled.
+MEASURE_SECONDS = 1
+# While a catalog original may still be downloaded, the broad library search
+# and the other same-member files it keeps share this bound.
+LOCAL_SECONDS = 8
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 _OWNER = re.compile(r"(?:^|[^a-z0-9])ch(\d{4})(?=[^0-9]|$)", re.I)
 _PACK = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
@@ -54,10 +70,53 @@ class SavedFacePlatformMismatch(FaceUnavailable):
     """An authoritative edited face must not be silently replaced by stock."""
 
 
+class _NoAnswer(FaceUnavailable):
+    """Nothing was learned about the face: its time ran out, it was stopped, or the worker was busy."""
+
 
 def _check(deadline):
     if time.monotonic() >= deadline:
-        raise FaceUnavailable("Finding the original face took too long.")
+        from .transient_failures import note
+        note()
+        raise _NoAnswer("Finding the original face took too long.")
+
+
+def _serialized_names(path):
+    """Casefolded serialized-file names a candidate bundle declares.
+
+    Only the bounded UnityFS directory is read; no object is parsed. Unity
+    resolves a PPtr's m_FileID through these names, so this tells whether a
+    candidate is the exact face a body's BodyPartManager points to.
+    """
+    from .model_viewer import _preflight_bundle
+    with open(path, "rb") as handle:
+        data = handle.read(MAX_PACK_BYTES + 1)
+    if len(data) > MAX_PACK_BYTES:
+        return set()
+    if not data.startswith(b"UnityFS\0"):
+        return {ntpath.basename(path).casefold()}
+    _, layout = _preflight_bundle(data, _with_layout=True)
+    info = layout["info"]
+    blocks, = struct.unpack_from(">i", info, 16)
+    cursor = 20 + blocks * 10
+    nodes, = struct.unpack_from(">i", info, cursor)
+    cursor += 4
+    names = set()
+    for _ in range(nodes):
+        cursor += 20
+        end = info.index(b"\0", cursor)
+        names.add(ntpath.basename(info[cursor:end].decode("utf-8", "replace")).casefold())
+        cursor = end + 1
+    return names
+
+
+def _asset(descriptor):
+    """A catalog asset across regions: one asset path and section size.
+
+    The JP and GL catalogs list the same asset in their own packs with their
+    own keys; its serialized file names are the same in each.
+    """
+    return descriptor.get("asset_path"), descriptor.get("size")
 
 
 def _inside(path, roots):
@@ -336,6 +395,159 @@ def declares_dynamic(scene):
     return False
 
 
+def _find(scene, transform, names):
+    """Unity Transform.Find for a relative path: depth first over children."""
+    from .model_viewer import _ref
+    if transform is None:
+        return None
+    if not names:
+        return transform
+    children = scene.tree(transform).get("m_Children", ())
+    for pointer in children[:256]:
+        child = _ref(transform, pointer)
+        if child is None or child.type.name != "Transform":
+            continue
+        game = _ref(child, scene.tree(child).get("m_GameObject"))
+        if game is not None and scene.name(game) == names[0]:
+            found = _find(scene, child, names[1:])
+            if found is not None:
+                return found
+    return None
+
+
+def member_head(scene, sources):
+    """Runtime facts of the one performer head among the selected sources.
+
+    CommonCoreMemberHead.GetFaceDots is headAll.transform.Find("Head_Face/
+    mesh_facedots"). ExistsMask sets HasMask from it, and NeedsMergeFace is its
+    negation; LiveDirectorBase.ShouldUseRinaFacialTracks requires it. The flag
+    is read from the BodyPartManager.headAll actually loaded, never a suit id.
+    """
+    from .model_viewer import _key, _ref, _source_path
+    heads = []
+    for obj in scene.env.objects:
+        if obj.type.name != "MonoBehaviour" or _source_path(obj) not in sources:
+            continue
+        _check(scene.deadline)
+        try:
+            tree = scene.tree(obj)
+            if not all(field in tree for field in ("head", "headAll", "face")):
+                continue
+            script = _ref(obj, tree.get("m_Script"))
+            if script is None or script.type.name != "MonoScript":
+                continue
+            definition = scene.tree(script)
+            if (definition.get("m_ClassName"), definition.get("m_Namespace"), definition.get("m_AssemblyName")) != (
+                    "BodyPartManager", "LLAS.Components.Members", "Assembly-CSharp.dll"):
+                continue
+            head_all = _ref(obj, tree.get("headAll"))
+            if head_all is None or head_all.type.name != "GameObject":
+                continue
+            dots = _find(scene, scene.transforms.get(_key(head_all)), ("Head_Face", "mesh_facedots"))
+            head = {"faceDots": dots is not None}
+            face_component, face = _member_face(scene, obj, tree)
+            # A face table that cannot be read only leaves facialTables out;
+            # the head's dots, cheek and lip-sync weight do not depend on it.
+            try:
+                tables = _facial_tables(scene, face_component, face)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                tables = {}
+            if tables:
+                head["facialTables"] = tables
+            material = _ref(obj, tree.get("headMaterial"))
+            # Only InitializeDefault (no mask) adds the cheek, bound to the
+            # sharedMaterial of the merged mesh_face/CombineFace; the editor's
+            # native merge gives those surfaces BodyPartManager.headMaterial.
+            if (dots is None and face is not None and _flag(face.get("needsMergingFace"))
+                    and material is not None and material.type.name == "Material"):
+                head["cheekMaterial"] = str(scene.tree(material).get("m_Name", ""))
+            # InitializeDefault passes MemberFaceData.LipSync.Weight to
+            # LiveMemberLipSync.Initialize; the masked heads' mouth controls
+            # create every clip at rate 1.
+            lip_sync = (face or {}).get("lipSync")
+            weight = lip_sync.get("weight") if isinstance(lip_sync, dict) else None
+            if dots is None and type(weight) in (int, float) and math.isfinite(weight) and 0 <= weight <= 1:
+                head["lipSyncWeight"] = float(weight)
+            heads.append(head)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+    return heads[0] if len(heads) == 1 else {}
+
+
+def _flag(value):
+    return type(value) in (bool, int) and value == 1
+
+
+def _member_face(scene, manager, tree):
+    """BodyPartManager.face and its inline MemberFaceData, verified by its MonoScript."""
+    from .model_viewer import _ref
+    face = _ref(manager, tree.get("face"))
+    if face is None or face.type.name != "MonoBehaviour":
+        return None, None
+    face_tree = scene.tree(face)
+    if not _declares(scene, face, face_tree, "MemberFace", "LLAS.Components.Members"):
+        return None, None
+    data = face_tree.get("memberFaceData")
+    return (face, data) if isinstance(data, dict) else (None, None)
+
+
+def _declares(scene, component, tree, name, namespace):
+    from .model_viewer import _ref
+    script = _ref(component, tree.get("m_Script"))
+    if script is None or script.type.name != "MonoScript":
+        return False
+    definition = scene.tree(script)
+    return (definition.get("m_ClassName"), definition.get("m_Namespace"),
+            definition.get("m_AssemblyName")) == (name, namespace, "Assembly-CSharp.dll")
+
+
+_FACIAL_TABLES = (("eyes", "animationTableEye"), ("mouth", "animationTableMouth"))
+_MAX_FACIAL_ROWS = 256
+
+
+def _facial_tables(scene, face, data):
+    """The face's own eye and mouth MemberFacialAnimationDataTable rows, in serialized order.
+
+    LiveCoreMemberHead.InitializeDefault hands MemberFaceData.AnimationTableMouth to
+    LiveMemberLipSync.Initialize and AnimationTableEye to LiveMemberEyeAnimation (and
+    LiveMemberEyeContact). Initialize walks its clip enum and
+    MemberFacialAnimationBase.CreateAnimationClip plays the first row whose index equals
+    the id (Enumerable.FirstOrDefault): that row's clip, whatever its customIndex, e.g.
+    mouth 13 (E2) -> LiveFacial_mouth_004. A missing row or a null clip creates no
+    playable, so ProcessFrame finds no entry and the index adds nothing. Null rows are
+    kept for that reason. A table whose clip is not loaded is left out entirely.
+    """
+    from .model_viewer import _ref, _source_hash
+    result = {}
+    if face is None or not isinstance(data, dict):
+        return result
+    for kind, field in _FACIAL_TABLES:
+        table = _ref(face, data.get(field))
+        if table is None or table.type.name != "MonoBehaviour":
+            continue
+        tree = scene.tree(table)
+        datas = tree.get("datas")
+        if (not _declares(scene, table, tree, "MemberFacialAnimationDataTable", "LLAS.Scene.Live.Components")
+                or not isinstance(datas, list) or len(datas) > _MAX_FACIAL_ROWS):
+            continue
+        rows = []
+        for entry in datas:
+            values = [entry.get(name) for name in ("index", "customIndex", "summary")] if isinstance(entry, dict) else ()
+            if len(values) != 3 or any(type(value) is not int for value in values):
+                break
+            row = dict(zip(("index", "customIndex", "summary"), values))
+            pointer = entry.get("clip")
+            if isinstance(pointer, dict) and pointer.get("m_PathID"):
+                clip = _ref(table, pointer)
+                if clip is None or clip.type.name != "AnimationClip" or not _source_hash(clip):
+                    break
+                row.update(sourceHash=_source_hash(clip), sourceName=str(scene.name(clip) or "Animation")[:160])
+            rows.append(row)
+        else:
+            result[kind] = rows
+    return result
+
+
 def _atomic(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -393,9 +605,62 @@ def _cached(path, expected=None):
         return None
 
 
-def _save(path, data, owner=None):
+def _save(path, data, owner=None, downloaded=False, compared=False):
     _atomic(path, data)
-    _atomic(str(path) + ".json", json.dumps({"size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "owner": owner}).encode())
+    meta = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "owner": owner}
+    if downloaded:
+        # The viewer fetched these bytes from the asset server. Later opens
+        # give them the place a fresh download would get (see _accept).
+        meta["downloaded"] = True
+    if compared:
+        # Fetched only to compare them with the face a body names, and not
+        # used yet: every body gives them a download's place (see _waits).
+        meta["compared"] = True
+    _atomic(str(path) + ".json", json.dumps(meta).encode())
+
+
+def _cache_name(owner, descriptor):
+    """The face cache file of one catalog asset: ``chNNNN_<descriptor identity>.unity``."""
+    identity = hashlib.sha256(json.dumps(descriptor, sort_keys=True).encode()).hexdigest()[:24]
+    return f"ch{native_from_member(owner):04}_{identity}.unity"
+
+
+def _meta(path):
+    """The cache metadata saved beside ``path``, or None."""
+    try:
+        if Path(str(path) + ".json").is_symlink():
+            return None
+        with open(str(path) + ".json", "rb") as handle:
+            raw = handle.read(4097)
+        meta = json.loads(raw) if len(raw) <= 4096 else None
+        return meta if isinstance(meta, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _downloaded(path):
+    """Whether cached face bytes came from the viewer's own asset download."""
+    return (_meta(path) or {}).get("downloaded") is True
+
+
+def _compared(path):
+    """Whether cached face bytes were downloaded only to compare them."""
+    return (_meta(path) or {}).get("compared") is True
+
+
+def _set_compared(path, compared):
+    """Mark cached face bytes as fetched only to compare them, or clear that mark."""
+    meta = _meta(path)
+    if meta is None or (meta.get("compared") is True) == compared:
+        return
+    if compared:
+        meta["compared"] = True
+    else:
+        meta.pop("compared", None)
+    try:
+        _atomic(str(path) + ".json", json.dumps(meta).encode())
+    except OSError:
+        pass
 
 
 class _SameOriginRedirect(HTTPRedirectHandler):
@@ -406,77 +671,158 @@ class _SameOriginRedirect(HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
-def _download(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
-    """Existing CDN's /static/<pack> route, bounded even for missing length headers."""
+def _alive(deadline):
+    """The download worker's own check: its deadline, or an abandoned transfer."""
+    stop = getattr(threading.current_thread(), "face_stop", None)
+    if stop is not None and stop.is_set():
+        raise FaceUnavailable("The original face download is no longer needed.")
     _check(deadline)
+
+
+def _download(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
+    """Existing CDN's /static/<pack> route, bounded even for missing length headers.
+
+    The worker's ``face_progress`` (see _Transfer) counts the bytes received,
+    in small reads so that a slow but steady download shows its rate early.
+    """
+    progress = getattr(threading.current_thread(), "face_progress", None)
+    if progress is not None:
+        progress.update(reported=True, total=expected, received=0)
+    _alive(deadline)
     request = Request(url, headers={"User-Agent": "Elichika model viewer"})
     with build_opener(_SameOriginRedirect()).open(request, timeout=min(8, max(1, deadline - time.monotonic()))) as response:
-        _check(deadline)
+        _alive(deadline)
         length = response.headers.get("Content-Length")
         if length is not None and (int(length) > byte_limit or (expected is not None and int(length) != expected)):
             raise FaceUnavailable("The original asset server returned an unexpected file size.")
+        if progress is not None and length is not None:
+            progress["total"] = int(length)
         chunks, size = [], 0
         while True:
-            _check(deadline)
-            chunk = response.read(min(65536, byte_limit - size + 1))
+            _alive(deadline)
+            chunk = response.read(min(8192, byte_limit - size + 1))
             if not chunk:
                 break
             size += len(chunk)
             if size > byte_limit or (expected is not None and size > expected):
                 raise FaceUnavailable("The original asset exceeds the face download limit.")
             chunks.append(chunk)
+            if progress is not None:
+                progress["received"] = size
     if size == 0 or (expected is not None and size != expected):
         raise FaceUnavailable("The original asset download was incomplete.")
     return b"".join(chunks)
 
 
-def _download_with_deadline(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
-    """Bound the caller's wait even when OS DNS ignores the socket timeout.
+def _behind(progress, started, now, limit):
+    """Whether a measured download cannot finish by ``limit``.
+
+    Nothing is judged in its first MEASURE_SECONDS. Then one that has received
+    nothing has stalled, and one whose average rate so far would bring the rest
+    in after ``limit`` is too slow. A downloader that reports no progress, or
+    an unknown size, is left to run until ``limit``.
+    """
+    if now - started < MEASURE_SECONDS or not progress.get("reported"):
+        return False
+    received, total = progress.get("received") or 0, progress.get("total")
+    if received <= 0:
+        return True
+    if not isinstance(total, int) or total <= received:
+        return False
+    return now + (total - received) * (now - started) / received > limit
+
+
+class _Transfer:
+    """One original-asset download on the single network worker.
 
     At most one daemon may be inside the original downloader; nothing queues.
-    The worker receives no FacePlan or cache path and only returns bytes. An
-    abandoned result is discarded, so late DNS/HTTP completion cannot decrypt
-    assets or publish cache files after the caller has returned its base model.
+    The worker receives no FacePlan or cache path and only returns bytes, and
+    it stops at ``deadline``. An abandoned result is discarded, so late
+    DNS/HTTP completion cannot decrypt assets or publish cache files after the
+    caller has returned its base model. With ``limit`` the download is
+    measured and stopped as soon as it cannot finish by then (_behind).
     """
-    _check(deadline)
-    slot = _DOWNLOAD_SLOT
-    if not slot.acquire(blocking=False):
-        raise FaceUnavailable("An original face download is still finishing. Local facial assets can still be used.")
-    completed, lock = threading.Event(), threading.Lock()
-    state = {"abandoned": False}
-    downloader = _download
 
-    def run():
-        try:
+    def __init__(self, url, expected, deadline, byte_limit, limit=None):
+        _check(deadline)
+        slot = _DOWNLOAD_SLOT
+        if not slot.acquire(blocking=False):
+            raise _NoAnswer("An original face download is still finishing. Local facial assets can still be used.")
+        self.deadline, self.limit = deadline, limit
+        self.completed, self.lock, self.stop = threading.Event(), threading.Lock(), threading.Event()
+        self.state = {"abandoned": False}
+        # The worker's downloader counts the bytes it received here.
+        self.progress = {}
+        self.started = time.monotonic() if limit is not None else None
+        downloader = _download
+
+        def run():
             try:
-                data = downloader(url, expected, deadline, byte_limit)
-                error = None
-            except Exception as exception:
-                data, error = None, exception
-            with lock:
-                if not state["abandoned"]:
-                    state.update(data=data, error=error)
-        finally:
-            slot.release()
-            completed.set()
+                try:
+                    data = downloader(url, expected, deadline, byte_limit)
+                    error = None
+                except Exception as exception:
+                    data, error = None, exception
+                with self.lock:
+                    if not self.state["abandoned"]:
+                        self.state.update(data=data, error=error)
+            finally:
+                slot.release()
+                self.completed.set()
 
-    try:
-        threading.Thread(target=run, name="viewer-face-download", daemon=True).start()
-    except Exception as error:
-        slot.release()
-        raise FaceUnavailable("The original face download could not be started.") from error
-    finished = completed.wait(max(0., deadline - time.monotonic()))
-    with lock:
-        if not finished or time.monotonic() >= deadline:
-            state.clear()
-            state["abandoned"] = True
-            raise FaceUnavailable("Finding the original face took too long.")
-        error, data = state.pop("error", None), state.pop("data", None)
-    if error is not None:
-        raise error
-    if data is None:
-        raise FaceUnavailable("The original face download did not finish.")
-    return data
+        try:
+            worker = threading.Thread(target=run, name="viewer-face-download", daemon=True)
+            worker.face_stop, worker.face_progress = self.stop, self.progress
+            worker.start()
+        except Exception as error:
+            slot.release()
+            raise FaceUnavailable("The original face download could not be started.") from error
+
+    def result(self):
+        """The bytes, if the worker finishes by its deadline; otherwise it is stopped.
+
+        A measured download is checked every tenth of a second and stopped as
+        soon as it cannot finish by its limit. Stopping raises _NoAnswer with
+        this transfer as ``transfer``: its worker frees the slot at its next
+        chunk, so the caller can wait for ``completed`` before another download.
+        """
+        until = self.deadline
+        while True:
+            wait = until - time.monotonic()
+            if self.limit is not None:
+                wait = min(wait, .1)
+            finished = self.completed.wait(max(0., wait))
+            with self.lock:
+                now = time.monotonic()
+                if finished and now < until:
+                    error, data = self.state.pop("error", None), self.state.pop("data", None)
+                    break
+                if now >= until or self.limit is not None and _behind(self.progress, self.started, now, self.limit):
+                    from .transient_failures import note
+                    note()
+                    self._abandon()
+                    stopped = _NoAnswer("Finding the original face took too long.")
+                    stopped.transfer = self
+                    raise stopped
+        if error is not None:
+            raise error
+        if data is None:
+            raise FaceUnavailable("The original face download did not finish.")
+        return data
+
+    def _abandon(self):
+        self.state.clear()
+        self.state["abandoned"] = True
+        self.stop.set()
+
+
+def _download_with_deadline(url, expected, deadline, byte_limit=MAX_PACK_BYTES, *, limit=None):
+    """Bound the caller's wait even when OS DNS ignores the socket timeout.
+
+    With ``limit``, the download is measured and stopped early once it cannot
+    finish by ``limit`` (see _behind and _Transfer.result).
+    """
+    return _Transfer(url, expected, deadline, byte_limit, limit).result()
 
 
 def _prune_cache(root, protected=(), deadline=None):
@@ -541,6 +887,23 @@ class FacePlan:
         self.database_paths = set()
         self._hint_sources = {}
         self._body_platforms = set()
+        # The body's own BodyPartManager.face CAB names, its verified game
+        # selections, and same-owner candidates kept until no exact face exists.
+        self.face_references, self._game_records, self._deferred = set(), [], []
+        # Catalog identities of the member's default suit body itself.
+        self._suit_models = set()
+        # Cached faces the viewer downloaded that are not the referenced face:
+        # they keep a download's place, after the catalog downloads.
+        self._late = []
+        # Cached faces whose bytes this plan downloaded, with their pack.
+        self._fetched = {}
+        # Pack URLs requested once (each reserves its bytes once), a download
+        # stopped early whose worker is still leaving, and section sizes of
+        # this member's catalog faces (see _trusted).
+        self._requested, self._stopping, self._sizes = set(), None, set()
+        # Inspections of kept candidates, the roles the kept candidates
+        # complete (see _hold), a measured download step, extractor manifests.
+        self._inspected, self._cover, self._measured, self._manifests = {}, set(), False, {}
         self.initial_roles = roles(scene) if self.enabled else set()
         if not self.enabled:
             return
@@ -584,6 +947,78 @@ class FacePlan:
         self.required_roles = set(self.needed)
         self.status = "already_present" if not self.needed else "unavailable"
         self.target_anchor, self.head_material = self._anchor(scene)
+        if self.needed:
+            self.face_references = self._face_references(scene, body_sources)
+            self._game_records = self._selected_records(scene, body_sources)
+
+    def _face_references(self, scene, sources):
+        """CAB names that the bodies' BodyPartManager.face pointers resolve through.
+
+        The game instantiates exactly that MemberFace prefab. A same-owner face
+        with another CAB (the stock face of a costume whose installed face was
+        isolated, or another costume's edited face) is a different prefab.
+        """
+        from .model_viewer import _source_path
+        names = set()
+        for obj in scene.env.objects:
+            if obj.type.name != "MonoBehaviour" or _source_path(obj) not in sources:
+                continue
+            try:
+                tree = scene.tree(obj)
+                pointer = tree.get("face")
+                if not isinstance(pointer, dict) or "headMaterial" not in tree:
+                    continue
+                file_id, path_id = pointer.get("m_FileID"), pointer.get("m_PathID")
+                externals = obj.assets_file.externals
+                if type(file_id) is not int or type(path_id) is not int or not path_id or not 0 < file_id <= len(externals):
+                    continue
+                if not _declares(scene, obj, tree, "BodyPartManager", "LLAS.Components.Members"):
+                    continue
+                names.add(ntpath.basename(externals[file_id - 1].path).casefold())
+            except Exception:
+                continue
+        return names
+
+    def _selected_records(self, scene, sources):
+        """Game-assets selections registered for these exact body bytes."""
+        from .model_viewer import _source_hash, _source_path
+        from .viewer_mod_sources import imported_record
+        hashes = {}
+        for obj in scene.env.objects:
+            source = _source_path(obj)
+            if source in sources and source not in hashes:
+                hashes[source] = _source_hash(obj)
+        origins = self.context.get("origins", {})
+        # Archive members and motion copies have another origin; only the
+        # imported model file itself carries the server's receipt.
+        eligible = [source for source in sorted(hashes) if origins.get(source, source) == source]
+        records = []
+        for source in eligible:
+            record = imported_record(source, hashes[source])
+            if record is None:
+                # A restart empties the in-memory registry. The import cache
+                # keeps its own receipt binding these exact bytes to the suit.
+                record = self._stored_record(source, hashes[source])
+            if record is not None and record not in records:
+                records.append(record)
+        return records
+
+    def _stored_record(self, source, digest):
+        """The selection the Game-assets import cache persisted for these bytes.
+
+        Only the application's own game-model cache is read, and only a
+        receipt bound to this file's path and SHA counts.
+        """
+        root = self.context.get("game_models_dir")
+        if not isinstance(root, str) or not root:
+            return None
+        from .viewer_mod_flow import stored_receipt
+        from .viewer_mod_sources import _record
+        try:
+            row = stored_receipt(source, digest, root)
+            return None if row is None else _record(row["record"])
+        except Exception:
+            return None
 
     def warn(self, code, message):
         warning = {"code": code, "message": message}
@@ -826,8 +1261,9 @@ class FacePlan:
             return 0 if (f"ch{native_from_member(self.owner):04}" in lower or f"{self.owner}_" in lower
                          or (character_name and re.match(re.escape(character_name) + r"(?:[^a-z]|$)", lower))) else 1
 
-        # Selected files' parents are already jailed by the server.
-        roots = [os.path.dirname(p) for p in self.paths]
+        # Selected files' parents are already jailed by the server. Walk them
+        # by their resolved path, as every file found is compared resolved.
+        roots = [os.path.realpath(os.path.dirname(p)) for p in self.paths]
         roots.extend(os.path.dirname(os.path.realpath(origin)) for path, origin in self.context.get("origins", {}).items() if path in self.paths)
         roots.extend(os.path.realpath(p) for p in self.context.get("library_roots", []) if os.path.isdir(p))
         cache = self.context.get("cache_dir")
@@ -861,6 +1297,58 @@ class FacePlan:
                         continue
                     found.append((rank_name(name), path))
         return [path for _, path in sorted(found)[:MAX_CANDIDATES]]
+
+    def _selected_iter(self):
+        """The selected game costume's own dependencies, as the client loads them.
+
+        A Game-assets selection names its suit and model. The client loads
+        that model's member_model_dependency rows with the body, so this is
+        the face its BodyPartManager was built against, including the private
+        face an installed edited costume depends on instead of the stock one.
+        """
+        root = self.context.get("repo_root")
+        if not root:
+            return
+        seen = set()
+        for record in self._game_records:
+            region, model, suit = record.get("region"), record.get("model"), record.get("suit_id")
+            platform = record.get("platform", "android")
+            if (record.get("scene_source") is not None or region not in ("gl", "jp") or platform not in ("android", "ios")
+                    or not isinstance(model, str) or not model or type(suit) is not int):
+                continue
+            prefix = "asset_i_" if platform == "ios" else "asset_a_"
+            language = record.get("selection_language", "en")
+            directory = Path(root) / "assets" / "db" / region
+            catalogs = sorted(directory.glob(prefix + "*.db"),
+                              key=lambda path: (path.name != f"{prefix}{language}.db", path.name != prefix + "en.db", path.name))
+            for catalog in catalogs[:16]:
+                _check(self.deadline)
+                try:
+                    with closing(sqlite3.connect(catalog.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+                        dependencies = [row[0] for row in db.execute(
+                            "SELECT dependency FROM member_model_dependency WHERE asset_path=? LIMIT 64", (model,))]
+                        keys = [key for key in dict.fromkeys(dependencies) if key != model]
+                        records = {}
+                        if keys:
+                            parameters = ",".join("?" for _ in keys)
+                            for row in db.execute(f"SELECT asset_path,pack_name,head,size,key1,key2 FROM member_model WHERE asset_path IN ({parameters})", keys):
+                                records.setdefault(row[0], row)
+                        sizes = _pack_sizes(db, list(dict.fromkeys(row[1] for row in records.values())), suit)
+                except (OSError, sqlite3.Error, TypeError, ValueError):
+                    continue
+                resources = [dict(zip(("asset_path", "pack_name", "head", "size", "key1", "key2"), row), pack_size=sizes.get(row[1]))
+                             for row in records.values()]
+                if not resources:
+                    continue
+                # One catalog is this selection's authority; other language
+                # catalogs of the same region repeat the same packs.
+                resources.sort(key=lambda resource: -resource["size"] if isinstance(resource["size"], int) else 0)
+                for resource in resources[:MAX_AUTO_FILES]:
+                    identity = tuple(resource[key] for key in ("pack_name", "head", "size", "key1", "key2", "pack_size"))
+                    if identity not in seen:
+                        seen.add(identity)
+                        yield resource
+                break
 
     def _descriptors(self):
         """Keep original view/region/platform alternatives before trying HTTP."""
@@ -933,6 +1421,8 @@ class FacePlan:
                         identity = tuple(resource[key] for key in ("pack_name", "head", "size", "key1", "key2", "pack_size"))
                         if identity not in seen:
                             seen.add(identity)
+                            if body and resource is body[0]:
+                                self._suit_models.add(identity)
                             yield resource
                             if len(seen) >= MAX_DESCRIPTOR_CANDIDATES:
                                 return
@@ -953,8 +1443,7 @@ class FacePlan:
         if not isinstance(head, int) or not isinstance(size, int) or head < 0 or not 0 < size <= MAX_PACK_BYTES \
                 or (pack_size is not None and not head + size <= pack_size <= MAX_PACK_BYTES):
             raise FaceUnavailable("The original face exceeds the mobile download limit.")
-        identity = hashlib.sha256(json.dumps(descriptor, sort_keys=True).encode()).hexdigest()[:24]
-        output = _managed_dir(root, "models") / f"ch{native_from_member(self.owner):04}_{identity}.unity"
+        output = _managed_dir(root, "models") / _cache_name(self.owner, descriptor)
         plain = _cached(output, size)
         if plain is not None:
             _preflight_bundle(plain)
@@ -985,7 +1474,7 @@ class FacePlan:
                 raise FaceUnavailable("The original face could not be decrypted for this platform.") from error
             return data
 
-        plain, packed, managed_pack = None, None, None
+        plain, packed, managed_pack, downloaded, compared, fetched = None, None, None, False, False, False
         for directory in dict.fromkeys(roots):
             _check(self.deadline)
             for relative in (pack_name, "pkg" + pack_name[0] + "/" + pack_name, "pak" + pack_name[0] + "/" + pack_name, "files/pkg" + pack_name[0] + "/" + pack_name):
@@ -1010,6 +1499,8 @@ class FacePlan:
             cached_pack = _managed_dir(root, "packs") / pack_name
             managed_pack = cached_pack
             packed = _cached(cached_pack, pack_size)
+            downloaded = packed is not None and _downloaded(cached_pack)
+            compared = packed is not None and _compared(cached_pack)
             if packed is None:
                 if not download or not self.context.get("allow_download", True):
                     raise FaceUnavailable("Original face downloads are disabled.")
@@ -1017,15 +1508,31 @@ class FacePlan:
                 parsed = urlsplit(base)
                 if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
                     raise FaceUnavailable("Configure a valid HTTPS original-asset CDN.")
+                url = base.rstrip("/") + "/" + pack_name
+                if url in self._requested:
+                    # Each pack is requested once: one that failed, did not
+                    # answer or was stopped is not fetched (or reserved) again.
+                    raise FaceUnavailable("The original face pack was already requested.")
                 remaining = MAX_TRANSFER_BYTES - self.transferred
                 reservation = pack_size if pack_size is not None else MAX_PACK_BYTES
                 if reservation > remaining:
                     raise FaceUnavailable("The original face exceeds the download budget.")
                 # Reserve before opening a socket, including failed attempts.
+                self._requested.add(url)
                 self.transferred += reservation
-                packed = _download_with_deadline(base.rstrip("/") + "/" + pack_name, pack_size, self.deadline, min(MAX_PACK_BYTES, remaining))
+                if self._stopping is not None:
+                    # A download stopped early frees the one worker at its next chunk.
+                    self._stopping.completed.wait(max(0., self.deadline - time.monotonic()))
+                    self._stopping = None
+                try:
+                    packed = _download_with_deadline(url, pack_size, self.deadline, min(MAX_PACK_BYTES, remaining),
+                                                     limit=self.deadline if self._measured else None)
+                except _NoAnswer as error:
+                    self._stopping = getattr(error, "transfer", None) or self._stopping
+                    raise
                 if not 0 < len(packed) <= MAX_PACK_BYTES or (pack_size is not None and len(packed) != pack_size):
                     raise FaceUnavailable("The original asset download was incomplete.")
+                downloaded = fetched = True
             try:
                 plain = decrypt(packed[head:head + size])
             except FaceUnavailable:
@@ -1034,8 +1541,10 @@ class FacePlan:
                 Path(str(managed_pack) + ".json").unlink(missing_ok=True)
                 raise
         if managed_pack is not None:
-            _save(managed_pack, packed)
-        _save(output, plain, self.owner)
+            _save(managed_pack, packed, downloaded=downloaded, compared=compared)
+        _save(output, plain, self.owner, downloaded=downloaded, compared=compared)
+        if fetched:
+            self._fetched[str(output)] = str(managed_pack)
         self.database_paths.add(str(output))
         return str(output)
 
@@ -1043,7 +1552,7 @@ class FacePlan:
         if not self.enabled or self.owner is None:
             return []
         try:
-            pending = []
+            pending, selected_pending, later, checked = [], [], [], set()
             try:
                 for path in self._verified_companions():
                     self._accept(path)
@@ -1051,57 +1560,83 @@ class FacePlan:
                 raise
             except Exception:
                 pass
+            # A Game-assets body names its own suit. The client loads that
+            # suit's dependencies with it, so they come before owner-wide
+            # caches and the member's default suit: an installed edited
+            # costume depends on its private face, not on the stock one.
+            try:
+                if self.needed:
+                    for descriptor in self._selected_iter():
+                        _check(self.deadline)
+                        self._sizes.add(descriptor.get("size"))
+                        try:
+                            if self._accept(self._resource(descriptor, download=False), exact=True, own=True):
+                                break
+                        except Exception:
+                            selected_pending.append(descriptor)
+            except Exception:
+                pass
             # A downloaded same-owner original must not wait behind catalog
             # scans. Names only select candidates; _accept validates contents.
+            # A referenced face that may be an edited copy of a catalog face
+            # (see _trusted) waits in ``later`` for the catalog's own copy.
             try:
                 if self.needed:
                     for path in self._known_local():
-                        if self._accept(path):
+                        if self.face_references and not self._trusted(path) and self._referenced(path):
+                            self._hold(later, path)
+                            continue
+                        if self._accept(path, exact=True):
                             break
             except Exception:
                 pass
             # Exact original/cache identities come before the broad Unity-file
             # search. A populated library must not consume the entire facial
             # budget before we can reuse its already-downloaded original pack.
+            # ``checked`` holds the catalog assets already decrypted here.
             try:
                 if self.needed:
                     for descriptor in self._descriptor_iter():
                         _check(self.deadline)
+                        if self.face_references and self._suit_model(descriptor):
+                            # The default suit's own body is not the face a
+                            # BodyPartManager references. It keeps its old
+                            # place among the downloads and is never decrypted
+                            # or fetched only to be compared.
+                            pending.append(descriptor)
+                            continue
+                        self._sizes.add(descriptor.get("size"))
                         try:
-                            if self._accept(self._resource(descriptor, download=False)):
+                            path = self._resource(descriptor, download=False)
+                            checked.add(_asset(descriptor))
+                            if self._accept(path, exact=True):
                                 break
+                            if path in self._late:
+                                # An earlier open downloaded it: it keeps the
+                                # place that download had.
+                                pending.append(path)
                         except Exception:
                             pending.append(descriptor)
             except Exception:
                 # Standalone/local-only viewers do not need an asset catalog.
                 pass
             if self.needed:
-                original_deadline = self.deadline
-                if pending and self.context.get("allow_download", True):
-                    # Leave time to obtain a known original when a large local
-                    # collection contains no usable same-character donor.
-                    self.deadline = min(self.deadline, time.monotonic() + 8)
-                try:
-                    for path in self._local():
-                        if self._accept(path):
-                            break
-                except Exception:
-                    pass
-                finally:
-                    self.deadline = original_deadline
+                self._search_local(pending, later)
             if self.needed:
-                for descriptor in pending:
-                    _check(self.deadline)
-                    try:
-                        if self._accept(self._resource(descriptor)):
-                            break
-                    except Exception:
-                        # One missing optional pack cannot hide a costume.
-                        continue
+                obtained = self._download_pass(selected_pending + pending + list(self._late),
+                                               len(selected_pending), checked, later)
+                # The face the body references was not obtained: the earlier
+                # choice, the first same-member candidate in the old order. A
+                # referenced face kept for later comes first.
+                for path in later + self._deferred + obtained:
+                    if not self.needed or self._accept(path):
+                        break
         except SavedFacePlatformMismatch:
             raise
         except Exception:
             pass
+        finally:
+            self._inspected.clear()
         if self.needed:
             self.status = "partial" if self.auto_paths else "unavailable"
             self.warn("face_source_unavailable", "The original face is unavailable. The costume is still shown; check the asset connection and try again.")
@@ -1114,11 +1649,273 @@ class FacePlan:
             pass
         return list(self.auto_paths)
 
-    def _accept(self, path):
-        if path in self.paths or path in self.auto_paths or len(self.auto_paths) >= MAX_AUTO_FILES:
+    def _suit_model(self, descriptor):
+        return tuple(descriptor.get(key) for key in ("pack_name", "head", "size", "key1", "key2", "pack_size")) in self._suit_models
+
+    @contextmanager
+    def _until(self, deadline):
+        """Bound one step by ``deadline``, never past the face deadline."""
+        original = self.deadline
+        self.deadline = min(original, deadline)
+        try:
+            yield
+        finally:
+            self.deadline = original
+
+    @contextmanager
+    def _download_step(self, measured, early):
+        """One download of the pass: ``measured`` (see _behind), ending FALLBACK_SECONDS early if ``early``."""
+        original, self._measured = self.deadline, measured
+        if early:
+            self.deadline = original - FALLBACK_SECONDS
+        try:
+            yield
+        finally:
+            self.deadline, self._measured = original, False
+
+    def _beside_dirs(self):
+        """The folders the selected files are in, as chosen and as resolved."""
+        folders = set()
+        for path in self.paths:
+            folders.add(os.path.realpath(os.path.dirname(path)))
+            folders.add(os.path.dirname(os.path.realpath(path)))
+        return folders
+
+    def _beside(self, path):
+        return os.path.dirname(os.path.realpath(path)) in self._beside_dirs()
+
+    def _extracted(self, path):
+        """Whether ``path`` is in a folder where the asset extractor writes member models.
+
+        These are the library roots and their 3d_model and extracted/3d_model
+        folders, the places ``_known_local`` probes for the extractor's own
+        chNNNN_facedynamic/chNNNN_face names.
+        """
+        folders = set()
+        for root in self.context.get("library_roots", []):
+            for relative in ("", "3d_model", os.path.join("extracted", "3d_model")):
+                folders.add(os.path.realpath(os.path.join(os.path.realpath(root), relative)))
+        return os.path.dirname(os.path.realpath(path)) in folders
+
+    def _trusted(self, path):
+        """Whether a referenced face is used at once, before the catalog's own copy.
+
+        It is beside a selected body (where the viewer saves an edited face),
+        in the face cache, or the bundled extractor's output in a library
+        folder (see _extracted): a file with the extractor's own name, or, in
+        a 3d_model folder, a member model that the extractor's
+        _extract_manifest.csv lists with this size, or that has the size of
+        one of this member's catalog faces. A referenced face anywhere else
+        may be an edited copy with the stock face's serialized names.
+        """
+        if self._beside(path) or self._in_cache(path):
+            return True
+        if not self._extracted(path):
+            return False
+        native = native_from_member(self.owner)
+        if os.path.basename(path).casefold() in (f"ch{native:04}_facedynamic.unity", f"ch{native:04}_face.unity"):
+            return True
+        if os.path.basename(os.path.dirname(os.path.realpath(path))) != "3d_model":
             return False
         try:
-            inspected = self._inspect(path)
+            size = os.path.getsize(path)
+        except OSError:
+            return False
+        return size in self._sizes or self._listed(path, size)
+
+    def _listed(self, path, size):
+        """Whether the extractor's _extract_manifest.csv lists ``path`` as an extracted member model of ``size`` bytes."""
+        real = os.path.realpath(path)
+        out_dir = os.path.dirname(os.path.dirname(real))
+        manifest = os.path.join(out_dir, "_extract_manifest.csv")
+        if manifest not in self._manifests:
+            rows = set()
+            try:
+                if not os.path.islink(manifest) and os.path.isfile(manifest) and os.path.getsize(manifest) <= MAX_MANIFEST_BYTES:
+                    with open(manifest, newline="", encoding="utf-8") as handle:
+                        for row in csv.reader(handle):
+                            if len(row) == 9 and row[0] == "member_model" and row[8] == "OK":
+                                rows.add((row[7].replace("\\", "/"), row[4]))
+            except (OSError, ValueError, csv.Error):
+                rows = set()
+            self._manifests[manifest] = rows
+        return (os.path.relpath(real, out_dir).replace(os.sep, "/"), str(size)) in self._manifests[manifest]
+
+    def _in_cache(self, path):
+        """Whether ``path`` is one of the face cache's own model files."""
+        cache = self.context.get("cache_dir")
+        if not cache:
+            return False
+        try:
+            directory = os.path.realpath(_cache_root(cache) / "models")
+        except (OSError, FaceUnavailable):
+            return False
+        return os.path.dirname(os.path.realpath(path)) == directory
+
+    def _search_local(self, pending, later):
+        """The broad same-member file search, with its old bound.
+
+        With a catalog original still to download, the walk and the
+        candidates it accepts or keeps share LOCAL_SECONDS. With a body
+        reference, a referenced face is used at once when it is trusted
+        (_trusted), one elsewhere is kept in ``later``, and any other file is
+        kept for the fallback in the old order (see _waits).
+        """
+        bounded = bool(pending) and self.context.get("allow_download", True)
+        try:
+            # Leave time to obtain a known original when a large local
+            # collection contains no usable same-character donor.
+            with self._until(time.monotonic() + LOCAL_SECONDS if bounded else self.deadline):
+                for path in self._local():
+                    if self.face_references and self._referenced(path) and not self._trusted(path):
+                        self._hold(later, path)
+                        continue
+                    if self._accept(path, exact=True):
+                        break
+        except Exception:
+            pass
+
+    def _referenced(self, path):
+        try:
+            return bool(_serialized_names(path) & self.face_references)
+        except Exception:
+            return False
+
+    def _download_pass(self, items, own, checked, later):
+        """Download catalog candidates in the old order; return the faces obtained but not used.
+
+        ``items`` holds the selected costume's own descriptors (the first
+        ``own``), the catalog candidates and the cached downloads, in the old
+        order. While no face of the member is at hand, each is downloaded with
+        the whole face time, as before; the face the body references is used
+        at once, and any other usable face is at hand. Once one is at hand,
+        only candidates that may still be the referenced face are downloaded,
+        each measured (_behind) and ending FALLBACK_SECONDS before the face
+        deadline. The first of them that is stopped or meets an asset server
+        that does not answer ends the downloads, as does any answer while a
+        referenced library face waits in ``later``. The selected costume's own
+        downloads are always measured: the old order still follows them. Each
+        pack is requested once (_resource).
+        """
+        from urllib.error import HTTPError
+        allow = self.context.get("allow_download", True)
+        obtained, broken, ended = [], set(), False
+        for index, item in enumerate(items):
+            if not self.needed:
+                break
+            path = item if isinstance(item, str) else None
+            if path is None:
+                at_hand = self._covered()
+                if ended or not allow or item.get("pack_name") in broken:
+                    continue
+                if at_hand and self.face_references and (self._suit_model(item) or _asset(item) in checked):
+                    continue
+                try:
+                    with self._download_step(at_hand or index < own, at_hand):
+                        path = self._resource(item)
+                except _NoAnswer:
+                    ended = ended or at_hand
+                    continue
+                except Exception as error:
+                    # A pack that failed is not asked for its other assets.
+                    broken.add(item.get("pack_name"))
+                    ended = ended or at_hand and bool(later or isinstance(error, OSError) and not isinstance(error, HTTPError))
+                    continue
+                checked.add(_asset(item))
+                ended = ended or at_hand and bool(later)
+            if not self.face_references or self._referenced(path):
+                if self._accept(path):
+                    break
+            else:
+                # Not the face the body references: a fallback at its place.
+                # Until it is used, a download keeps a download's place in
+                # later opens too.
+                self._compared_now(path)
+                self._hold(obtained, path)
+        return obtained
+
+    def _late_download(self, path):
+        """A face cached only because the viewer downloaded it.
+
+        Without the cache it would be downloaded again, after the catalog
+        downloads, so it keeps that place in every later open: whether an
+        earlier open fetched it cannot change the choice.
+        """
+        return self._in_cache(path) and _downloaded(path)
+
+    def _compared_now(self, path):
+        """Mark a face this plan downloaded but did not use, with its pack."""
+        if path in self._fetched:
+            _set_compared(path, True)
+            if self._fetched[path]:
+                _set_compared(self._fetched[path], True)
+
+    def _covered(self):
+        """Whether the candidates kept for the fallback complete the missing roles."""
+        return bool(self.needed) and not self.needed - self._cover
+
+    def _hold(self, kept, path):
+        """Keep a same-member candidate in ``kept``, in order, for the fallback.
+
+        Until the kept candidates complete the missing roles, each is inspected
+        now, within the current step's bound as accepting it would be. The
+        download pass relies on that (_covered); _accept reuses the inspection.
+        """
+        if path not in kept:
+            kept.append(path)
+        if not self._covered():
+            self._cover |= completion_roles(self._usable(path))
+
+    def _usable(self, path):
+        """The roles a candidate would add now (an inspection kept for _accept)."""
+        if path in self.paths or path in self.auto_paths:
+            return set()
+        try:
+            inspected = self._inspection(path)
+        except SavedFacePlatformMismatch:
+            raise
+        except Exception:
+            return set()
+        return set(inspected[2]) if inspected else set()
+
+    def _inspection(self, path):
+        """_inspect, reusing an earlier inspection for the same missing roles.
+
+        A scene keeps the deadline it was read with, so one read within a
+        shorter step bound (the broad search's) is read again.
+        """
+        key, kept = frozenset(self.needed), self._inspected.get(path)
+        if kept is None or kept[0] != key or kept[1] < self.deadline:
+            kept = self._inspected[path] = (key, self.deadline, self._inspect(path))
+        return kept[2]
+
+    def _waits(self, path, own=False):
+        """Whether a candidate keeps a later place instead of being used now.
+
+        With a body reference, another face prefab of the same member is only
+        a fallback while the face it references may still be found. For every
+        body, a face the viewer downloaded but did not use keeps the place a
+        fresh download has, so that download cannot change later choices;
+        the selected game costume's ``own`` faces are not held back by it.
+        """
+        if self.face_references:
+            if self._referenced(path):
+                return False
+            self._hold(self._late if self._late_download(path) else self._deferred, path)
+            return True
+        if not own and self._in_cache(path) and _compared(path):
+            self._hold(self._late, path)
+            return True
+        return False
+
+    def _accept(self, path, exact=False, own=False):
+        if path in self.paths or path in self.auto_paths or len(self.auto_paths) >= MAX_AUTO_FILES:
+            return False
+        if exact and self._waits(path, own):
+            return False
+        try:
+            inspected = self._inspection(path)
+            self._inspected.pop(path, None)
             if inspected is None:
                 return False
             scene, dynamic, found = inspected
@@ -1130,6 +1927,11 @@ class FacePlan:
             if self.face_mode != "board" or "board" not in available:
                 auxiliaries.difference_update({"face_overlay", "board_shell"})
             self.auto_paths.append(path)
+            if self._in_cache(path) and _compared(path):
+                # Used now: from here on it is a face the viewer downloaded.
+                _set_compared(path, False)
+                if self._fetched.get(path):
+                    _set_compared(self._fetched[path], False)
             if os.path.realpath(path) in self._hint_sources:
                 self.saved_paths.add(path)
             self.dynamic_sources.update(dynamic)
@@ -1220,6 +2022,28 @@ class FacePlan:
                 elif bindings[key] is not None and _key(bindings[key]) != _key(material):
                     # An explicitly shared prefab with distinct atlases has no
                     # single material assignment. Preserve its own material.
+                    bindings[key] = None
+            # MergeAndCombineFaceMesh.MergeFace (GL 3.12.0 0x2c94ff4) also gives
+            # headMaterial to every Renderer below headAll (set_sharedMaterial
+            # loop at 0x2c95478) when the face needs merging. A costume's own
+            # Hair keeps its serialized material only on masked heads.
+            try:
+                head_all = _ref(obj, tree.get("headAll"))
+                face_data = scene.tree(face).get("memberFaceData")
+            except Exception:
+                continue
+            merge = face_data.get("needsMergingFace") if isinstance(face_data, dict) else None
+            if (head_all is None or head_all.type.name != "GameObject" or type(merge) not in (bool, int) or merge != 1
+                    or material.assets_file is not obj.assets_file
+                    or _find(scene, scene.transforms.get(_key(head_all)), ("Head_Face", "mesh_facedots")) is not None):
+                continue
+            for renderer, _, game_object in scene.renderers:
+                if _source_path(renderer) != _source_path(obj) or not beneath(game_object, head_all):
+                    continue
+                key = _key(renderer)
+                if key not in bindings:
+                    bindings[key] = material
+                elif bindings[key] is not None and _key(bindings[key]) != _key(material):
                     bindings[key] = None
         self.material_bindings = bindings
 
@@ -1458,3 +2282,99 @@ class FacePlan:
             self.status = "partial" if self.added else "unavailable"
         elif self.required_roles:
             self.status = "added"
+
+
+class _CatalogFaces(FacePlan):
+    """A face plan without a body: only its catalog listing and reading.
+
+    ``_descriptor_iter`` lists the member's default costume (its suit, views
+    and their dependencies) and ``_resource`` reads one listed asset, both
+    unchanged; nothing is chosen for a body.
+    """
+
+    def __init__(self, owner, context, deadline, platform=None, board=False):
+        self.context = dict(context or {})
+        self.enabled = True
+        self.deadline = deadline
+        self.paths, self.auto_paths, self.warnings = [], [], []
+        self.owner = owner
+        self.face_mode = "board" if board else "normal"
+        self._body_platforms = {platform} if platform is not None else set()
+        self._suit_models, self.database_paths, self._requested = set(), set(), set()
+        self.transferred, self._stopping, self._measured, self._fetched = 0, None, False, {}
+
+
+def catalog_originals(owner, faces, context, *, platform=None, board=False, download=False, seconds=FACE_SECONDS):
+    """Which of ``faces`` are byte for byte a catalog original of the member's own face.
+
+    ``faces`` maps keys to face bundle bytes of member ``owner`` (native
+    ``platform``, 13 or 9, when known). The originals are the assets the
+    member's default costume depends on (its suit and views, as the face plan
+    lists them; the default body itself is not a face), in every catalog of
+    that platform. Every official costume of a member shares that face; an
+    installed costume with its own face depends on another asset instead.
+    Only originals whose section has a face's size are read: from the face
+    cache, a local pack, or (``download``) the original asset server, as
+    automatic faces are read (``FacePlan._resource``). A copy downloaded here
+    keeps a download's place in later face choices (see ``_waits``).
+
+    Returns ``{"listed", "proven", "unread", "names"}``: whether the catalogs
+    list the default costume at all, the keys whose bytes equal an original,
+    the other keys an original of their size could not be read for, and the
+    face cache file names of all listed originals (a cached face with another
+    catalog name is a copy of another catalog asset).
+    """
+    result = {"listed": False, "proven": set(), "unread": set(), "names": set()}
+    context = context or {}
+    if type(owner) is not int or not faces or not context.get("repo_root") or not context.get("cache_dir"):
+        return result
+    digests = {key: hashlib.sha256(raw).hexdigest() for key, raw in faces.items()}
+    sizes = {len(raw) for raw in faces.values()}
+    plan = _CatalogFaces(owner, {**context, "allow_download": bool(download) and context.get("allow_download", True)},
+                         time.monotonic() + seconds, platform, board)
+    candidates, listed = [], True
+    try:
+        for descriptor in plan._descriptor_iter():
+            result["listed"] = True
+            if plan._suit_model(descriptor):
+                continue
+            result["names"].add(_cache_name(owner, descriptor))
+            if descriptor.get("size") in sizes:
+                candidates.append(descriptor)
+    except Exception:
+        # No catalog (a standalone viewer), or the listing stopped: what it
+        # did not list may still be an original of any face's size.
+        listed = False
+    def compare(path):
+        data = _cached(path)
+        if data is not None:
+            digest = hashlib.sha256(data).hexdigest()
+            result["proven"].update(key for key, value in digests.items() if value == digest)
+    def open_keys(descriptor):
+        return [key for key in faces if key not in result["proven"] and len(faces[key]) == descriptor.get("size")]
+    # The cache and local packs first, then the asset server.
+    pending = []
+    for descriptor in candidates:
+        if not open_keys(descriptor):
+            continue
+        try:
+            compare(plan._resource(descriptor, download=False))
+        except Exception:
+            pending.append(descriptor)
+    for descriptor in pending:
+        keys = open_keys(descriptor)
+        if not keys:
+            continue
+        try:
+            if not plan.context["allow_download"]:
+                raise FaceUnavailable("Original face downloads are disabled.")
+            path = plan._resource(descriptor)
+            # Fetched only to compare: no body uses it yet.
+            plan._compared_now(path)
+            compare(path)
+        except Exception:
+            result["unread"].update(keys)
+    if not listed:
+        result["unread"].update(faces)
+    result["unread"] -= result["proven"]
+    return result

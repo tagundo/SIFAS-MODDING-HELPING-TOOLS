@@ -27,6 +27,23 @@
  * unique retained image owners are undoable. Pixel history defaults to 64 MiB;
  * structural changes and combined pixel/mask moves can use up to 128 MiB.
  *
+ * recordState(label, change) adds a pixel-free undo step for host state kept
+ * beside the layers (the head-texture blush bake): change(true) redoes it and
+ * change(false) undoes it. replaceImageData/restoreProject accept the same
+ * config.custom function, run with that layer step in one undo entry.
+ *
+ * onHistoryRecord(label, change) is called once for every new undo step, after
+ * its change is made and kept; its result stays with that step. change says
+ * what the step changed: pixels (a layer's pixels), selection, layers (the
+ * layer stack: change.flattenedChanged() then compares the flattened image
+ * before and after a band of rows at a time, stopping at the first difference;
+ * it is valid during this call only) or state (recordState only).
+ * A selection brush stroke, for one, is a pixels-false step whatever its label.
+ * onHistoryTravel(value, redo) gets that result back when the step is undone
+ * (redo false) or redone (redo true), before any of the step's changes or
+ * events. The host keeps state beside the pixels this way (the texture
+ * operations a Mod name lists) without any step of its own.
+ *
  * copySelection/cutSelection use a bounded in-app clipboard shared by engines.
  * pasteClipboard/startMoveSelection create pending floating pixels: getImage
  * remains committed, getDisplayImage previews movement. Enter commits one undo
@@ -212,25 +229,57 @@
       }
       var result = display ? displayComposite : composite, owned = display ? displayOwned : compositeOwned, dirty = display ? displayDirty : compositeDirty;
       if (!result || !owned || result.width !== doc.width || result.height !== doc.height) { result = { width: doc.width, height: doc.height, data: new Uint8ClampedArray(doc.data.length) }; dirty = dimensions(); }
-      if (dirty) {
-        for (var y = dirty.y; y < dirty.y + dirty.height; y++) for (var x = dirty.x; x < dirty.x + dirty.width; x++) {
-          var offset = (y * doc.width + x) * 4, red = 0, green = 0, blue = 0, alphaByte = 0;
-          for (var layerIndex = 0; layerIndex < visible.length; layerIndex++) {
-            var source = sources[layerIndex].data, opacity = visible[layerIndex].opacity;
-            if (!layerIndex) { red = source[offset]; green = source[offset + 1]; blue = source[offset + 2]; alphaByte = Math.round(source[offset + 3] * opacity); continue; }
-            var alpha = source[offset + 3] / 255 * opacity; if (!alpha) continue;
-            var old = alphaByte / 255, combined = alpha + old * (1 - alpha);
-            red = Math.round((source[offset] * alpha + red * old * (1 - alpha)) / combined);
-            green = Math.round((source[offset + 1] * alpha + green * old * (1 - alpha)) / combined);
-            blue = Math.round((source[offset + 2] * alpha + blue * old * (1 - alpha)) / combined);
-            alphaByte = Math.round(combined * 255);
-          }
-          result.data[offset] = red; result.data[offset + 1] = green; result.data[offset + 2] = blue; result.data[offset + 3] = alphaByte;
-        }
-      }
+      if (dirty) blendLayers(result.data, visible, sources, dirty);
       if (display) { displayComposite = result; displayOwned = true; displayDirty = null; }
       else { composite = result; compositeOwned = true; compositeDirty = null; }
       return result;
+    }
+    // Blends the dirty rectangle of visible layers into target, whose byte 0 is
+    // the texture's byte base (0 for a full-size target).
+    function blendLayers(target, visible, sources, dirty, base) {
+      base = base || 0;
+      for (var y = dirty.y; y < dirty.y + dirty.height; y++) for (var x = dirty.x; x < dirty.x + dirty.width; x++) {
+        var offset = (y * doc.width + x) * 4, red = 0, green = 0, blue = 0, alphaByte = 0;
+        for (var layerIndex = 0; layerIndex < visible.length; layerIndex++) {
+          var source = sources[layerIndex].data, opacity = visible[layerIndex].opacity;
+          if (!layerIndex) { red = source[offset]; green = source[offset + 1]; blue = source[offset + 2]; alphaByte = Math.round(source[offset + 3] * opacity); continue; }
+          var alpha = source[offset + 3] / 255 * opacity; if (!alpha) continue;
+          var old = alphaByte / 255, combined = alpha + old * (1 - alpha);
+          red = Math.round((source[offset] * alpha + red * old * (1 - alpha)) / combined);
+          green = Math.round((source[offset + 1] * alpha + green * old * (1 - alpha)) / combined);
+          blue = Math.round((source[offset + 2] * alpha + blue * old * (1 - alpha)) / combined);
+          alphaByte = Math.round(combined * 255);
+        }
+        var at = offset - base; target[at] = red; target[at + 1] = green; target[at + 2] = blue; target[at + 3] = alphaByte;
+      }
+    }
+    // Whether two layer lists flatten to the same RGBA bytes (getImage's rule),
+    // without touching the composite caches or making full-size copies.
+    function sameFlattened(before, after) {
+      var clear = new Map();
+      function transparent(data) {
+        if (!clear.has(data)) { var empty = true; for (var i = 3; i < data.length; i += 4) if (data[i]) { empty = false; break; } clear.set(data, empty); }
+        return clear.get(data);
+      }
+      // A fully transparent layer above the bottom visible one adds nothing to the blend.
+      function blended(list) { return list.filter(function (layer) { return layer.visible && layer.opacity > 0; }).filter(function (layer, index) { return !index || !transparent(layer.image.data); }); }
+      var left = blended(before), right = blended(after);
+      // The same images at the same opacities flatten alike (a rename, a hidden or empty layer added, moved or removed).
+      if (left.length === right.length && left.every(function (layer, index) { return layer.image.data === right[index].image.data && layer.opacity === right[index].opacity; })) return true;
+      // Otherwise blend both a band of rows at a time and stop at the first
+      // difference; one opaque layer is its own flattened image.
+      var rows = Math.max(1, Math.min(doc.height, Math.floor(16384 / doc.width))), scratchA = new Uint8ClampedArray(rows * doc.width * 4), scratchB = new Uint8ClampedArray(scratchA.length);
+      var leftSources = left.map(function (layer) { return layer.image; }), rightSources = right.map(function (layer) { return layer.image; });
+      function bandOf(list, sources, scratch, band, base, length) {
+        if (list.length === 1 && list[0].opacity === 1) return sources[0].data.subarray(base, base + length);
+        blendLayers(scratch, list, sources, band, base); return scratch;
+      }
+      for (var y = 0; y < doc.height; y += rows) {
+        var band = { x: 0, y: y, width: doc.width, height: Math.min(rows, doc.height - y) }, base = y * doc.width * 4, length = band.height * doc.width * 4;
+        var a = bandOf(left, leftSources, scratchA, band, base, length), b = bandOf(right, rightSources, scratchB, band, base, length);
+        for (var i = 0; i < length; i++) if (a[i] !== b[i]) return false;
+      }
+      return true;
     }
     function nextLayerId() { var id; do { id = "layer_" + (++layerSerial).toString(36); } while (layers.some(function (layer) { return layer.id === id; })); return id; }
     function checkedName(value) { if (typeof value !== "string" || !value.trim() || /[\u0000-\u001f\u007f]/.test(value) || Array.from(value).length > 128) throw new Error("Use a layer name of 1 to 128 characters."); return value.trim(); }
@@ -250,6 +299,21 @@
         historyBytes = retainedBytes();
       }
     }
+    // The host's value for a new undo step (onHistoryRecord), kept with it. A
+    // layer step's project is the stack before it; layers is the stack after it.
+    function recorded(record) {
+      if (!options.onHistoryRecord) return record;
+      var before = record.project, flattened = null, live = true;
+      try {
+        record.host = options.onHistoryRecord(record.label, { pixels: record.image.length > 0, selection: record.mask.length > 0 || record.activeBefore !== record.activeAfter, layers: !!before, state: !!record.stateOnly,
+          flattenedChanged: function () {
+            if (!live) throw new Error("A history step's flattened image is compared during onHistoryRecord only.");
+            if (flattened === null) flattened = before ? !sameFlattened(before.layers, layers) : record.image.length > 0;
+            return flattened;
+          } });
+      } finally { live = false; }
+      return record;
+    }
     function changeLayers(label, callback, config) {
       requireImage(); if (floating) throw new Error("Apply or cancel the floating selection first."); if (transaction) rollback();
       var before = snapshot(false), oldHistory = history.slice(), oldFuture = future.slice(); callback();
@@ -257,11 +321,12 @@
       preview = null; displayOverride = null;
       if (config && config.history === false) { history = []; future = []; }
       else {
-        future = []; history.push({ label: label, project: before, image: [], mask: [], bytes: 0, dirty: dimensions() });
+        future = []; history.push({ label: label, project: before, image: [], mask: [], bytes: 0, dirty: dimensions(), custom: config && typeof config.custom === "function" ? config.custom : null });
         // A single operation must remain undoable; never silently discard it.
         if (retainedBytes() > Math.min(128 * 1024 * 1024, maxBytes * 2) && before.layers.reduce(function (sum, layer) { return sum + (layers.some(function (next) { return next.image.data === layer.image.data; }) ? 0 : layer.image.data.byteLength); }, 0) > Math.min(128 * 1024 * 1024, maxBytes * 2)) {
           assignProject(before); history = oldHistory; future = oldFuture; historyBytes = retainedBytes(); throw new Error("This layer operation exceeds the texture undo memory limit.");
         }
+        recorded(history[history.length - 1]);
       }
       trimHistory(); layerChanged(); redraw(dimensions(), dimensions()); notify(true, false, dimensions()); return activeLayerId;
     }
@@ -320,7 +385,7 @@
       });
       transaction = null;
       if (!record.image.length && !record.mask.length && record.activeBefore === record.activeAfter) return false;
-      future = []; history.push(record); trimHistory();
+      future = []; history.push(recorded(record)); trimHistory();
       preview = null; if (record.mask.length || record.activeBefore !== record.activeAfter) countSelection(); redraw(record.dirty, record.maskDirty || (record.activeBefore !== record.activeAfter ? dimensions() : null));
       notify(!!record.image.length, !!record.mask.length || record.activeBefore !== record.activeAfter, record.dirty);
       return true;
@@ -425,8 +490,10 @@
       if (floating) { cancelFloating(); return true; }
       if (transaction) rollback(); if (!from.length) return false;
       var record = from.pop(); // moving between undo and redo does not free its retained tiles
+      if (options.onHistoryTravel && Object.prototype.hasOwnProperty.call(record, "host")) options.onHistoryTravel(record.host, useAfter);
+      if (record.stateOnly) { record.custom(useAfter); to.push(record); trimHistory(); if (options.onHistoryChange) options.onHistoryChange(getState()); return true; }
       if (record.project) {
-        var oppositeProject = snapshot(false); assignProject(record.project); record.project = oppositeProject; to.push(record); trimHistory(); layerChanged(); redraw(dimensions(), dimensions()); notify(true, false, dimensions()); return true;
+        var oppositeProject = snapshot(false); assignProject(record.project); record.project = oppositeProject; to.push(record); trimHistory(); if (record.custom) record.custom(useAfter); layerChanged(); redraw(dimensions(), dimensions()); notify(true, false, dimensions()); return true;
       }
       var currentDoc = doc, sourceLayer = findLayer(record.layerId); doc = sourceLayer.image;
       var activeTarget = useAfter ? record.activeAfter : record.activeBefore;
@@ -483,6 +550,12 @@
     function replaceImageData(value, config) {
       requireImage(); var pixels = image(value, doc), id = nextLayerId();
       return changeLayers(config && config.label || "Replace texture", function () { layers = [{ id: id, name: "Background", visible: true, opacity: 1, image: pixels }]; activeLayerId = id; doc = pixels; }, config);
+    }
+    function recordState(label, change) {
+      requireImage(); if (typeof change !== "function") throw new Error("A state change needs an undo function.");
+      if (floating) throw new Error("Apply or cancel the floating selection first."); if (transaction) rollback();
+      future = []; history.push(recorded({ label: label || "State", custom: change, stateOnly: true, image: [], mask: [], bytes: 0, dirty: null })); trimHistory();
+      if (options.onHistoryChange) options.onHistoryChange(getState()); return true;
     }
     function selectionBounds() {
       if (!doc) return null;
@@ -681,7 +754,7 @@
       redraw();
     }
     return {
-      setImage: setImage, getImage: function (copy) { var value = compositeImage(false); return value ? copy === false ? value : image(value) : null; }, getActiveImage: function (copy) { return doc ? copy === false ? doc : image(doc) : null; }, getDisplayImage: function () { return compositeImage(true); }, applyImageData: applyImageData, replaceImageData: replaceImageData, setPreviewImage: setPreviewImage,
+      setImage: setImage, getImage: function (copy) { var value = compositeImage(false); return value ? copy === false ? value : image(value) : null; }, getActiveImage: function (copy) { return doc ? copy === false ? doc : image(doc) : null; }, getDisplayImage: function () { return compositeImage(true); }, applyImageData: applyImageData, replaceImageData: replaceImageData, recordState: recordState, setPreviewImage: setPreviewImage,
       setDisplayOverride: function (value) { displayOverride = value === null ? null : image(value, doc); displayComposite = null; previewCanvasDirty = dimensions(); redraw(); },
       getLayers: layerRows, selectLayer: selectLayer, addLayer: addLayer, duplicateLayer: duplicateLayer, renameLayer: renameLayer, removeLayer: removeLayer, moveLayer: moveLayer, setLayerVisible: setLayerVisible, setLayerOpacity: setLayerOpacity, mergeLayerDown: mergeLayerDown,
       getProject: function (copy) { requireImage(); return snapshot(copy !== false); }, restoreProject: restoreProject,

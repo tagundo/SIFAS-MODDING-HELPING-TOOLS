@@ -116,6 +116,8 @@
     var disposed = false;
     var events = [];
     var clips = animations || [];
+    // Exact (CUBICSPLINE) rotation tracks evaluate normalized for the mixer and replayAnimationTracks.
+    if (window.ViewerMotionTimeline && window.ViewerMotionTimeline.prepareAnimations) window.ViewerMotionTimeline.prepareAnimations(clips);
     var clipEntries = [], clipByName = new Map(), visibleClipEntries = [], clipMetadata = new Map(), expressionClipLabels = new Map();
     (info && info.clips || []).forEach(function (entry) { if (!clipMetadata.has(entry.name)) clipMetadata.set(entry.name, entry); });
     (info && info.expressionCatalog && info.expressionCatalog.clips || []).forEach(function (entry) {
@@ -620,6 +622,8 @@
     function replayAnimationTracks() {
       if (!currentClip || !currentClip.animation) return;
       if (!currentClip.replayTracks) currentClip.replayTracks = currentClip.animation.tracks.map(function (track) {
+        // A CUBICSPLINE interpolant yields one sample (a third of getValueSize()); create() made its
+        // quaternion tracks evaluate normalized.
         var binding = THREE.PropertyBinding.create(root, track.name); binding.bind();
         return { binding: binding, interpolant: track.createInterpolant() };
       });

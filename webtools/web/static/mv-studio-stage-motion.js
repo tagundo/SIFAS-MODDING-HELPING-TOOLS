@@ -2,8 +2,13 @@
   "use strict";
 
   const kinds = { translation: "position", rotation: "quaternion", euler: "quaternion", scale: "scale", visibility: "visible",
-    overlayTint: "overlayTint", overlayUV: "overlayUV", overlayColor: "overlayColor", overlayScalar: "overlayScalar" };
-  const materialKinds = new Set(["overlayTint", "overlayUV", "overlayColor", "overlayScalar"]);
+    overlayTint: "overlayTint", overlayUV: "overlayUV", overlayColor: "overlayColor", overlayScalar: "overlayScalar",
+    overlayAmbient: "overlayAmbient" };
+  const materialKinds = new Set(["overlayTint", "overlayUV", "overlayColor", "overlayScalar", "overlayAmbient"]);
+  // Unity RotationOrder (0 XYZ ... 4 ZXY, the default) -> three.js Euler order. Unity
+  // names the axes in the order they apply (XYZ: q = qZ*qY*qX); three.js names
+  // the product left to right, so the string reverses. The X mirror keeps it.
+  const eulerOrders = ["ZYX", "YZX", "XZY", "ZXY", "YXZ", "XYZ"];
   const clamp = (x, low, high) => Math.min(high, Math.max(low, x));
   const number = (value, fallback) => Number.isFinite(value) ? value : fallback;
   const modulo = (x, divisor) => ((x % divisor) + divisor) % divisor;
@@ -96,9 +101,17 @@
       const color = kind === "overlayColor";
       const value = global.MVStudioSoftBillboards?.materialChannel?.(node, kind, color ? "_Color" : property);
       if (color ? value?.isVector4 : Number.isFinite(value?.value)) return value;
+      // A world MeshRenderer scalar of its own stage material (AS/Blend/Opaque _BlendRate).
+      const own = color ? null : global.MVStudioStageMaterial?.materialChannel?.(node, kind, property);
+      if (Number.isFinite(own?.value)) return own;
       return;
     }
-    if (requiresMaterial) return global.MVStudioStageOverlay?.materialChannel?.(node, kind, rendererClass, scope);
+    if (requiresMaterial) {
+      const overlay = global.MVStudioStageOverlay?.materialChannel?.(node, kind, rendererClass, scope);
+      if (overlay || scope !== "world" || rendererClass !== undefined) return overlay;
+      // A world MeshRenderer without an overlay pass: its own stage material.
+      return global.MVStudioStageMaterial?.materialChannel?.(node, kind, property);
+    }
     if (rendererClass === undefined) return node.userData.mvStageOverlayChannels?.[kind];
   }
 
@@ -167,7 +180,9 @@
             const kind = kinds[source.kind], node = group.nodes.get(source.path);
             const material = materialKinds.has(kind), numeric = kind === "visible" || kind === "overlayScalar";
             if (!node || !Array.isArray(source.curves) || !source.curves.every(validCurve) ||
-                source.curves.length !== (numeric ? 1 : material || source.kind === "rotation" ? 4 : 3)) continue;
+                source.curves.length !== (numeric ? 1 : material || source.kind === "rotation" ? 4 : 3) ||
+                (source.kind === "euler" && source.rotationOrder !== undefined && !(Number.isInteger(source.rotationOrder) &&
+                  eulerOrders[source.rotationOrder]))) continue;
             const value = material ? materialValue(node, source, materialScope, requiresMaterial) : node[kind];
             if (material && !value) continue;
             targets.push({source, kind, node, material, numeric, value});
@@ -196,7 +211,8 @@
       for (let i = 0; i < values.length; i++) values[i] = evaluate(source.curves[i], time);
       if (target.numeric) target.sum += values[0] * weight;
       else if (target.kind === "quaternion") {
-        if (source.kind === "euler") quaternion.setFromEuler(euler.set(values[0] * radians, -values[1] * radians, -values[2] * radians));
+        if (source.kind === "euler") quaternion.setFromEuler(euler.set(values[0] * radians, -values[1] * radians, -values[2] * radians,
+          eulerOrders[source.rotationOrder ?? 4]));
         else {
           quaternion.set(values[0], -values[1], -values[2], values[3]);
           if (!(quaternion.lengthSq() > 0)) return;
@@ -265,7 +281,14 @@
       }
     }
 
-    return { update, accepts: event => acceptedEvents.has(event) };
+    // The material values an AnimationTrack curve drives (a MaterialPropertyBlock in the game), read-only.
+    function curveTargets() {
+      const result = new Set();
+      for (const group of groups.values()) for (const channel of group.channels.values()) if (channel.material) result.add(channel.value);
+      return result;
+    }
+
+    return { update, curveTargets, accepts: event => acceptedEvents.has(event) };
   }
 
   global.MVStudioStageMotion = { apply, clipTime, evaluate, nativeActive, sampleTime, validCurve, weightedEvent };

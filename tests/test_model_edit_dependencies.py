@@ -113,6 +113,46 @@ class SelectedDependencyTests(unittest.TestCase):
             info["env"].load_file(outside, is_dependency=True)
         self.assertEqual(outside.read_bytes(), raw)
 
+    def test_mesh_and_texture_tool_environment_never_searches_working_directory(self):
+        # viewer_mesh_tools._objects backs the mesh tools and the texture
+        # tools (including the cheek blush scan of a model session).
+        from webtools.core import viewer_mesh_tools
+        raw = external_shader_fixture("CAB-9382ea964987eceddd567506a3b21312", 8291131735116688333)
+        for index in range(64):
+            (self.root / f"unrelated-{index}.bin").write_bytes(b"unrelated")
+        (self.root / "CAB-9382ea964987eceddd567506a3b21312").write_bytes(colored_fixture())
+        previous = Path.cwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, previous)
+        with patch.object(LocalFileSystem, "walk", side_effect=AssertionError("Directory search is forbidden")) as walk, \
+                patch.object(LocalFileSystem, "exists", side_effect=AssertionError("Unselected files cannot be probed")) as exists, \
+                patch.object(LocalFileSystem, "open", side_effect=AssertionError("Unselected files cannot be loaded")) as opened:
+            env, _, objects = viewer_mesh_tools._objects(raw)
+            material = next(obj for obj in objects.values() if obj.type.name == "Material")
+            self.assertIsNone(model_viewer._ref(material, material.read_typetree()["m_Shader"]))
+            with self.assertRaises(FileNotFoundError):
+                env.find_file("CAB-9382ea964987eceddd567506a3b21312")
+            walk.assert_not_called()
+            exists.assert_not_called()
+            opened.assert_not_called()
+            self.assertEqual(env.local_files, [])
+        # Serialized files inside the selected bundle still resolve.
+        body = UnityPy.load(colored_fixture())
+        shader_asset = UnityPy.load(colored_fixture()).file
+        shader_asset.objects = {18: shader_asset.objects[18]}
+        tree = body.file.objects[13].read_typetree()
+        body.file.externals.append(external("archive:/selected/CAB-selected-shader"))
+        tree["m_Shader"] = {"m_FileID": len(body.file.externals), "m_PathID": 18}
+        body.file.objects[13].save_typetree(tree)
+        del body.file.objects[18]
+        bundle = unity_bundle([("CAB-selected-body", body.file.save()), ("CAB-selected-shader", shader_asset.save())])
+        with patch.object(LocalFileSystem, "walk", side_effect=AssertionError("No directory search")) as walk:
+            _, _, objects = viewer_mesh_tools._objects(bundle)
+            member = next(obj for obj in objects.values() if obj.type.name == "Material")
+            resolved = model_viewer._ref(member, member.read_typetree()["m_Shader"])
+            self.assertEqual(resolved.read_typetree()["m_Name"], "AS/Member")
+            walk.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,1033 @@
+/* Evaluate MV Studio at every director time recorded in a game runtime value dump.
+
+   node tests/mv_runtime_capture.js --dump GAME.json.gz|job.log --manifest M.json --out DIR
+        [--library DIR] [--server-root DIR] [--url URL] [--phases -1,0,1] [--preroll 3]
+        [--software true] [--chromium PATH] [--keys FILE] [--batch 100] [--physics-order game|same-frame]
+        [--physics-grid game|clock|rule] [--frame-history game|none] [--physics-read-point update|none]
+        [--particle-clock game|director] [--suits dump|POSITION:SUIT,...]
+
+   The game dump (schema sifas-mv-runtime-dump/1, side "game") is read as a gzip
+   or plain JSON document, or extracted from a GitHub job log (@@RTDUMP blobs;
+   the 'rtdump-probe' blob is not a dump document and is only recorded).
+   The editor imports the original MV through its own catalog and game stream,
+   applies the quality the game actually ran (header.quality.values, mapped
+   name by name; the manifest quality is only the fallback when the game
+   recorded none) and marks the dump invalid:quality when a difference
+   remains. It then pins the game's viewport and switches to the
+   live camera. With --suits the members wear explicit suits instead of the
+   member mapping's: "dump" pins the suit each game slot wore (frame
+   members[].suitId), or list POSITION:SUIT pairs; the import fails unless the
+   editor dresses every pinned slot so. Every game record is then evaluated at
+   each phase: at the director time the dump recorded for frame
+   clock.frameCount + phase whenever a record of that frame exists or the
+   sampler's frame clock read it (trailer.frameClocks, clock.prevFrame /
+   nextFrame: every rendered frame's clock; the director follows the
+   millisecond music clock, so t - deltaTime can miss the previous frame by a
+   few milliseconds, and a director pinned at the song end does not move),
+   else at t = clock.directorTime + phase * clock.deltaTime: a
+   plain deferred seek for pure parts, a fixed-step physics preroll ending
+   exactly at t for members and springs. The sampler reads every record in the
+   frame after the evaluation its transforms show (see PHYSICS_READ_POINT), so
+   with --physics-read-point update (default) a members or springs record also
+   takes that frame's pre-timeline spring step after the preroll; none leaves
+   it out. With --frame-history
+   game (default) every seek also hands the editor the game's rendered frame
+   times before t (gameFrameTimes), which the client state that changes only on
+   rendered frames reads (the director's beat origin, the ambient components'
+   last written colors, the cheek floats a finished clip leaves). The game
+   steps its springs once per rendered
+   frame, so the preroll steps on the game's own frame times (gameFrameTimes:
+   record frameCount, directorTime and deltaTime); --physics-grid clock uses
+   the frame rate the game achieved (frames per director second, capped by the
+   requested rate) and rule the requested rate, for A/B checks. The read-only
+   MVStudioScene.assetDump() supplies
+   the values; DIR/editor-dump.json.gz is written in the same schema with
+   side "editor". With --particle-clock game (default) the original particle
+   systems run on the game's Time.time (the frame clock rows, else the record
+   clocks: MVStudioScene.setGameClock), which falls behind the director when
+   frames hit Time.maximumDeltaTime; director runs them on director time. Values stay in editor space: tests/mv_runtime_compare.py
+   owns every conversion. Pixels are never read back or resampled.
+*/
+'use strict';
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const zlib = require('node:zlib');
+const capture = require('./mv_frame_capture');
+const SPRINGS = globalThis.MVStudioPhysics;
+
+const SCHEMA = 'sifas-mv-runtime-dump/1';
+const MODTOOLS = path.resolve(__dirname, '..');
+const FRAME_SECTIONS = ['clock', 'directors', 'cameras', 'correctors', 'cameraWork', 'globals', 'renderSettings', 'lights',
+  'memberIdentity', 'anchors'];
+const PHYSICS_PARTS = new Set(['members', 'springs']);
+// Where the game's sampler reads a record of frame N (PHYSICS_READ_POINT):
+// - qa-mvdump runs every read in a SendOrPostCallback posted to the
+//   UnitySynchronizationContext (the observer's cached main dispatcher:
+//   CachedMainThreadDispatcher createIl2CppAdapter postCached -> deliver), so
+//   it runs in UnitySynchronizationContext.ExecuteTasks. libunity calls that
+//   from a player-loop callback (0x3e9838 -> 0x66ccf4, which invokes the
+//   method looked up as UnitySynchronizationContext.ExecuteTasks at 0x66f544),
+//   never inside a script's Update.
+// - LiveDirectorBase.Update (0x2926e74) writes _MusicTime from the millisecond
+//   music clock, and LiveTimeSynchronizer.SyncMusicPlayingTime (0x20f7bd8) sets
+//   director.time and calls PlayableDirector.DeferredEvaluate: the timeline
+//   animates after every Update script.
+// - LiveCoreMemberManager.Update (0x2f6a708 -> UpdateMultiThread 0x2f6a7b8)
+//   runs this frame's SwingBoneGroupJob on the pose frame N-1 ended with.
+// - In the FOVMOD client both Update methods start with a patched branch into
+//   libfovmod. Its member hook (amv_game_member_update 0x33f28) completes the
+//   jobs around the original only in an MP4 export session and otherwise
+//   tail-calls the original; the dump never exports.
+// - The dumps agree: _MusicTime equals clock.directorTime (phase 0), the
+//   transforms show the previous evaluation (phase -1), and the spring
+//   rotations carry frame N's step on that pose (12035 dump3b and dump4).
+// So a members or springs record of frame N is frame N-1's evaluation plus
+// frame N's pre-timeline spring step (MVStudioScene.stepPhysicsUpdate).
+// Unevidenced, resting on the dump values above: which player-loop subsystem
+// runs ExecuteTasks (not mapped in libunity), that it runs after the Update
+// scripts and before the deferred evaluation, and that the sampler's
+// main-thread Transform reads wait for the TransformAccess job UpdateMultiThread
+// scheduled (job sync on Transform access), so they see the job's write-back.
+const PHYSICS_READ_POINTS = ['update', 'none'];
+const KNOWN_PARTS = new Set(['census', 'quality', 'fovmodNative', 'renderers', 'materials', 'lightingRefs', 'members',
+  'springs', 'stageNodes', 'particles', 'post', 'propertyBlocks', 'tracks']);
+const TIMESTAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z /;
+
+function parseArgs(argv) {
+  const options = {};
+  for (let index = 0; index < argv.length; index++) {
+    const key = argv[index];
+    if (!key.startsWith('--')) throw new Error(`Unexpected argument ${key}`);
+    const value = argv[index + 1];
+    if (value === undefined || (value.startsWith('--') && !/^--?\d/.test(value))) throw new Error(`${key} needs a value`);
+    options[key.slice(2)] = value;
+    index++;
+  }
+  if (!options.dump || !options.manifest || !options.out) {
+    throw new Error('Usage: --dump GAME.json.gz|job.log --manifest FILE --out DIR [--url URL | --server-root DIR --library DIR]');
+  }
+  return options;
+}
+
+function parsePhases(text) {
+  const phases = String(text ?? '-1,0,1').split(',').map((value) => Number(value.trim()));
+  assert(phases.length && phases.every((value) => Number.isInteger(value) && Math.abs(value) <= 3), '--phases lists integers in [-3, 3]');
+  return [...new Set(phases)].sort((a, b) => a - b);
+}
+
+// ------------------------------------------------------------------ dump input
+
+function gunzipMaybe(bytes) {
+  return bytes[0] === 0x1f && bytes[1] === 0x8b ? zlib.gunzipSync(bytes) : bytes;
+}
+
+// The @@RTDUMP transport (schema section 8): strip the GitHub timestamp prefix,
+// join the chunks between BEGIN and END, and verify bytes and sha256 from INDEX.
+function extractFromLog(text) {
+  const index = new Map(), chunks = new Map(), done = new Set();
+  let open = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(TIMESTAMP, '');
+    if (!line.startsWith('@@')) continue;
+    if (line.startsWith('@@RTDUMP-INDEX ')) {
+      const entry = JSON.parse(line.slice('@@RTDUMP-INDEX '.length));
+      index.set(entry.name, entry);
+    } else if (line.startsWith('@@RTDUMP-BEGIN ')) {
+      open = line.slice('@@RTDUMP-BEGIN '.length).trim();
+      chunks.set(open, []);
+    } else if (line.startsWith('@@RTDUMP-END ')) {
+      const name = line.slice('@@RTDUMP-END '.length).trim();
+      if (name !== open) throw new Error(`RTDUMP blob ${name} ends while ${open} is open`);
+      done.add(name);
+      open = null;
+    } else if (open && !line.startsWith('@@RTDUMP-') && !line.startsWith('@@RTPROBE') && !line.startsWith('@@SHOT')) {
+      chunks.get(open).push(line.slice(2).trim());
+    }
+  }
+  const docs = [], auxiliary = {};
+  for (const name of done) {
+    const bytes = Buffer.from(chunks.get(name).join(''), 'base64');
+    const entry = index.get(name);
+    if (entry) {
+      if (Number.isInteger(entry.bytes) && entry.bytes !== bytes.length) throw new Error(`RTDUMP ${name}: ${bytes.length} bytes, index says ${entry.bytes}`);
+      const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+      if (entry.sha256 && entry.sha256 !== sha) throw new Error(`RTDUMP ${name}: sha256 mismatch`);
+    }
+    const value = JSON.parse(gunzipMaybe(bytes).toString('utf8'));
+    if (isDumpDocument(name, value)) docs.push(value); else auxiliary[name] = value;
+  }
+  if (!docs.length) throw new Error('The job log has no complete @@RTDUMP dump blob');
+  Object.defineProperty(docs, 'auxiliary', { value: auxiliary });
+  return docs;
+}
+
+// rtdump-core and rtdump-full are dump documents; 'rtdump-probe' (the class
+// and field inventory of the game probe) and any other blob are not merged.
+function isDumpDocument(name, value) {
+  return name !== 'rtdump-probe' && value !== null && typeof value === 'object' && typeof value.side === 'string' &&
+    Array.isArray(value.records);
+}
+
+function mergeDumps(docs) {
+  const [first] = docs;
+  const records = new Map();
+  for (const doc of docs) {
+    if (doc.schema !== first.schema || doc.side !== first.side) throw new Error('Dump parts disagree on schema or side');
+    for (const record of doc.records || []) if (!records.has(record.id)) records.set(record.id, record);
+  }
+  const trailers = docs.map((doc) => doc.trailer).filter(Boolean);
+  const trailer = trailers.find((item) => item.stopReason) || trailers[0] || null;
+  const truncation = trailers.map((item) => item.truncation).find(Boolean) || trailer?.truncation || null;
+  // The frame clock rows travel in rtdump-core only (rtdump-full's trailer points there).
+  const frameClocks = trailers.map((item) => item.frameClocks).find((item) => Array.isArray(item?.rows)) ?? trailer?.frameClocks;
+  return { schema: first.schema, side: first.side, header: first.header,
+    records: [...records.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || String(a.id).localeCompare(String(b.id))),
+    trailer: trailer ? { ...trailer, truncation, ...(frameClocks !== undefined ? { frameClocks } : {}) } : null };
+}
+
+function readDump(file) {
+  const raw = gunzipMaybe(fs.readFileSync(file));
+  const text = raw.toString('utf8');
+  let docs;
+  if (/^\s*\{/.test(text)) {
+    try { docs = [JSON.parse(text)]; } catch (_) { docs = null; }
+  }
+  docs ||= extractFromLog(text);
+  const doc = mergeDumps(docs);
+  if (doc.schema !== SCHEMA) throw new Error(`Unknown dump schema ${doc.schema}; this runner reads ${SCHEMA}`);
+  if (!doc.header || !Array.isArray(doc.records)) throw new Error('The dump has no header or records');
+  return { doc, sha256: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'), auxiliary: docs.auxiliary || {} };
+}
+
+// ------------------------------------------------------------- member suits
+
+// The suit each slot wore in the game (frame members[] {slot, memberId, suitId}).
+function gameSuits(doc) {
+  const suits = new Map(), changed = new Set();
+  for (const record of doc.records) {
+    if (record.kind !== 'frame') continue;
+    for (const member of Array.isArray(record.members) ? record.members : []) {
+      if (!Number.isInteger(member?.slot) || !Number.isInteger(member?.suitId)) continue;
+      const seen = suits.get(member.slot);
+      if (seen && (seen.suitId !== member.suitId || seen.memberId !== (member.memberId ?? null))) changed.add(member.slot);
+      else if (!seen) suits.set(member.slot, { suitId: member.suitId, memberId: member.memberId ?? null });
+    }
+  }
+  if (changed.size) throw new Error(`The game dump changes the member or suit of slot ${[...changed].join(', ')} during the performance`);
+  return suits;
+}
+
+// --suits: "dump" or POSITION:SUIT[,POSITION:SUIT...] -> { source, costumes: { "<position>": suitId } }, or null.
+function suitPlan(text, doc) {
+  if (text === undefined) return null;
+  if (text === 'dump') {
+    const suits = gameSuits(doc);
+    if (!suits.size) throw new Error('--suits dump: the game dump records no member suits (frame members[].suitId)');
+    return { source: 'dump', costumes: Object.fromEntries([...suits].sort((a, b) => a[0] - b[0]).map(([slot, item]) => [String(slot), item.suitId])),
+      members: Object.fromEntries([...suits].map(([slot, item]) => [String(slot), item.memberId])) };
+  }
+  const costumes = {};
+  for (const item of String(text).split(',')) {
+    const match = /^\s*(\d+)\s*:\s*(\d+)\s*$/.exec(item);
+    const position = match && String(Number(match[1]));
+    if (!match || !(Number(position) >= 1 && Number(position) <= 64) || position in costumes || !(Number(match[2]) > 0)) {
+      throw new Error('--suits is "dump" or POSITION:SUIT[,POSITION:SUIT...] with positions 1-64');
+    }
+    costumes[position] = Number(match[2]);
+  }
+  return { source: 'option', costumes, members: {} };
+}
+
+// The editor's game import request carries the pinned costumes (server option `costumes`).
+async function pinCostumes(page, plan) {
+  const pattern = /\/api\/mv-studio\/game(?:-stream)?(?:\?|$)/;
+  const handler = async (route) => {
+    const request = route.request();
+    if (request.method() !== 'POST') return route.continue();
+    const body = JSON.parse(request.postData() || '{}');
+    return route.continue({ postData: JSON.stringify({ ...body, costumes: plan.costumes }) });
+  };
+  await page.route(pattern, handler);
+  return () => page.unroute(pattern, handler);
+}
+
+// Every pinned slot must be dressed as requested (and by the member the game had there).
+function checkCostumes(plan, performers) {
+  const byPosition = new Map((performers || []).map((item) => [String(item.position), item]));
+  const problems = [];
+  for (const [position, suit] of Object.entries(plan.costumes)) {
+    const performer = byPosition.get(position);
+    if (!performer) problems.push(`position ${position} has no performer`);
+    else if (performer.costumeId !== suit) problems.push(`position ${position} wears ${performer.costumeId}, not ${suit}`);
+    else if (performer.loaded === false) {
+      problems.push(`position ${position} has no model for suit ${suit} (its asset pack is not local; set "download": true in the manifest)`);
+    }
+    else if (plan.members[position] != null && performer.memberId !== plan.members[position]) {
+      problems.push(`position ${position} is member ${performer.memberId}, the game had ${plan.members[position]}`);
+    }
+  }
+  if (problems.length) throw new Error(`The editor did not dress the pinned suits: ${problems.join('; ')}`);
+  return [...byPosition.values()].map(({ position, memberId, costumeId, loaded }) => ({ position, memberId: memberId ?? null,
+    costumeId: costumeId ?? null, ...(loaded === undefined ? {} : { loaded }) }));
+}
+
+// ------------------------------------------------------------- evaluation plan
+
+function stageNodeKey(node) {
+  if (typeof node.key === 'string' && node.key.startsWith('stageNode:')) return node.key;
+  const crc = Number.isInteger(node.crc) ? node.crc : zlib.crc32(Buffer.from(String(node.relPath ?? '').replace(/\\/g, '/'), 'utf8')) >>> 0;
+  return `stageNode:${node.binding}#${crc}`;
+}
+
+// What assetDump needs to select the editor counterparts of a game renderer:
+// key, scope, GameObject path and mesh name (schema 1.5 renderer join).
+// A renderer outside /EntryPoint belongs to the additively loaded stage scene (e.g. /Model/ground
+// of bg0006_01_s1): its editor counterpart is in scope "stage" (mv_runtime_compare.Conventions.game_scope).
+// Member renderers the game creates at runtime keep the editor's source mesh names
+// (mv_runtime_compare.Conventions.member_mesh_alias): LiveCoreMemberHead merges the face
+// meshes into CombineFace, and hair/body are split per bone budget into <suit>_head_BoneN /
+// <suit>_body_BoneN below the Hair/Body GameObjects.
+const MEMBER_RUNTIME_MESHES = [[/\/mesh_face\/CombineFace$/, 'Face'], [/\/mesh_hair\/Hair\/[^/]+_Bone\d+$/, 'Hair'],
+  [/\/mesh_body\/Body\/[^/]+_Bone\d+$/, 'Body']];
+function memberMeshAlias(renderer) {
+  if (!/^member\d+$/.test(renderer.scope || '') || typeof renderer.path !== 'string') return null;
+  return MEMBER_RUNTIME_MESHES.find(([pattern]) => pattern.test(renderer.path))?.[1] ?? null;
+}
+
+function rendererSelector(renderer) {
+  const outside = renderer.scope === 'other' && typeof renderer.path === 'string' && renderer.path.startsWith('/') &&
+    !renderer.path.startsWith('/EntryPoint/') && renderer.path.split('/').length >= 3;
+  return { key: renderer.key, scope: outside ? 'stage' : renderer.scope, mesh: memberMeshAlias(renderer) ?? renderer.mesh ?? null,
+    path: outside ? renderer.path.split('/').slice(2).join('/') : renderer.path ?? null };
+}
+
+function rendererIndex(records) {
+  const index = new Map();
+  for (const record of records) for (const renderer of Array.isArray(record.renderers) ? record.renderers : []) {
+    if (typeof renderer.key === 'string') index.set(renderer.key, rendererSelector(renderer));
+  }
+  return index;
+}
+
+// The editor dumps exactly the counterparts of what the game record holds, so
+// a chunk of 24 renderers does not repeat the whole stage at every phase.
+function filterFor(record, renderers) {
+  const part = record.part;
+  if (part === 'renderers' && Array.isArray(record.renderers) && record.renderers.length) {
+    return { renderers: record.renderers.map(rendererSelector) };
+  }
+  if (part === 'materials' && Array.isArray(record.materials) && record.materials.length) {
+    const wanted = new Map();
+    for (const material of record.materials) for (const use of Array.isArray(material.usedBy) ? material.usedBy : []) {
+      const key = String(use).replace(/#\d+$/, '');
+      const renderer = renderers.get(key);
+      if (!renderer) return null;
+      wanted.set(key, renderer);
+    }
+    return wanted.size ? { renderers: [...wanted.values()] } : null;
+  }
+  if (part === 'stageNodes' && Array.isArray(record.stageNodes) && record.stageNodes.length) {
+    return { stageNodes: record.stageNodes.map(stageNodeKey) };
+  }
+  if (part === 'members' && Array.isArray(record.members)) {
+    const bones = record.members.flatMap((member) => (member.bones || []).map((bone) => bone.key)).filter(Boolean);
+    return bones.length ? { bones } : null;
+  }
+  return null;
+}
+
+// ------------------------------------------------------------- frame clocks
+
+// qa-mvdump sampler 3 (sifas-mv-frame-clock/1): one row per rendered frame,
+// read by the agent's per-frame tick or a record's own clock section.
+const FRAME_CLOCK_FIELDS = ['frameCount', 'directorTime', 'musicTime', 'unityTime', 'deltaTime', 'realtimeSinceStartup', 'source'];
+
+function mainDuration(doc) {
+  for (const record of doc.records || []) {
+    const main = (record.directors || []).find((director) => director?.main);
+    if (Number.isFinite(main?.duration) && main.duration > 0) return main.duration;
+  }
+  return null;
+}
+
+// frameCount -> {frameCount, directorTime, musicTime, unityTime, deltaTime,
+// realtimeSinceStartup, source}: the trailer's frame clock rows plus the
+// clock.prevFrame / nextFrame the records carry; empty for dumps without them.
+// A row whose director was not reached keeps the director time
+// LiveTimeSynchronizer.SyncMusicPlayingTime sets from the music time
+// (0x20f7c3c-0x20f7ca8: max(0, min(ms * .001, duration))), to the 9 significant
+// digits the agent records every director time with.
+function frameClocks(doc) {
+  const out = new Map(), duration = mainDuration(doc);
+  const add = (clock) => {
+    if (!Number.isInteger(clock?.frameCount) || out.has(clock.frameCount)) return;
+    const value = { ...clock };
+    if (!Number.isFinite(value.directorTime) && Number.isFinite(value.musicTime)) {
+      const time = Math.max(0, duration ? Math.min(value.musicTime * 0.001, duration) : value.musicTime * 0.001);
+      value.directorTime = Number(time.toPrecision(9));
+      value.directorFrom = 'musicTime';
+    }
+    out.set(value.frameCount, value);
+  };
+  const table = doc.trailer?.frameClocks;
+  if (Array.isArray(table?.rows) && JSON.stringify(table.fields) === JSON.stringify(FRAME_CLOCK_FIELDS)) {
+    for (const row of table.rows) {
+      if (Array.isArray(row)) add(Object.fromEntries(FRAME_CLOCK_FIELDS.map((name, index) => [name, row[index] ?? null])));
+    }
+  }
+  for (const record of doc.records || []) for (const key of ['prevFrame', 'nextFrame']) add(record.clock?.[key]);
+  return new Map([...out].sort((a, b) => a[0] - b[0]));
+}
+
+// Director time of every frame a record was taken in (frameCount -> seconds),
+// and of every frame the frame clock read: the frames whose time the dump
+// knows exactly. Pre-start records (director 0)
+// are left out, as in gameFrames. planRequests evaluates phase -1/+1 at the
+// time recorded for frame frameCount -/+ 1 whenever the dump holds that frame,
+// whatever its distance from t +/- deltaTime: it is the director time of the
+// evaluation the game ran in that frame (a jittered, clamped or pinned frame
+// interval included). Without such a record the estimate t + phase * deltaTime
+// is rounded to the millisecond when every recorded director time is a whole
+// millisecond: LiveDirectorBase.Update (0x2926e74) reads
+// LiveMusicMachine.MusicPlayingTime, an int of milliseconds, and the director
+// follows it.
+function recordedFrameTimes(doc, { records = true, clocks = true } = {}) {
+  const frames = new Map();
+  if (records) for (const record of doc.records || []) {
+    const clock = record.clock;
+    if (!Number.isInteger(clock?.frameCount) || !Number.isFinite(clock?.directorTime) || !(clock.directorTime > 0)) continue;
+    if (!frames.has(clock.frameCount)) frames.set(clock.frameCount, clock.directorTime);
+  }
+  if (clocks) for (const [frame, clock] of frameClocks(doc)) {
+    if (!frames.has(frame) && Number.isFinite(clock.directorTime) && clock.directorTime > 0) frames.set(frame, clock.directorTime);
+  }
+  return frames;
+}
+
+function millisecondClock(doc) {
+  const times = (doc.records || []).map((record) => record.clock?.directorTime).filter(Number.isFinite);
+  return times.length > 0 && times.every((time) => Math.abs(time * 1000 - Math.round(time * 1000)) < 1e-6);
+}
+
+function planRequests(doc, phases, { readPoint = 'update' } = {}) {
+  assert(PHYSICS_READ_POINTS.includes(readPoint), '--physics-read-point is update or none');
+  const renderers = rendererIndex(doc.records);
+  // A neighbour another record was taken in is "recorded" (as before frame clocks); one only the
+  // frame clock read is "frameClock". Both are the frame's own director time.
+  const recorded = recordedFrameTimes(doc, { clocks: false }), clocked = recordedFrameTimes(doc, { records: false });
+  const milliseconds = millisecondClock(doc);
+  const requests = [];
+  for (const record of doc.records) {
+    const time = record.clock?.directorTime;
+    if (!Number.isFinite(time)) continue;
+    const deltaTime = Number.isFinite(record.clock?.deltaTime) && record.clock.deltaTime > 0 ? record.clock.deltaTime : 1 / 30;
+    const part = record.kind === 'full' ? record.part : null;
+    const sections = record.kind === 'frame' ? FRAME_SECTIONS : ['clock', part];
+    const frame = record.clock?.frameCount;
+    for (const phase of phases) {
+      const fromRecord = phase !== 0 && Number.isInteger(frame) && time > 0 ? recorded.get(frame + phase) : undefined;
+      const fromClock = phase !== 0 && Number.isInteger(frame) && time > 0 && fromRecord === undefined ? clocked.get(frame + phase) : undefined;
+      const neighbour = fromRecord ?? fromClock;
+      const phaseSource = phase === 0 ? 'record' : fromRecord !== undefined ? 'recorded' : fromClock !== undefined ? 'frameClock' : 'deltaTime';
+      const estimate = time + phase * deltaTime;
+      const t = neighbour ?? (milliseconds && phase !== 0 ? Math.round(estimate * 1000) / 1000 : estimate);
+      if (t < 0) continue;
+      requests.push({ id: `${record.id}@${phase}`, source: record, phase, phaseSource, t, deltaTime, sections,
+        frame: Number.isInteger(frame) && (phase === 0 || neighbour !== undefined) ? frame + phase : null,
+        physics: PHYSICS_PARTS.has(part), readPoint: PHYSICS_PARTS.has(part) && readPoint === 'update',
+        unknownPart: part !== null && !KNOWN_PARTS.has(part), filter: filterFor(record, renderers) });
+    }
+  }
+  return requests.sort((a, b) => a.t - b.t || a.id.localeCompare(b.id));
+}
+
+// The real-time game steps its springs once per rendered frame, so a runtime dump
+// is reproduced at the frame rate the game achieved: frames per director second
+// between the first and last records taken while the director advanced
+// (clock.frameCount and clock.directorTime), capped by the rate the game
+// requested (MVStudioPhysics.gameFrameRate). When the frame counter does not
+// agree with the recorded deltaTime (within 25%; e.g. a synthetic document whose
+// frameCount is a record counter) the mean deltaTime gives the rate instead.
+// Without a usable clock the requested rate is used.
+function gameClockRate(doc, qualityValues, device) {
+  const target = SPRINGS.gameFrameRate(qualityValues, device);
+  const clocks = (doc.records || []).map((record) => record.clock)
+    .filter((clock) => Number.isFinite(clock?.frameCount) && Number.isFinite(clock?.directorTime));
+  const end = clocks.reduce((max, clock) => Math.max(max, clock.directorTime), -Infinity);
+  const advancing = clocks.filter((clock) => clock.directorTime > 0 && clock.directorTime < end)
+    .sort((a, b) => a.frameCount - b.frameCount);
+  const first = advancing[0], last = advancing.at(-1);
+  const frames = last && last.frameCount - first.frameCount, seconds = last && last.directorTime - first.directorTime;
+  if (!(frames > 0 && seconds > 0)) return { source: 'game-rule', rate: target, target, achieved: null, frames: 0, seconds: 0, meanDeltaTime: null };
+  const deltas = advancing.map((clock) => clock.deltaTime).filter((value) => Number.isFinite(value) && value > 0);
+  const meanDeltaTime = deltas.length ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length : null;
+  let achieved = frames / seconds, source = 'game-clock';
+  if (meanDeltaTime && Math.abs(achieved * meanDeltaTime - 1) > 0.25) { achieved = 1 / meanDeltaTime; source = 'game-deltaTime'; }
+  return { source, rate: Math.min(achieved, target), target, achieved, frames, seconds, meanDeltaTime };
+}
+
+// The game's clock for the original particle systems (--particle-clock game): [directorTime,
+// Time.time] of every rendered frame the dump knows, in frame order: the frame clock rows (exact,
+// every frame), else the record clocks (the editor interpolates between them). Frames before the
+// director starts, and frames that do not advance it (pinned at the song end, rewound), are left
+// out, so the samples are a function of director time. lagMax is how far Time.time fell behind the
+// director over the dump (Time.maximumDeltaTime clamps).
+function gameClockSamples(doc) {
+  const points = new Map();
+  const clocks = frameClocks(doc);
+  for (const [frame, clock] of clocks) {
+    if (Number.isFinite(clock.directorTime) && Number.isFinite(clock.unityTime)) points.set(frame, [clock.directorTime, clock.unityTime]);
+  }
+  const fromClock = points.size;
+  for (const record of doc.records || []) {
+    const clock = record.clock;
+    if (Number.isInteger(clock?.frameCount) && !points.has(clock.frameCount) && Number.isFinite(clock?.directorTime) &&
+        Number.isFinite(clock?.unityTime)) points.set(clock.frameCount, [clock.directorTime, clock.unityTime]);
+  }
+  const samples = [];
+  for (const [, point] of [...points].sort((a, b) => a[0] - b[0])) {
+    const last = samples.at(-1);
+    if (!(point[0] > 0) || (last && (point[0] <= last[0] || point[1] < last[1]))) continue;
+    samples.push(point);
+  }
+  let lagMax = 0;
+  for (const [time, unity] of samples) lagMax = Math.max(lagMax, (time - samples[0][0]) - (unity - samples[0][1]));
+  const frames = deviceFrames(doc);
+  return { source: fromClock ? (fromClock === points.size ? 'frameClock' : 'frameClock+records') : 'records', samples,
+    lagMax: samples.length ? lagMax : null, frames };
+}
+
+// Every frame the game rendered while its director played, in frame order, as [directorTime,
+// Time.deltaTime, frameCount] (MVStudioParticleSystems.frameGrid): the frame clock's rows from the
+// first one whose director time the agent's own per-frame tick read (source 0: the director
+// LiveTimeSynchronizer drives answered), when they hold every frame from there to the last one,
+// each with a director time (frameClocks: else from the music time) and a deltaTime in (0, 10],
+// and the director never goes back; else null. Earlier rows (the tick not running yet, or no
+// director to read) come before the timeline's first evaluation: 12023 dump5 rows 13000 (a
+// record's clock, director 0) and 13001 (director not read) precede the first read at 13002, and
+// fx_par_so2023_02, a clip from 0 s, has ParticleSystem.time = the deltaTime sum from frame 13002
+// in all six records (within 5e-6 s; from 13000 it misses by 0.27 s). The original particle
+// systems step each frame's own Time.deltaTime (libunity.so 0x1ce1f4 / 0x1d7490), a clip from the
+// first frame whose director time reaches its start (12035 dump5: ParticleSystem.time is the
+// deltaTime sum of the frames from that one to the frame before the record's, within 6e-5 s).
+function deviceFrames(doc) {
+  const all = [...frameClocks(doc)];
+  const first = all.findIndex(([, clock]) => clock.source === 0 && clock.directorFrom === undefined && Number.isFinite(clock.directorTime));
+  const clocks = first < 0 ? [] : all.slice(first);
+  if (clocks.length < 2 || !Array.isArray(doc.trailer?.frameClocks?.rows)) return null;
+  const rows = [];
+  let expected = null;
+  for (const [frame, clock] of clocks) {
+    if (expected !== null && frame !== expected) return null;
+    expected = frame + 1;
+    const { directorTime: time, deltaTime } = clock;
+    if (!Number.isFinite(time) || time < 0 || !(deltaTime > 0) || deltaTime > 10 || (rows.length && time < rows.at(-1)[0])) return null;
+    rows.push([time, deltaTime, frame]);
+  }
+  return rows;
+}
+
+// ------------------------------------------------------------- browser side
+
+// The game's rendered frame times the seeks hand to the editor (--frame-history).
+async function setFrameHistory(page, times) {
+  await page.evaluate((times) => { mvFrameProbe.frameHistory = times; }, times || null);
+}
+
+// The game's clock for the original particle systems (gameClockSamples), or null for the director's,
+// and the run's own device frames (deviceFrames) or null. Returns the number of samples the scene
+// took (gameFrames: how many device frames).
+async function setGameClock(page, samples, frames = null) {
+  return page.evaluate(({ samples, frames }) => {
+    const scene = mvFrameProbe.scene;
+    if (typeof scene.setGameClock !== 'function') throw new Error('This editor build has no MVStudioScene.setGameClock()');
+    if (frames && typeof scene.gameFrames !== 'function') throw new Error('This editor build has no MVStudioScene.gameFrames()');
+    return frames ? scene.setGameClock(samples, frames) : scene.setGameClock(samples);
+  }, { samples: samples || null, frames: frames || null });
+}
+
+// The number of device frames the scene's original particle systems step on (0: none).
+async function gameFrameCount(page) {
+  return page.evaluate(() => typeof mvFrameProbe.scene.gameFrames === 'function' ? mvFrameProbe.scene.gameFrames() : 0);
+}
+
+async function evaluatePure(page, batch, keys) {
+  return page.evaluate(({ batch, keys }) => {
+    const scene = mvFrameProbe.scene;
+    const now = () => performance.now();
+    return batch.map((request) => {
+      const start = now();
+      // The game frame a record's phase is (several frames can show one director time).
+      if (typeof scene.setGameFrame === 'function') scene.setGameFrame(request.frame ?? null);
+      scene.seek(request.t, undefined, true, mvFrameProbe.frameHistory || null);
+      const seeked = now();
+      const values = scene.assetDump({ sections: request.sections, filter: request.filter || undefined, keys: keys || undefined });
+      return { id: request.id, values, seekMs: seeked - start, dumpMs: now() - seeked };
+    });
+  }, { batch: batch.map(({ id, t, sections, filter, frame }) => ({ id, t, sections, filter, frame: frame ?? null })), keys });
+}
+
+// Unity Time.maximumDeltaTime (default 1/3 s): a clamped deltaTime does not
+// give the previous frame's director time.
+const MAX_DELTA_TIME = 1 / 3;
+
+// The game's own rendered frames (frameCount -> director seconds, in frame
+// order) from every record that carries clock.frameCount. Every record is a
+// frame it showed; the frame before it is at directorTime - deltaTime unless
+// deltaTime was clamped to maximumDeltaTime; the other frames between two
+// records are spread evenly over the director time between them. While the
+// director does not advance (pinned at the song end) every frame between two
+// records shows that time. A director that goes back leaves the frames between
+// those two records unknown; both records keep their own times. The same map
+// as mv_frame_compare.py game_frame_times.
+function gameFrames(doc) {
+  const anchors = new Map();
+  for (const record of doc.records || []) {
+    const clock = record.clock;
+    if (!Number.isInteger(clock?.frameCount) || !Number.isFinite(clock?.directorTime) || !(clock.directorTime > 0)) continue;
+    if (!anchors.has(clock.frameCount)) anchors.set(clock.frameCount, { frame: clock.frameCount, t: clock.directorTime, dt: clock.deltaTime });
+  }
+  // Frames the frame clock read are anchors too: with every frame read, nothing is estimated.
+  for (const [frame, clock] of frameClocks(doc)) {
+    if (!anchors.has(frame) && Number.isFinite(clock.directorTime) && clock.directorTime > 0) {
+      anchors.set(frame, { frame, t: clock.directorTime, dt: clock.deltaTime });
+    }
+  }
+  const sorted = [...anchors.values()].sort((a, b) => a.frame - b.frame);
+  const frames = new Map(sorted.map(({ frame, t }) => [frame, t]));
+  for (let index = 1; index < sorted.length; index++) {
+    const a = sorted[index - 1], b = sorted[index], count = b.frame - a.frame;
+    if (Math.abs(b.t - a.t) <= 1e-9) {
+      for (let k = 1; k < count; k++) frames.set(a.frame + k, a.t);
+      continue;
+    }
+    if (!(b.t > a.t)) continue;
+    const before = Number.isFinite(b.dt) && b.dt > 0 && b.dt < MAX_DELTA_TIME - 1e-6 && b.t - b.dt > a.t + 1e-9 && count >= 2 ? b.t - b.dt : null;
+    const end = before ?? b.t, spread = before === null ? count : count - 1;
+    for (let k = 1; k < spread; k++) frames.set(a.frame + k, a.t + k * (end - a.t) / spread);
+    if (before !== null) frames.set(b.frame - 1, before);
+  }
+  return new Map([...frames].sort((a, b) => a[0] - b[0]));
+}
+
+// The spring preroll grid: gameFrames as an ascending list of director times.
+// Springs step once per rendered frame (SwingBoneGroupJob has no time step), so
+// this grid is what the game's springs saw, including its frame-time jitter on
+// a slow device. The preroll picks its frames by time, so the list must not go
+// back: a frame earlier than a time already listed (a rewound record, and the
+// frames after it until the director passes that time again) is left out,
+// while mv_frame_compare.py game_frame_times keeps it in its frameCount map.
+function gameFrameTimes(doc) {
+  const times = [];
+  for (const time of gameFrames(doc).values()) {
+    // A pinned director's records may differ by rounding (<= 1e-9 s); they hold the listed time.
+    if (!times.length) times.push(time);
+    else if (time >= times.at(-1) - 1e-9) times.push(Math.max(time, times.at(-1)));
+  }
+  return times;
+}
+
+// Preroll frame times before t: the game grid inside [t - preroll, t) when it
+// covers the window, else the fixed-step grid at `rate` ending exactly at t.
+function prerollTimes(time, preroll, rate, grid = null) {
+  const from = preroll === 'full' ? -Infinity : time - preroll;
+  if (grid?.length && grid[0] <= Math.max(from, 0) + 1e-9 && grid.at(-1) >= time - 1e-9) {
+    return { source: 'game-frames', times: grid.filter((value) => value >= from - 1e-9 && value < time - 1e-9) };
+  }
+  const available = Math.floor(time * rate + 1e-6);
+  const steps = preroll === 'full' ? available : Math.min(available, Math.floor(preroll * rate + 1e-6));
+  return { source: 'fixed-rate', times: Array.from({ length: steps }, (_, step) => time - (steps - step) / rate) };
+}
+
+// A spring preroll ending exactly at t (game frame grid or the same fixed-step
+// grid as mv_frame_capture.js renderFrame()); the last step is deferred too:
+// nothing is drawn or read back. Each call is one physics clock interval
+// (1000 / stampRate ms), so every preroll frame steps the springs once. A
+// request with readPoint then runs the next frame's spring step on its own
+// (PHYSICS_READ_POINT) before the values are read.
+async function evaluatePhysics(page, request, preroll, rate, keys, grid = null, stampRate = rate) {
+  const plan = prerollTimes(request.t, preroll, rate, grid);
+  const result = await page.evaluate(({ request, times, stampRate, keys }) => {
+    const scene = mvFrameProbe.scene;
+    const begin = performance.now(), time = request.t;
+    const start = times.length ? times[0] : time;
+    if (typeof scene.setGameFrame === 'function') scene.setGameFrame(request.frame ?? null);
+    if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / stampRate, undefined, true);
+    scene.seek(start, undefined, true, mvFrameProbe.frameHistory || null);
+    scene.setPlaying(true);
+    try {
+      times.forEach((value, step) => scene.playbackFrame(value, step * 1000 / stampRate, true));
+      scene.playbackFrame(time, times.length * 1000 / stampRate, true);
+      const readPointStep = request.readPoint ? scene.stepPhysicsUpdate((times.length + 1) * 1000 / stampRate) : null;
+      const seeked = performance.now();
+      const values = scene.assetDump({ sections: request.sections, filter: request.filter || undefined, keys: keys || undefined });
+      return { id: request.id, values, seekMs: seeked - begin, dumpMs: performance.now() - seeked, steps: times.length, prerollStart: start,
+        readPointStep };
+    } finally {
+      scene.setPlaying(false);
+    }
+  }, { request: { id: request.id, t: request.t, sections: request.sections, filter: request.filter, readPoint: request.readPoint === true,
+    frame: request.frame ?? null },
+    times: plan.times, stampRate, keys });
+  return { ...result, prerollSource: plan.source };
+}
+
+// --------------------------------------------------------------- editor dump
+
+// LiveQualitySettingVO backing-field names -> editor quality keys. This table
+// and the fallback rule are exactly mv_runtime_compare.Conventions.QUALITY and
+// Conventions.quality_key (test_mv_runtime_compare checks that they agree).
+const QUALITY_NAMES = Object.freeze({
+  PostEffect: 'posteffect', FrameRate60Fps: 'frame_rate_60fps', MemberSwingBone: 'member_swing_bone_mv',
+  Quality: 'quality_mode', RenderingResolution: 'rendering_resolution', BaseLight: 'base_light',
+  StageAmbient: 'stage_ambient', StageAnimation: 'stage_animation', StageColoring: 'stage_coloring',
+  StageControl: 'stage_control', StageOverlayEffect: 'stage_overlay_effect', StageFlashLight: 'stage_flash_light',
+  StageDisplay: 'stage_display', StageEmissive: 'stage_emissive', StageAudience: 'stage_audience',
+  StageCubemap: 'stage_cubemap', MemberAmbient: 'member_ambient', MemberRimLight: 'member_rim_light',
+  MemberSpotLightShaft: 'member_spot_light_shaft', MemberSpotLightArea: 'member_spot_light_area',
+  PropAmbient: 'prop_ambient', PropRimLight: 'prop_rim_light', SplitScreen: 'split_screen',
+});
+// The preset's row id identifies the catalog row, not a scene setting; it is never compared.
+const QUALITY_IGNORED = new Set(['set_id']);
+function snakeCase(name) {
+  if (Object.prototype.hasOwnProperty.call(QUALITY_NAMES, name)) return QUALITY_NAMES[name];
+  return name.replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+function qualityValue(raw) {
+  return raw && typeof raw === 'object' && 'v' in raw ? raw.v : raw;
+}
+
+// A C# bool may arrive as 0/1 from a raw field read.
+function sameQuality(gameValue, editorValue) {
+  if (typeof editorValue === 'boolean' && (gameValue === 0 || gameValue === 1)) return editorValue === Boolean(gameValue);
+  return gameValue === editorValue;
+}
+
+function qualityDifferences(gameQuality, editorValues) {
+  const values = gameQuality?.values;
+  if (!values || typeof values !== 'object') return { compared: 0, differences: [], gameOnly: [] };
+  const differences = [], gameOnly = [];
+  let compared = 0;
+  for (const [name, raw] of Object.entries(values)) {
+    const key = snakeCase(name), value = qualityValue(raw);
+    if (QUALITY_IGNORED.has(key)) continue;
+    if (!(key in editorValues)) { gameOnly.push(name); continue; }
+    compared++;
+    if (!sameQuality(value, editorValues[key])) differences.push({ game: name, editor: key, gameValue: value, editorValue: editorValues[key] });
+  }
+  return { compared, differences, gameOnly };
+}
+
+// Contract 5: the quality request built from the game header. The mode comes
+// from Quality (-> quality_mode); every other value with an editor control
+// becomes an override applied after the mode's preset. Values with no editor
+// control are listed as gameOnly (they cannot be applied).
+function qualityPlan(gameQuality, catalog, fallback) {
+  const values = gameQuality?.values && typeof gameQuality.values === 'object' ? gameQuality.values : null;
+  if (!values || !Object.keys(values).length) {
+    return { source: 'manifest', request: { mode: fallback.mode, overrides: { ...(fallback.overrides || {}) } }, gameOnly: [],
+      reason: 'the game dump records no quality values' };
+  }
+  const options = new Map((catalog.options || []).map((option) => [option.key, option]));
+  const overrides = {}, gameOnly = [];
+  let mode = null;
+  for (const [name, raw] of Object.entries(values)) {
+    const key = snakeCase(name), value = qualityValue(raw);
+    if (key === 'quality_mode') { mode = value; continue; }
+    if (QUALITY_IGNORED.has(key)) continue;
+    const option = options.get(key);
+    if (!option) { gameOnly.push(name); continue; }
+    if (option.type === 'number' && Number.isFinite(value)) overrides[key] = value;
+    else if (option.type !== 'number' && (typeof value === 'boolean' || value === 0 || value === 1)) overrides[key] = Boolean(value);
+    else gameOnly.push(name);
+  }
+  const plan = { source: 'game', request: { mode: Number.isSafeInteger(mode) ? mode : fallback.mode, overrides }, gameOnly };
+  if (!Number.isSafeInteger(mode)) plan.reason = 'the game dump records no Quality mode; the manifest mode is the base preset';
+  return plan;
+}
+
+async function qualityCatalog(page) {
+  return page.evaluate(() => {
+    const quality = MVStudio.getState().project?.quality || {};
+    return { modes: (quality.modes || []).map((mode) => mode.id), options: (quality.options || []).map(({ key, type }) => ({ key, type })) };
+  });
+}
+
+// Applies the game's quality; on failure falls back to the manifest quality.
+// The result carries status "matched" or "invalid:quality" with its reasons.
+async function applyGameQuality(page, gameQuality, manifestQuality) {
+  const catalog = await qualityCatalog(page);
+  const plan = qualityPlan(gameQuality, catalog, manifestQuality);
+  const reasons = plan.reason && plan.source === 'manifest' ? [plan.reason] : [];
+  let applied;
+  try {
+    applied = await capture.applyQuality(page, plan.request);
+  } catch (error) {
+    reasons.push(`the game quality could not be applied: ${error.message}`);
+    applied = await capture.applyQuality(page, manifestQuality);
+  }
+  const differences = qualityDifferences(gameQuality, applied.values);
+  if (differences.differences.length) reasons.push(`${differences.differences.length} game quality value(s) differ after applying`);
+  return { mode: applied.mode, values: applied.values, source: plan.source, request: plan.request, gameOnly: plan.gameOnly,
+    status: reasons.length ? 'invalid:quality' : 'matched', reasons, gameDifferences: differences };
+}
+
+function viewportFor(doc) {
+  const screen = doc.header.screen || {};
+  let width = Number.isInteger(screen.width) && screen.width > 0 ? screen.width : 1280;
+  let height = Number.isInteger(screen.height) && screen.height > 0 ? screen.height : 720;
+  const notes = [];
+  const camera = doc.records.filter((record) => record.kind === 'frame')
+    .flatMap((record) => record.cameras || []).find((item) => item?.key === 'camera:main');
+  const target = camera?.targetTexture;
+  // RenderingResolution scales the screen to its height and Unity rounds the width
+  // (1280x720 at 640 -> 1138x640, aspect 1.778125): no width at the screen height
+  // reproduces that aspect, so pin the camera's own pixel size when it gives the aspect.
+  const pixel = [camera?.pixelWidth, camera?.pixelHeight];
+  const pixelAspect = pixel.every((value) => Number.isInteger(value) && value > 0) ? pixel[0] / pixel[1] : null;
+  if (target && Number.isInteger(target.width) && Number.isInteger(target.height) &&
+      Math.abs(target.width / target.height - width / height) > 1e-4) {
+    notes.push(`main camera renders to ${target.width}x${target.height}; pinned to that aspect instead of the screen`);
+    width = Math.round(height * target.width / target.height);
+  } else if (pixelAspect !== null && (!Number.isFinite(camera?.aspect) || Math.abs(pixelAspect - camera.aspect) <= 1e-5 * camera.aspect) &&
+      (pixel[0] !== width || pixel[1] !== height)) {
+    notes.push(`main camera draws ${pixel[0]}x${pixel[1]} (aspect ${pixelAspect}) on the ${width}x${height} screen; pinned to the camera pixel size`);
+    [width, height] = pixel;
+  } else if (Number.isFinite(camera?.aspect) && Math.abs(camera.aspect - width / height) > 1e-4) {
+    notes.push(`main camera aspect ${camera.aspect} differs from the screen ${width}x${height}; pinned to the camera aspect`);
+    width = Math.round(height * camera.aspect);
+  }
+  return { width, height, gameAspect: Number.isFinite(camera?.aspect) ? camera.aspect : null, notes };
+}
+
+function stats(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1) + 0.5))];
+  return { n: sorted.length, p50: at(0.5), p95: at(0.95), max: sorted.at(-1), total: sorted.reduce((sum, value) => sum + value, 0) };
+}
+
+function editorRecord(request, result, rate) {
+  const source = request.source, values = { ...result.values };
+  const record = { id: request.id, kind: source.kind, sourceRecord: source.id, phase: request.phase };
+  if (source.kind === 'full') Object.assign(record, { pass: source.pass ?? null, part: source.part, chunk: source.chunk ?? 0 });
+  record.clock = { directorTime: request.t, sourceDirectorTime: source.clock.directorTime, phase: request.phase,
+    phaseSeconds: request.t - source.clock.directorTime, phaseSource: request.phaseSource ?? null, deltaTime: request.deltaTime,
+    rate: values.clock?.rate ?? rate };
+  if (request.physics) {
+    record.clock.physicsRate = rate;
+    // The pre-timeline spring step of the frame the sampler read in (PHYSICS_READ_POINT): null when not run.
+    record.clock.readPointStep = result.readPointStep ?? null;
+  }
+  if (Math.abs((values.clock?.directorTime ?? NaN) - request.t) > 1e-9) {
+    (values.errors ||= []).push({ at: 'clock', error: `editor time ${values.clock?.directorTime} != requested ${request.t}` });
+  }
+  delete values.clock;
+  record.cost = { elapsedMs: result.seekMs + result.dumpMs, seekMs: result.seekMs, dumpMs: result.dumpMs,
+    assetDumpMs: values.cost?.elapsedMs ?? null, ...(result.steps !== undefined ? { prerollSteps: result.steps, prerollStart: result.prerollStart,
+      prerollSource: result.prerollSource ?? null } : {}) };
+  delete values.cost;
+  record.nonFinite = values.nonFinite || [];
+  delete values.nonFinite;
+  if (request.unknownPart) (values.errors ||= []).push({ at: source.part, error: 'part not modeled by this editor runner' });
+  if (!values.errors?.length) delete values.errors;
+  if (!values.truncatedSections?.length) delete values.truncatedSections;
+  return Object.assign(record, values);
+}
+
+// Pins the game viewport, selects the live camera and applies the size to it.
+async function prepareLiveView(page, viewport) {
+  await capture.pinViewport(page, viewport.width, viewport.height);
+  const pinned = await page.evaluate(() => {
+    const select = document.querySelector('#mv-camera-mode');
+    select.value = 'live';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    const fade = document.querySelector('#mv-screen-fade');
+    if (fade?.checked) {
+      fade.checked = false;
+      fade.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const scene = mvFrameProbe.scene;
+    if (typeof scene.assetDump !== 'function') throw new Error('This editor build has no MVStudioScene.assetDump()');
+    // Without resize(false) the live camera keeps the old aspect.
+    scene.resize(false);
+    const state = scene.inspect();
+    return { aspect: state.camera.aspect, canvas: state.canvas, cameraMode: state.cameraMode };
+  });
+  assert(Math.abs(pinned.aspect - viewport.width / viewport.height) < 1e-9, `editor aspect ${pinned.aspect} after pinning ${viewport.width}x${viewport.height}`);
+  if (viewport.gameAspect !== null) {
+    assert(Math.abs(pinned.aspect - viewport.gameAspect) <= 1e-5 * viewport.gameAspect,
+      `editor aspect ${pinned.aspect} differs from the game main camera aspect ${viewport.gameAspect}`);
+  }
+  return pinned;
+}
+
+// Evaluates every game record at every phase; pure records in batches.
+async function capturePage(page, game, { phases, preroll, rate, batchSize = 100, keys = null, grid = null, stampRate = rate,
+  history = null, readPoint = 'update' }) {
+  const requests = planRequests(game, phases, { readPoint });
+  await setFrameHistory(page, history);
+  const results = new Map();
+  const pureStart = Date.now();
+  const pure = requests.filter((request) => !request.physics), physics = requests.filter((request) => request.physics);
+  for (let index = 0; index < pure.length; index += batchSize) {
+    for (const result of await evaluatePure(page, pure.slice(index, index + batchSize), keys)) results.set(result.id, result);
+  }
+  const pureSeconds = (Date.now() - pureStart) / 1000;
+  const physicsStart = Date.now();
+  for (const request of physics) results.set(request.id, await evaluatePhysics(page, request, preroll, rate, keys, grid, stampRate));
+  const physicsSeconds = (Date.now() - physicsStart) / 1000;
+  const records = requests.map((request) => editorRecord(request, results.get(request.id), rate));
+  const costs = (select) => records.filter(select).map((record) => record.cost.elapsedMs);
+  const timing = { pureSeconds, physicsSeconds, captureSeconds: pureSeconds + physicsSeconds,
+    frameMs: stats(costs((record) => record.kind === 'frame')), fullMs: stats(costs((record) => record.kind === 'full')),
+    physicsMs: stats(costs((record) => record.cost.prerollSteps !== undefined)) };
+  return { records, timing };
+}
+
+function editorDocument({ game, gameFile, sha256, auxiliary = {}, records, timing, conventions, manifest, viewport, quality, phases, preroll, rate,
+  physics = null, batchSize, keysFile, producer, errors, began, performers = null }) {
+  const elapsedSeconds = (Date.now() - began) / 1000;
+  return {
+    schema: SCHEMA, side: 'editor',
+    header: {
+      createdAt: new Date().toISOString(), producer, conventions, source: { ...manifest.source },
+      screen: { width: viewport.width, height: viewport.height, notes: viewport.notes },
+      fovmod: { aspectBounds: { min: 0.75, max: 1 }, source: 'MVStudioSplit.aspectCorrection' },
+      quality: { mode: quality.mode, values: quality.values, source: quality.source ?? 'manifest', request: quality.request ?? null,
+        status: quality.status ?? 'invalid:quality', reasons: quality.reasons ?? ['quality was not taken from the game dump'],
+        gameOnly: quality.gameOnly ?? [], gameDifferences: qualityDifferences(game.header.quality, quality.values) },
+      ...(performers ? { performers } : {}),
+      limits: { phases, physicsPrerollSeconds: preroll, rate, batch: batchSize },
+      physics,
+      keys: keysFile ? { file: path.basename(keysFile), sha256: crypto.createHash('sha256').update(fs.readFileSync(keysFile)).digest('hex') } : null,
+      gameDump: { sha256, file: gameFile ? path.basename(gameFile) : null, schema: game.schema, records: game.records.length,
+        producer: game.header.producer?.name ?? null, budgets: game.header.budgets ?? null, auxiliaryBlobs: Object.keys(auxiliary).sort() },
+    },
+    records,
+    trailer: { records: { frame: records.filter((record) => record.kind === 'frame').length,
+      full: records.filter((record) => record.kind === 'full').length }, pageErrors: errors, elapsedSeconds, timing },
+  };
+}
+
+async function run() {
+  const options = parseArgs(process.argv.slice(2));
+  const began = Date.now();
+  const phases = parsePhases(options.phases);
+  const preroll = options.preroll === 'full' ? 'full' : Number(options.preroll ?? 3);
+  assert(preroll === 'full' || (Number.isFinite(preroll) && preroll >= 0), '--preroll is seconds or "full"');
+  const order = options['physics-order'] ?? 'game';
+  assert(SPRINGS.ORDERS.includes(order), '--physics-order is game or same-frame');
+  const gridMode = options['physics-grid'] ?? 'game';
+  assert(['game', 'clock', 'rule'].includes(gridMode), '--physics-grid is game, clock or rule');
+  const historyMode = options['frame-history'] ?? 'game';
+  assert(['game', 'none'].includes(historyMode), '--frame-history is game or none');
+  const readPoint = options['physics-read-point'] ?? 'update';
+  assert(PHYSICS_READ_POINTS.includes(readPoint), '--physics-read-point is update or none');
+  const particleClock = options['particle-clock'] ?? 'game';
+  assert(['game', 'director'].includes(particleClock), '--particle-clock is game or director');
+  const batchSize = Number(options.batch ?? 100);
+  assert(Number.isInteger(batchSize) && batchSize > 0, '--batch is a positive integer');
+  const manifest = capture.readManifest(options.manifest);
+  const { doc: game, sha256, auxiliary } = readDump(path.resolve(options.dump));
+  assert.equal(game.side, 'game', 'The --dump document must be a game dump (side "game")');
+  const keysFile = options.keys ? path.resolve(options.keys) : null;
+  const keys = keysFile ? JSON.parse(fs.readFileSync(keysFile, 'utf8')) : null;
+  const requestKeys = keys && Array.isArray(keys.shaderGlobalCandidates) ? { globals: keys.shaderGlobalCandidates } : null;
+  const out = path.resolve(options.out);
+  fs.mkdirSync(out, { recursive: true });
+  const serverRoot = path.resolve(options['server-root'] || path.join(MODTOOLS, '..'));
+  const viewport = viewportFor(game);
+  const suits = suitPlan(options.suits, game);
+  let server = null, browser = null;
+  try {
+    const { chromium } = require('playwright');
+    const url = options.url || (server = await capture.bootEditor(serverRoot, options.library, path.join(out, 'editor-server.log'))).url;
+    browser = await chromium.launch({ executablePath: options.chromium || process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
+      args: capture.browserArgs(options.software === 'true') });
+    const page = await browser.newPage({ viewport: { width: Math.max(2600, viewport.width + 64), height: Math.max(1600, viewport.height + 64) },
+      deviceScaleFactor: 1 });
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.addInitScript(capture.attachSceneProbe);
+    await page.goto(url + '/#mv');
+    const importStart = Date.now();
+    const unpin = suits ? await pinCostumes(page, suits) : null;
+    try {
+      await capture.importOriginal(page, manifest.source, manifest.download === true);
+    } finally {
+      if (unpin) await unpin();
+    }
+    const importSeconds = (Date.now() - importStart) / 1000;
+    const dressed = await page.evaluate(() => (MVStudio.getState().project?.performers || [])
+      .map(({ position, memberId, costumeId, glb }) => ({ position, memberId, costumeId, loaded: typeof glb === 'string' && glb.length > 0 })));
+    const performers = suits ? { source: suits.source, pinned: suits.costumes, dressed: checkCostumes(suits, dressed) }
+      : { source: 'deck', pinned: null, dressed };
+    const quality = await applyGameQuality(page, game.header.quality, manifest.quality);
+    const clock = gameClockRate(game, quality.values, manifest.device);
+    await capture.applyPhysicsReference(page, { rate: clock.target, order,
+      timing: { order, exportFps: null, device: manifest.device || {} } });
+    const rate = gridMode === 'rule' ? clock.target : clock.rate;
+    const grid = gridMode === 'game' ? gameFrameTimes(game) : null;
+    const physics = { ...clock, rate, reference: gridMode === 'rule' ? 'game-rule' : gridMode === 'game' && grid.length ? 'game-frames' : clock.source,
+      order, gridFrames: grid ? grid.length : null };
+    // The player's anti-aliasing option sets the 3D render height (off by default, as on the
+    // reference devices: QualitySettings.antiAliasing 0 and no camera allowMSAA in the dumps).
+    const antiAliasing = await capture.applyAntiAliasing(page, manifest.device?.antiAliasing);
+    const pinned = await prepareLiveView(page, viewport);
+    const project = await page.evaluate(() => {
+      const value = MVStudio.getState().project;
+      return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [] };
+    });
+    const history = historyMode === 'game' ? gameFrameTimes(game) : null;
+    physics.frameHistory = history ? history.length : null;
+    physics.readPoint = readPoint;
+    const clockPlan = particleClock === 'game' ? gameClockSamples(game) : null;
+    const clockSamples = await setGameClock(page, clockPlan?.samples ?? null, clockPlan?.frames ?? null);
+    physics.particleClock = { mode: particleClock, source: clockPlan?.source ?? 'director', samples: clockSamples,
+      deviceFrames: await gameFrameCount(page), lagMax: clockPlan?.lagMax ?? null };
+    physics.frameClock = { frames: frameClocks(game).size, phaseSources: null };
+    const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target,
+      history, readPoint });
+    physics.frameClock.phaseSources = records.reduce((counts, record) => {
+      const source = record.clock?.phaseSource ?? 'none';
+      counts[source] = (counts[source] || 0) + 1;
+      return counts;
+    }, {});
+    timing.importSeconds = importSeconds;
+    const webgl = await capture.rendererInfo(page);
+    const producer = { name: 'mv_runtime_capture.js', modtools: { commit: capture.gitHead(MODTOOLS), dirty: capture.gitDirty(MODTOOLS) },
+      server: { root: serverRoot, commit: options.url ? null : capture.gitHead(serverRoot) }, url: options.url || null,
+      browser: browser.version(), webgl };
+    const conventions = await page.evaluate(() => ({ ...MVStudioAssetDump.CONVENTIONS }));
+    const editor = editorDocument({ game, gameFile: options.dump, sha256, auxiliary, records, timing, conventions, manifest, viewport, quality,
+      phases, preroll, rate, physics, batchSize, keysFile, producer, errors, began, performers });
+    const body = zlib.gzipSync(Buffer.from(JSON.stringify(editor)), { level: 9 });
+    fs.writeFileSync(path.join(out, 'editor-dump.json.gz'), body);
+    const environment = { schema: 1, kind: 'elichika-mv-runtime-capture', createdAt: editor.header.createdAt, manifest, project,
+      physicsRate: rate, physics,
+      gameDump: editor.header.gameDump, render: { ...viewport, pinned, antiAliasing }, quality: editor.header.quality, performers,
+      environment: { ...producer, platform: process.platform }, timing, elapsedSeconds: editor.trailer.elapsedSeconds, pageErrors: errors,
+      output: { file: 'editor-dump.json.gz', bytes: body.length, records: records.length } };
+    fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify(environment, null, 2) + '\n');
+    console.log(JSON.stringify({ out, records: records.length, gameRecords: game.records.length, phases,
+      importSeconds, captureSeconds: timing.captureSeconds, elapsedSeconds: editor.trailer.elapsedSeconds, frameMsP50: timing.frameMs?.p50 ?? null,
+      bytes: body.length, quality: { status: quality.status, source: quality.source, mode: quality.mode, reasons: quality.reasons },
+      qualityDifferences: editor.header.quality.gameDifferences.differences.length, pageErrors: errors.length,
+      webgl: webgl.renderer }));
+  } finally {
+    if (browser) await browser.close();
+    if (server) server.child.kill();
+  }
+}
+
+if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
+module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planRequests, filterFor, stageNodeKey, editorRecord, rendererSelector,
+  gameSuits, suitPlan, pinCostumes, checkCostumes,
+  qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
+  gameFrames, gameFrameTimes, recordedFrameTimes, setFrameHistory, prerollTimes, memberMeshAlias, PHYSICS_READ_POINTS,
+  FRAME_CLOCK_FIELDS, frameClocks, gameClockSamples, deviceFrames, setGameClock, gameFrameCount,
+  prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };

@@ -15,6 +15,25 @@ from webtools.core import mv_studio_timeline as studio
 SAMPLES = Path(os.environ.get("ELICHIKA_STUDIO_TIMELINE_DIR", "/unavailable-studio-samples"))
 
 
+def legacy_zxy_quaternion(values, euler=False, order=None):
+    """model_animation._quaternion as 998b326 had it: every Euler rotation composed in ZXY, whatever its order."""
+    import math
+    from webtools.core import model_animation as animation
+
+    if euler:
+        x, y, z = (math.radians(value) * .5 for value in values)
+        values = animation._multiply(animation._multiply((0, math.sin(y), 0, math.cos(y)), (math.sin(x), 0, 0, math.cos(x))),
+                                     (0, 0, math.sin(z), math.cos(z)))
+    length = math.sqrt(sum(value * value for value in values))
+    x, y, z, w = (value / length for value in values)
+    return [x, -y, -z, w]
+
+
+def rotation_degrees(a, b):
+    import math
+    return math.degrees(2 * math.acos(min(1., abs(sum(x * y for x, y in zip(a, b))))))
+
+
 class TimelineContractTests(unittest.TestCase):
     def test_non_timeline_input_has_a_clear_error(self):
         with self.assertRaisesRegex(ValueError, "UnityFS live timeline"):
@@ -62,6 +81,180 @@ class TimelineContractTests(unittest.TestCase):
                 amended["m_ClipBindingConstant"]["genericBindings"][1].update(wrong)
                 with self.assertRaisesRegex(ValueError, "camera bindings"):
                     studio._camera_sample_order(amended)
+
+    @staticmethod
+    def euler_camera(order, eulers, rate=60.):
+        """A full native shot: dense position, Euler (customType = RotationOrder) and FOV samples."""
+        rows = [{"path": 0, "typeID": 4, "attribute": 1, "customType": 0, "isPPtrCurve": 0},
+                {"path": 0, "typeID": 4, "attribute": 4, "customType": order, "isPPtrCurve": 0},
+                {"path": 0, "typeID": 114, "attribute": studio._FOV, "customType": 0, "isPPtrCurve": 0}]
+        samples = [value for index, euler in enumerate(eulers) for value in (index * .1, 1.5, -4., *euler, 30. + index)]
+        span = (len(eulers) - 1) / rate
+        return {"m_SampleRate": rate, "m_ClipBindingConstant": {"genericBindings": rows}, "m_MuscleClip": {
+            "m_StartTime": 0., "m_StopTime": span, "m_Clip": {"data": {
+                "m_StreamedClip": {"curveCount": 0, "data": []}, "m_ConstantClip": {"data": []},
+                "m_DenseClip": {"m_CurveCount": 7, "m_FrameCount": len(eulers), "m_SampleRate": rate,
+                                "m_BeginTime": 0., "m_SampleArray": samples}}}}}
+
+    @staticmethod
+    def camera_points(tree):
+        span = tree["m_MuscleClip"]["m_StopTime"]
+        return studio._camera_frames(SimpleNamespace(read_typetree=lambda: tree), {}, span, None, 10_000)
+
+    def test_camera_euler_binding_uses_its_unity_rotation_order(self):
+        import math
+        from webtools.core import model_animation as animation
+
+        def unity(order, euler):  # Unity-handed quaternion of the Euler angles in that order.
+            return list(animation.unity_euler_quaternion(euler, order))
+
+        eulers = [[10., 70., -40.], [12., 68., -35.]]
+        for order in (0, 4):
+            with self.subTest(order=order):
+                tree = self.euler_camera(order, eulers)
+                self.assertEqual(studio._camera_channels(tree, None)["eulerOrder"], order)
+                for point, euler in zip(self.camera_points(tree), eulers):
+                    expected = unity(order, euler)
+                    self.assertGreater(abs(sum(a * b for a, b in zip(point["rotation"], expected))), 1 - 1e-12)
+        # SIFAS cameras bind customType 0: XYZ is q = qZ*qY*qX, which differs from the ZXY default here.
+        xyz, zxy = unity(0, eulers[0]), unity(4, eulers[0])
+        self.assertLess(abs(sum(a * b for a, b in zip(xyz, zxy))), math.cos(math.radians(1)))
+        for invalid in (6, 2.5):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "Euler rotation order"):
+                studio._camera_channels(self.euler_camera(invalid, eulers), None)
+
+    def test_camera_point_edits_write_euler_samples_in_the_binding_order(self):
+        import math
+        import random
+        rng = random.Random(7)
+        # A sweep through the XYZ gimbal region and across +-180 degrees.
+        eulers = [[170. + 4 * index, 60. + 2.5 * index, -175. - 3 * index] for index in range(16)]
+        eulers += [[rng.uniform(-170, 170), rng.uniform(-80, 80), rng.uniform(-170, 170)] for _ in range(8)]
+        for order in (0, 4):
+            with self.subTest(order=order):
+                tree = self.euler_camera(order, eulers)
+                span = tree["m_MuscleClip"]["m_StopTime"]
+                before = self.camera_points(tree)
+                after = deepcopy(before)
+                for point in after:
+                    point["fov"] += 1
+                studio._write_camera(tree, {}, {"duration": span, "values": {"keyframes": before}},
+                                     {"duration": span, "values": {"keyframes": after}})
+                written = self.camera_points(tree)
+                for old, new in zip(after, written):
+                    self.assertGreater(abs(sum(a * b for a, b in zip(old["rotation"], new["rotation"]))), 1 - 1e-12)
+                    self.assertAlmostEqual(new["fov"], old["fov"], places=9)
+                samples = tree["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"]["m_SampleArray"]
+                angles = [samples[index * 7 + 3:index * 7 + 6] for index in range(len(eulers))]
+                # Linear interpolation between dense samples never takes the long way round.
+                self.assertLess(max(abs(b - a) for first, second in zip(angles, angles[1:])
+                                    for a, b in zip(first, second)), 181)
+                # Authored steps are 2.5-4 degrees. Exactly at the XYZ gimbal (y = 90) only x - z is defined:
+                # the writer keeps x and the next sample catches up with one doubled step.
+                self.assertLess(max(abs(b - a) for first, second in zip(angles[:16], angles[1:16])
+                                    for a, b in zip(first, second)), 8.5)
+
+    def legacy_camera_fixture(self):
+        """Two native XYZ camera shots: their parsed track, the same track as 998b326 saved it, and the bundle objects."""
+        import random
+        from webtools.core import model_animation as animation
+
+        rng = random.Random(11)
+        trees, clips, events, objects = [], [], [], {}
+        for index in range(2):
+            eulers = [[rng.uniform(-60, 60), rng.uniform(-80, 80), rng.uniform(-40, 40)] for _ in range(9)]
+            tree = self.euler_camera(0, eulers)
+            span = tree["m_MuscleClip"]["m_StopTime"]
+            trees.append(tree)
+            clips.append({"m_Start": index * 2., "m_Duration": span})
+            objects[("cab-x", 20 + index)] = SimpleNamespace(type=SimpleNamespace(name="AnimationClip"),
+                                                             read_typetree=lambda tree=tree: deepcopy(tree))
+            events.append({"id": f"cab-x:5:{index}", "start": index * 2., "duration": span, "label": f"Shot {index}",
+                           "values": {"asset": f"cab-x:{10 + index}", "playableClass": "AnimationPlayableAsset",
+                                      "animation": f"cab-x:{20 + index}", "animationName": f"cam{index}",
+                                      "keyframes": self.camera_points(tree)},
+                           "editableValues": ["keyframes"]})
+        objects[("cab-x", 5)] = SimpleNamespace(type=SimpleNamespace(name="MonoBehaviour"),
+                                                read_typetree=lambda: {"m_Clips": deepcopy(clips)})
+        native = {"id": "cab-x:5", "kind": "camera", "label": "CameraMotion/Camera1", "events": events,
+                  "nativeClass": "AnimationTrack", "muted": False, "binding": "/EntryPoint/Live/Cameras/MainCamera"}
+        legacy = deepcopy(native)
+        with patch.object(animation, "_quaternion", legacy_zxy_quaternion):
+            for event, tree in zip(legacy["events"], trees):
+                event["values"]["keyframes"] = self.camera_points(tree)
+        # Python and browser JSON both round-trip these doubles exactly.
+        return trees, native, json.loads(json.dumps(legacy)), objects
+
+    def test_legacy_unedited_camera_points_export_the_original_bytes(self):
+        trees, native, legacy, objects = self.legacy_camera_fixture()
+        self.assertGreater(max(rotation_degrees(a["rotation"], b["rotation"]) for event, old in zip(native["events"], legacy["events"])
+                               for a, b in zip(event["values"]["keyframes"], old["values"]["keyframes"])), 1)
+        bloom = {"id": "cab-x:7", "kind": "bloom", "label": "Bloom", "events": [], "nativeClass": "BloomTrack", "muted": False}
+        saved = [legacy, bloom]
+        snapshot = deepcopy(saved)
+        with patch.object(studio, "_read", return_value=(None, objects, {})):
+            self.assertEqual(studio.restore_legacy_camera_keyframes(b"raw", "x", saved, [native, bloom]), [native, bloom])
+        self.assertEqual(saved, snapshot)
+        with patch.object(studio, "_read") as read:
+            current = [deepcopy(native), bloom]
+            self.assertIs(studio.restore_legacy_camera_keyframes(b"raw", "x", current, [native, bloom]), current)
+        read.assert_not_called()
+
+        raw = b"native timeline bytes"
+        original = {"duration": 4., "tracks": [native, bloom], "warnings": []}
+        with patch.object(studio, "parse_timeline", return_value=original), \
+                patch.object(studio, "_read", return_value=(None, objects, {})):
+            self.assertIs(studio.export_timeline(raw, "x", deepcopy([native, bloom])), raw)
+            self.assertIs(studio.export_timeline(raw, "x", deepcopy(saved)), raw)
+        # The parse of timeline bytes (convert_parsed) is never a legacy project: without the legacy
+        # step its points are written as they are, and the bundle is not read for legacy rotations.
+        with patch.object(studio, "parse_timeline", return_value=original), patch.object(studio, "_read") as read, \
+                patch.object(studio, "_rewrite_timeline", return_value=b"rewritten") as rewrite:
+            self.assertEqual(studio.prepare_tracks(raw, "x", deepcopy(saved), [native, bloom], legacy_camera=False),
+                             saved)
+            self.assertIs(studio.export_timeline(raw, "x", deepcopy([native, bloom]), legacy_camera=False), raw)
+            self.assertEqual(studio.export_timeline(raw, "x", deepcopy(saved), legacy_camera=False), b"rewritten")
+        read.assert_not_called()
+        self.assertEqual(rewrite.call_args.args[2]["tracks"], saved)
+
+    def test_legacy_camera_edit_is_kept_and_written_in_the_binding_order(self):
+        trees, native, legacy, objects = self.legacy_camera_fixture()
+        edited = deepcopy(legacy)
+        points = edited["events"][1]["values"]["keyframes"]
+        points[3]["fov"] += 2.
+        points[5]["rotation"] = [0., .6, 0., .8]
+        with patch.object(studio, "_read", return_value=(None, objects, {})):
+            restored, = studio.restore_legacy_camera_keyframes(b"raw", "x", [edited], [native])
+        self.assertEqual(restored["events"][0], native["events"][0])
+        expected = deepcopy(native["events"][1])
+        expected["values"]["keyframes"][3]["fov"] += 2.
+        expected["values"]["keyframes"][5]["rotation"] = [0., .6, 0., .8]
+        self.assertEqual(restored["events"][1], expected)
+
+        written = deepcopy(trees[1])
+        studio._write_camera(written, {}, native["events"][1], restored["events"][1])
+        for point, want in zip(self.camera_points(written), expected["values"]["keyframes"]):
+            self.assertLess(rotation_degrees(point["rotation"], want["rotation"]), 1e-5)
+            self.assertAlmostEqual(point["fov"], want["fov"], places=9)
+        # Without the migration the edited shot's untouched points would bake the old ZXY error into the clip.
+        baked = deepcopy(trees[1])
+        studio._write_camera(baked, {}, native["events"][1], edited["events"][1])
+        self.assertGreater(max(rotation_degrees(point["rotation"], want["rotation"]) for point, want in
+                               zip(self.camera_points(baked), expected["values"]["keyframes"])), 1)
+
+    def test_stage_motion_euler_channels_carry_the_binding_rotation_order(self):
+        from webtools.core import mv_studio_stage_motion as stage
+        bindings = {"genericBindings": []}
+        tree = {"m_ClipBindingConstant": bindings, "m_MuscleClip": {
+            "m_StartTime": 0, "m_StopTime": 2, "m_Clip": {"m_ConstantClip": {"data": [30., 60., 90.]}}}}
+        reader = SimpleNamespace(read_typetree=lambda: tree)
+        for order in (0, 4):
+            with self.subTest(order=order):
+                bindings["genericBindings"] = [{"path": 77, "typeID": 4, "attribute": 4, "customType": order,
+                                                "isPPtrCurve": 0, "script": {"m_FileID": 0, "m_PathID": 0}}]
+                declaration, _ = stage._read_clip(reader, None)
+                self.assertEqual(declaration["channels"], [{"path": 77, "kind": "euler", "rotationOrder": order,
+                                                            "curves": [("constant", 30.), ("constant", 60.), ("constant", 90.)]}])
 
     def test_overlay_material_distinguishes_native_color_and_vector_lanes(self):
         from webtools.core.mv_studio_stage_overlay import material_channels
@@ -133,12 +326,19 @@ class TimelineContractTests(unittest.TestCase):
               for lane, name in enumerate(props, 4)],
             {"path": floor, "kind": "overlayTint", "curves": [("constant", lane) for lane in range(13, 17)]},
         ])
-        self.assertIsNone(read(color + scalars + tint, overlay=True))
-        for invalid in (color[1:] + scalars, color + scalars + scalars[:1],
-                        color + [binding(fog, "_Density", 9)], color + [binding(fog, "_Density", 8, 137)],
-                        color + [binding(fog, "_UnknownFloat", 8)],
+        # The layer-20 overlay pass holds no soft billboard: those curves are dropped and reported.
+        declaration, _ = read(color + scalars + tint, overlay=True)
+        self.assertEqual([channel["kind"] for channel in declaration["channels"]], ["overlayTint"])
+        self.assertEqual(len(declaration["droppedChannels"]), 1 + len(props))
+        for invalid in (color + scalars + scalars[:1], color + [binding(fog, "_Density", 8, 137)],
                         color + [{**scalars[0], "script": {"m_FileID": 0, "m_PathID": 77}}]):
             self.assertIsNone(read(invalid + tint, world=True))
+        # An incomplete color, a scalar in another lane or an unknown float is dropped, not the clip.
+        for partial, kept in ((color[1:] + scalars, len(props)), (color + [binding(fog, "_Density", 9)], 1),
+                              (color + [binding(fog, "_UnknownFloat", 8)], 1)):
+            declaration, _ = read(partial + tint, world=True)
+            self.assertEqual(len(declaration["channels"]), kept + 1)
+            self.assertEqual(len(declaration["droppedChannels"]), 1)
 
     def test_stage_motion_rejects_partial_native_clip_playback(self):
         from webtools.core import mv_studio_stage_motion as stage
@@ -171,7 +371,7 @@ class TimelineContractTests(unittest.TestCase):
             self.assertEqual(stage._quality("StageEffect/Expert/Animation/Lights", parent=("cab", 3), mono=mono), "stage_animation")
             self.assertIsNone(stage._quality("StageEffect/Expert/Animation/Curtain/Track", parent=("cab", 4), mono=mono))
 
-    def test_typed_native_overlay_uses_category_and_keeps_world_alias_unbound(self):
+    def test_typed_native_overlay_uses_category_and_world_renderer_curves_need_their_own_material(self):
         from webtools.core import mv_studio_stage_motion as stage
         from zlib import crc32
 
@@ -201,9 +401,11 @@ class TimelineContractTests(unittest.TestCase):
                 patch.object(studio, "_pointer", side_effect=lambda _, ptr: ("cab", ptr["m_PathID"]) if ptr else None):
             for tracks in ([world, overlay], [overlay, world]):
                 parsed = stage.read(objects, mono, tracks, time.monotonic() + 3)
+                # MVStudioStageMaterial has no world holder for a MeshRenderer
+                # _TintColor, so the world alias stays unbound.
                 self.assertEqual(parsed["bindings"], [overlay["binding"]])
                 self.assertEqual(parsed["quality"], {"cab:1": "stage_overlay_effect"})
-                self.assertEqual(set(parsed["mix"]), {"cab:1:0"})
+                self.assertEqual(parsed["mix"], {"cab:1:0": {}})
                 declared = parsed["clips"]["cab:4"]
                 self.assertTrue(declared["requiresOverlayMaterial"])
                 self.assertTrue(declared["sampleTimeF32"])
@@ -213,7 +415,9 @@ class TimelineContractTests(unittest.TestCase):
                 }])
             existing = stage.read(objects, mono, [legacy], time.monotonic() + 3)["clips"]["cab:4"]
             self.assertNotIn("requiresOverlayMaterial", existing)
-            self.assertNotIn("sampleTimeF32", existing)
+            # Every overlay clip samples at the native normalized float time,
+            # a MeshRenderer-only legacy fx_ove_*/Effect_root clip included.
+            self.assertTrue(existing["sampleTimeF32"])
             for row in bindings:
                 row.update(typeID=137, script={"m_FileID": 0, "m_PathID": 0})
             skinned = stage.read(objects, mono, [legacy], time.monotonic() + 3)["clips"]["cab:4"]
@@ -237,6 +441,34 @@ class TimelineContractTests(unittest.TestCase):
                 self.assertEqual(shared["mix"], {"cab:2:0": {"materialScope": "world"}})
                 self.assertTrue(shared["clips"]["cab:4"]["requiresOverlayMaterial"])
                 self.assertTrue(shared["clips"]["cab:4"]["sampleTimeF32"])
+
+            # A world MeshRenderer _MainTex_ST curve binds to that renderer's own
+            # stage material, so the world clip is selected.
+            def renderer(path, name):
+                return [{"path": path, "typeID": 23, "customType": 22, "isPPtrCurve": 0,
+                         "attribute": (crc32(name) & 0x0FFFFFFF) | (lane << 28)} for lane in range(4)]
+
+            clip["m_ClipBindingConstant"]["genericBindings"] = renderer(17, b"_MainTex_ST")
+            for tracks in ([world, overlay], [overlay, world]):
+                parsed = stage.read(objects, mono, tracks, time.monotonic() + 3)
+                self.assertEqual(parsed["bindings"], [row["binding"] for row in tracks])
+                self.assertEqual(parsed["quality"], {"cab:1": "stage_overlay_effect", "cab:2": "stage_animation"})
+                self.assertEqual(parsed["mix"], {"cab:1:0": {}, "cab:2:0": {"materialScope": "world"}})
+                declared = parsed["clips"]["cab:4"]
+                self.assertTrue(declared["requiresOverlayMaterial"])
+                self.assertEqual(declared["channels"], [{
+                    "path": 17, "kind": "overlayUV",
+                    "curves": [("constant", value) for value in (1, .5, .25, 0)],
+                }])
+            # With a _TintColor on a second MeshRenderer the tint has no world
+            # holder, so the whole world clip stays unbound.
+            clip["m_ClipBindingConstant"]["genericBindings"] = renderer(17, b"_MainTex_ST") + renderer(18, b"_TintColor")
+            clip["m_MuscleClip"]["m_Clip"]["m_ConstantClip"]["data"] = [1, .5, .25, 0, 1, 1, 1, 1]
+            for tracks in ([world, overlay], [overlay, world]):
+                parsed = stage.read(objects, mono, tracks, time.monotonic() + 3)
+                self.assertEqual(parsed["bindings"], [overlay["binding"]])
+                self.assertEqual(parsed["mix"], {"cab:1:0": {}})
+                self.assertEqual({row["kind"] for row in parsed["clips"]["cab:4"]["channels"]}, {"overlayUV", "overlayTint"})
 
     def test_resident_particle_color_requires_exact_world_skin_and_complete_lanes(self):
         from webtools.core import mv_studio_stage_motion as stage
@@ -273,6 +505,65 @@ class TimelineContractTests(unittest.TestCase):
             self.assertIsNone(stage._read_clip(reader, None, world=True))
         payload["genericBindings"] = [{**item, "typeID": 23} for item in surface] + colors[:3]
         self.assertIsNone(stage._read_clip(reader, None, world=True))
+
+
+@unittest.skipUnless((SAMPLES / "a-1203503-live_timeline.unity").is_file(), "Original game samples are optional")
+class LegacyCameraProjectTests(unittest.TestCase):
+    """1203503 binds its camera Euler curves in XYZ; projects saved by 998b326 carry them composed in ZXY."""
+
+    @classmethod
+    def setUpClass(cls):
+        from webtools.core import model_animation as animation
+
+        cls.raw = (SAMPLES / "a-1203503-live_timeline.unity").read_bytes()
+        cls.fresh = studio.parse_timeline(cls.raw, "a")
+        with patch.object(animation, "_quaternion", legacy_zxy_quaternion):
+            legacy = studio.parse_timeline(cls.raw, "a")
+        cls.legacy = json.loads(json.dumps(legacy))  # As a saved project carries it.
+
+    @staticmethod
+    def camera(data):
+        return next(track for track in data["tracks"] if track["kind"] == "camera")
+
+    def affected(self):
+        return [index for index, (fresh, legacy) in enumerate(zip(self.camera(self.fresh)["events"],
+                                                                  self.camera(self.legacy)["events"])) if fresh != legacy]
+
+    def test_unedited_legacy_project_exports_the_original_bytes(self):
+        self.assertEqual(len(self.raw), 300856)
+        self.assertEqual(len(self.affected()), 15)
+        tracks = deepcopy(self.legacy["tracks"])
+        restored = studio.restore_legacy_camera_keyframes(self.raw, "a", tracks, self.fresh["tracks"])
+        self.assertEqual(restored, self.fresh["tracks"])
+        self.assertEqual(studio._changes(self.fresh, {**self.fresh, "tracks": restored}), [])
+        self.assertIs(studio.export_timeline(self.raw, "a", deepcopy(self.fresh["tracks"])), self.raw)
+        self.assertIs(studio.export_timeline(self.raw, "a", tracks), self.raw)
+        self.assertEqual(tracks, self.legacy["tracks"])
+
+    def test_legacy_project_keeps_its_camera_edit_and_matches_a_fresh_edit(self):
+        index = self.affected()[0]
+
+        def edit(data):
+            tracks = deepcopy(data["tracks"])
+            point = self.camera({"tracks": tracks})["events"][index]["values"]["keyframes"][12]
+            point["fov"] += 1.5
+            point["position"][0] += .25
+            return tracks
+
+        fresh, legacy = edit(self.fresh), edit(self.legacy)
+        restored = studio.restore_legacy_camera_keyframes(self.raw, "a", legacy, self.fresh["tracks"])
+        self.assertEqual(restored, fresh)
+        self.assertEqual(len(studio._changes(self.fresh, {**self.fresh, "tracks": restored})), 1)
+        changed = studio.export_timeline(self.raw, "a", fresh)
+        self.assertEqual(studio.export_timeline(self.raw, "a", legacy), changed)
+        current = self.camera(studio.parse_timeline(changed, "a"))["events"]
+        original = self.camera(self.fresh)["events"]
+        self.assertEqual(current[:index] + current[index + 1:], original[:index] + original[index + 1:])
+        written = current[index]["values"]["keyframes"]
+        wanted = self.camera({"tracks": fresh})["events"][index]["values"]["keyframes"]
+        self.assertAlmostEqual(written[12]["fov"], wanted[12]["fov"], places=4)
+        self.assertAlmostEqual(written[12]["position"][0], wanted[12]["position"][0], places=4)
+        self.assertLess(max(rotation_degrees(a["rotation"], b["rotation"]) for a, b in zip(written, wanted)), .01)
 
 
 @unittest.skipUnless((SAMPLES / "a-1205603-live_timeline.unity").is_file() and

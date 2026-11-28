@@ -111,9 +111,34 @@ class MVGameCatalogTests(unittest.TestCase):
         self.assertEqual([(row["id"], row["mvOnly"]) for row in rows], [(12, True), (13, False)])
         self.assertEqual(rows[0]["variants"][0]["label"], "Stage & lights")
         self.assertEqual(rows[1]["variants"][0]["source"], "difficulty")
+        # The picker tells same-named stages apart and marks lives the client's MV screen lacks.
+        self.assertEqual([row.get("inMvList") for row in rows], [True, False])
+        self.assertEqual(rows[1]["variants"][0]["scene"], "scene_stage")
         self.assertEqual(self.selection(live=13)["stage"]["sceneName"], "scene_stage")
         with self.assertRaisesRegex(ValueError, "no longer available"):
             self.selection(live=14)
+
+    def test_stage_model_follows_the_3d_asset_not_the_mv_picker_stage(self):
+        # Like 11072 position 3: m_live_mv lists picker stage bg0001 (1000101), but the
+        # client loads m_live_3d_asset.live_stage_master_id (bg0018, 1001801).
+        with closing(sqlite3.connect(self.root / "assets/db/gl/masterdata.db")) as db, db:
+            db.executescript("""
+                INSERT INTO m_live VALUES (14, 'k.third', 6, NULL, NULL, 9, NULL);
+                INSERT INTO m_live_3d_asset VALUES (33, 'timeline', 18, NULL, NULL, 3, NULL);
+                INSERT INTO m_live_stage VALUES (1, 'k.picker', 'bg0001_01_s1', 'pickerModel', NULL, 'pickerBg'),
+                    (18, 'k.special', 'bg0018_01_s1', 'specialModel', NULL, 'specialBg');
+                INSERT INTO m_live_mv VALUES (14, 1, 3, 33), (14, 7, 1, 31);
+            """)
+        song = next(row for row in studio.catalog(self.root, region="gl", platform="android", language="en")["songs"]
+                    if row["id"] == 14)
+        self.assertEqual([(row["id"], row["stageId"], row["pickerStageId"], row["sceneName"], row["position"])
+                          for row in song["variants"]],
+                         [(31, 7, 7, "scene_stage", 1), (33, 18, 1, "bg0018_01_s1", 3)])
+        selected = studio.resolve(self.root, region="gl", platform="android", live_id=14, asset_id=33, language="en")
+        self.assertEqual((selected["stage"]["id"], selected["stage"]["sceneName"]), (18, "bg0018_01_s1"))
+        self.assertEqual(selected["stageModel"]["asset"], "specialModel")
+        self.assertEqual(selected["stage"]["background"]["asset"], "specialBg")
+        self.assertNotIn("pickerModel", {row["asset"] for row in selected["missing"]})
 
     def test_resolves_same_platform_dependencies_costume_and_music(self):
         android, ios = self.selection(), self.selection("ios")
@@ -126,6 +151,101 @@ class MVGameCatalogTests(unittest.TestCase):
         self.assertEqual(ios["performers"][0]["themeColor"], [214 / 255, 213 / 255, 202 / 255, 1.0])
         self.assertEqual(ios["audio"]["acb"]["pack_name"], "acbpack")
         self.assertEqual(ios["missing"][0]["asset"], "unavailable")
+
+    def test_explicit_costumes_replace_the_member_mapping_suit(self):
+        # A recorded game performance may wear another suit than m_live_member_mapping
+        # (12035 runtime dump: 102111001 instead of 102112001). The import can pin it.
+        with closing(sqlite3.connect(self.root / "assets/db/gl/masterdata.db")) as db, db:
+            db.execute("INSERT INTO m_suit VALUES (52, 101, 'k.costume', 'costume2'), (61, 102, 'k.costume', 'other')")
+        for platform in ("a", "i"):
+            with closing(sqlite3.connect(self.root / f"assets/db/gl/asset_{platform}_en.db")) as db, db:
+                db.execute("INSERT INTO member_model VALUES ('costume2', ?, 4, ?, 7, 11)",
+                           ("androidpack" if platform == "a" else "iospack", len(self.plain)))
+        pinned = studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en",
+                                costumes={"1": 52})["performers"][0]
+        self.assertEqual((pinned["costumeId"], pinned["model"]["asset"]), (52, "costume2"))
+        self.assertEqual([choice["id"] for choice in pinned["costumes"]], [52, 51])
+        self.assertEqual(self.selection()["performers"][0]["costumeId"], 51, "without m_member_init the mapping suit stays")
+        for costumes, error in (({"1": 61}, "not a costume of the member at position 1"), ({"2": 51}, "no member at its position"),
+                                ({"x": 52}, "valid costumes"), ({"1": "52"}, "valid costumes"), ([52], "valid costumes")):
+            with self.subTest(costumes=costumes), self.assertRaisesRegex(ValueError, error):
+                studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en", costumes=costumes)
+
+    def client_chain_fixture(self):
+        with closing(sqlite3.connect(self.root / "assets/db/gl/masterdata.db")) as db, db:
+            db.executescript("""
+                CREATE TABLE m_member_init (member_m_id INTEGER PRIMARY KEY, suit_m_id INTEGER);
+                CREATE TABLE m_suit_view (suit_master_id INTEGER, view_status INTEGER, model_asset_path TEXT);
+                CREATE TABLE m_suit_attach (suit_master_id INTEGER PRIMARY KEY, original_suit_master_id INTEGER, attach_key TEXT);
+                INSERT INTO m_suit VALUES (52, 101, 'k.costume', 'costume2'), (53, 101, 'k.costume', 'costume');
+                INSERT INTO m_member_init VALUES (101, 52);
+                INSERT INTO m_suit_view VALUES (51, 2, 'costume2');
+                INSERT INTO m_suit_attach VALUES (53, 51, 'c1');
+            """)
+        for platform in ("a", "i"):
+            with closing(sqlite3.connect(self.root / f"assets/db/gl/asset_{platform}_en.db")) as db, db:
+                db.execute("INSERT INTO member_model VALUES ('costume2', ?, 4, ?, 7, 11)",
+                           ("androidpack" if platform == "a" else "iospack", len(self.plain)))
+
+    def test_performers_follow_the_client_mv_deck_chain(self):
+        # The client's first MV deck tab (Customize) with no saved deck wears m_member_init;
+        # the Original tab wears the mapping suit a new player owns.
+        self.client_chain_fixture()
+        performer = self.selection()["performers"][0]
+        self.assertEqual((performer["costumeId"], performer["suitSource"], performer["model"]["asset"], performer["viewStatus"]),
+                         (52, "memberInit", "costume2", 1))
+        original = studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en",
+                                  deck={"deckType": 1})
+        self.assertEqual((original["performers"][0]["costumeId"], original["performers"][0]["suitSource"]), (51, "mapping"))
+        self.assertEqual(original["deck"], {"deckType": 1, "userId": None, "saved": False})
+        # Choices: the worn, mapping and initial suits first, each followed by its m_suit_view models.
+        self.assertEqual([(choice["id"], choice.get("viewStatus")) for choice in performer["costumes"]],
+                         [(52, None), (51, None), (51, 2), (53, None)])
+        attached = studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en",
+                                  costumes={"1": 53})["performers"][0]
+        self.assertEqual((attached["attachKey"], attached["model"]["asset"], attached["suitSource"]), ("c1", "costume", "pinned"))
+
+    def test_view_status_selects_the_m_suit_view_model(self):
+        self.client_chain_fixture()
+        for options in ({"costumes": {"1": {"suit": 51, "viewStatus": 2}}},
+                        {"deck": {"deckType": 1, "members": {"101": {"viewStatus": 2}}}}):
+            performer = studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en",
+                                       **options)["performers"][0]
+            self.assertEqual((performer["costumeId"], performer["model"]["asset"], performer["viewStatus"]), (51, "costume2", 2))
+        with self.assertRaisesRegex(ValueError, "no view status 3"):
+            studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en",
+                           costumes={"1": {"suit": 51, "viewStatus": 3}})
+
+    def test_follows_a_local_elichika_players_saved_deck(self):
+        self.client_chain_fixture()
+        with closing(sqlite3.connect(self.root / "userdata.db")) as db, db:
+            columns = ", ".join(f"member_master_id_{n} TEXT, suit_master_id_{n} TEXT" for n in range(1, 13))
+            db.executescript(f"""
+                CREATE TABLE u_status (user_id INTEGER PRIMARY KEY, name TEXT);
+                CREATE TABLE u_member (user_id INTEGER, member_master_id INTEGER, suit_master_id INTEGER, view_status INTEGER);
+                CREATE TABLE u_suit (user_id INTEGER, suit_master_id INTEGER);
+                CREATE TABLE u_live_mv_deck (user_id INTEGER, live_master_id INTEGER, {columns});
+                CREATE TABLE u_live_mv_deck_custom (user_id INTEGER, live_master_id INTEGER, {columns});
+                INSERT INTO u_status VALUES (7, 'Player');
+                INSERT INTO u_member VALUES (7, 101, 52, 1);
+                INSERT INTO u_live_mv_deck_custom (user_id, live_master_id, member_master_id_1, suit_master_id_1)
+                    VALUES (7, 12, '101', '53');
+            """)
+        self.assertEqual(studio.catalog(self.root, region="gl", platform="android", language="en")["players"],
+                         [{"id": 7, "name": "Player"}])
+        selected = studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en",
+                                  deck={"userId": 7})
+        self.assertEqual((selected["performers"][0]["costumeId"], selected["performers"][0]["suitSource"]), (53, "deck"))
+        self.assertEqual(selected["deck"], {"deckType": 2, "userId": 7, "saved": True})
+        # Original tab: no saved original deck, and the player does not own mapping suit 51.
+        original = studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en",
+                                  deck={"userId": 7, "deckType": 1})
+        self.assertEqual(original["performers"][0]["costumeId"], 52)
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            self.selection_with(deck={"userId": 8})
+
+    def selection_with(self, **options):
+        return studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en", **options)
 
     def test_reads_exact_local_pack_or_metapack_without_implicit_download(self):
         descriptor = self.selection()["timeline"]
@@ -174,6 +294,22 @@ class MVGameCatalogTests(unittest.TestCase):
             motion.write_bytes(b"Different authored timeline clip data")
             open_actor()
             self.assertEqual(prepare.call_count, 3)
+            # A suit attach key re-dresses the same model bundle: its own preview, told the key.
+            mv_studio._preview(model, performer=True, motions=(motion,), companions=(companion,), reuse=True, attach="c1")
+            self.assertEqual(prepare.call_count, 4)
+            self.assertEqual(prepare.call_args.kwargs["face_context"]["_mv_attach_key"], "c1")
+            self.assertNotIn("_mv_attach_key", prepare.call_args_list[0].kwargs["face_context"])
+
+    def test_actor_cache_keys_a_suit_attach_key(self):
+        from webtools.core import mv_studio_actor_cache as actors
+        model, face = self.root / "model.unity", self.root / "face.unity"
+        for file in (model, face):
+            file.write_bytes(file.name.encode())
+        cache = actors.ActorCache.__new__(actors.ActorCache)
+        cache.recipe, cache.context = "recipe", ("gl", "android")
+        plain = cache.key(("timeline", []), 1, 211, model, [face], [])
+        self.assertEqual(plain, cache.key(("timeline", []), 1, 211, model, [face], [], attach=""))
+        self.assertNotEqual(plain, cache.key(("timeline", []), 1, 211, model, [face], [], attach="c1"))
 
     def test_exact_game_stage_reuses_successful_media_across_staging_directories(self):
         first = self.root / "old-import" / "game-2.unity"

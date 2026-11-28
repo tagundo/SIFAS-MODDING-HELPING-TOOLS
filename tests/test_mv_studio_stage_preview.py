@@ -101,6 +101,15 @@ class StagePreviewTests(unittest.TestCase):
         return mv_studio.load_game(self.root, region="gl", platform="android", live_id=10,
                                    asset_id=11, language="en", **kwargs)
 
+    def test_project_source_records_the_resolved_deck_and_suit_sources(self):
+        self.selection["deck"] = {"deckType": 1, "userId": 7, "saved": True}
+        self.selection["performers"][0].update(costumeId=102111001, viewStatus=1, suitSource="deck", attachKey="c1")
+        source = self.import_game()["source"]
+        self.assertEqual((source["kind"], source["liveId"], source["assetId"]), ("game", 10, 11))
+        self.assertEqual(source["deck"], {"deckType": 1, "userId": 7, "saved": True})
+        self.assertEqual(source["suits"], [{"position": 1, "memberId": 210, "costumeId": 102111001, "viewStatus": 1,
+                                            "suitSource": "deck", "attachKey": "c1"}])
+
     def test_snapshot_is_detached_before_cast_and_uses_existing_download_consent(self):
         baseline = self.import_game(download=True)
         original_history = self.history[:]
@@ -188,3 +197,10 @@ class StagePreviewTests(unittest.TestCase):
         self.assertNotIn(("load", "actor"), self.history)
         self.assertEqual(list(self.root.iterdir()), [])
         self.assertTrue(self.import_game()["performers"][0]["glb"])
+
+    def test_game_import_keeps_up_to_twelve_performers(self):
+        # LiveCoreMemberManager.MemberMax = 12 (12074, 12096, 12097, 12121 and 12128 cast 12).
+        self.selection["performers"] = [{"position": slot, "memberId": 200 + slot, "model": self.asset(f"actor-{slot}")}
+                                        for slot in range(1, 14)]
+        project = self.import_game()
+        self.assertEqual([performer["position"] for performer in project["performers"]], list(range(1, 13)))

@@ -193,7 +193,8 @@ print(json.dumps(rows))`, actualSource, saved.previewPaths[0]], { cwd: product, 
     assert.equal(sha(source), originalHash); assert.deepStrictEqual(errors, []);
     await page.screenshot({ path: path.join(evidence, 'combined-saved-reedited.png') }); report.sourceSha256 = originalHash; report.status = 'PASS';
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); throw error; }
-  finally { if (context) await context.close(); if (browser) await browser.close(); if (server) { server.child.kill(); server.log.end(); }
+  finally { if (context) await context.close(); if (browser) await browser.close(); if (server) { server.child.kill(); server.log.end(); await new Promise(resolve => { if (server.child.exitCode !== null || server.child.signalCode !== null) return resolve(); server.child.once('exit', resolve); setTimeout(resolve, 5000).unref(); }); }
+    fs.rmSync(library, { recursive: true, force: true });
     fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n'); console.log(JSON.stringify(report, null, 2)); }
 }
 if (require.main === module) main().catch(() => { process.exitCode = 1; });

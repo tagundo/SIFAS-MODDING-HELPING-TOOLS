@@ -3,6 +3,7 @@
 import math
 
 from . import model_viewer as viewer
+from .mv_studio_shader_identity import keywords as shader_keywords
 
 
 _ROOT = "/EntryPoint/Live/Stages/MainStage/Effect/"
@@ -69,11 +70,20 @@ def binding(scene, component, tree):
     original = scene.tree(material)
     if not _shader(material, original):
         return None
-    keywords = set(str(original.get("m_ShaderKeywords", "")).split())
+    # Only the shader's own keywords select its program (mv_studio_shader_identity); the
+    # _AUTO_PLAY, _VERTEX_COLOR and _SATURATE toggles only set them. Every combination of
+    # _AUTO_PLAY_ON, _SATURATE_ON and _VERTEX_COLOR_ON has its own GLES3 program.
+    keywords = shader_keywords(material, original)
     floats = viewer._properties(original, "m_Floats")
-    if (keywords - {"_VERTEXCOLOR_OFF"} or any(floats.get(option) for option in ("_AUTO_PLAY", "_VERTEX_COLOR", "_SATURATE"))
-            or (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1)) != (5, 1)
-            or tree.get("lightShaftTextures")):
+    if (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1)) != (5, 1):
+        return None
+    # LiveCoreStageColoring.ApplyTextureIndex swaps _MainTex for
+    # lightShaftTextures[LiveColoringClip.textureIndex] (keeping _MainTex_ST).
+    shafts = tree.get("lightShaftTextures") or []
+    if not isinstance(shafts, list) or len(shafts) > 64:
+        return None
+    shafts = [_texture(component, pointer) for pointer in shafts]
+    if any(shaft is None for shaft in shafts):
         return None
     cull = floats.get("_CullMode", 0)
     queue = original.get("m_CustomRenderQueue", -1)
@@ -93,7 +103,37 @@ def binding(scene, component, tree):
         "target": _ROOT + "/".join(path[1:]), "tint": rgba, "speed": speed, "shift": shift,
         "cull": cull, "queue": 3000 if queue == -1 else queue, "mainUV": main_uv,
         "indexScale": id_uv[0], "indexOffset": id_uv[2],
-    })
+        **{field: True for field, keyword in (("autoPlay", "_AUTO_PLAY_ON"), ("saturate", "_SATURATE_ON"),
+                                             ("vertexColor", "_VERTEX_COLOR_ON")) if keyword in keywords},
+    }, tuple(shafts))
+
+
+def with_sort_center(descriptor, renderer_tree, mesh, *, builtin_mesh=False, world=None):
+    """Adds the renderer's sort center. Unity draws the renderers of one transparent queue back
+    to front by the distance from the camera to their bounds' center, the mesh's m_LocalAABB
+    center under the renderer's transform; a renderer with its own sorting layer, order or
+    priority keeps the descriptor without one (as the stage overlay does).
+
+    ``world`` is the Unity local-to-world matrix the exporter baked into the vertices
+    (model_viewer._geometry writes diag(-1, 1, 1, 1) @ world @ vertex). A coloring renderer
+    outside the stage-motion bindings has no node transform, so its center is baked the same
+    way; a renderer under a retained stage node or an AxisBillboard node is placed by its node
+    and passes the identity. The center of a transformed box is the transformed center, so
+    this is also the center of Unity's world bounds."""
+    from . import mv_studio_stage_overlay as overlay
+
+    bounds = overlay._sort_bounds(renderer_tree, None if builtin_mesh else mesh, builtin_mesh=builtin_mesh)
+    if not bounds:
+        return descriptor
+    if world is not None:
+        import numpy as np
+
+        x, y, z = bounds["sortCenter"]
+        center = np.asarray(world, dtype=float) @ np.array([-x, y, z, 1.])
+        if not np.isfinite(center[:3]).all():
+            return descriptor
+        bounds = {**bounds, "sortCenter": [-float(center[0]), float(center[1]), float(center[2])]}
+    return {**descriptor, **bounds}
 
 
 def renderer_binding(scene, game, candidates):
@@ -105,7 +145,7 @@ def renderer_binding(scene, game, candidates):
 
 
 def export(glb, materials, binding, palettes):
-    _, palette, texture, fields = binding
+    _, palette, texture, fields, shafts = binding
     key = viewer._key(palette)
     if key not in palettes:
         original = palette.read()
@@ -120,4 +160,5 @@ def export(glb, materials, binding, palettes):
     saved = palettes[key]
     if saved is None:
         return None
-    return {**fields, "palette": saved, "main": materials.texture(texture)}
+    return {**fields, "palette": saved, "main": materials.texture(texture),
+            "shaftTextures": [materials.texture(shaft) for shaft in shafts]}

@@ -249,16 +249,52 @@ _TABLES = {
         "Preserve part physics": "부분 물리 유지",
         "Reuse empty UV areas": "빈 UV 영역 재사용",
         "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.":
-            "Donor의 원래 UV 위치를 먼저 사용합니다. 겹치면 아틀라스로 합치거나 다른 빈 UV 영역으로 옮기기를 켜세요. 패딩은 추가하지 않습니다.",
+            "도너의 원래 UV 위치를 먼저 사용합니다. 겹치면 아틀라스로 합치거나 다른 빈 UV 영역으로 옮기기를 켜세요. 패딩은 추가하지 않습니다.",
         "Move to another empty UV area": "다른 빈 UV 영역으로 옮기기",
         "Match smaller textures to larger ones": "작은 이미지를 큰 이미지에 맞추기",
         "Texture and UV placement": "텍스처·UV 배치 방식",
+        "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head material, so an atlas would never be shown and would move the blush. Choose Body as the receiving mesh, or use original or empty UV positions.":
+            "머리 메시에는 새 텍스처 아틀라스를 사용할 수 없습니다. 게임은 머리 아래의 모든 메시를 원래 머리 머티리얼로 그리므로 아틀라스는 표시되지 않고 홍조 위치도 틀어집니다. 이식받을 메시로 Body를 고르거나, 원래 UV 위치 또는 빈 UV 영역을 사용하세요.",
+        "Load the costume together with its face before transplanting onto a head mesh. The game draws the face's eyes and mouth from the same head texture, and their areas must be protected.":
+            "머리 메시에 이식하려면 의상을 얼굴과 함께 불러오세요. 게임은 얼굴의 눈과 입도 같은 머리 텍스처로 그리므로 그 영역을 보호해야 합니다.",
+        "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the receiving mesh, or select a smaller part.":
+            "머리 텍스처에 얼굴·눈·입·홍조와 기존 머리 메시를 피해 선택한 부분을 넣을 빈 곳이 없습니다. 이식받을 메시로 Body를 고르거나 더 작은 부분을 선택하세요.",
+        "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the receiving mesh.":
+            "얼굴 메시에는 부분을 이식할 수 없습니다. 게임은 얼굴 메시를 원래 머리 머티리얼과 고정된 홍조 위치로 다시 합쳐 그립니다. 이식받을 메시로 Body나 Hair를 고르세요.",
+        "One game material holds one culling setting, so the donor's and the receiving mesh's materials must match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.":
+            "게임 머티리얼 하나에는 컬링 설정이 하나뿐이므로 도너 머티리얼과 이식받을 메시의 머티리얼이 같아야 합니다. 같은 컬링을 쓰는 머티리얼의 메시(Body나 Hair 등)를 이식받을 메시로 고르세요.",
+        "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.":
+            "선택한 부분의 텍스처가 같은 UV 면적에 대해 대응하는 머리 텍스처보다 더 촘촘한 픽셀을 씁니다. 얼굴·눈·입이 머리 텍스처로 그려지므로 머리 텍스처의 크기는 바꾸지 않습니다. 이식받을 메시로 Body를 고르세요.",
+        "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.":
+            "선택한 부분의 원래 UV 위치는 머리 텍스처에서 이미 얼굴·눈·입·홍조 또는 다른 머리 메시가 쓰고 있습니다. '빈 UV 영역으로 이동'을 고르거나, 이식받을 메시로 Body를 고르세요.",
+        "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh.":
+            "선택한 부분의 텍스처를 원래 픽셀 그대로 머리 텍스처에 넣을 수 없습니다. 이유는 로그에 있습니다. 이식받을 메시로 Body를 고르세요.",
+        "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.":
+            "머리 메시에 이식하려면 머리의 BodyPartManager.headMaterial이 의상 파일 안에 저장되어 있어야 합니다.",
+        "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.":
+            "머리 텍스처를 쓰는 메시의 정점 데이터가 번들 밖에 저장되어 있습니다. 원래 의상과 얼굴을 다시 여세요.",
+        "A head-texture mesh is compressed; its texture area cannot be protected.":
+            "머리 텍스처를 쓰는 메시가 압축되어 있어 그 텍스처 영역을 보호할 수 없습니다.",
+        "A head-texture mesh has triangles without UV0 coordinates.":
+            "머리 텍스처를 쓰는 메시에 UV0 좌표가 없는 삼각형이 있습니다.",
+        "A head-texture mesh has invalid UV0 coordinates.":
+            "머리 텍스처를 쓰는 메시의 UV0 좌표가 올바르지 않습니다.",
+        "A head-texture mesh references an invalid vertex.":
+            "머리 텍스처를 쓰는 메시가 잘못된 정점을 참조합니다.",
+        "A head-texture surface references a mesh outside its bundle; its texture area cannot be protected.":
+            "머리 텍스처를 쓰는 표면이 번들 밖의 메시를 참조하므로 그 텍스처 영역을 보호할 수 없습니다.",
+        "Receiving mesh":
+            "이식받을 메시",
+        "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":
+            "Body 등 머리 밖의 메시: 이식한 부분은 원래 본을 그대로 따라가므로 머리 장식은 계속 머리에 붙어 있습니다. 텍스처는 그 메시의 텍스처에 들어가며 아틀라스도 사용할 수 있고, 홍조에는 영향이 없습니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
+        "Meshes under the head (such as Hair): the game draws every head mesh with the shared head material. The part's texture must fit in free head-texture space outside the face, eyes, mouth and blush; no atlas is made, and the face must be loaded. Body and head meshes draw in the same order with the same outline.":
+            "머리 아래 메시(Hair 등): 게임은 머리 아래의 모든 메시를 공용 머리 머티리얼로 그립니다. 이식한 부분의 텍스처는 얼굴·눈·입·홍조 영역을 피해 머리 텍스처의 빈 곳에 들어가야 하며, 아틀라스는 만들지 않고 얼굴도 함께 불러와야 합니다. Body와 머리 메시는 같은 순서와 같은 외곽선으로 그려집니다.",
         "Reuse original UV positions": "원래 UV 위치 재사용",
-        "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.": "메인·림라이트 등 대응 이미지를 각각 큰 쪽 해상도로 맞추고 원래 UV 위치를 유지합니다. 원래 위치가 사용 중이면 새 아틀라스로 합칩니다. 패딩은 추가하지 않습니다.",
+        "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. Head meshes are never combined into an atlas. No padding is added.": "메인·림라이트 등 대응 이미지를 각각 큰 쪽 해상도로 맞추고 원래 UV 위치를 유지합니다. 원래 위치가 사용 중이면 새 아틀라스로 합칩니다. 머리 메시는 아틀라스로 합치지 않습니다. 패딩은 추가하지 않습니다.",
         "Move into empty UV areas": "빈 UV 영역으로 이동",
-        "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added.": "메인 텍스처 해상도는 유지하고 보조 맵의 비율을 맞춘 뒤, 선택 영역의 텍스처와 UV를 함께 빈 공간으로 옮깁니다. 들어갈 공간이 없으면 새 아틀라스로 합칩니다. 패딩은 추가하지 않습니다.",
+        "Keep main-texture resolution, match auxiliary-map ratios, and move each selected UV island with its textures into unused space. If no space fits, use a new atlas. Head meshes are never combined into an atlas. No padding is added.": "메인 텍스처 해상도는 유지하고 보조 맵의 비율을 맞춘 뒤, 선택한 UV 섬마다 텍스처와 함께 빈 공간으로 옮깁니다. 들어갈 공간이 없으면 새 아틀라스로 합칩니다. 머리 메시는 아틀라스로 합치지 않습니다. 패딩은 추가하지 않습니다.",
         "Build a new texture atlas": "새 아틀라스로 합치기",
-        "Combine textures into a new atlas and remap UVs. No padding is added.": "텍스처를 새 아틀라스로 합치고 UV를 다시 배치합니다. 패딩은 추가하지 않습니다.",
+        "Combine textures into a new atlas and remap UVs. Not available for head meshes. No padding is added.": "텍스처를 새 아틀라스로 합치고 UV를 다시 배치합니다. 머리 메시에는 사용할 수 없습니다. 패딩은 추가하지 않습니다.",
         "Before either UV reuse method, enlarge corresponding main, rimlight and other UV textures to the larger resolution. No padding is added.":
             "두 UV 재사용 방식에 앞서 메인·림라이트 등 대응하는 UV 텍스처를 큰 쪽 해상도로 확대합니다. 패딩은 추가하지 않습니다.",
         "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added.":
@@ -770,12 +806,48 @@ _TABLES = {
         "Move to another empty UV area": "別の空きUV領域へ移動",
         "Match smaller textures to larger ones": "小さい画像を大きい画像に合わせる",
         "Texture and UV placement": "テクスチャ・UVの配置方法",
+        "Head meshes cannot use a new texture atlas. The game draws every head mesh with the original head material, so an atlas would never be shown and would move the blush. Choose Body as the receiving mesh, or use original or empty UV positions.":
+            "頭のメッシュには新しいテクスチャアトラスを使えません。ゲームは頭の下のすべてのメッシュを元の頭マテリアルで描画するため、アトラスは表示されず、チークの位置もずれます。移植先のメッシュにBodyを選ぶか、元のUV位置または空きUV領域を使ってください。",
+        "Load the costume together with its face before transplanting onto a head mesh. The game draws the face's eyes and mouth from the same head texture, and their areas must be protected.":
+            "頭のメッシュに移植するには、衣装を顔と一緒に読み込んでください。ゲームは顔の目と口も同じ頭テクスチャで描画するため、その領域を保護する必要があります。",
+        "The head texture has no free area for the selected part outside the face, eyes, mouth, blush and existing head meshes. Choose Body as the receiving mesh, or select a smaller part.":
+            "頭テクスチャに、顔・目・口・チークと既存の頭メッシュを避けて選択パーツを入れる空きがありません。移植先のメッシュにBodyを選ぶか、より小さいパーツを選択してください。",
+        "The face mesh cannot receive a part. The game rebuilds it into its combined face with the original head material and fixed blush positions. Choose Body or Hair as the receiving mesh.":
+            "顔のメッシュにはパーツを移植できません。ゲームは顔のメッシュを元の頭マテリアルと固定のチーク位置で結合し直して描画します。移植先のメッシュにBodyかHairを選んでください。",
+        "One game material holds one culling setting, so the donor's and the receiving mesh's materials must match. Choose a receiving mesh whose material uses the same culling, such as Body or Hair.":
+            "ゲームのマテリアル1つにはカリング設定が1つしかないため、ドナーと移植先のメッシュのマテリアルが一致する必要があります。同じカリングを使うマテリアルのメッシュ（BodyやHairなど）を移植先に選んでください。",
+        "A texture of the selected part has finer pixels for its UV area than the matching head texture. The head's textures keep their size, because the face, eyes and mouth are drawn from them. Choose Body as the receiving mesh.":
+            "選択したパーツのテクスチャは、同じUV面積に対して対応する頭テクスチャより細かいピクセルを使っています。顔・目・口は頭テクスチャで描画されるため、頭テクスチャのサイズは変更しません。移植先のメッシュにBodyを選んでください。",
+        "The selected part's original UV position in the head texture is already used by the face, eyes, mouth, blush or another head mesh. Choose 'Move into empty UV areas', or Body as the receiving mesh.":
+            "選択したパーツの元のUV位置は、頭テクスチャ上ですでに顔・目・口・チークまたは別の頭メッシュが使っています。「空きUV領域へ移動」を選ぶか、移植先のメッシュにBodyを選んでください。",
+        "The selected part's textures cannot be written into the head texture with their exact pixels; the log names the reason. Choose Body as the receiving mesh.":
+            "選択したパーツのテクスチャを元のピクセルのまま頭テクスチャに書き込めません。理由はログに記録されています。移植先のメッシュにBodyを選んでください。",
+        "The head's BodyPartManager.headMaterial must be stored in the costume before grafting onto a head mesh.":
+            "頭のメッシュに移植するには、頭のBodyPartManager.headMaterialが衣装ファイル内に保存されている必要があります。",
+        "A head-texture mesh stores its vertices outside the bundle; reopen the original costume and face.":
+            "頭テクスチャを使うメッシュの頂点データがバンドルの外に保存されています。元の衣装と顔を開き直してください。",
+        "A head-texture mesh is compressed; its texture area cannot be protected.":
+            "頭テクスチャを使うメッシュが圧縮されているため、そのテクスチャ領域を保護できません。",
+        "A head-texture mesh has triangles without UV0 coordinates.":
+            "頭テクスチャを使うメッシュに、UV0座標のない三角形があります。",
+        "A head-texture mesh has invalid UV0 coordinates.":
+            "頭テクスチャを使うメッシュのUV0座標が不正です。",
+        "A head-texture mesh references an invalid vertex.":
+            "頭テクスチャを使うメッシュが無効な頂点を参照しています。",
+        "A head-texture surface references a mesh outside its bundle; its texture area cannot be protected.":
+            "頭テクスチャを使う面がバンドル外のメッシュを参照しているため、そのテクスチャ領域を保護できません。",
+        "Receiving mesh":
+            "移植先のメッシュ",
+        "Body and other meshes outside the head: the part keeps following its own bones, so a head accessory stays on the head. Its texture goes into that mesh's own texture, where an atlas is allowed, and the blush is not affected. Body and head meshes draw in the same order with the same outline.":
+            "Bodyなど頭の外のメッシュ：移植したパーツは元のボーンに従うため、頭のアクセサリーは頭に付いたままです。テクスチャはそのメッシュのテクスチャに入り、アトラスも使えます。チークには影響しません。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。",
+        "Meshes under the head (such as Hair): the game draws every head mesh with the shared head material. The part's texture must fit in free head-texture space outside the face, eyes, mouth and blush; no atlas is made, and the face must be loaded. Body and head meshes draw in the same order with the same outline.":
+            "頭の下のメッシュ（Hairなど）：ゲームは頭の下のすべてのメッシュを共通の頭マテリアルで描画します。パーツのテクスチャは顔・目・口・チークの領域を避けて頭テクスチャの空きに収める必要があり、アトラスは作らず、顔も一緒に読み込む必要があります。Bodyと頭のメッシュは同じ順序・同じアウトラインで描画されます。",
         "Reuse original UV positions": "元のUV位置を再利用",
-        "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.": "メイン・リムライトなど対応する画像をそれぞれ大きい方の解像度に合わせ、元のUV位置を維持します。その位置が使用中なら新しいアトラスに結合します。パディングは追加しません。",
+        "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. Head meshes are never combined into an atlas. No padding is added.": "メイン・リムライトなど対応する画像をそれぞれ大きい方の解像度に合わせ、元のUV位置を維持します。その位置が使用中なら新しいアトラスに結合します。頭のメッシュはアトラスに結合しません。パディングは追加しません。",
         "Move into empty UV areas": "空きUV領域へ移動",
-        "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added.": "メインテクスチャの解像度を維持し、補助マップの比率を合わせて、選択領域のテクスチャとUVを一緒に空き領域へ移動します。収まる空間がなければ新しいアトラスに結合します。パディングは追加しません。",
+        "Keep main-texture resolution, match auxiliary-map ratios, and move each selected UV island with its textures into unused space. If no space fits, use a new atlas. Head meshes are never combined into an atlas. No padding is added.": "メインテクスチャの解像度を維持し、補助マップの比率を合わせて、選択したUVアイランドごとにテクスチャと一緒に空き領域へ移動します。収まる空間がなければ新しいアトラスに結合します。頭のメッシュはアトラスに結合しません。パディングは追加しません。",
         "Build a new texture atlas": "新しいテクスチャアトラスを作成",
-        "Combine textures into a new atlas and remap UVs. No padding is added.": "テクスチャを新しいアトラスに結合し、UVを再配置します。パディングは追加しません。",
+        "Combine textures into a new atlas and remap UVs. Not available for head meshes. No padding is added.": "テクスチャを新しいアトラスに結合し、UVを再配置します。頭のメッシュには使用できません。パディングは追加しません。",
         "Before either UV reuse method, enlarge corresponding main, rimlight and other UV textures to the larger resolution. No padding is added.":
             "どちらのUV再利用方式でも、メイン・リムライトなど対応するUVテクスチャを大きい方の解像度に先に拡大します。パディングは追加しません。",
         "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added.":
@@ -2275,6 +2347,9 @@ _VIEWER_TRANSLATIONS.update({
     "Mod ZIP": ["모드 ZIP", "MOD ZIP"],
     "Edited preview copy": ["편집한 미리보기 사본", "編集したプレビュー用コピー"],
     "Edit recipe": ["편집 기록", "編集レシピ"],
+    "Saved in folder": ["저장 폴더", "保存フォルダー"],
+    "The Mod ZIP folder cannot be a symbolic link.": ["모드 ZIP 폴더는 심볼릭 링크일 수 없습니다.", "MOD ZIPフォルダーはシンボリックリンクにできません。"],
+    "The Mod ZIP folder has too many files with this name. Rename the mod and try again.": ["모드 ZIP 폴더에 같은 이름의 파일이 너무 많습니다. 모드 이름을 바꾼 뒤 다시 시도하세요.", "MOD ZIPフォルダーに同じ名前のファイルが多すぎます。MOD名を変えてもう一度試してください。"],
     "Add to game": ["게임에 추가", "ゲームに追加"],
     "Add to game saves your current body edits as a mod and installs it. Rina's board and unmasked models receive the same body edits.": [
         "게임에 추가를 누르면 현재 체형 편집을 모드로 저장하고 설치합니다. 리나는 보드·보드 없음 모델에 같은 체형 편집을 적용합니다.",
@@ -2469,7 +2544,10 @@ _VIEWER_MODEL_SAVE_TRANSLATIONS = {
     "Preview lighting only; saved model materials stay unchanged.": ["미리보기의 조명 설정입니다. 저장하는 모델의 원본 재질 값은 유지됩니다.", "プレビューの照明設定です。保存するモデルの元のマテリアル値は維持されます。"],
     "Choose a real donor file, not a symbolic link.": ["바로가기나 심볼릭 링크 대신 원본 도너 파일을 선택하세요.", "ショートカットやシンボリックリンクではなく、実体のあるドナーファイルを選んでください。"],
     "The donor costume is outside the allowed folders.": ["도너 의상이 앱에서 접근할 수 있는 폴더 밖에 있습니다.", "ドナー衣装がアプリからアクセスできるフォルダの外にあります。"],
-    "This saved ZIP binds its body to the included face. Reimport the original body before excluding the face; no Mod ZIP was created.": ["이 ZIP의 의상은 포함된 얼굴 파일과 연결되어 있습니다. 얼굴을 제외하려면 원본 의상을 다시 가져온 뒤 저장하세요. 모드 ZIP은 생성하지 않았습니다.", "このZIPの衣装は同梱された顔ファイルと結び付いています。顔を除外するには元の衣装を再インポートしてから保存してください。Mod ZIPは作成されていません。"],
+    "This costume's body uses the face its ZIP includes, so that face cannot be left out. Tick 'Include face and mouth edits for this costume' to keep it; no Mod ZIP was created.": ["이 의상의 몸체는 ZIP에 포함된 얼굴을 사용하므로 그 얼굴을 뺄 수 없습니다. '이 코스튬의 얼굴·입 편집 포함'을 선택해 얼굴을 유지하세요. 모드 ZIP은 생성하지 않았습니다.", "この衣装の本体はZIPに同梱された顔を使用しているため、その顔を外すことはできません。「この衣装の顔・口の編集を含める」をオンにして顔を残してください。Mod ZIPは作成されていません。"],
+    "This costume ZIP includes its own face, so it is included by default. Only this costume uses it; other costumes and the character's shared face stay unchanged.": ["이 의상 ZIP에는 자체 얼굴이 포함되어 있어 기본으로 함께 포함됩니다. 이 얼굴은 이 코스튬만 사용하며, 다른 의상과 캐릭터의 공용 얼굴에는 적용되지 않습니다.", "この衣装のZIPには専用の顔が同梱されているため、初期設定で含めます。この顔はこの衣装だけが使用し、他の衣装やキャラクター共通の顔には適用されません。"],
+    "Choose one costume to package; unrelated model files cannot share one Mod ZIP.": ["모드 ZIP으로 묶을 의상을 하나만 선택하세요. 서로 관계없는 모델 파일은 한 모드 ZIP에 함께 넣을 수 없습니다.", "Mod ZIPにまとめる衣装を1つだけ選んでください。関係のないモデルファイルを1つのMod ZIPにまとめることはできません。"],
+    "The costume installer stopped with exit code {code}. Usual causes are missing Elichika settings (config.json) or a Mod ZIP the installer could not find in its costume folder; the server console shows the installer's message.": ["의상 설치 프로그램이 종료 코드 {code}로 중단되었습니다. 흔한 원인은 Elichika 설정 파일(config.json)이 없거나 설치 프로그램이 의상 폴더에서 모드 ZIP을 찾지 못한 경우입니다. 설치 프로그램의 메시지는 서버 콘솔에 표시됩니다.", "衣装インストーラーが終了コード {code} で停止しました。よくある原因は、Elichikaの設定ファイル（config.json）がないことや、インストーラーが衣装フォルダでMod ZIPを見つけられなかったことです。インストーラーのメッセージはサーバーのコンソールに表示されます。"],
     "Choose whether to include this costume's verified face companion.": ["이 코스튬에 얼굴·입 편집을 포함할지 선택하세요.", "この衣装に顔・口の編集を含めるか選んでください。"],
     "Open the original model before saving model edits.": ["원본 모델을 열고 모델 편집을 저장하세요.", "元のモデルを開いてからモデル編集を保存してください。"],
     "The model edit recipe is invalid.": ["모델 편집 기록이 올바르지 않습니다.", "モデル編集レシピが無効です。"],
@@ -2483,6 +2561,8 @@ _VIEWER_MODEL_SAVE_TRANSLATIONS = {
     "Include face and mouth edits for this costume": ["이 코스튬의 얼굴·입 편집 포함", "この衣装の顔・口の編集を含める"],
     "Only this costume uses the included face. Other costumes and the character's shared face stay unchanged.": ["포함한 얼굴은 이 코스튬만 사용합니다. 다른 의상과 캐릭터의 공용 얼굴에는 적용되지 않습니다.", "含めた顔はこの衣装だけが使用します。他の衣装やキャラクター共通の顔には適用されません。"],
     "Face and mouth edits will not be applied in game. This costume uses the game's original face.": ["게임에 얼굴·입 편집을 적용하지 않습니다. 이 코스튬은 게임의 원래 얼굴을 사용합니다.", "ゲームに顔・口の編集を適用しません。この衣装はゲームの元の顔を使用します。"],
+    "The game's original face could not be checked on this device. Open the costume once with 'Load from game assets' so it can be checked, or tick this option to include the face and mouth edits.": ["이 기기에서 게임의 원래 얼굴을 확인할 수 없습니다. '게임 에셋에서 불러오기'로 이 코스튬을 한 번 열면 확인할 수 있고, 이 옵션을 선택하면 얼굴·입 편집이 포함됩니다.", "この端末ではゲームの元の顔を確認できません。「ゲームアセットから読み込む」でこの衣装を一度開くと確認できます。このオプションをオンにすると顔・口の編集が含まれます。"],
+    "The game's original face could not be checked on this device, so this costume's face cannot be left out yet. Open the costume once with 'Load from game assets' so its face can be checked, or tick 'Include face and mouth edits for this costume' to include the face edits; no Mod ZIP was created.": ["이 기기에서 게임의 원래 얼굴을 확인할 수 없어 아직 이 코스튬의 얼굴을 뺄 수 없습니다. '게임 에셋에서 불러오기'로 이 코스튬을 한 번 열면 얼굴을 확인할 수 있고, '이 코스튬의 얼굴·입 편집 포함'을 선택하면 얼굴 편집이 포함됩니다. 모드 ZIP은 생성하지 않았습니다.", "この端末ではゲームの元の顔を確認できないため、まだこの衣装の顔を外せません。「ゲームアセットから読み込む」でこの衣装を一度開くと顔を確認できます。「この衣装の顔・口の編集を含める」をオンにすると顔の編集が含まれます。Mod ZIPは作成されていません。"],
     "Open the original face with this costume to include face and mouth edits.": ["얼굴·입 편집을 포함하려면 이 의상의 원래 얼굴 파일도 함께 불러오세요.", "顔・口の編集を含めるには、この衣装の元の顔ファイルも一緒に開いてください。"],
     "Choose whether to include face and mouth edits for this costume.": ["이 코스튬의 얼굴·입 편집을 포함할지 선택하세요.", "この衣装の顔・口の編集を含めるか選んでください。"],
     "Apply selected face deletions before saving.": ["칠한 면의 삭제를 적용한 뒤 저장하세요.", "塗った面の削除を適用してから保存してください。"],
@@ -2493,6 +2573,215 @@ _VIEWER_MODEL_SAVE_TRANSLATIONS = {
 for _source, _translated in _VIEWER_MODEL_SAVE_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]
+
+# Costume variant (pair) refusals that name one part: fixed sentences ending in
+# ": {name}" (viewer_mod_pair_edits.NAMED_REFUSALS). The viewer translates the
+# sentence and keeps the name. Rina board view: held face outline rows.
+_VIEWER_PAIR_TRANSLATIONS = {
+    "The counterpart is missing a unique matching bone hierarchy: {name}": (
+        "다른 버전 모델에 같은 계층의 고유한 본이 없습니다: {name}", "もう一方のモデルに同じ階層の固有のボーンがありません: {name}"),
+    "The counterpart bone is not writable: {name}": (
+        "다른 버전 모델의 본은 저장할 수 없습니다: {name}", "もう一方のモデルのボーンは保存できません: {name}"),
+    "The counterpart cannot preserve the selected save method: {name}": (
+        "다른 버전 모델에서는 선택한 저장 방식을 쓸 수 없습니다: {name}", "もう一方のモデルでは選択した保存方法を使えません: {name}"),
+    "The counterpart has no unique matching physics component: {name}": (
+        "다른 버전 모델에 일치하는 고유한 물리 컴포넌트가 없습니다: {name}", "もう一方のモデルに一致する固有の物理コンポーネントがありません: {name}"),
+    "The counterpart has no unique matching outline mesh: {name}": (
+        "다른 버전 모델에 일치하는 고유한 외곽선 메시가 없습니다: {name}", "もう一方のモデルに一致する固有の輪郭線メッシュがありません: {name}"),
+    "The counterpart has no verified matching vertex order for detailed outline edits: {name}": (
+        "다른 버전 모델의 정점 순서가 같은지 확인할 수 없어 정점별 외곽선 편집을 적용할 수 없습니다: {name}",
+        "もう一方のモデルの頂点の順序が同じか確認できないため、頂点ごとの輪郭線編集を適用できません: {name}"),
+    "Edits of parts that only the selected costume variant has stay on that variant: {names}": (
+        "선택한 의상 버전에만 있는 부분의 편집은 그 버전에만 적용됩니다: {names}",
+        "選択した衣装バージョンにだけある部分の編集は、そのバージョンにのみ適用されます: {names}"),
+    "1 face outline edit made in the Normal face view is kept ({meshes}).": (
+        "일반 얼굴 보기에서 편집한 얼굴 외곽선 1개가 유지됩니다 ({meshes}).",
+        "素顔の表示で編集した顔の輪郭線1件を保持しています（{meshes}）。"),
+    "{count} face outline edits made in the Normal face view are kept ({meshes}).": (
+        "일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개가 유지됩니다 ({meshes}).",
+        "素顔の表示で編集した顔の輪郭線{count}件を保持しています（{meshes}）。"),
+    "This recipe sets the face outlines itself; 1 face outline edit made in the Normal face view was released.": (
+        "이 편집 기록은 얼굴 외곽선을 직접 정하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 1개는 유지되지 않습니다.",
+        "この編集レシピは顔の輪郭線を指定しているため、素顔の表示で編集した顔の輪郭線1件は保持されません。"),
+    "This recipe sets the face outlines itself; {count} face outline edits made in the Normal face view were released.": (
+        "이 편집 기록은 얼굴 외곽선을 직접 정하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개는 유지되지 않습니다.",
+        "この編集レシピは顔の輪郭線を指定しているため、素顔の表示で編集した顔の輪郭線{count}件は保持されません。"),
+    "This recipe edits the face textures itself; 1 face outline edit made in the Normal face view was released.": (
+        "이 편집 기록은 얼굴 텍스처를 직접 편집하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 1개는 유지되지 않습니다.",
+        "この編集レシピは顔のテクスチャを編集しているため、素顔の表示で編集した顔の輪郭線1件は保持されません。"),
+    "This recipe edits the face textures itself; {count} face outline edits made in the Normal face view were released.": (
+        "이 편집 기록은 얼굴 텍스처를 직접 편집하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개는 유지되지 않습니다.",
+        "この編集レシピは顔のテクスチャを編集しているため、素顔の表示で編集した顔の輪郭線{count}件は保持されません。"),
+    "This recipe edits the face itself; 1 face outline edit made in the Normal face view was released.": (
+        "이 편집 기록은 얼굴을 직접 편집하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 1개는 유지되지 않습니다.",
+        "この編集レシピは顔そのものを編集しているため、素顔の表示で編集した顔の輪郭線1件は保持されません。"),
+    "This recipe edits the face itself; {count} face outline edits made in the Normal face view were released.": (
+        "이 편집 기록은 얼굴을 직접 편집하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개는 유지되지 않습니다.",
+        "この編集レシピは顔そのものを編集しているため、素顔の表示で編集した顔の輪郭線{count}件は保持されません。"),
+    # Separator of a list of part names inside a sentence ({names}, {meshes}).
+    ", ": (", ", "、"),
+}
+for _source, (_korean, _japanese) in _VIEWER_PAIR_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+
+# MV Studio editor lane C: the camera editor (keys, curves, key diamonds). "Keyframes",
+# "Result" and "Automatic" are already translated above and are not redefined here.
+_MV_EDITOR_C_TRANSLATIONS = {
+    "Camera editor": ("카메라 편집기", "カメラエディター"),
+    "{count} samples · {rate} Hz": ("샘플 {count}개 · {rate} Hz", "サンプル{count}個 · {rate} Hz"),
+    "Open camera editor": ("카메라 편집기 열기", "カメラエディターを開く"),
+    "Key {time}": ("키 {time}", "キー {time}"),
+    "Original motion": ("원본 움직임", "元の動き"),
+    "Offset keys": ("오프셋 키", "オフセットキー"),
+    "Keyframes (replace)": ("키프레임 (교체)", "キーフレーム（置き換え）"),
+    "Camera mode": ("카메라 모드", "カメラモード"),
+    "Offset space": ("오프셋 기준", "オフセットの基準"),
+    "View-relative": ("시점 기준", "視点基準"),
+    "World": ("월드", "ワールド"),
+    "Camera keys": ("카메라 키", "カメラキー"),
+    "Key current view": ("현재 시점 키 추가", "現在の視点をキー"),
+    "Add key": ("키 추가", "キーを追加"),
+    "Duplicate key": ("키 복제", "キーを複製"),
+    "Delete key": ("키 삭제", "キーを削除"),
+    "Previous key": ("이전 키", "前のキー"),
+    "Next key": ("다음 키", "次のキー"),
+    "Align view to game camera": ("시점을 게임 카메라에 맞추기", "視点をゲームカメラに合わせる"),
+    "Revert shot": ("샷 되돌리기", "ショットを元に戻す"),
+    "Convert to keyframes": ("키프레임으로 변환", "キーフレームに変換"),
+    "Auto key": ("자동 키", "自動キー"),
+    "Keys the free camera view every time you finish moving it.": (
+        "자유 카메라를 움직일 때마다 그 시점을 키로 저장합니다.", "自由カメラを動かすたびに、その視点をキーにします。"),
+    "At the playhead": ("재생 위치 값", "再生位置の値"),
+    "Value": ("값", "値"),
+    "Offset": ("오프셋", "オフセット"),
+    "X": ("X", "X"),
+    "Y": ("Y", "Y"),
+    "Z": ("Z", "Z"),
+    "Pan": ("팬", "パン"),
+    "Tilt": ("틸트", "チルト"),
+    "Roll": ("롤", "ロール"),
+    "FOV": ("화각", "画角"),
+    "Truck": ("트럭 (좌우)", "トラック（左右）"),
+    "Pedestal": ("페데스탈 (상하)", "ペデスタル（上下）"),
+    "Dolly": ("돌리 (앞뒤)", "ドリー（前後）"),
+    "Selected key": ("선택한 키", "選択したキー"),
+    "Frame": ("프레임", "フレーム"),
+    "Interpolation": ("보간", "補間"),
+    "Handles": ("핸들", "ハンドル"),
+    "Constant": ("상수", "一定"),
+    "Linear": ("선형", "リニア"),
+    "Bezier": ("베지어", "ベジェ"),
+    "Auto clamped": ("자동 클램프", "自動クランプ"),
+    "Flat": ("평탄", "フラット"),
+    "Free": ("자유", "フリー"),
+    "Ease presets": ("이징 프리셋", "イージングプリセット"),
+    "Ease in-out": ("이즈 인아웃", "イーズインアウト"),
+    "Ease in": ("이즈 인", "イーズイン"),
+    "Ease out": ("이즈 아웃", "イーズアウト"),
+    "Curve channels": ("커브 채널", "カーブのチャンネル"),
+    "Camera curves": ("카메라 커브", "カメラカーブ"),
+    "Shot {index} / {count}": ("샷 {index} / {count}", "ショット {index} / {count}"),
+    "Frame {frame} / {last}": ("프레임 {frame} / {last}", "フレーム {frame} / {last}"),
+    "No camera shot at the playhead.": ("재생 위치에 카메라 샷이 없습니다.", "再生位置にカメラショットがありません。"),
+    "New camera shot at playhead": ("재생 위치에 새 카메라 샷", "再生位置に新しいカメラショット"),
+    "Camera shot": ("카메라 샷", "カメラショット"),
+    "Camera (editor)": ("카메라 (편집기)", "カメラ（エディター）"),
+    "This camera shot cannot be edited.": ("이 카메라 샷은 편집할 수 없습니다.", "このカメラショットは編集できません。"),
+    "The camera samples of this shot cannot be exported.": (
+        "이 샷의 카메라 샘플은 내보낼 수 없습니다.", "このショットのカメラサンプルは書き出せません。"),
+    "Switch the preview camera to Free camera to key the view.": (
+        "시점을 키로 저장하려면 미리보기 카메라를 자유 카메라로 바꾸세요.",
+        "視点をキーにするには、プレビューカメラを自由カメラに切り替えてください。"),
+    "A camera rig also moves this shot.": ("카메라 리그도 이 샷을 움직입니다.", "カメラリグもこのショットを動かしています。"),
+    "This shot's length is not whole frames (1/60 s): its camera edits cannot be exported until it is.": (
+        "이 샷의 길이가 프레임(1/60초) 단위가 아닙니다. 프레임 단위로 맞추기 전에는 카메라 편집을 내보낼 수 없습니다.",
+        "このショットの長さがフレーム（1/60秒）単位ではありません。フレーム単位にするまでカメラの編集は書き出せません。"),
+    "Set the length of camera shots with camera edits to whole frames (1/60 s) before exporting.": (
+        "내보내기 전에 카메라를 편집한 샷의 길이를 프레임(1/60초) 단위로 맞추세요.",
+        "書き出す前に、カメラを編集したショットの長さをフレーム（1/60秒）単位にしてください。"),
+    "Keys past the end of this shot: {count}. They are hidden but still shape its motion, and come back if the shot is made longer.": (
+        "이 샷의 끝 뒤에 있는 키: {count}개. 숨겨져 있지만 움직임에는 계속 반영되며, 샷을 늘리면 다시 나타납니다.",
+        "このショットの終わりより後のキー：{count} 個。非表示ですが動きには反映され、ショットを長くすると戻ります。"),
+    "Continue: the preview holds this shot's end pose. In the game it may play on if the camera clip is longer than the shot.": (
+        "계속: 미리보기는 이 샷의 마지막 포즈를 유지합니다. 카메라 클립이 샷보다 길면 게임에서는 이어서 재생될 수 있습니다.",
+        "続ける：プレビューはこのショットの最後のポーズを保ちます。カメラクリップがショットより長いと、ゲームでは再生が続くことがあります。"),
+    "The camera could not be baked.": ("카메라를 굽지 못했습니다.", "カメラを焼き込めませんでした。"),
+    "Edit camera key": ("카메라 키 편집", "カメラキーを編集"),
+    "Add camera key": ("카메라 키 추가", "カメラキーを追加"),
+    "Move camera key": ("카메라 키 이동", "カメラキーを移動"),
+    "Delete camera key": ("카메라 키 삭제", "カメラキーを削除"),
+    "Duplicate camera key": ("카메라 키 복제", "カメラキーを複製"),
+    "Edit camera handle": ("카메라 핸들 편집", "カメラハンドルを編集"),
+    "Change interpolation": ("보간 변경", "補間を変更"),
+    "Change handle type": ("핸들 종류 변경", "ハンドルの種類を変更"),
+    "Apply ease preset": ("이징 프리셋 적용", "イージングプリセットを適用"),
+    "Change camera mode": ("카메라 모드 변경", "カメラモードを変更"),
+    "Change offset space": ("오프셋 기준 변경", "オフセットの基準を変更"),
+    "New camera shot": ("새 카메라 샷", "新しいカメラショット"),
+    "Remove the camera keys of this shot and play its original motion?": (
+        "이 샷의 카메라 키를 지우고 원래 움직임으로 재생할까요?", "このショットのカメラキーを消して、元の動きで再生しますか？"),
+    "Replace this shot's motion with keys at its first and last frame and at every key?": (
+        "이 샷의 움직임을 첫 프레임, 마지막 프레임과 각 키 위치의 키로 바꿀까요?",
+        "このショットの動きを、最初と最後のフレームと各キーの位置のキーに置き換えますか？"),
+    "Turn the keys into offsets over the original motion at the same frames?": (
+        "같은 프레임에서 키를 원래 움직임에 대한 오프셋으로 바꿀까요?",
+        "同じフレームで、キーを元の動きに対するオフセットに変えますか？"),
+    # Several keys at once ("Clear selection" is translated above).
+    "Keys can be selected in one camera shot at a time.": (
+        "키는 한 번에 한 카메라 샷 안에서만 선택할 수 있습니다.", "キーは一度に1つのカメラショットの中でだけ選択できます。"),
+    "Key selection": ("키 선택", "キーの選択"),
+    "Select all keys": ("모든 키 선택", "すべてのキーを選択"),
+    "Copy keys": ("키 복사", "キーをコピー"),
+    "Paste keys": ("키 붙여넣기", "キーを貼り付け"),
+    "No keys selected": ("선택한 키 없음", "選択したキーはありません"),
+    "Keys selected: {count}": ("키 {count}개 선택됨", "{count}個のキーを選択中"),
+    "Keys selected in shot {index}: {count}": ("샷 {index}의 키 {count}개 선택됨", "ショット {index} のキーを{count}個選択中"),
+    "Time scale (%)": ("간격 배율 (%)", "間隔の倍率 (%)"),
+    "Scale timing": ("간격 배율 적용", "間隔を伸縮"),
+    "Scales the spacing of the selected keys around the first selected key (Alt+drag the last selected key on the timeline does the same).": (
+        "첫 번째로 선택한 키를 기준으로 선택한 키 사이의 간격을 늘리거나 줄입니다. 타임라인에서 마지막으로 선택한 키를 Alt+드래그해도 됩니다.",
+        "最初に選択したキーを基準に、選択したキーの間隔を伸縮します。タイムラインで最後に選択したキーを Alt+ドラッグしても同じです。"),
+    "Add to selected keys": ("선택한 키에 더하기", "選択したキーに加算"),
+    "Apply offset": ("오프셋 적용", "オフセットを適用"),
+    "Shift or Ctrl+click adds a key. Drag on empty lane or graph space to box-select (Shift adds). Drag a selected key to move them all; Alt+drag the last one to stretch.": (
+        "Shift 또는 Ctrl+클릭으로 키를 추가합니다. 레인이나 그래프의 빈 곳을 드래그하면 상자로 선택합니다(Shift: 추가). "
+        "선택한 키를 드래그하면 함께 움직이고, 마지막 키를 Alt+드래그하면 간격을 늘이거나 줄입니다.",
+        "Shift または Ctrl+クリックでキーを追加します。レーンやグラフの空いた所をドラッグすると範囲選択します（Shift: 追加）。"
+        "選択したキーをドラッグするとまとめて動き、最後のキーを Alt+ドラッグすると間隔を伸縮します。"),
+    "Move camera keys": ("선택한 카메라 키 이동", "選択したカメラキーを移動"),
+    "Delete camera keys": ("선택한 카메라 키 삭제", "選択したカメラキーを削除"),
+    "Scale camera key timing": ("카메라 키 간격 배율", "カメラキーの間隔を伸縮"),
+    "Offset camera keys": ("카메라 키에 오프셋 더하기", "カメラキーにオフセットを加算"),
+    "Paste camera keys": ("카메라 키 붙여넣기", "カメラキーを貼り付け"),
+    "Camera keys copied: {count}.": ("카메라 키 {count}개를 복사했습니다.", "カメラキーを{count}個コピーしました。"),
+    "Copy camera keys first.": ("먼저 카메라 키를 복사하세요.", "先にカメラキーをコピーしてください。"),
+    "The copied keys do not fit in this shot.": ("복사한 키가 이 샷 안에 들어가지 않습니다.", "コピーしたキーはこのショットに収まりません。"),
+    "Keys outside this shot were left out: {count}.": (
+        "이 샷 범위를 벗어난 키 {count}개는 제외했습니다.", "このショットの範囲外のキー{count}個は除外しました。"),
+    "Select at least two keys to scale their timing.": (
+        "간격을 바꾸려면 키를 두 개 이상 선택하세요.", "間隔を変えるには、キーを2つ以上選択してください。"),
+    "The timing stops at a neighbouring key or the end of the shot.": (
+        "이웃한 키나 샷 끝에서 멈췄습니다.", "隣のキーかショットの端で止まりました。"),
+    # Touch: "Select several" (no Shift or Ctrl on a phone).
+    "Select several": ("여러 개 선택", "複数選択"),
+    "While this is on, a tap adds or removes a key and a sideways drag on the camera lane selects the keys in a box. A long-press on a key also turns it on.": (
+        "켜 두면 키를 탭할 때마다 선택에 더하거나 빼고, 카메라 레인을 가로로 드래그하면 상자 안의 키를 선택합니다. 키를 길게 눌러도 켜집니다.",
+        "オンの間は、キーをタップするたびに選択に追加・解除し、カメラレーンを横にドラッグすると範囲内のキーを選択します。キーを長押ししてもオンになります。"),
+    "Touch: turn on Select several (or long-press a key) and tap keys; drag sideways on the camera lane or on the graph to box-select. Drag a selected key to move them all.": (
+        "터치: '여러 개 선택'을 켜거나 키를 길게 누른 뒤 키를 탭하세요. 카메라 레인이나 그래프를 가로로 드래그하면 상자로 선택합니다. "
+        "선택한 키를 드래그하면 함께 움직입니다.",
+        "タッチ: 「複数選択」をオンにするかキーを長押しして、キーをタップします。カメラレーンやグラフを横にドラッグすると範囲選択します。"
+        "選択したキーをドラッグするとまとめて動きます。"),
+    "Delete selected keys": ("선택한 키 삭제", "選択したキーを削除"),
+    # Split-screen sub cameras ("Camera" is translated in the MV Studio table).
+    "Main camera": ("메인 카메라", "メインカメラ"),
+    "Sub camera {slot}": ("서브 카메라 {slot}", "サブカメラ {slot}"),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_C_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
 
 
 _COSTUME_CONVERSION_TRANSLATIONS = {
@@ -2558,6 +2847,140 @@ for _source, _translated in _COSTUME_CONVERSION_TRANSLATIONS.items():
     _TABLES["ja"][_source] = _translated[1]
 
 
+_MV_EDITOR_D_TRANSLATIONS = {
+    "Follow camera": ("따라가기 카메라", "追従カメラ"),
+    "Camera rigs (editor)": ("카메라 리그 (편집기)", "カメラリグ（エディター）"),
+    "Follow cameras are editor rigs. They are baked into the camera shots they cover, which is what the game plays.": (
+        "따라가기 카메라는 편집기 리그입니다. 리그가 덮는 카메라 샷에 구워지며, 게임은 그 샷을 재생합니다.",
+        "追従カメラはエディターのリグです。重なるカメラショットに焼き込まれ、ゲームではそのショットが再生されます。"),
+    "Add follow camera": ("따라가기 카메라 추가", "追従カメラを追加"),
+    "Follow camera {index}": ("따라가기 카메라 {index}", "追従カメラ {index}"),
+    "{label} copy": ("{label} 사본", "{label} のコピー"),
+    "Makes a camera that follows a member, like a Cinemachine follow camera. It covers the shot at the playhead.": (
+        "멤버를 따라가는 카메라를 만듭니다(Cinemachine의 팔로우 카메라와 비슷합니다). 재생 위치의 샷 구간에 추가됩니다.",
+        "メンバーを追いかけるカメラを作ります（Cinemachine の追従カメラに近い動きです）。再生位置のショットの範囲に追加されます。"),
+    "No members to follow. Add a performer first.": (
+        "따라갈 멤버가 없습니다. 먼저 출연자를 추가하세요.", "追従するメンバーがいません。先に出演者を追加してください。"),
+    "Rig": ("리그", "リグ"),
+    "Rig name": ("리그 이름", "リグ名"),
+    "Time range": ("구간", "区間"),
+    "Start (s)": ("시작 (초)", "開始（秒）"),
+    "End (s)": ("끝 (초)", "終了（秒）"),
+    "Duplicate rig": ("리그 복제", "リグを複製"),
+    "Delete rig": ("리그 삭제", "リグを削除"),
+    "Target": ("대상", "対象"),
+    "Body part": ("부위", "部位"),
+    "Head (whole)": ("머리 전체", "頭全体"),
+    "Camera view": ("카메라 시점", "カメラの視点"),
+    "Front puts the camera on the audience side; Right is the member's right.": (
+        "정면은 관객석 쪽, 오른쪽은 멤버의 오른쪽에 카메라를 둡니다.",
+        "正面は客席側、右はメンバーの右側にカメラを置きます。"),
+    "Front view": ("정면", "正面"),
+    "Back view": ("후면", "背面"),
+    "Left view": ("왼쪽", "左"),
+    "Right view": ("오른쪽", "右"),
+    "Custom view": ("사용자", "カスタム"),
+    "Custom: the direction is this angle alone.": ("사용자: 이 각도만으로 방향을 정합니다.", "カスタム：この角度だけで向きを決めます。"),
+    "Added to the preset direction.": ("프리셋 방향에 더해집니다.", "プリセットの向きに加算されます。"),
+    "Reference": ("방향 기준", "向きの基準"),
+    "Stage front": ("무대 정면", "ステージ正面"),
+    "Member facing": ("멤버가 보는 방향", "メンバーの向き"),
+    "Camera angle": ("카메라 각도", "カメラの角度"),
+    "Fixed (follow position only)": ("위치만 따라가기 (각도 고정)", "位置だけ追従（角度固定）"),
+    "Pan (follow angle only)": ("각도만 따라가기 (위치 고정)", "角度だけ追従（位置固定）"),
+    "Look at member": ("위치·각도 모두 따라가기", "位置と角度の両方を追従"),
+    "Fixed: the camera keeps its direction and only follows the member's position. Pan: the camera stays where the rig starts and only turns toward the member. Look at member: it moves and turns.": (
+        "위치만: 카메라 방향은 그대로 두고 멤버의 위치만 따라 움직입니다. 각도만: 카메라는 리그 시작 위치에 그대로 있고 멤버 쪽으로만 돌아갑니다. 모두: 움직이면서 멤버 쪽으로 돌아갑니다.",
+        "位置だけ：カメラの向きはそのままで、メンバーの位置だけを追って動きます。角度だけ：カメラはリグ開始位置にとどまり、メンバーの方へ向きだけを変えます。両方：動きながらメンバーの方を向きます。"),
+    "Placement": ("배치", "配置"),
+    "Framing": ("구도", "構図"),
+    "Close-up": ("클로즈업", "クローズアップ"),
+    "Medium shot": ("미디엄 샷", "ミディアムショット"),
+    "Full shot": ("풀 샷", "フルショット"),
+    "Camera height above the look-at point.": ("조준점보다 카메라가 높은 정도입니다.", "注視点から見たカメラの高さです。"),
+    "+ moves the camera toward the member's right in the front view (the camera's left).": (
+        "+ 값은 정면 시점에서 카메라를 멤버의 오른쪽(카메라 기준 왼쪽)으로 옮깁니다.",
+        "＋の値は、正面の視点でカメラをメンバーの右側（カメラから見て左）へ動かします。"),
+    "Moves the point the camera looks at, in the reference frame.": (
+        "카메라가 바라보는 점을 방향 기준에 맞춰 옮깁니다.", "カメラが見る点を、向きの基準に沿って動かします。"),
+    "Lens": ("렌즈", "レンズ"),
+    "Dead zone": ("데드존", "デッドゾーン"),
+    "Small moves inside the dead zone are ignored. Once the member leaves it, the camera follows until the member is back within radius × (1 − hysteresis).": (
+        "데드존 안의 작은 움직임은 무시합니다. 멤버가 데드존을 벗어나면 반경 × (1 − 히스테리시스) 안으로 돌아올 때까지 따라갑니다.",
+        "デッドゾーン内の小さな動きは無視します。メンバーが外に出ると、半径 ×（1 − ヒステリシス）の内側に戻るまで追いかけます。"),
+    "Height lock": ("높이 고정", "高さ固定"),
+    "Keeps the camera or the look-at point at one height, so jumps and crouches do not bob the camera.": (
+        "카메라나 조준점의 높이를 고정해 점프나 웅크림에 카메라가 위아래로 흔들리지 않게 합니다.",
+        "カメラまたは注視点の高さを固定し、ジャンプやしゃがみでカメラが上下しないようにします。"),
+    "Lock": ("고정", "固定"),
+    "Look-at point": ("조준점", "注視点"),
+    "Locked height": ("고정할 높이", "固定する高さ"),
+    "Height at the rig start": ("리그 시작 높이", "リグ開始時の高さ"),
+    "Fixed height": ("지정 높이", "指定の高さ"),
+    "Damping": ("댐핑", "ダンピング"),
+    "How long the camera takes to catch up, in seconds (about 63 % of the way). 0 follows at once; larger values are smoother.": (
+        "카메라가 따라잡는 데 걸리는 시간(초, 약 63% 지점)입니다. 0은 즉시 따라가고, 값이 클수록 부드럽습니다.",
+        "カメラが追いつくまでの時間（秒、約63%に達するまで）です。0はすぐに追従し、大きいほど滑らかになります。"),
+    "Blend": ("블렌드", "ブレンド"),
+    "Fades from the shot's own camera and back. 0 is a cut.": (
+        "원래 샷의 카메라에서 부드럽게 넘어왔다가 돌아갑니다. 0은 바로 전환합니다.",
+        "元のショットのカメラから滑らかに切り替わり、また戻ります。0はカットです。"),
+    "Yaw offset (°)": ("방향 회전 (°)", "向きの回転 (°)"),
+    "Turn damping (s)": ("회전 댐핑 (초)", "回転ダンピング（秒）"),
+    "Distance (m)": ("거리 (m)", "距離 (m)"),
+    "Height (m)": ("높이 (m)", "高さ (m)"),
+    "Side offset (m)": ("좌우 이동 (m)", "左右のずらし (m)"),
+    "Look-at height (m)": ("조준 높이 (m)", "注視点の高さ (m)"),
+    "Look-at side (m)": ("조준 좌우 (m)", "注視点の左右 (m)"),
+    "Look-at forward (m)": ("조준 앞뒤 (m)", "注視点の前後 (m)"),
+    "FOV (°)": ("화각 (°)", "画角 (°)"),
+    "Roll (°)": ("롤 (°)", "ロール (°)"),
+    "Radius (m)": ("반경 (m)", "半径 (m)"),
+    "Height band (m)": ("높이 범위 (m)", "高さの範囲 (m)"),
+    "Hysteresis": ("히스테리시스", "ヒステリシス"),
+    "Fixed height (m)": ("지정 높이 (m)", "指定の高さ (m)"),
+    "Look-at XZ (s)": ("조준 수평 (초)", "注視点 水平（秒）"),
+    "Look-at Y (s)": ("조준 수직 (초)", "注視点 垂直（秒）"),
+    "Camera XZ (s)": ("카메라 수평 (초)", "カメラ 水平（秒）"),
+    "Camera Y (s)": ("카메라 수직 (초)", "カメラ 垂直（秒）"),
+    "Blend in (s)": ("블렌드 인 (초)", "ブレンドイン（秒）"),
+    "Blend out (s)": ("블렌드 아웃 (초)", "ブレンドアウト（秒）"),
+    "The follow camera is baked for the current members and outfits. Other MV decks can frame differently. For registered MVs, Height lock: Camera is recommended.": (
+        "따라가기 카메라는 현재 멤버와 의상을 기준으로 구워집니다. 다른 MV 덱에서는 구도가 달라질 수 있습니다. 게임에 등록할 MV에는 '높이 고정: 카메라'를 권장합니다.",
+        "追従カメラは現在のメンバーと衣装を基準に焼き込まれます。別のMVデッキでは構図が変わることがあります。登録するMVには「高さ固定：カメラ」をおすすめします。"),
+    "Baking camera… {percent}%": ("카메라 굽는 중… {percent}%", "カメラを焼き込み中… {percent}%"),
+    "Bake again": ("다시 굽기", "もう一度焼き込む"),
+    "Baking was cancelled. The shots keep their previous camera.": (
+        "굽기를 취소했습니다. 샷은 이전 카메라를 유지합니다.", "焼き込みを取り消しました。ショットは前のカメラのままです。"),
+    "Waiting for the 3D preview…": ("3D 미리보기를 기다리는 중…", "3Dプレビューを待っています…"),
+    "The 3D preview is not available, so the follow camera cannot be baked.": (
+        "3D 미리보기를 사용할 수 없어 따라가기 카메라를 구울 수 없습니다.", "3Dプレビューが使えないため、追従カメラを焼き込めません。"),
+    "This member is not loaded in the 3D preview.": (
+        "이 멤버가 3D 미리보기에 불러와지지 않았습니다.", "このメンバーは3Dプレビューに読み込まれていません。"),
+    "This member has no target for the chosen body part.": (
+        "이 멤버에는 선택한 부위의 기준점이 없습니다.", "このメンバーには選んだ部位の基準点がありません。"),
+    "This member has no facing; the stage front is used.": (
+        "이 멤버는 방향 정보가 없어 무대 정면을 기준으로 합니다.", "このメンバーには向きの情報がないため、ステージ正面を基準にします。"),
+    "No camera shot is under this rig, so it moves nothing.": (
+        "이 리그 아래에 카메라 샷이 없어 아무것도 움직이지 않습니다.", "このリグの下にカメラショットがないため、何も動きません。"),
+    "{label} · {start}–{end} · Member {slot}": ("{label} · {start}–{end} · 멤버 {slot}", "{label} · {start}–{end} · メンバー{slot}"),
+    "Baking the follow camera was cancelled. Try again to bake it, or delete the rig.": (
+        "따라가기 카메라 굽기가 취소되었습니다. 다시 시도해 굽거나 리그를 삭제하세요.",
+        "追従カメラの焼き込みが取り消されました。もう一度焼き込むか、リグを削除してください。"),
+    "A follow camera has no member to follow. Choose a loaded member or delete the rig before exporting.": (
+        "따라갈 멤버가 없는 따라가기 카메라가 있습니다. 내보내기 전에 불러온 멤버를 고르거나 리그를 삭제하세요.",
+        "追従するメンバーがいない追従カメラがあります。書き出す前に、読み込まれたメンバーを選ぶかリグを削除してください。"),
+    "Edit follow camera": ("따라가기 카메라 편집", "追従カメラを編集"),
+    "Move follow camera": ("따라가기 카메라 이동", "追従カメラを移動"),
+    "Resize follow camera": ("따라가기 카메라 길이 변경", "追従カメラの長さを変更"),
+    "Duplicate follow camera": ("따라가기 카메라 복제", "追従カメラを複製"),
+    "Delete follow camera": ("따라가기 카메라 삭제", "追従カメラを削除"),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_D_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+
 _MV_STUDIO_TRANSLATIONS = {
     "Panel settings": ("패널 설정", "パネル設定"),
     "Load MV from game": ("게임에서 MV 불러오기", "ゲームからMVを読み込む"),
@@ -2567,36 +2990,22 @@ _MV_STUDIO_TRANSLATIONS = {
     "Exporting native timeline…": ("게임용 타임라인 내보내는 중…", "ゲーム用タイムラインを書き出し中…"),
     "Native timeline exported.": ("게임용 타임라인을 내보냈습니다.", "ゲーム用タイムラインを書き出しました。"),
     "Open an MV to preview its stage and timeline.": ("MV를 열면 무대와 타임라인을 볼 수 있습니다.", "MVを開くとステージとタイムラインを確認できます。"),
+    "The 3D preview could not prepare its materials before playback. They are prepared when first shown.": (
+        "3D 미리보기가 재생 전에 재질을 미리 준비하지 못했습니다. 처음 표시될 때 준비합니다.",
+        "3Dプレビューで再生前にマテリアルを準備できませんでした。最初に表示されるときに準備します。"),
     "This MV has no visual assets available for preview.": ("이 MV에서 미리 볼 수 있는 모델을 찾지 못했습니다.", "このMVにはプレビューできるモデルがありません。"),
     "Preview camera": ("미리보기 카메라", "プレビューカメラ"),
     "Game camera": ("게임 카메라", "ゲームカメラ"),
+    "Start and end fade": ("시작·종료 페이드", "開始・終了フェード"),
     "Free camera": ("자유 카메라", "自由カメラ"),
     "Frame scene": ("무대 전체 보기", "ステージ全体を表示"),
     "MV assets": ("MV 에셋", "MVアセット"),
     "Tracks": ("트랙", "トラック"),
     "Selected event": ("선택한 이벤트", "選択したイベント"),
     "MV quality settings": ("MV 그래픽 설정", "MVグラフィック設定"),
-    "Register in game": ("게임에 등록", "ゲームに登録"),
-    "MV title": ("MV 제목", "MVのタイトル"),
-    "Register original as an MV-only copy": ("게임 원본을 MV 전용 복사본으로 등록", "ゲームの元データをMV専用コピーとして登録"),
-    "Register MV-only copy with selected timelines": ("선택한 타임라인으로 MV 전용 복사본 등록", "選んだタイムラインでMV専用コピーを登録"),
-    "Register MV-only copy with selected assets": ("선택한 에셋으로 MV 전용 복사본 등록", "選んだアセットでMV専用コピーを登録"),
-    "Custom timelines (optional)": ("사용자 타임라인 (선택)", "カスタムタイムライン（任意）"),
-    "Choose Android timeline": ("Android 타임라인 선택", "Androidタイムラインを選択"),
-    "Choose iOS timeline": ("iOS 타임라인 선택", "iOSタイムラインを選択"),
-    "Use exported timeline": ("내보낸 타임라인 사용", "書き出したタイムラインを使用"),
-    "Custom soundtrack (optional)": ("사용자 음원 (선택)", "カスタム音源（任意）"),
-    "Choose an ACB with one game music cue and its AWB if the cue streams from an external file.": [
-        "게임 음원 큐가 하나인 ACB를 선택하세요. 외부 파일에서 스트리밍할 경우 해당 AWB도 선택하세요.",
-        "ゲーム音源のキューが1つ入ったACBを選んでください。外部ファイルからのストリーミングには対応するAWBも選んでください。"
-    ],
     "Choose ACB": ("ACB 선택", "ACBを選択"),
     "Choose AWB": ("AWB 선택", "AWBを選択"),
-    "Choose the ACB that uses this AWB.": ("이 AWB를 사용하는 ACB를 선택하세요.", "このAWBを使用するACBを選んでください。"),
-    "Registering MV…": ("MV 등록 중…", "MVを登録中…"),
-    "MV-only copy registered.": ("MV 전용 복사본을 등록했습니다.", "MV専用コピーを登録しました。"),
     "Restart the game server to load the updated catalog.": ("목록 변경을 게임에 적용하려면 게임 서버를 재시작하세요.", "更新した一覧をゲームに反映するには、ゲームサーバーを再起動してください。"),
-    "Live show": ("라이브", "ライブ"),
     "Load chart templates": ("채보 템플릿 불러오기", "譜面テンプレートを読み込む"),
     "Loading chart templates…": ("채보 템플릿 불러오는 중…", "譜面テンプレートを読み込み中…"),
     "No compatible chart templates.": ("호환되는 채보 템플릿을 찾지 못했습니다.", "対応する譜面テンプレートがありません。"),
@@ -2619,8 +3028,19 @@ _MV_STUDIO_TRANSLATIONS = {
     "Search MVs": ("MV 검색", "MVを検索"),
     "Song": ("곡", "楽曲"),
     "MV variant": ("MV 버전", "MVの種類"),
+    "MV deck": ("MV 덱", "MVデッキ"),
+    "Customize": ("커스터마이즈", "カスタマイズ"),
+    "Original": ("오리지널", "オリジナル"),
+    "Player": ("플레이어", "プレイヤー"),
+    "New player": ("새 플레이어", "新しいプレイヤー"),
+    "Game costume": ("게임 의상", "ゲームの衣装"),
+    # Not bare "View": the global table would also rename the texture tools' View menu.
+    "View status": ("뷰 상태", "ビュー状態"),
     "Load MV": ("MV 불러오기", "MVを読み込む"),
     "MV only": ("MV 전용", "MV専用"),
+    "MV stage {n}": ("MV {n}번", "MV {n}番"),
+    "Live 3D only": ("라이브 3D 전용", "ライブ3D専用"),
+    "Not in the MV list": ("MV 목록에 없음", "MV一覧にない"),
     "Loading MVs…": ("MV 목록 불러오는 중…", "MV一覧を読み込み中…"),
     "No matching MVs.": ("일치하는 MV를 찾지 못했습니다.", "該当するMVが見つかりません。"),
     "Preparing MV from game…": ("게임에서 MV 준비 중…", "ゲームデータからMVを準備中…"),
@@ -2637,12 +3057,12 @@ _MV_STUDIO_TRANSLATIONS = {
     "Performer": ("출연자", "出演者"),
     "No performers are loaded.": ("불러온 출연자가 없습니다.", "読み込まれた出演者がいません。"),
     "Replace outfit": ("의상 교체", "衣装を交換"),
-    "This MV already has nine performers. Choose an existing performer to replace their outfit.": [
-        "이 MV에는 이미 출연자가 9명 있습니다. 기존 출연자를 선택해 의상을 교체하세요.",
-        "このMVには出演者がすでに9人います。既存の出演者を選んで衣装を交換してください。"
+    "This MV already has twelve performers. Choose an existing performer to replace their outfit.": [
+        "이 MV에는 이미 출연자가 12명 있습니다. 기존 출연자를 선택해 의상을 교체하세요.",
+        "このMVには出演者がすでに12人います。既存の出演者を選んで衣装を交換してください。"
     ],
     "Props": ("소품", "小道具"),
-    "Effects": ("효과", "エフェクト"),
+    "Effects": ("이펙트", "エフェクト"),
     "Soundtrack": ("음원", "音源"),
     "Soundtrack offset (s)": ("음원 오프셋 (초)", "音源オフセット（秒）"),
     "Import soundtrack": ("음원 불러오기", "音源を読み込む"),
@@ -2665,13 +3085,15 @@ _MV_STUDIO_TRANSLATIONS = {
     "Entry number": ("항목 번호", "項目番号"),
     "No MV quality settings were imported.": ("불러온 MV 그래픽 설정이 없습니다.", "読み込まれたMVグラフィック設定はありません。"),
     "Quality preset": ("그래픽 프리셋", "グラフィックプリセット"),
+    "Refresh-rate mode": ("주사율 모드", "リフレッシュレートモード"),
+    "Anti-aliasing": ("안티에일리어싱", "アンチエイリアス"),
     "Soundtrack playback is unavailable. The timeline is still playing.": ("음원을 재생할 수 없어 타임라인만 재생합니다.", "音源を再生できないためタイムラインのみ再生します。"),
     "The imported MV project is invalid.": ("불러온 MV 프로젝트 형식이 올바르지 않습니다.", "読み込んだMVプロジェクトの形式が正しくありません。"),
     "The MV could not be loaded.": ("MV를 불러오지 못했습니다.", "MVを読み込めませんでした。"),
     "The MV asset could not be imported.": ("MV 에셋을 불러오지 못했습니다.", "MVアセットを読み込めませんでした。"),
     "The MV project could not be saved.": ("MV 프로젝트를 저장하지 못했습니다.", "MVプロジェクトを保存できませんでした。"),
     "Camera": ("카메라", "カメラ"),
-    "Dance": ("안무", "ダンス"),
+    "Dance": ("댄스", "ダンス"),
     "Gaze": ("시선", "視線"),
     "Cheek": ("볼", "頬"),
     "Sound": ("소리", "サウンド"),
@@ -2682,10 +3104,1154 @@ _MV_STUDIO_TRANSLATIONS = {
     "Stage": ("무대", "ステージ"),
     "Crowd": ("관객", "観客"),
     "Split screen": ("화면 분할", "画面分割"),
+    # Game import progress (mv-studio-import-progress.js; the server's plan sends the same step labels).
+    "Reading game data…": ("게임 데이터를 읽는 중…", "ゲームデータを読み込み中…"),
+    "Reading the live timeline…": ("라이브 타임라인을 분석하는 중…", "ライブタイムラインを解析中…"),
+    "Converting the stage…": ("무대를 변환하는 중…", "ステージを変換中…"),
+    "Converting stage effects…": ("무대 이펙트를 변환하는 중…", "ステージエフェクトを変換中…"),
+    "Converting stage props…": ("무대 소품을 변환하는 중…", "ステージの小道具を変換中…"),
+    "Converting member {index}/{count}: {name}": ("멤버 변환 중 {index}/{count}: {name}", "メンバーを変換中 {index}/{count}: {name}"),
+    "Decoding the soundtrack…": ("음원을 디코딩하는 중…", "楽曲をデコード中…"),
+    "Finishing the MV project…": ("MV 프로젝트를 마무리하는 중…", "MVプロジェクトを仕上げ中…"),
+    "Opening the timeline bundle…": ("타임라인 번들을 여는 중…", "タイムラインバンドルを開いています…"),
+    "Reading timeline tracks…": ("타임라인 트랙을 읽는 중…", "タイムライントラックを読み込み中…"),
+    "Stage effects {done}/{total}": ("무대 연출 {done}/{total}", "ステージ演出 {done}/{total}"),
+    "Reading choreography…": ("안무 데이터를 읽는 중…", "振り付けデータを読み込み中…"),
+    "Textures {done}": ("텍스처 {done}개", "テクスチャ {done}枚"),
+    "Building dance motion… {done}%": ("댄스 모션을 만드는 중… {done}%", "ダンスモーションを生成中… {done}%"),
+    "Loading 3D models {done}/{total}…": ("3D 모델을 불러오는 중 {done}/{total}…", "3Dモデルを読み込み中 {done}/{total}…"),
+    "Loading 3D models…": ("3D 모델을 불러오는 중…", "3Dモデルを読み込み中…"),
+    "Ready to play": ("재생 준비 완료", "再生の準備ができました"),
+    "Preparing effects…": ("이펙트를 준비하는 중…", "エフェクトを準備中…"),
+    "Reused from cache": ("캐시에서 재사용", "キャッシュから再利用"),
+    "Stage is ready. Members are still loading.": ("무대가 준비되었습니다. 멤버를 불러오는 중입니다.", "ステージの準備ができました。メンバーを読み込み中です。"),
+    "Members done {done}/{count}": ("멤버 {done}/{count} 완료", "メンバー {done}/{count} 完了"),
+    "Game data {read}/{total} MB": ("게임 데이터 {read}/{total} MB", "ゲームデータ {read}/{total} MB"),
+    "Cancel import": ("불러오기 취소", "読み込みをキャンセル"),
+    "Cancelling…": ("취소하는 중…", "キャンセル中…"),
+    "MV import cancelled.": ("MV 불러오기를 취소했습니다.", "MVの読み込みをキャンセルしました。"),
+    # Game import errors (mv_studio.load_game and mv_studio_game) a person can meet.
+    "An MV is already being prepared. Try again when it finishes.": (
+        "다른 MV를 준비하는 중입니다. 끝난 뒤 다시 시도하세요.", "別のMVを準備中です。終わってからもう一度お試しください。"),
+    "The original MV timeline pack is missing. Download its missing assets or choose a local mod file.": (
+        "원본 MV 타임라인 팩이 없습니다. 누락된 에셋을 다운로드하거나 로컬 모드 파일을 선택하세요.",
+        "元のMVタイムラインパックがありません。不足しているアセットをダウンロードするか、ローカルのMODファイルを選んでください。"),
+    "This file does not contain an original live timeline.": (
+        "이 파일에는 원본 라이브 타임라인이 없습니다.", "このファイルには元のライブタイムラインが含まれていません。"),
+    "The original MV timeline exceeds the supported size.": (
+        "원본 MV 타임라인이 지원하는 크기를 넘습니다.", "元のMVタイムラインが対応サイズを超えています。"),
+    "The stage preview or soundtrack exceeds the supported size.": (
+        "무대 미리보기나 음원이 지원하는 크기를 넘습니다.", "ステージプレビューまたは楽曲が対応サイズを超えています。"),
+    "The 3D preview expired. Reopen the asset.": (
+        "3D 미리보기가 만료되었습니다. 에셋을 다시 여세요.", "3Dプレビューの有効期限が切れました。アセットを開き直してください。"),
+    "Reading the selected MV assets took too long. Try again.": (
+        "선택한 MV 에셋을 읽는 데 시간이 너무 오래 걸렸습니다. 다시 시도하세요.",
+        "選択したMVアセットの読み込みに時間がかかりすぎました。もう一度お試しください。"),
+    "The selected game MV and stage are no longer available. Refresh the list.": (
+        "선택한 게임 MV와 무대를 더 이상 사용할 수 없습니다. 목록을 새로 고치세요.",
+        "選択したゲームのMVとステージは利用できなくなりました。リストを更新してください。"),
+    "The selected game pack changed during import. Try again.": (
+        "불러오는 동안 선택한 게임 팩이 바뀌었습니다. 다시 시도하세요.", "読み込み中に選択したゲームパックが変更されました。もう一度お試しください。"),
+    "The selected game pack section is incomplete.": (
+        "선택한 게임 팩 섹션이 불완전합니다.", "選択したゲームパックのセクションが不完全です。"),
+    "The selected MV stage has no game stage model reference.": (
+        "선택한 MV 무대에 게임 무대 모델 참조가 없습니다.", "選択したMVステージにはゲームのステージモデル参照がありません。"),
+    "The selected sound pack has an invalid CRI header.": (
+        "선택한 사운드 팩의 CRI 헤더가 올바르지 않습니다.", "選択したサウンドパックのCRIヘッダーが無効です。"),
+    "A requested costume has no member at its position in this MV.": (
+        "요청한 의상의 위치에 이 MV의 멤버가 없습니다.", "指定した衣装の位置に、このMVのメンバーがいません。"),
+    "Choose a valid game MV and stage.": ("올바른 게임 MV와 무대를 선택하세요.", "有効なゲームのMVとステージを選んでください。"),
+    "Choose valid costumes for the MV members.": ("MV 멤버에게 올바른 의상을 선택하세요.", "MVメンバーに有効な衣装を選んでください。"),
+    "Choose a supported game region and asset platform.": (
+        "지원하는 게임 지역과 에셋 플랫폼을 선택하세요.", "対応しているゲーム地域とアセットプラットフォームを選んでください。"),
+    "This MV has too many linked game assets.": ("이 MV에 연결된 게임 에셋이 너무 많습니다.", "このMVにリンクされたゲームアセットが多すぎます。"),
+    "The game contains too many 3D MV catalog rows.": (
+        "게임의 3D MV 카탈로그 항목이 너무 많습니다.", "ゲームの3D MVカタログ行が多すぎます。"),
 }
 for _source, (_korean, _japanese) in _MV_STUDIO_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
+
+# MV Studio editor lane A: timeline tabs and filters, undo/redo, clip editing.
+_MV_EDITOR_A_TRANSLATIONS = {
+    "Edit": ("편집", "編集"),
+    "All": ("전체", "すべて"),
+    "Expression": ("표정", "表情"),
+    "Screen effects": ("화면 효과", "画面効果"),
+    "Other": ("기타", "その他"),
+    "Timeline categories": ("타임라인 분류", "タイムラインの分類"),
+    "Tracks: {tracks} · Clips: {clips}": ("트랙 {tracks}개 · 클립 {clips}개", "トラック{tracks}件 · クリップ{clips}件"),
+    "Members": ("멤버", "メンバー"),
+    "All members": ("전체 멤버", "全メンバー"),
+    "Member": ("멤버", "メンバー"),
+    "Search tracks": ("트랙 이름 검색", "トラック名で検索"),
+    "Show editable tracks only": ("편집 가능한 트랙만 보기", "編集できるトラックのみ表示"),
+    "The Edit tab already lists edited and editable tracks.": (
+        "편집 탭에는 이미 편집한 트랙과 편집 가능한 트랙만 나옵니다.",
+        "編集タブには編集したトラックと編集できるトラックだけが表示されます。",
+    ),
+    "Native group": ("원본 그룹", "元のグループ"),
+    "All groups": ("모든 그룹", "すべてのグループ"),
+    "{tracks} tracks · {clips} clips · {edited} edited": (
+        "트랙 {tracks}개 · 클립 {clips}개 · 편집 {edited}개", "トラック{tracks}件 · クリップ{clips}件 · 編集{edited}件"),
+    "Editable": ("편집 가능", "編集可能"),
+    "No edits yet. Editable tracks are listed below.": (
+        "아직 편집한 항목이 없습니다. 편집할 수 있는 트랙은 아래에 있습니다.",
+        "まだ編集していません。編集できるトラックは下にあります。",
+    ),
+    "Edited": ("편집됨", "編集済み"),
+    "Undo": ("실행 취소", "元に戻す"),
+    "Redo": ("다시 실행", "やり直す"),
+    "Undo: {label}": ("실행 취소: {label}", "元に戻す: {label}"),
+    "Redo: {label}": ("다시 실행: {label}", "やり直す: {label}"),
+    "Nothing to undo": ("실행 취소할 작업이 없습니다", "元に戻す操作はありません"),
+    "Nothing to redo": ("다시 실행할 작업이 없습니다", "やり直す操作はありません"),
+    "Move clip": ("클립 이동", "クリップを移動"),
+    "Resize clip": ("클립 길이 변경", "クリップの長さを変更"),
+    "Rename clip": ("클립 이름 변경", "クリップ名を変更"),
+    "Edit value": ("값 편집", "値を編集"),
+    "Revert clip": ("클립 되돌리기", "クリップを元に戻す"),
+    "Duplicate clip": ("클립 복제", "クリップを複製"),
+    "Delete clip": ("클립 삭제", "クリップを削除"),
+    "Move performer": ("출연자 위치 변경", "出演者の位置を変更"),
+    "Change soundtrack offset": ("음원 오프셋 변경", "音源オフセットを変更"),
+    "Change quality preset": ("그래픽 프리셋 변경", "グラフィックプリセットを変更"),
+    "Change quality setting": ("그래픽 설정 변경", "グラフィック設定を変更"),
+    "Clip name": ("클립 이름", "クリップ名"),
+    "Recomputed by the game": ("게임이 다시 계산하는 값입니다", "ゲームが再計算する値です"),
+    "Some timeline edits could not be carried over.": (
+        "일부 타임라인 편집 내용을 옮기지 못했습니다.", "一部のタイムライン編集を引き継げませんでした。"),
+    "Wait for the current MV task to finish.": ("진행 중인 MV 작업이 끝날 때까지 기다려 주세요.", "実行中のMV処理が終わるまでお待ちください。"),
+    "This clip's timing cannot be edited.": ("이 클립의 시간은 편집할 수 없습니다.", "このクリップの時間は編集できません。"),
+    "Drag a clip to move it and its right edge to change its length. Alt+Left or Alt+Right moves the clip by one frame, with Shift by ten frames.": (
+        "클립을 드래그하면 이동하고, 오른쪽 끝을 드래그하면 길이가 바뀝니다. Alt+왼쪽/오른쪽 화살표로 1프레임씩, Shift를 함께 누르면 10프레임씩 옮깁니다.",
+        "クリップをドラッグすると移動し、右端をドラッグすると長さが変わります。Alt+左右矢印キーで1フレームずつ、Shiftを併用すると10フレームずつ移動します。",
+    ),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_A_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# MV Studio timeline host (mv-studio.js): derived blends, timing fields per clip type,
+# track mute and quality badges.
+_MV_EDITOR_E2_TRANSLATIONS = {
+    "Set by the overlap with the next or previous clip": (
+        "앞뒤 클립과 겹치는 길이로 정해집니다", "前後のクリップと重なる長さで決まります"),
+    "The game does not use these timing fields of this clip type: {fields}.": (
+        "이 클립 종류에서 게임이 쓰지 않는 시간 항목: {fields}.", "このクリップの種類でゲームが使わない時間項目: {fields}。"),
+    "Before and after the clip": ("클립 앞뒤", "クリップの前後"),
+    "Clip offset": ("클립 오프셋", "クリップオフセット"),
+    "Playback speed": ("재생 속도", "再生速度"),
+    "Ease and blend": ("이즈와 블렌드", "イーズとブレンド"),
+    "Camera shots keep their offset and speed and offer None or Hold, the modes the preview shows.": (
+        "카메라 샷은 오프셋과 속도를 바꿀 수 없고, 미리보기에 나오는 없음과 정지만 고를 수 있습니다.",
+        "カメラショットはオフセットと速度を変えられず、プレビューに出る「なし」と「保持」だけを選べます。"),
+    "Camera shots keep their offset and speed: the preview plays the samples read from the shot.": (
+        "카메라 샷은 오프셋과 속도를 바꿀 수 없습니다. 미리보기는 샷에서 읽은 샘플을 그대로 재생합니다.",
+        "カメラショットはオフセットと速度を変えられません。プレビューはショットから読んだサンプルをそのまま再生します。"),
+    "Restore original value": ("원래 값으로 되돌리기", "元の値に戻す"),
+    # The extrapolation mode after None, Hold (and before Ping-pong, Continue), which have theirs.
+    "Loop": ("반복", "ループ"),
+    "This shot overlaps another: the game crossfades them, the preview cuts to the later shot.": (
+        "이 샷은 다른 샷과 겹칩니다. 게임은 두 샷을 겹쳐 전환하지만, 미리보기는 뒤의 샷으로 바로 바뀝니다.",
+        "このショットは別のショットと重なっています。ゲームでは重ねて切り替わりますが、プレビューは後のショットにすぐ切り替わります。"),
+    "{tracks} tracks · {clips} clips · {edited} edited · {follow} with recomputed blends or times": (
+        "트랙 {tracks}개 · 클립 {clips}개 · 편집 {edited}개 · 블렌드나 시간만 다시 계산된 클립 {follow}개",
+        "トラック{tracks}件 · クリップ{clips}件 · 編集{edited}件 · ブレンドや時間だけ再計算されたクリップ{follow}件"),
+    "Mute track": ("트랙 음소거", "トラックをミュート"),
+    "Unmute track": ("트랙 음소거 해제", "トラックのミュートを解除"),
+    "Muted": ("음소거됨", "ミュート中"),
+    "Muted group": ("음소거된 그룹", "ミュート中のグループ"),
+    "This track is muted. The preview skips it.": (
+        "이 트랙은 음소거되어 미리보기에서 재생되지 않습니다.", "このトラックはミュート中で、プレビューでは再生されません。"),
+    "A group's mute does not reach the game: the game plays each track in it by its own mute.": (
+        "그룹 음소거는 게임에 반영되지 않습니다. 게임은 그룹 안의 각 트랙을 그 트랙의 음소거 설정대로 재생합니다.",
+        "グループのミュートはゲームに反映されません。ゲームはグループ内の各トラックを、そのトラック自身のミュート設定で再生します。"),
+    "The game sets this track's mute from the {option} quality setting when the MV starts.": (
+        "이 트랙의 음소거는 MV가 시작될 때 게임이 '{option}' 그래픽 설정에 따라 정합니다.",
+        "このトラックのミュートは、MVの開始時にゲームが「{option}」のグラフィック設定に合わせて決めます。"),
+    "The game sets this track's mute from the MV quality settings when the MV starts.": (
+        "이 트랙의 음소거는 MV가 시작될 때 게임이 MV 그래픽 설정에 따라 정합니다.",
+        "このトラックのミュートは、MVの開始時にゲームがMVのグラフィック設定に合わせて決めます。"),
+    "The game sets the mute of eye and mouth tracks itself when the MV starts.": (
+        "눈과 입 트랙의 음소거는 MV가 시작될 때 게임이 직접 정합니다.",
+        "目と口のトラックのミュートは、MVの開始時にゲームが自分で決めます。"),
+    # English names of the stage quality flags (core/mv_studio_quality._FIELDS) for a project without options.
+    "Stage ambient lighting": ("무대 환경광", "ステージ環境光"),
+    "Stage animation": ("무대 애니메이션", "ステージアニメーション"),
+    "Stage coloring": ("무대 색상 연출", "ステージの色演出"),
+    "Stage controls": ("무대 제어", "ステージ制御"),
+    "Stage overlay effects": ("무대 오버레이 효과", "ステージのオーバーレイ効果"),
+    "Stage flash lighting": ("무대 점멸 조명", "ステージの点滅照明"),
+    "Stage displays": ("무대 화면", "ステージのスクリーン"),
+    "Post-processing effects": ("후처리 효과", "ポストエフェクト"),
+    "Stage emissive surfaces": ("무대 발광 표면", "ステージの発光面"),
+    # "Audience" (관객/観客) comes from the editor lane B table.
+    "Plays only while {option} is on in the MV quality settings.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 켜져 있을 때만 재생됩니다.", "MVのグラフィック設定で「{option}」がオンのときだけ再生されます。"),
+    "Its tracks play only while {option} is on in the MV quality settings.": (
+        "이 그룹의 트랙은 MV 그래픽 설정에서 '{option}'이(가) 켜져 있을 때만 재생됩니다.",
+        "このグループのトラックは、MVのグラフィック設定で「{option}」がオンのときだけ再生されます。"),
+    "{option} is off in the MV quality settings, so the game mutes this track.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 꺼져 있어 게임은 이 트랙을 재생하지 않습니다.",
+        "MVのグラフィック設定で「{option}」がオフなので、ゲームはこのトラックを再生しません。"),
+    "{option} is off in the MV quality settings, so the game mutes its tracks.": (
+        "MV 그래픽 설정에서 '{option}'이(가) 꺼져 있어 게임은 이 그룹의 트랙을 재생하지 않습니다.",
+        "MVのグラフィック設定で「{option}」がオフなので、ゲームはこのグループのトラックを再生しません。"),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_E2_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# MV Studio free camera views (mv-studio-free-camera.js). Front, Back, Left side, Right side
+# and FOV are the 3D model tab's and the camera editor's strings.
+_MV_FREE_CAMERA_TRANSLATIONS = {
+    "Free camera views": ("자유 카메라 시점", "自由カメラの視点"),
+    "Views": ("시점", "視点"),
+    "Show or hide the free camera views. A short preview keeps them folded so the view stays visible.": (
+        "자유 카메라 시점 조절을 펼치거나 접습니다. 미리보기 높이가 낮으면 화면이 가려지지 않도록 접어 둡니다.",
+        "自由カメラの視点操作を開閉します。プレビューが低いときは画面が隠れないよう畳んでおきます。"),
+    # "Target" (대상/対象) comes from the follow camera table (_MV_EDITOR_D_TRANSLATIONS).
+    "Stage centre": ("무대 중앙", "ステージ中央"),
+    "The free camera looks at this point and turns around it.": (
+        "자유 카메라가 이 지점을 바라보며 그 주위를 돕니다.", "自由カメラはこの点を見ながら、その周りを回ります。"),
+    "View direction": ("보는 방향", "見る方向"),
+    "Look from the audience side (the side the members face).": (
+        "관객석 쪽(멤버가 바라보는 쪽)에서 봅니다.", "客席側（メンバーが向いている側）から見ます。"),
+    "Look from behind the stage.": ("무대 뒤쪽에서 봅니다.", "ステージの後ろ側から見ます。"),
+    "Look from the members' left.": ("멤버의 왼쪽에서 봅니다.", "メンバーの左側から見ます。"),
+    "Look from the members' right.": ("멤버의 오른쪽에서 봅니다.", "メンバーの右側から見ます。"),
+    "Distance": ("거리", "距離"),
+    "Distance from the target (m). The mouse wheel also moves the camera forward and back.": (
+        "대상과의 거리(m)입니다. 마우스 휠로도 카메라를 앞뒤로 움직일 수 있습니다.",
+        "対象からの距離（m）です。マウスホイールでもカメラを前後に動かせます。"),
+    "Vertical field of view (°). Shift+mouse wheel also changes it.": (
+        "세로 화각(°)입니다. Shift+마우스 휠로도 바꿀 수 있습니다.", "縦の画角（°）です。Shift+マウスホイールでも変えられます。"),
+    "Follow member": ("멤버 따라가기", "メンバーを追う"),
+    "While a member is the target, the free camera moves with that member as the MV plays or the playhead moves. Preview only.": (
+        "멤버가 대상일 때 MV를 재생하거나 재생 위치를 옮기면 자유 카메라가 그 멤버와 함께 움직입니다. 미리보기 전용입니다.",
+        "メンバーが対象のとき、MVの再生中や再生位置の移動に合わせて自由カメラがそのメンバーと一緒に動きます。プレビュー専用です。"),
+}
+for _source, (_korean, _japanese) in _MV_FREE_CAMERA_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# MV-only song registration (mv-studio-register.js, core/mv_studio_register.py): the panel, the
+# job stages, the plan notes, every Elichika store message (mv_studio_live.MESSAGES), the CRI
+# encoder's fixed messages and the native export refusals a registration can show.
+_MV_REGISTER_TRANSLATIONS = {
+    # Panel
+    "Register as an MV-only song": ("MV 전용 곡으로 등록", "MV専用曲として登録"),
+    "Update song": ("업데이트", "更新"),
+    "Register as a new song": ("새 곡으로 등록", "新しい曲として登録"),
+    "Base MV": ("기본 MV", "ベースMV"),
+    "Choose base MV": ("기본 MV 고르기", "ベースMVを選ぶ"),
+    "Change": ("변경", "変更"),
+    "Stage, choreography, props and members come from the base MV.": (
+        "무대·안무·소품·멤버는 기본 MV의 것을 사용합니다.", "ステージ・振り付け・小物・メンバーはベースMVのものを使います。"),
+    "Title": ("제목", "タイトル"),
+    "Credit": ("크레디트", "クレジット"),
+    "Leave empty to use the base song's credit.": (
+        "비워 두면 기본 MV 곡의 크레디트를 씁니다.", "空欄のままにするとベースMVの曲のクレジットを使います。"),
+    "Jacket": ("재킷", "ジャケット"),
+    "Choose image": ("이미지 선택", "画像を選択"),
+    "Choose jacket image": ("재킷 이미지 선택", "ジャケット画像を選択"),
+    "Use the base jacket": ("기본 재킷 사용", "ベースのジャケットを使う"),
+    "Keep the registered jacket": ("등록된 재킷 유지", "登録済みのジャケットのまま"),
+    "Choose the square area for the jacket.": ("재킷으로 쓸 정사각형 영역을 고르세요.", "ジャケットに使う正方形の範囲を選んでください。"),
+    "Jacket area size": ("영역 크기", "範囲の大きさ"),
+    "The selected area is used as is.": ("고른 영역을 그대로 씁니다.", "選んだ範囲をそのまま使います。"),
+    "The selected area is resized to 400×400.": ("고른 영역을 400×400으로 크기만 맞춥니다.", "選んだ範囲を400×400に拡大・縮小します。"),
+    "This 400×400 image is used as is.": ("400×400 이미지라 그대로 씁니다.", "400×400の画像なのでそのまま使います。"),
+    "This square image is resized to 400×400.": ("정사각형 이미지를 400×400으로 크기만 맞춥니다.", "正方形の画像を400×400に拡大・縮小します。"),
+    "The registered jacket stays.": ("등록된 재킷을 그대로 둡니다.", "登録済みのジャケットのままです。"),
+    "The base song's jacket is used.": ("기본 MV 곡의 재킷을 씁니다.", "ベースMVの曲のジャケットを使います。"),
+    "400×400 · choose an area when the image is not square.": (
+        "400×400 · 정사각형이 아니면 영역을 고르세요.", "400×400・正方形でない画像は範囲を選んでください。"),
+    "Audio": ("음원", "音源"),
+    "Original song audio": ("원곡 음원 그대로", "原曲の音源のまま"),
+    "Keep the registered audio": ("등록된 음원 유지", "登録済みの音源のまま"),
+    "Project audio": ("프로젝트 음원", "プロジェクトの音源"),
+    "Prepared ACB/AWB (advanced)": ("준비된 ACB/AWB 파일 (고급)", "用意したACB/AWBファイル（上級者向け）"),
+    "This version can register only the original audio or prepared ACB/AWB files.": (
+        "이 버전에서는 원곡 음원 또는 ACB/AWB 파일만 쓸 수 있습니다.", "このバージョンでは原曲の音源かACB/AWBファイルだけを使えます。"),
+    "This project has no soundtrack.": ("이 프로젝트에는 음원이 없습니다.", "このプロジェクトには音源がありません。"),
+    "BPM": ("BPM", "BPM"),
+    "First beat (s)": ("첫 박 (초)", "最初の拍（秒）"),
+    "Preview start (s)": ("미리듣기 시작 (초)", "試聴の開始（秒）"),
+    "The soundtrack offset ({offset} s) is applied to the registered audio.": (
+        "음원 오프셋({offset}초)을 등록할 음원에 반영합니다.", "音源オフセット（{offset}秒）を登録する音源に反映します。"),
+    "What reaches the game": ("게임 반영 점검", "ゲームへの反映チェック"),
+    "Timeline unchanged: the original MV plays.": ("타임라인 변경 없음: 원래 MV가 재생됩니다.", "タイムラインの変更なし：元のMVが再生されます。"),
+    "No native timeline: the base MV's timeline plays unchanged.": (
+        "게임용 타임라인이 없는 프로젝트라 기본 MV의 타임라인이 그대로 재생됩니다.",
+        "ゲーム用タイムラインがないプロジェクトなので、ベースMVのタイムラインがそのまま再生されます。"),
+    "Camera: {count} shots edited": ("카메라 {count}컷 수정", "カメラ{count}カットを編集"),
+    "Camera: {count} shots edited (follow camera included)": (
+        "카메라 {count}컷 수정 (팔로우 카메라 포함)", "カメラ{count}カットを編集（フォローカメラを含む）"),
+    "Values: {values} · clip timing: {timing}": (
+        "조명·효과 값 {values}개 · 클립 타이밍 {timing}개", "照明・効果の値{values}件・クリップのタイミング{timing}件"),
+    "Applied on Android and iOS": ("Android · iOS 모두 적용", "AndroidとiOSの両方に反映"),
+    "Applied on {platform}": ("{platform}에 적용", "{platform}に反映"),
+    "Download (about {size} MB)": ("내려받기 (약 {size} MB)", "ダウンロード（約{size} MB）"),
+    "No {platform} original": ("{platform} 원본 없음", "{platform}の元データなし"),
+    "{platform} has no original in this region: it plays the base MV.": (
+        "이 지역에는 {platform} 원본이 없어 기본 MV가 재생됩니다.", "この地域には{platform}の元データがないため、ベースMVが再生されます。"),
+    "Not in the game:": ("게임에 들어가지 않음:", "ゲームには入らないもの："),
+    "Checking what reaches the game…": ("게임 반영 점검 중…", "ゲームへの反映をチェック中…"),
+    "Open this panel to check what reaches the game.": (
+        "이 패널을 열면 게임에 반영되는 내용을 점검합니다.", "このパネルを開くとゲームに反映される内容をチェックします。"),
+    "Region: {region}": ("지역: {region}", "地域：{region}"),
+    "New song": ("새 곡", "新しい曲"),
+    "Update {title} ({id})": ("{title} ({id}) 업데이트", "{title}（{id}）を更新"),
+    "Register as": ("등록 대상", "登録先"),
+    "Songs registered from this base MV: {songs}": ("이 기본 MV로 등록한 곡이 있습니다: {songs}", "このベースMVで登録した曲があります：{songs}"),
+    "Not chosen": ("선택 안 함", "未選択"),
+    "Search MV": ("MV 검색", "MVを検索"),
+    "Use this base MV": ("이 MV를 기본 MV로 사용", "このMVをベースにする"),
+    "Continue": ("계속", "続ける"),
+    "iOS will play the original MV. Continue?": ("iOS에서는 원래 MV가 재생됩니다. 계속할까요?", "iOSでは元のMVが再生されます。続けますか？"),
+    "Android will play the original MV. Continue?": (
+        "Android에서는 원래 MV가 재생됩니다. 계속할까요?", "Androidでは元のMVが再生されます。続けますか？"),
+    "Android and iOS will play the original MV. Continue?": (
+        "Android와 iOS 모두 원래 MV가 재생됩니다. 계속할까요?", "AndroidとiOSの両方で元のMVが再生されます。続けますか？"),
+    "Preparing the project": ("프로젝트 준비 중", "プロジェクトを準備中"),
+    "Decoding the soundtrack": ("음원 읽는 중", "音源を読み込み中"),
+    "Registered '{title}' ({id}).": ("'{title}'({id})를 등록했습니다.", "「{title}」（{id}）を登録しました。"),
+    "Updated '{title}' ({id}).": ("'{title}'({id})를 업데이트했습니다.", "「{title}」（{id}）を更新しました。"),
+    "Removed '{title}' ({id}).": ("'{title}'({id})를 삭제했습니다.", "「{title}」（{id}）を削除しました。"),
+    "No changes to apply.": ("바뀐 내용이 없습니다.", "変更はありません。"),
+    "The game server was restarted.": ("게임 서버를 다시 시작했습니다.", "ゲームサーバーを再起動しました。"),
+    "The game server restarts when this job finishes.": ("작업이 끝나면 게임 서버를 다시 시작합니다.", "処理が終わるとゲームサーバーを再起動します。"),
+    "Restart the game server to apply it.": ("게임 서버를 다시 시작해야 적용됩니다.", "反映するにはゲームサーバーを再起動してください。"),
+    "The game server was stopped. Start it again.": ("게임 서버를 멈췄습니다. 다시 시작하세요.", "ゲームサーバーを停止しました。もう一度起動してください。"),
+    "In game: Live → song list → {title} → MV": (
+        "게임: 라이브 → 곡 목록 → {title} → MV 버튼", "ゲーム：ライブ → 楽曲一覧 → {title} → MVボタン"),
+    "Registered MV-only songs ({count})": ("등록한 MV 전용 곡 ({count})", "登録したMV専用曲（{count}）"),
+    "No MV-only songs are registered in this region.": ("이 지역에 등록한 MV 전용 곡이 없습니다.", "この地域に登録したMV専用曲はありません。"),
+    "Updated {date}": ("{date} 수정", "{date} 更新"),
+    "Not visible in the game (no Advanced chart)": ("게임에 보이지 않음 (상급 채보 없음)", "ゲームに表示されません（上級の譜面なし）"),
+    "Base MV unknown": ("기본 MV를 알 수 없음", "ベースMVが不明"),
+    "Original MV on iOS": ("iOS 원본 MV", "iOSは元のMV"),
+    "Original MV on Android": ("Android 원본 MV", "Androidは元のMV"),
+    "Open": ("열기", "開く"),
+    "Fix": ("고치기", "修正"),
+    "Delete": ("삭제", "削除"),
+    "Delete '{title}'?": ("'{title}'를 삭제할까요?", "「{title}」を削除しますか？"),
+    ("This deletes the song, its jacket, audio and timeline files, and every player's MV deck, play records and playlist "
+     "entries for it. A backup is made first, and the game server stops for a moment."): (
+        "곡, 재킷, 음원, 타임라인 파일과 모든 플레이어의 이 곡 MV 덱·플레이 기록·플레이리스트 항목을 지웁니다. "
+        "지우기 전에 백업을 만들고, 게임 서버를 잠시 멈춥니다.",
+        "曲、ジャケット、音源、タイムラインのファイルと、全プレイヤーのこの曲のMVデッキ・プレイ記録・プレイリスト項目を削除します。"
+        "削除の前にバックアップを作り、ゲームサーバーを一時停止します。"),
+    "Player records to delete: {count}": ("지울 플레이어 기록: {count}개", "削除するプレイヤー記録：{count}件"),
+    "Advanced: replace charts": ("고급: 채보 바꾸기", "上級者向け：譜面の差し替え"),
+    "Replace the placeholder Advanced chart with your own, or add other difficulties.": (
+        "자리 표시용 상급 채보를 직접 만든 채보로 바꾸거나 다른 난이도를 추가합니다.",
+        "仮の上級譜面を自作の譜面に差し替えたり、ほかの難易度を追加したりします。"),
+    "This browser cannot open this audio format. Convert it to WAV and import it again.": (
+        "이 브라우저에서 이 음원 형식을 열 수 없습니다. WAV로 바꿔서 가져오세요.",
+        "このブラウザーではこの音源の形式を開けません。WAVに変換して読み込み直してください。"),
+    "The project soundtrack is no longer available. Import it again.": (
+        "프로젝트 음원을 더 이상 찾을 수 없습니다. 다시 가져오세요.", "プロジェクトの音源が見つかりません。読み込み直してください。"),
+    "The soundtrack offset leaves no audio to register.": (
+        "음원 오프셋 때문에 등록할 음원이 남지 않습니다.", "音源オフセットのため、登録する音源が残りません。"),
+    "The converted audio is empty or larger than 96 MiB.": (
+        "변환한 음원이 비어 있거나 96 MiB보다 큽니다.", "変換した音源が空か、96 MiBを超えています。"),
+    "MV registration progress is unavailable. Reopen this page.": (
+        "등록 진행 상황을 받을 수 없습니다. 이 페이지를 다시 여세요.", "登録の進行状況を受け取れません。このページを開き直してください。"),
+    "MV registration progress was interrupted. Check the songs list.": (
+        "등록 진행 상황이 끊겼습니다. 등록한 곡 목록을 확인하세요.", "登録の進行状況が途切れました。登録した曲の一覧を確認してください。"),
+    "MV registration was cancelled.": ("MV 등록을 취소했습니다.", "MVの登録をキャンセルしました。"),
+    "Removing the MV-only song was cancelled.": ("MV 전용 곡 삭제를 취소했습니다.", "MV専用曲の削除をキャンセルしました。"),
+    "Some editor changes are not baked into the timeline yet. Wait for them to finish, then register again.": (
+        "아직 타임라인에 반영되지 않은 편집이 있습니다. 끝날 때까지 기다린 뒤 다시 등록하세요.",
+        "まだタイムラインに反映されていない編集があります。終わるまで待ってから登録し直してください。"),
+    # Job stages
+    "Checking the base MV originals": ("기본 MV 원본 확인", "ベースMVの元データを確認"),
+    "Building the Android timeline": ("Android 타임라인 만드는 중", "Android用タイムラインを作成中"),
+    "Building the iOS timeline": ("iOS 타임라인 만드는 중", "iOS用タイムラインを作成中"),
+    "Converting the audio": ("음원 변환 중", "音源を変換中"),
+    "Building the preview audio": ("미리듣기 음원 만드는 중", "試聴用の音源を作成中"),
+    "Preparing the jacket": ("재킷 준비 중", "ジャケットを準備中"),
+    "Stopping the game server": ("게임 서버 정지", "ゲームサーバーを停止"),
+    "Writing to the game catalog": ("게임 목록에 쓰는 중", "ゲームの一覧に書き込み中"),
+    "Restarting the game server": ("게임 서버 다시 시작", "ゲームサーバーを再起動"),
+    "Removing the song from the game": ("게임에서 곡 지우는 중", "ゲームから曲を削除中"),
+    # Plan notes and registration errors (core/mv_studio_register.py)
+    "MV registration requires the Elichika server app.": (
+        "MV 등록에는 Elichika 서버 앱이 필요합니다.", "MVの登録にはElichikaサーバーアプリが必要です。"),
+    "Another MV registration or removal is running. Try again when it finishes.": (
+        "다른 MV 등록이나 삭제가 진행 중입니다. 끝난 뒤 다시 시도하세요.",
+        "ほかのMVの登録または削除を実行中です。終わってからもう一度お試しください。"),
+    "Choose the base MV.": ("기본 MV를 고르세요.", "ベースMVを選んでください。"),
+    "The base MV of this song is unknown. Only removal is available.": (
+        "이 곡의 기본 MV를 알 수 없습니다. 삭제만 할 수 있습니다.", "この曲のベースMVが不明です。削除のみできます。"),
+    ("The registered song this project was opened from was removed. Choose a stock base MV to register this "
+     "project."): (
+        "이 프로젝트를 연 등록 곡이 삭제되었습니다. 이 프로젝트를 등록하려면 게임의 원래 MV를 기본 MV로 고르세요.",
+        "このプロジェクトを開いた登録済みの曲は削除されました。このプロジェクトを登録するには、ゲームの元のMVをベースMVとして選んでください。"),
+    "This song was made from another base MV. Register the project as a new song.": (
+        "이 곡은 다른 기본 MV로 만들었습니다. 이 프로젝트는 새 곡으로 등록하세요.",
+        "この曲は別のベースMVから作られています。このプロジェクトは新しい曲として登録してください。"),
+    "The track structure changed, so the timeline cannot go into the game:": (
+        "트랙 구조가 바뀌어 게임에 넣을 수 없습니다:", "トラックの構成が変わったため、ゲームに入れられません："),
+    "The original MV timeline is unavailable. Reopen the original timeline before saving.": (
+        "원본 MV 타임라인을 찾을 수 없습니다. 원본 타임라인을 다시 연 뒤 저장하세요.",
+        "元のMVタイムラインが見つかりません。元のタイムラインを開き直してから保存してください。"),
+    "The project's timeline does not belong to this base MV.": (
+        "프로젝트의 타임라인이 이 기본 MV의 것이 아닙니다.", "プロジェクトのタイムラインはこのベースMVのものではありません。"),
+    "The base MV's original iOS timeline is not available. Allow the download, or register for Android only.": (
+        "기본 MV의 iOS 원본 타임라인이 없습니다. 내려받기를 허용하거나 Android에만 등록하세요.",
+        "ベースMVのiOS用の元タイムラインがありません。ダウンロードを許可するか、Androidだけに登録してください。"),
+    "The base MV's original Android timeline is not available. Allow the download, or register for iOS only.": (
+        "기본 MV의 Android 원본 타임라인이 없습니다. 내려받기를 허용하거나 iOS에만 등록하세요.",
+        "ベースMVのAndroid用の元タイムラインがありません。ダウンロードを許可するか、iOSだけに登録してください。"),
+    ("The edits could not be baked into the iOS original MV. Register for Android only to play the original MV on "
+     "iOS."): (
+        "편집 내용을 iOS 원본 MV에 넣지 못했습니다. iOS에서 원래 MV가 재생되도록 Android에만 등록하세요.",
+        "編集内容をiOSの元のMVに反映できませんでした。iOSでは元のMVが再生されるよう、Androidだけに登録してください。"),
+    ("The edits could not be baked into the Android original MV. Register for iOS only to play the original MV on "
+     "Android."): (
+        "편집 내용을 Android 원본 MV에 넣지 못했습니다. Android에서 원래 MV가 재생되도록 iOS에만 등록하세요.",
+        "編集内容をAndroidの元のMVに反映できませんでした。Androidでは元のMVが再生されるよう、iOSだけに登録してください。"),
+    "The Android and iOS timelines came out different, so nothing was registered.": (
+        "Android와 iOS 타임라인이 서로 다르게 만들어져 등록하지 않았습니다.",
+        "AndroidとiOSのタイムラインが異なる結果になったため、登録しませんでした。"),
+    "The project changed after the last check. Check it again, then register.": (
+        "마지막 점검 뒤에 프로젝트가 바뀌었습니다. 다시 점검한 다음 등록하세요.",
+        "前回のチェックの後にプロジェクトが変わりました。もう一度チェックしてから登録してください。"),
+    "{platform}: the registered timeline stays": ("{platform}: 등록된 타임라인을 그대로 둡니다", "{platform}：登録済みのタイムラインのままです"),
+    "Register for Android only": ("Android에만 등록", "Androidだけに登録"),
+    "Register for iOS only": ("iOS에만 등록", "iOSだけに登録"),
+    "{platform}: left out of this registration, it plays the original MV": (
+        "{platform}: 이번 등록에서 빠지며 원래 MV가 재생됩니다", "{platform}：今回の登録から外れ、元のMVが再生されます"),
+    "Backup: {path}": ("백업: {path}", "バックアップ：{path}"),
+    "Enter a song title between 1 and 160 characters.": ("곡 제목을 1~160자로 입력하세요.", "曲のタイトルを1〜160文字で入力してください。"),
+    "Enter a credit of at most 200 characters on one line.": (
+        "크레디트는 한 줄로 200자 이내로 입력하세요.", "クレジットは1行・200文字以内で入力してください。"),
+    "Choose Android, iOS or both.": ("Android, iOS 또는 둘 다 고르세요.", "Android、iOS、または両方を選んでください。"),
+    "The MV registration request is invalid.": ("MV 등록 요청이 올바르지 않습니다.", "MVの登録リクエストが正しくありません。"),
+    "Choose a new song, or a registered song to update.": (
+        "새 곡 또는 업데이트할 등록 곡을 고르세요.", "新しい曲か、更新する登録済みの曲を選んでください。"),
+    "A new song has no registered part to keep.": ("새 곡에는 유지할 등록 내용이 없습니다.", "新しい曲には保持する登録内容がありません。"),
+    "Choose the song audio.": ("곡 음원을 고르세요.", "曲の音源を選んでください。"),
+    "Enter the BPM and the first beat of the project audio.": (
+        "프로젝트 음원의 BPM과 첫 박을 입력하세요.", "プロジェクトの音源のBPMと最初の拍を入力してください。"),
+    "Enter a BPM between 1 and 999 and a first beat of 0 seconds or more.": (
+        "BPM은 1~999, 첫 박은 0초 이상으로 입력하세요.", "BPMは1〜999、最初の拍は0秒以上で入力してください。"),
+    "Enter a preview start of 0 seconds or more.": ("미리듣기 시작은 0초 이상으로 입력하세요.", "試聴の開始は0秒以上で入力してください。"),
+    "The converted project audio is no longer available. Register again.": (
+        "변환한 프로젝트 음원을 더 이상 찾을 수 없습니다. 다시 등록하세요.",
+        "変換したプロジェクトの音源が見つかりません。もう一度登録してください。"),
+    "The base song's audio is not available locally. Allow the download, or keep the original audio.": (
+        "기본 MV 곡의 음원이 이 기기에 없습니다. 내려받기를 허용하거나 원곡 음원을 그대로 쓰세요.",
+        "ベースMVの曲の音源がこの端末にありません。ダウンロードを許可するか、原曲の音源のまま使ってください。"),
+    "Choose the jacket.": ("재킷을 고르세요.", "ジャケットを選んでください。"),
+    "The jacket area must be a square inside the image.": (
+        "재킷 영역은 이미지 안의 정사각형이어야 합니다.", "ジャケットの範囲は画像内の正方形にしてください。"),
+    "The jacket must be a PNG, JPEG or another image this app can open.": (
+        "재킷은 PNG, JPEG 등 이 앱이 열 수 있는 이미지여야 합니다.", "ジャケットはPNGやJPEGなど、このアプリで開ける画像にしてください。"),
+    "The jacket image is larger than this app can open.": (
+        "재킷 이미지가 너무 커서 이 앱에서 열 수 없습니다.", "ジャケット画像が大きすぎて、このアプリでは開けません。"),
+    "Track settings do not reach the game:": ("트랙 설정은 게임에 반영되지 않습니다:", "トラックの設定はゲームに反映されません："),
+    "These edited values are preview-only:": ("이 편집 값은 미리보기에만 적용됩니다:", "これらの編集値はプレビューのみに反映されます："),
+    "Imported stage, effect or prop models": ("가져온 무대·효과·소품 모델", "読み込んだステージ・エフェクト・小物のモデル"),
+    "Imported performer models": ("가져온 출연자 모델", "読み込んだ出演者のモデル"),
+    "Member positions": ("멤버 위치", "メンバーの位置"),
+    "Pinned costumes (choose outfits in the game's MV deck)": (
+        "의상 고정 (의상은 게임의 MV 덱에서 고르세요)", "衣装の固定（衣装はゲームのMVデッキで選んでください）"),
+    "MV quality preview settings": ("MV 그래픽 미리보기 설정", "MVグラフィックのプレビュー設定"),
+    "Editor changes that could not be baked:": ("타임라인에 반영하지 못한 편집:", "タイムラインに反映できなかった編集："),
+    "The follow camera is baked for the preview members' heights.": (
+        "팔로우 카메라는 미리보기 멤버 키 기준으로 만들어집니다.", "フォローカメラはプレビューのメンバーの身長を基準に作られます。"),
+    "The audio is {seconds} s longer than the MV. The last scene holds until the music ends.": (
+        "음원이 MV보다 {seconds}초 깁니다. 마지막 장면이 멈춘 채로 끝까지 재생됩니다.",
+        "音源がMVより{seconds}秒長いです。最後の場面が止まったまま最後まで再生されます。"),
+    "The audio is {seconds} s shorter than the MV. The MV ends with the music.": (
+        "음원이 MV보다 {seconds}초 짧습니다. 음원이 끝나면 MV도 끝납니다.", "音源がMVより{seconds}秒短いです。音源が終わるとMVも終わります。"),
+    "The soundtrack offset applies only to the project audio. The original audio starts with the MV.": (
+        "음원 오프셋은 프로젝트 음원에만 적용됩니다. 원곡 음원은 MV와 함께 시작합니다.",
+        "音源オフセットはプロジェクトの音源にだけ反映されます。原曲の音源はMVと同時に始まります。"),
+    "The edits are counted once the original MV is available. Allow the download to bake them.": (
+        "원본 MV를 받은 뒤 편집을 셉니다. 반영하려면 내려받기를 허용하세요.",
+        "元のMVを取得してから編集を数えます。反映するにはダウンロードを許可してください。"),
+    # Registration routes (webtools/server.py)
+    "Send the converted audio as a WAV file.": ("변환한 음원을 WAV 파일로 보내세요.", "変換した音源をWAVファイルとして送ってください。"),
+    "The converted audio upload was interrupted.": ("변환한 음원 업로드가 중간에 끊겼습니다.", "変換した音源のアップロードが途中で途切れました。"),
+    "Open 3D MV at the local app address before changing the game catalog.": (
+        "게임 목록을 바꾸려면 이 기기의 앱 주소에서 3D MV를 여세요.",
+        "ゲームの一覧を変更するには、この端末のアプリのアドレスで3D MVを開いてください。"),
+    "Open the editor from this app before saving changes.": (
+        "변경 내용을 저장하려면 이 앱에서 편집기를 여세요.", "変更を保存するには、このアプリからエディターを開いてください。"),
+    "The MV request failed.": ("MV 요청에 실패했습니다.", "MVのリクエストに失敗しました。"),
+    "Invalid editing request size.": ("편집 요청 크기가 올바르지 않습니다.", "編集リクエストのサイズが正しくありません。"),
+    "The editing request is too large or empty.": ("편집 요청이 너무 크거나 비어 있습니다.", "編集リクエストが大きすぎるか、空です。"),
+    "Unsupported editing request.": ("지원하지 않는 편집 요청입니다.", "対応していない編集リクエストです。"),
+    "Choose a valid MV search.": ("올바른 MV 검색어를 입력하세요.", "正しいMVの検索条件を入力してください。"),
+    "Provide a matching chart and difficulty template.": (
+        "맞는 채보와 난이도 템플릿을 넣어 주세요.", "対応する譜面と難易度テンプレートを指定してください。"),
+    "Database maintenance is busy. Retry after the current operation finishes.": (
+        "다른 데이터베이스 작업이 진행 중입니다. 끝난 뒤 다시 시도하세요.",
+        "ほかのデータベース処理を実行中です。終わってからもう一度お試しください。"),
+    "Database maintenance could not start safely. Retry after checking the runtime.": (
+        "데이터베이스 작업을 안전하게 시작하지 못했습니다. 실행 환경을 확인한 뒤 다시 시도하세요.",
+        "データベース処理を安全に開始できませんでした。実行環境を確認してからもう一度お試しください。"),
+    # Native export refusals (core/mv_studio_timeline.py)
+    "Native export can edit existing tracks in their original order only.": (
+        "게임용 내보내기는 기존 트랙을 원래 순서 그대로만 편집할 수 있습니다.",
+        "ゲーム用の書き出しでは、既存のトラックを元の順番のまま編集することしかできません。"),
+    "Track identity, binding, and original metadata are read-only in native exports.": (
+        "게임용 내보내기에서 트랙 식별자, 연결 대상, 원래 메타데이터는 바꿀 수 없습니다.",
+        "ゲーム用の書き出しでは、トラックの識別子・バインド先・元のメタデータは変更できません。"),
+    "Native export can edit existing clip slots in their original order only.": (
+        "게임용 내보내기는 기존 클립 칸을 원래 순서 그대로만 편집할 수 있습니다.",
+        "ゲーム用の書き出しでは、既存のクリップ枠を元の順番のまま編集することしかできません。"),
+    "The revision cannot replace a native clip's original identities or fields.": (
+        "편집으로 원래 클립의 식별자나 필드를 바꿀 수 없습니다.", "編集で元のクリップの識別子やフィールドを置き換えることはできません。"),
+    "The revision cannot change which native clip fields are editable.": (
+        "편집으로 원래 클립의 편집 가능한 필드를 바꿀 수 없습니다.", "編集で元のクリップの編集可能なフィールドを変えることはできません。"),
+    "Change the original clip timings to set the native timeline duration.": (
+        "게임용 타임라인 길이를 바꾸려면 원래 클립의 타이밍을 바꾸세요.",
+        "ゲーム用タイムラインの長さを変えるには、元のクリップのタイミングを変えてください。"),
+    "An edited clip uses a shared or external playable asset. Edit its timing only.": (
+        "편집한 클립이 공유되거나 외부에 있는 재생 에셋을 씁니다. 타이밍만 편집하세요.",
+        "編集したクリップは共有または外部の再生アセットを使っています。タイミングだけを編集してください。"),
+    "This camera animation is shared or external. Edit its timing only.": (
+        "이 카메라 애니메이션은 공유되거나 외부에 있습니다. 타이밍만 편집하세요.",
+        "このカメラアニメーションは共有または外部のものです。タイミングだけを編集してください。"),
+    "Keep one camera point per frame of the shot, at its frame times.": (
+        "샷의 프레임마다 카메라 포인트를 하나씩, 그 프레임 시간에 두세요.",
+        "ショットのフレームごとにカメラポイントを1つずつ、そのフレームの時刻に置いてください。"),
+    "Camera point edits need an untrimmed native shot: clip offset 0, speed 1 and its own camera bindings.": (
+        "카메라 포인트를 편집하려면 잘리지 않은 원래 샷이어야 합니다: 클립 오프셋 0, 속도 1, 원래 카메라 바인딩.",
+        "カメラポイントを編集するには、切り詰めていない元のショットが必要です（クリップオフセット0、速度1、元のカメラバインディング）。"),
+    "A camera shot with camera edits needs a length of whole frames (1/60 s).": (
+        "카메라를 편집한 샷의 길이는 프레임(1/60초) 단위여야 합니다.", "カメラを編集したショットの長さは、フレーム（1/60秒）単位にしてください。"),
+    "The native copy changed unrelated Unity objects or resources.": (
+        "게임용 사본에서 관계없는 Unity 오브젝트나 리소스가 바뀌었습니다.",
+        "ゲーム用のコピーで無関係なUnityオブジェクトまたはリソースが変わりました。"),
+    "A native timeline edit did not survive serialization.": (
+        "게임용 타임라인 편집이 저장 과정에서 유지되지 않았습니다.", "ゲーム用タイムラインの編集が保存の過程で保たれませんでした。"),
+    "Timeline diagnostics are read-only in native exports.": (
+        "게임용 내보내기에서 타임라인 진단 정보는 바꿀 수 없습니다.", "ゲーム用の書き出しでは、タイムラインの診断情報は変更できません。"),
+    "The revision no longer matches the original timeline.": (
+        "편집 내용이 원래 타임라인과 더 이상 맞지 않습니다.", "編集内容が元のタイムラインと一致しなくなりました。"),
+    # Elichika store (mv_studio_live.MESSAGES)
+    "Choose a native file of the expected type.": ("올바른 형식의 게임 파일을 고르세요.", "正しい形式のゲーム用ファイルを選んでください。"),
+    "The selected file is empty, too large or unreadable.": (
+        "선택한 파일이 비어 있거나 너무 크거나 읽을 수 없습니다.", "選んだファイルが空か、大きすぎるか、読み込めません。"),
+    "The selected file changed during registration. Try again.": (
+        "등록하는 동안 선택한 파일이 바뀌었습니다. 다시 시도하세요.", "登録中に選んだファイルが変わりました。もう一度お試しください。"),
+    "Provide each native timeline as an unpacked UnityFS bundle.": (
+        "게임용 타임라인은 압축을 푼 UnityFS 번들로 넣어 주세요.", "ゲーム用タイムラインは展開済みのUnityFSバンドルで指定してください。"),
+    "The native timeline exceeds the supported file size.": (
+        "게임용 타임라인이 지원하는 파일 크기를 넘습니다.", "ゲーム用タイムラインが対応するファイルサイズを超えています。"),
+    "The jacket must be a PNG or JPEG image of exactly 400x400 pixels.": (
+        "재킷은 정확히 400x400 픽셀인 PNG 또는 JPEG 이미지여야 합니다.", "ジャケットはちょうど400x400ピクセルのPNGまたはJPEG画像にしてください。"),
+    "The jacket image must be at most 2 MiB.": ("재킷 이미지는 2 MiB 이하여야 합니다.", "ジャケット画像は2 MiB以下にしてください。"),
+    "Provide the song audio as an ACB cue sheet with its optional AWB bank.": (
+        "곡 음원은 ACB 큐 시트와 (필요하면) AWB 뱅크로 넣어 주세요.", "曲の音源はACBキューシートと（必要なら）AWBバンクで指定してください。"),
+    "The audio cue sheet or bank is empty or too large.": (
+        "음원 큐 시트나 뱅크가 비어 있거나 너무 큽니다.", "音源のキューシートまたはバンクが空か、大きすぎます。"),
+    "Provide an ACB containing one playable cue with the same name as the sheet.": (
+        "시트와 같은 이름의 재생 가능한 큐가 하나 든 ACB를 넣어 주세요.", "シートと同じ名前の再生できるキューが1つ入ったACBを指定してください。"),
+    "Provide the matching AWB for a streaming cue, or only the ACB for an embedded cue.": (
+        "스트리밍 큐에는 짝이 맞는 AWB를, 내장 큐에는 ACB만 넣어 주세요.",
+        "ストリーミングのキューには対応するAWBを、埋め込みのキューにはACBだけを指定してください。"),
+    "The audio cue could not be read or decoded.": ("음원 큐를 읽거나 디코딩하지 못했습니다.", "音源のキューを読み込めないか、デコードできませんでした。"),
+    "Choose the ACB cue sheet for this AWB bank.": ("이 AWB 뱅크의 ACB 큐 시트를 고르세요.", "このAWBバンクに対応するACBキューシートを選んでください。"),
+    "The CRI sheet must use an unused music_XXXX game cue name.": (
+        "CRI 시트 이름은 쓰이지 않은 music_XXXX 게임 큐 이름이어야 합니다.", "CRIシート名は未使用のmusic_XXXX形式のゲームのキュー名にしてください。"),
+    "The timeline must use the native format of its selected platform.": (
+        "타임라인은 선택한 플랫폼의 게임 형식이어야 합니다.", "タイムラインは選んだプラットフォームのゲーム形式にしてください。"),
+    "The selected Unity file has no unique native timeline container.": (
+        "선택한 Unity 파일에 게임용 타임라인 컨테이너가 하나만 있지 않습니다.",
+        "選んだUnityファイルにゲーム用タイムラインのコンテナーが1つだけではありません。"),
+    "The selected Unity timeline container is empty.": ("선택한 Unity 타임라인 컨테이너가 비어 있습니다.", "選んだUnityタイムラインのコンテナーが空です。"),
+    "The native timeline and its dependencies must match the selected stage template.": (
+        "게임용 타임라인과 그 의존 파일이 선택한 기본 무대와 맞아야 합니다.",
+        "ゲーム用タイムラインとその依存ファイルは、選んだベースのステージと一致する必要があります。"),
+    "The timeline changes a serialized game type used by the stage.": (
+        "타임라인이 무대가 쓰는 게임 데이터 형식을 바꿉니다.", "タイムラインがステージで使うゲームのデータ形式を変えています。"),
+    "The timeline changes native container, script or resource data.": (
+        "타임라인이 게임 컨테이너, 스크립트 또는 리소스 데이터를 바꿉니다.", "タイムラインがゲームのコンテナー・スクリプト・リソースのデータを変えています。"),
+    "The timeline introduces a reference outside the selected stage template.": (
+        "타임라인이 선택한 기본 무대 밖을 참조합니다.", "タイムラインが選んだベースのステージの外を参照しています。"),
+    "The native Unity timeline could not be read against the selected stage template.": (
+        "게임용 Unity 타임라인을 선택한 기본 무대와 비교해 읽지 못했습니다.",
+        "ゲーム用Unityタイムラインを、選んだベースのステージと照らし合わせて読み込めませんでした。"),
+    "A game catalog is missing the base MV's native timeline pack.": (
+        "게임 목록에 기본 MV의 타임라인 팩이 없습니다.", "ゲームの一覧にベースMVのタイムラインパックがありません。"),
+    "Install the base MV's original timeline for this platform locally, or allow the download, to verify the edit.": (
+        "편집을 확인하려면 이 플랫폼의 기본 MV 원본 타임라인을 기기에 받아 두거나 내려받기를 허용하세요.",
+        "編集を確認するには、このプラットフォーム用のベースMVの元タイムラインを端末に用意するか、ダウンロードを許可してください。"),
+    "The supplied original timeline does not match the base MV's catalogued size.": (
+        "받은 원본 타임라인이 게임 목록에 적힌 기본 MV의 크기와 다릅니다.",
+        "取得した元タイムラインが、ゲームの一覧にあるベースMVのサイズと一致しません。"),
+    "Provide a native timeline for Android, iOS or both.": (
+        "Android, iOS 또는 둘 다의 게임용 타임라인을 넣어 주세요.", "Android、iOS、または両方のゲーム用タイムラインを指定してください。"),
+    "A game catalog is missing the base MV's native timeline.": (
+        "게임 목록에 기본 MV의 타임라인이 없습니다.", "ゲームの一覧にベースMVのタイムラインがありません。"),
+    "Select the GL or JP catalog.": ("GL 또는 JP 목록을 고르세요.", "GLまたはJPの一覧を選んでください。"),
+    "The region's game databases are incomplete.": ("이 지역의 게임 데이터베이스가 완전하지 않습니다.", "この地域のゲームデータベースがそろっていません。"),
+    "Close the database editor so MV Studio can update all catalogs in one transaction.": (
+        "MV 스튜디오가 모든 목록을 한 번에 고칠 수 있도록 데이터베이스 편집기를 닫으세요.",
+        "MVスタジオがすべての一覧を一度に更新できるよう、データベースエディターを閉じてください。"),
+    "The installed game database layout does not support this MV.": (
+        "설치된 게임 데이터베이스 구조가 이 MV를 지원하지 않습니다.", "インストール済みのゲームデータベースの構造がこのMVに対応していません。"),
+    "Stop the game server before removing an MV-only song.": (
+        "MV 전용 곡을 지우기 전에 게임 서버를 멈추세요.", "MV専用曲を削除する前にゲームサーバーを停止してください。"),
+    "Provide the original timelines per platform.": ("원본 타임라인을 플랫폼별로 넣어 주세요.", "元のタイムラインをプラットフォームごとに指定してください。"),
+    "Name the preview cue sheet after the music cue sheet with _SABI.": (
+        "미리듣기 큐 시트 이름은 음악 큐 시트 이름 뒤에 _SABI를 붙이세요.", "試聴用キューシートの名前は、曲のキューシート名の後ろに_SABIを付けてください。"),
+    "Fingerprints must be short text values for android, ios, audio or jacket.": (
+        "지문 값은 android, ios, audio, jacket용 짧은 문자열이어야 합니다.", "フィンガープリントはandroid・ios・audio・jacket用の短い文字列にしてください。"),
+    "The MV-only song ID is outside this region's range.": (
+        "MV 전용 곡 ID가 이 지역의 범위를 벗어납니다.", "MV専用曲のIDがこの地域の範囲外です。"),
+    "No free MV-only song ID is left in this region.": ("이 지역에 남은 MV 전용 곡 ID가 없습니다.", "この地域で使えるMV専用曲のIDが残っていません。"),
+    "The base MV must be a stock 3D song with a song cue and formation.": (
+        "기본 MV는 곡 음원과 멤버 구성이 있는 게임 원래의 3D 곡이어야 합니다.",
+        "ベースMVは、曲の音源とメンバー編成があるゲーム本来の3D曲にしてください。"),
+    "Choose a stock game MV as the base, not a registered MV-only song.": (
+        "기본 MV로는 등록한 MV 전용 곡이 아닌 게임 원래의 MV를 고르세요.",
+        "ベースMVには、登録したMV専用曲ではなくゲーム本来のMVを選んでください。"),
+    "The selected 3D timeline does not belong to the base song.": (
+        "선택한 3D 타임라인이 기본 곡의 것이 아닙니다.", "選んだ3Dタイムラインはベースの曲のものではありません。"),
+    "An MV position refers to an unknown stage.": ("MV 위치가 알 수 없는 무대를 가리킵니다.", "MVの位置が不明なステージを指しています。"),
+    "Select a song registered by MV Studio.": ("MV 스튜디오로 등록한 곡을 고르세요.", "MVスタジオで登録した曲を選んでください。"),
+    "A game catalog is missing a complete package of the base MV.": (
+        "게임 목록에 기본 MV의 패키지가 온전히 있지 않습니다.", "ゲームの一覧にベースMVのパッケージがそろっていません。"),
+    "A game catalog is missing its main package.": ("게임 목록에 main 패키지가 없습니다.", "ゲームの一覧にmainパッケージがありません。"),
+    "A game catalog is missing the base song's native cue sheet.": (
+        "게임 목록에 기본 곡의 큐 시트가 없습니다.", "ゲームの一覧にベースの曲のキューシートがありません。"),
+    "The new audio must keep the song's existing cue sheet names.": (
+        "새 음원은 곡의 기존 큐 시트 이름을 그대로 써야 합니다.", "新しい音源は曲の既存のキューシート名をそのまま使う必要があります。"),
+    "The selected music ID or cue already belongs to a song in this region.": (
+        "선택한 음악 ID나 큐를 이 지역의 다른 곡이 이미 쓰고 있습니다.", "選んだ音楽IDまたはキューは、この地域のほかの曲がすでに使っています。"),
+    "The chart template has more stage effects than MV Studio can copy.": (
+        "채보 템플릿의 스테이지 효과가 MV 스튜디오가 복사할 수 있는 수보다 많습니다.",
+        "譜面テンプレートのステージ効果が、MVスタジオでコピーできる数より多いです。"),
+    "The song's placeholder chart ID is already in use.": (
+        "이 곡의 자리 표시용 채보 ID를 이미 쓰고 있습니다.", "この曲の仮の譜面IDはすでに使われています。"),
+    "No playable Advanced chart was found to use as this song's placeholder.": (
+        "이 곡의 자리 표시용으로 쓸 수 있는 상급 채보를 찾지 못했습니다.", "この曲の仮の譜面として使える上級の譜面が見つかりませんでした。"),
+    "The placeholder chart template could not be read.": ("자리 표시용 채보 템플릿을 읽지 못했습니다.", "仮の譜面テンプレートを読み込めませんでした。"),
+    "The requested MV-only song ID is already in use.": ("요청한 MV 전용 곡 ID를 이미 쓰고 있습니다.", "指定したMV専用曲のIDはすでに使われています。"),
+    "Choose the update options explicitly.": ("업데이트 옵션을 직접 고르세요.", "更新のオプションを明示的に選んでください。"),
+    "The registered song is incomplete in the game catalog. Remove it and register again.": (
+        "등록한 곡이 게임 목록에 온전히 있지 않습니다. 삭제한 뒤 다시 등록하세요.",
+        "登録した曲がゲームの一覧にそろっていません。削除してから登録し直してください。"),
+    "The removal review is out of date. Review the song again before removing it.": (
+        "삭제 확인 내용이 오래되었습니다. 곡을 다시 확인한 뒤 삭제하세요.", "削除の確認内容が古くなっています。曲をもう一度確認してから削除してください。"),
+    "A live in progress uses this song. Finish the live in the game, then try again.": (
+        "플레이 중인 라이브가 이 곡을 쓰고 있습니다. 게임에서 라이브를 끝낸 뒤 다시 시도하세요.",
+        "プレイ中のライブがこの曲を使っています。ゲームでライブを終えてから、もう一度お試しください。"),
+    "A profile showcase or ranking uses this song. Change it to another song in the game, then try again.": (
+        "프로필 쇼케이스나 랭킹이 이 곡을 쓰고 있습니다. 게임에서 다른 곡으로 바꾼 뒤 다시 시도하세요.",
+        "プロフィールの展示またはランキングがこの曲を使っています。ゲームでほかの曲に変えてから、もう一度お試しください。"),
+    ("The song was removed, but players' records for it could not be cleaned. The game ignores records of songs it no "
+     "longer has."): (
+        "곡은 지웠지만 플레이어 기록을 정리하지 못했습니다. 게임은 없는 곡의 기록을 무시합니다.",
+        "曲は削除しましたが、プレイヤーの記録を整理できませんでした。ゲームは存在しない曲の記録を無視します。"),
+    ("The change was saved, but some files it no longer needs could not be moved or deleted. The game does not use "
+     "them."): (
+        "변경은 저장했지만 더는 필요 없는 일부 파일을 옮기거나 지우지 못했습니다. 게임은 이 파일을 쓰지 않습니다.",
+        "変更は保存しましたが、不要になった一部のファイルを移動または削除できませんでした。ゲームはこれらのファイルを使いません。"),
+    "The change was saved, but older MV Studio backups could not be deleted.": (
+        "변경은 저장했지만 오래된 MV 스튜디오 백업을 지우지 못했습니다.", "変更は保存しましたが、古いMVスタジオのバックアップを削除できませんでした。"),
+    "Choose the exact source stage before installing a replacement timeline.": (
+        "대체 타임라인을 넣기 전에 원본 무대를 정확히 고르세요.", "差し替えタイムラインを入れる前に、元のステージを正確に選んでください。"),
+    "The chart exceeds the supported file size.": ("채보가 지원하는 파일 크기를 넘습니다.", "譜面が対応するファイルサイズを超えています。"),
+    "Provide a complete native stage chart, with its own note list.": (
+        "노트 목록이 들어 있는 완전한 게임용 채보를 넣어 주세요.", "ノーツの一覧を含む完全なゲーム用譜面を指定してください。"),
+    "The native chart must contain complete notes.": ("게임용 채보에 노트가 온전히 들어 있어야 합니다.", "ゲーム用譜面には完全なノーツが必要です。"),
+    "The native chart contains invalid appeal chances.": ("게임용 채보에 잘못된 어필 찬스가 있습니다.", "ゲーム用譜面に不正なアピールチャンスがあります。"),
+    "The native chart contains invalid note effects.": ("게임용 채보에 잘못된 노트 효과가 있습니다.", "ゲーム用譜面に不正なノーツ効果があります。"),
+    "The native chart contains invalid stage effects.": ("게임용 채보에 잘못된 스테이지 효과가 있습니다.", "ゲーム用譜面に不正なステージ効果があります。"),
+    "The native chart repeats an appeal chance or effect ID.": (
+        "게임용 채보에 어필 찬스나 효과 ID가 중복됩니다.", "ゲーム用譜面でアピールチャンスまたは効果のIDが重複しています。"),
+    "A chart note has an invalid timing, value or reference.": (
+        "채보 노트의 타이밍, 값 또는 참조가 잘못되었습니다.", "譜面のノーツのタイミング・値・参照が正しくありません。"),
+    "Provide one or more native chart files.": ("게임용 채보 파일을 하나 이상 넣어 주세요.", "ゲーム用譜面ファイルを1つ以上指定してください。"),
+    "Choose a game difficulty type for each chart.": ("채보마다 게임 난이도를 고르세요.", "譜面ごとにゲームの難易度を選んでください。"),
+    "A native chart needs a file and a gameplay template.": (
+        "게임용 채보에는 파일과 게임 플레이 템플릿이 필요합니다.", "ゲーム用譜面にはファイルとゲームプレイのテンプレートが必要です。"),
+    "Select an open gameplay template of the same difficulty type.": (
+        "같은 난이도의 열려 있는 게임 플레이 템플릿을 고르세요.", "同じ難易度の、開放済みのゲームプレイテンプレートを選んでください。"),
+    "A chart is already installed for that difficulty.": ("그 난이도에는 이미 채보가 들어 있습니다.", "その難易度にはすでに譜面が入っています。"),
+    "The stock game requires a type-30 chart to open the song's MV from its music list.": (
+        "게임 원래 클라이언트는 곡 목록에서 MV를 열려면 상급(30) 채보가 필요합니다.",
+        "ゲーム本来のクライアントでは、楽曲一覧からMVを開くには上級（30）の譜面が必要です。"),
+    "The gameplay template is missing its difficulty settings.": (
+        "게임 플레이 템플릿에 난이도 설정이 없습니다.", "ゲームプレイテンプレートに難易度の設定がありません。"),
+    "No free chart ID is left for that difficulty.": ("그 난이도에 쓸 수 있는 채보 ID가 남지 않았습니다.", "その難易度で使える譜面IDが残っていません。"),
+    # CRI HCA encoder and ACB/AWB writer (core/cri_hca_encode.py, core/cri_acb_write.py)
+    "The encoder needs 16-bit stereo PCM samples.": ("인코더에는 16비트 스테레오 PCM 샘플이 필요합니다.", "エンコーダーには16ビットのステレオPCMサンプルが必要です。"),
+    "The decoded audio does not have the input's length and channels.": (
+        "디코딩한 음원의 길이나 채널 수가 입력과 다릅니다.", "デコードした音源の長さまたはチャンネル数が入力と一致しません。"),
+    "The PCM samples must be int16 with shape (frames, channels).": (
+        "PCM 샘플은 (프레임, 채널) 모양의 int16이어야 합니다.", "PCMサンプルは(フレーム, チャンネル)の形のint16にしてください。"),
+    "The HCA key must be a nonzero 64-bit value.": ("HCA 키는 0이 아닌 64비트 값이어야 합니다.", "HCAキーは0以外の64ビット値にしてください。"),
+    "The HCA stream has no complete header.": ("HCA 스트림에 온전한 헤더가 없습니다.", "HCAストリームに完全なヘッダーがありません。"),
+    "The HCA stream has no HCA header.": ("HCA 스트림에 HCA 헤더가 없습니다.", "HCAストリームにHCAヘッダーがありません。"),
+    "The HCA header is truncated or fails its checksum.": (
+        "HCA 헤더가 잘렸거나 체크섬이 맞지 않습니다.", "HCAヘッダーが途中で切れているか、チェックサムが一致しません。"),
+    "The HCA header has no format or compression chunk.": (
+        "HCA 헤더에 형식 또는 압축 청크가 없습니다.", "HCAヘッダーにフォーマットまたは圧縮のチャンクがありません。"),
+    "The HCA header has no channels, sample rate or frame size.": (
+        "HCA 헤더에 채널 수, 샘플레이트 또는 프레임 크기가 없습니다.", "HCAヘッダーにチャンネル数・サンプルレート・フレームサイズがありません。"),
+    "The HCA encoder could not fit a frame.": ("HCA 인코더가 프레임을 크기에 맞추지 못했습니다.", "HCAエンコーダーがフレームを収められませんでした。"),
+    "The HCA encoder overflowed a frame.": ("HCA 인코더의 프레임이 넘쳤습니다.", "HCAエンコーダーのフレームがあふれました。"),
+    "The audio is empty or longer than the encoder limit.": ("음원이 비어 있거나 인코더 한도보다 깁니다.", "音源が空か、エンコーダーの上限より長いです。"),
+    "The HCA key or bank subkey is invalid.": ("HCA 키 또는 뱅크 보조 키가 올바르지 않습니다.", "HCAキーまたはバンクのサブキーが正しくありません。"),
+    "The encode progress callback is not callable.": ("인코딩 진행 콜백을 호출할 수 없습니다.", "エンコードの進捗コールバックを呼び出せません。"),
+    "The WAV data must be bytes.": ("WAV 데이터는 바이트여야 합니다.", "WAVデータはバイト列にしてください。"),
+    "The WAV file is empty or larger than the upload limit.": (
+        "WAV 파일이 비어 있거나 업로드 한도보다 큽니다.", "WAVファイルが空か、アップロードの上限を超えています。"),
+    "The file is not a complete RIFF/WAVE file.": ("온전한 RIFF/WAVE 파일이 아닙니다.", "完全なRIFF/WAVEファイルではありません。"),
+    "The WAV file has no format or data chunk.": ("WAV 파일에 형식 또는 데이터 청크가 없습니다.", "WAVファイルにフォーマットまたはデータのチャンクがありません。"),
+    "The WAV format chunk has an unsupported size.": ("WAV 형식 청크의 크기를 지원하지 않습니다.", "WAVのフォーマットチャンクのサイズに対応していません。"),
+    "The WAV file is not 16-bit integer PCM.": ("WAV 파일이 16비트 정수 PCM이 아닙니다.", "WAVファイルが16ビット整数PCMではありません。"),
+    "The WAV file has the wrong sample rate or channel count.": (
+        "WAV 파일의 샘플레이트나 채널 수가 맞지 않습니다.", "WAVファイルのサンプルレートまたはチャンネル数が正しくありません。"),
+    "The WAV format chunk is inconsistent.": ("WAV 형식 청크의 내용이 서로 맞지 않습니다.", "WAVのフォーマットチャンクの内容が矛盾しています。"),
+    "The WAV data is empty or ends inside a sample.": (
+        "WAV 데이터가 비어 있거나 샘플 중간에서 끝납니다.", "WAVデータが空か、サンプルの途中で終わっています。"),
+    "The preview start must be a time inside the song.": ("미리듣기 시작은 곡 안의 시간이어야 합니다.", "試聴の開始は曲の範囲内の時間にしてください。"),
+    "The preview fade must be zero or more seconds.": ("미리듣기 페이드는 0초 이상이어야 합니다.", "試聴のフェードは0秒以上にしてください。"),
+    "The preview length must be a positive sample count.": ("미리듣기 길이는 양수 샘플 수여야 합니다.", "試聴の長さは正のサンプル数にしてください。"),
+    "The HCA header has an unsupported chunk.": ("HCA 헤더에 지원하지 않는 청크가 있습니다.", "HCAヘッダーに対応していないチャンクがあります。"),
+    "The HCA bitrate is too low for this audio.": ("이 음원에는 HCA 비트레이트가 너무 낮습니다.", "この音源にはHCAのビットレートが低すぎます。"),
+    "The WAV file has a truncated chunk.": ("WAV 파일의 청크가 잘렸습니다.", "WAVファイルのチャンクが途中で切れています。"),
+    "The WAV file must be 44100 Hz stereo.": ("WAV 파일은 44100 Hz 스테레오여야 합니다.", "WAVファイルは44100 Hzのステレオにしてください。"),
+    "The WAV file has a misplaced format chunk.": ("WAV 파일의 형식 청크 위치가 잘못되었습니다.", "WAVファイルのフォーマットチャンクの位置が正しくありません。"),
+    "The WAV file has a misplaced data chunk.": ("WAV 파일의 데이터 청크 위치가 잘못되었습니다.", "WAVファイルのデータチャンクの位置が正しくありません。"),
+    "The reference PCM must be int16 with shape (samples, channels).": (
+        "기준 PCM은 (샘플, 채널) 모양의 int16이어야 합니다.", "基準のPCMは(サンプル, チャンネル)の形のint16にしてください。"),
+    "The cue sheet has no CRI UTF table.": ("큐 시트에 CRI UTF 테이블이 없습니다.", "キューシートにCRI UTFテーブルがありません。"),
+    "The cue sheet contains invalid table bounds.": ("큐 시트의 테이블 범위가 잘못되었습니다.", "キューシートのテーブル範囲が正しくありません。"),
+    "The cue sheet has an inconsistent row layout.": ("큐 시트의 행 구조가 서로 맞지 않습니다.", "キューシートの行の構造が矛盾しています。"),
+    "BPM and the first beat are required for the cue's beat table.": (
+        "큐의 비트 테이블을 만들려면 BPM과 첫 박이 필요합니다.", "キューのビートテーブルにはBPMと最初の拍が必要です。"),
+    "The beat table needs a supported time signature.": ("비트 테이블에는 지원하는 박자가 필요합니다.", "ビートテーブルには対応している拍子が必要です。"),
+    "The preview excerpt must lie inside the song.": ("미리듣기 구간은 곡 안에 있어야 합니다.", "試聴の区間は曲の範囲内にしてください。"),
+    "The cue sheet name is invalid.": ("큐 시트 이름이 올바르지 않습니다.", "キューシート名が正しくありません。"),
+    "The cue sheet GUID must be 16 bytes.": ("큐 시트 GUID는 16바이트여야 합니다.", "キューシートのGUIDは16バイトにしてください。"),
+    "The HCA stream length does not match its header.": ("HCA 스트림 길이가 헤더와 맞지 않습니다.", "HCAストリームの長さがヘッダーと一致しません。"),
+    "The HCA stream has no samples.": ("HCA 스트림에 샘플이 없습니다.", "HCAストリームにサンプルがありません。"),
+    "The template cue sheet must hold exactly one cue with one waveform.": (
+        "템플릿 큐 시트에는 파형 하나짜리 큐가 정확히 하나 있어야 합니다.",
+        "テンプレートのキューシートには、波形が1つのキューがちょうど1つ必要です。"),
+    "The template cue is not HCA audio.": ("템플릿 큐가 HCA 음원이 아닙니다.", "テンプレートのキューがHCA音源ではありません。"),
+    "The template cue uses an unsupported streaming mode.": (
+        "템플릿 큐가 지원하지 않는 스트리밍 방식을 씁니다.", "テンプレートのキューが対応していないストリーミング方式を使っています。"),
+    "The template waveform has no bank id.": ("템플릿 파형에 뱅크 ID가 없습니다.", "テンプレートの波形にバンクIDがありません。"),
+    "The rebuilt cue sheet does not name its cue.": ("다시 만든 큐 시트에 큐 이름이 없습니다.", "作り直したキューシートにキュー名がありません。"),
+    "The decode quality floor must be a number of decibels.": (
+        "디코딩 품질 하한은 데시벨 숫자여야 합니다.", "デコード品質の下限はデシベルの数値にしてください。"),
+    "The app's HCA decoder is missing, so the new audio cannot be checked.": (
+        "앱의 HCA 디코더가 없어 새 음원을 확인할 수 없습니다.", "アプリのHCAデコーダーがないため、新しい音源を確認できません。"),
+    "The new audio does not decode to the input's length and channels.": (
+        "새 음원을 디코딩하면 길이나 채널 수가 입력과 다릅니다.", "新しい音源をデコードすると、長さまたはチャンネル数が入力と一致しません。"),
+    "The decoded audio differs too much from the input.": ("디코딩한 음원이 입력과 너무 다릅니다.", "デコードした音源が入力と違いすぎます。"),
+    "The cue sheet has an invalid string offset.": ("큐 시트의 문자열 위치가 잘못되었습니다.", "キューシートの文字列の位置が正しくありません。"),
+    "The cue sheet has an unterminated string.": ("큐 시트에 끝나지 않은 문자열이 있습니다.", "キューシートに終端のない文字列があります。"),
+    "The cue sheet has an unsupported column type.": ("큐 시트에 지원하지 않는 열 형식이 있습니다.", "キューシートに対応していない列の型があります。"),
+    "The cue sheet has a truncated column.": ("큐 시트의 열이 잘렸습니다.", "キューシートの列が途中で切れています。"),
+    "The cue sheet has a truncated column declaration.": ("큐 시트의 열 선언이 잘렸습니다.", "キューシートの列の宣言が途中で切れています。"),
+    "The cue sheet has an unsupported column declaration.": (
+        "큐 시트에 지원하지 않는 열 선언이 있습니다.", "キューシートに対応していない列の宣言があります。"),
+    "The audio bank (AWB) cannot be read.": ("오디오 뱅크(AWB)를 읽을 수 없습니다.", "オーディオバンク（AWB）を読み込めません。"),
+    "The beat table needs at least one tempo.": ("비트 테이블에는 템포가 하나 이상 필요합니다.", "ビートテーブルにはテンポが1つ以上必要です。"),
+    "Each tempo needs a BPM and a start sample.": ("템포마다 BPM과 시작 샘플이 필요합니다.", "テンポごとにBPMと開始サンプルが必要です。"),
+    "The first beat must be a time inside the song.": ("첫 박은 곡 안의 시간이어야 합니다.", "最初の拍は曲の範囲内の時間にしてください。"),
+    "The BPM must be a number between 0 and 1000.": ("BPM은 0과 1000 사이의 숫자여야 합니다.", "BPMは0から1000の間の数値にしてください。"),
+    "The beats must start inside the song, in order.": ("박은 곡 안에서 순서대로 시작해야 합니다.", "拍は曲の範囲内で順番に始まる必要があります。"),
+    "The template cue sheet cannot be read.": ("템플릿 큐 시트를 읽을 수 없습니다.", "テンプレートのキューシートを読み込めません。"),
+    "The template cue sheet does not have the stock music layout.": (
+        "템플릿 큐 시트가 게임 원래 음악의 구조가 아닙니다.", "テンプレートのキューシートがゲーム本来の楽曲の構造ではありません。"),
+    "The template stream-only cue has an unexpected memory bank.": (
+        "스트리밍 전용 템플릿 큐에 예상하지 않은 메모리 뱅크가 있습니다.",
+        "ストリーミング専用のテンプレートのキューに想定外のメモリーバンクがあります。"),
+    "The template's memory and stream banks use different keys.": (
+        "템플릿의 메모리 뱅크와 스트림 뱅크가 서로 다른 키를 씁니다.",
+        "テンプレートのメモリーバンクとストリームバンクが異なるキーを使っています。"),
+    "The template cue sheet has no memory bank column.": (
+        "템플릿 큐 시트에 메모리 뱅크 열이 없습니다.", "テンプレートのキューシートにメモリーバンクの列がありません。"),
+    "The template cue sheet has no stream bank hash.": (
+        "템플릿 큐 시트에 스트림 뱅크 해시가 없습니다.", "テンプレートのキューシートにストリームバンクのハッシュがありません。"),
+    "The template cue sheet has no beat table.": ("템플릿 큐 시트에 비트 테이블이 없습니다.", "テンプレートのキューシートにビートテーブルがありません。"),
+    "The new audio was not decoded by the app's HCA decoder.": (
+        "새 음원을 앱의 HCA 디코더로 디코딩하지 않았습니다.", "新しい音源はアプリのHCAデコーダーでデコードされませんでした。"),
+    "The cue sheet has an undecodable string.": ("큐 시트에 읽을 수 없는 문자열이 있습니다.", "キューシートに読み取れない文字列があります。"),
+    "The cue sheet has an invalid data offset.": ("큐 시트의 데이터 위치가 잘못되었습니다.", "キューシートのデータの位置が正しくありません。"),
+    "The template cue sheet has an unsupported stream bank header table.": (
+        "템플릿 큐 시트의 스트림 뱅크 헤더 테이블을 지원하지 않습니다.",
+        "テンプレートのキューシートのストリームバンクヘッダーテーブルに対応していません。"),
+    "The new audio does not decode.": ("새 음원이 디코딩되지 않습니다.", "新しい音源をデコードできません。"),
+}
+for _source, (_korean, _japanese) in _MV_REGISTER_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# Apply to game (mv-studio-apply.js, core/mv_studio_apply.py, Elichika's mv_studio_stock): the panel,
+# the job stages and every message the plan, the jobs and the stock MV store can show. Strings the
+# registration panel already has (server notes, download, backup, confirm buttons) are not repeated.
+_MV_APPLY_TRANSLATIONS = {
+    # Panel
+    "Apply to game": ("게임에 적용", "ゲームに適用"),
+    "Apply only the edits": ("수정 사항만 적용", "修正だけを適用"),
+    "Apply all": ("전체 적용", "全体を適用"),
+    "Restore the original MV": ("원래대로 되돌리기", "元のMVに戻す"),
+    "Checking the game's timeline…": ("게임의 타임라인 확인 중…", "ゲームのタイムラインを確認中…"),
+    "Open this panel to check the game's timeline.": (
+        "이 패널을 열면 게임의 타임라인을 확인합니다.", "このパネルを開くとゲームのタイムラインを確認します。"),
+    "Load the MV from the game to apply it.": (
+        "게임에 적용하려면 게임에서 MV를 불러오세요.", "ゲームに適用するには、ゲームからMVを読み込んでください。"),
+    "Register as a new MV-only song…": ("새 MV 전용 곡으로 등록…", "新しいMV専用曲として登録…"),
+    "MV-only song: {title} ({id})": ("MV 전용 곡: {title} ({id})", "MV専用曲: {title}（{id}）"),
+    "Game MV: {title} ({id})": ("게임 MV: {title} ({id})", "ゲームのMV: {title}（{id}）"),
+    "In the game: MV Studio version {revision} ({date})": (
+        "게임: MV Studio 버전 {revision} ({date})", "ゲーム: MV Studio版 {revision}（{date}）"),
+    "In the game: the original MV": ("게임: 원본 MV", "ゲーム: 元のMV"),
+    "Loaded from: the registered song": ("불러온 것: 등록된 곡", "読み込み元: 登録済みの曲"),
+    "Loaded from: MV Studio version {revision}": ("불러온 것: MV Studio 버전 {revision}", "読み込み元: MV Studio版 {revision}"),
+    "Loaded from: an MV Studio version": ("불러온 것: MV Studio 버전", "読み込み元: MV Studio版"),
+    "Loaded from: the original MV": ("불러온 것: 원본 MV", "読み込み元: 元のMV"),
+    "This MV also plays in the 3D live of {count} songs: {titles}": (
+        "이 MV는 곡 {count}개의 3D 라이브에서도 재생됩니다: {titles}", "このMVは{count}曲の3Dライブでも再生されます: {titles}"),
+    "The song's 3D live plays this MV too.": (
+        "이 곡의 3D 라이브에서도 이 MV가 재생됩니다.", "この曲の3DライブでもこのMVが再生されます。"),
+    "Only the {region} game changes. The other region keeps its MV.": (
+        "{region} 게임만 바뀝니다. 다른 지역은 지금의 MV를 그대로 둡니다.", "{region}のゲームだけが変わります。ほかの地域は今のMVのままです。"),
+    "The game's MV changed after this project was loaded. Apply only the edits keeps those changes; Apply all replaces them.": (
+        "이 프로젝트를 불러온 뒤 게임의 MV가 바뀌었습니다. '수정 사항만 적용'은 그 변경을 유지하고, '전체 적용'은 덮어씁니다.",
+        "このプロジェクトを読み込んだ後にゲームのMVが変わりました。「修正だけを適用」はその変更を残し、「全体を適用」は置き換えます。"),
+    "Edits: none since the last apply": ("수정 사항: 마지막 적용 이후 없음", "修正: 前回の適用以降なし"),
+    "Edits: none since loading": ("수정 사항: 불러온 뒤 없음", "修正: 読み込み以降なし"),
+    "Edits since the last apply: {clips} clips (camera {camera} · values {values} · timing {timing})": (
+        "마지막 적용 이후 수정: 클립 {clips}개 (카메라 {camera} · 값 {values} · 타이밍 {timing})",
+        "前回の適用以降の修正: クリップ{clips}個（カメラ{camera}・値{values}・タイミング{timing}）"),
+    "Edits since loading: {clips} clips (camera {camera} · values {values} · timing {timing})": (
+        "불러온 뒤 수정: 클립 {clips}개 (카메라 {camera} · 값 {values} · 타이밍 {timing})",
+        "読み込み以降の修正: クリップ{clips}個（カメラ{camera}・値{values}・タイミング{timing}）"),
+    "Apply all: the game already plays this project.": (
+        "전체 적용: 게임이 이미 이 프로젝트대로 재생합니다.", "全体を適用: ゲームはすでにこのプロジェクトのとおり再生しています。"),
+    "Apply all: the game plays the original MV again.": (
+        "전체 적용: 게임이 원본 MV를 다시 재생합니다.", "全体を適用: ゲームは元のMVを再び再生します。"),
+    "Apply all: {clips} clips differ from the original MV": (
+        "전체 적용: 원본 MV와 다른 클립 {clips}개", "全体を適用: 元のMVと異なるクリップ{clips}個"),
+    "Changed differently in the game ({count})": ("게임에서 다르게 바뀐 항목 ({count})", "ゲームで別の内容に変わった項目（{count}）"),
+    "{where}: loaded {loaded} → project {project}, game {game}": (
+        "{where}: 불러온 값 {loaded} → 프로젝트 {project}, 게임 {game}", "{where}: 読み込み時 {loaded} → プロジェクト {project}、ゲーム {game}"),
+    "{where}: last applied {loaded} → project {project}, game {game}": (
+        "{where}: 마지막 적용 값 {loaded} → 프로젝트 {project}, 게임 {game}",
+        "{where}: 前回の適用時 {loaded} → プロジェクト {project}、ゲーム {game}"),
+    "These edits are not in {platform} yet.": (
+        "이 수정 사항은 아직 {platform}에 적용되지 않았습니다.", "この修正はまだ{platform}に適用されていません。"),
+    "Nothing was overwritten. Use Apply all to replace the game's version with this project, or load the MV from the game again.": (
+        "아무것도 덮어쓰지 않았습니다. 게임의 버전을 이 프로젝트로 바꾸려면 '전체 적용'을 쓰거나, 게임에서 MV를 다시 불러오세요.",
+        "何も上書きしていません。ゲームの版をこのプロジェクトで置き換えるには「全体を適用」を使うか、ゲームからMVを読み込み直してください。"),
+    "The game server stops for a moment while the game catalog is written.": (
+        "게임 목록에 쓰는 동안 게임 서버가 잠시 멈춥니다.", "ゲームの一覧に書き込む間、ゲームサーバーが少し止まります。"),
+    "Restart the game server after applying.": ("적용한 뒤 게임 서버를 다시 시작하세요.", "適用した後にゲームサーバーを再起動してください。"),
+    "Restore the original MV? The MV Studio version {revision} stays in a backup.": (
+        "원본 MV로 되돌릴까요? 지금의 MV Studio 버전({revision})은 백업에 남습니다.", "元のMVに戻しますか？ MV Studio版 {revision}はバックアップに残ります。"),
+    "Apply all replaces the game's MV Studio version {revision} with this project. A backup is made first. Continue?": (
+        "'전체 적용'은 게임의 MV Studio 버전({revision})을 이 프로젝트로 바꿉니다. 먼저 백업합니다. 계속할까요?",
+        "「全体を適用」はゲームのMV Studio版 {revision}をこのプロジェクトで置き換えます。先にバックアップします。続けますか？"),
+    "Apply all writes this whole project over the game's original MV. A backup is made first. Continue?": (
+        "'전체 적용'은 이 프로젝트 전체를 게임의 원본 MV 위에 씁니다. 먼저 백업합니다. 계속할까요?",
+        "「全体を適用」はこのプロジェクト全体をゲームの元のMVに書き込みます。先にバックアップします。続けますか？"),
+    "Android and iOS keep the MV they play now. Continue?": (
+        "Android와 iOS는 지금 재생하는 MV를 그대로 둡니다. 계속할까요?", "AndroidとiOSは今再生しているMVのままです。続けますか？"),
+    "iOS keeps the MV it plays now. Continue?": ("iOS는 지금 재생하는 MV를 그대로 둡니다. 계속할까요?", "iOSは今再生しているMVのままです。続けますか？"),
+    "Android keeps the MV it plays now. Continue?": (
+        "Android는 지금 재생하는 MV를 그대로 둡니다. 계속할까요?", "Androidは今再生しているMVのままです。続けますか？"),
+    "Restored the original MV: {title}.": ("원본 MV로 되돌렸습니다: {title}.", "元のMVに戻しました: {title}。"),
+    "Applied to the game: {title}.": ("게임에 적용했습니다: {title}.", "ゲームに適用しました: {title}。"),
+    "Applying to the game was cancelled.": ("게임에 적용하는 작업을 취소했습니다.", "ゲームへの適用を取り消しました。"),
+    # Job stages
+    "Checking the game's timeline": ("게임의 타임라인 확인", "ゲームのタイムラインを確認"),
+    "Applying the edits to the Android timeline": ("Android 타임라인에 수정 사항 적용 중", "Androidのタイムラインに修正を適用中"),
+    "Applying the edits to the iOS timeline": ("iOS 타임라인에 수정 사항 적용 중", "iOSのタイムラインに修正を適用中"),
+    "Checking the timelines against the original MV": ("원본 MV와 타임라인 대조", "元のMVとタイムラインを照合"),
+    "Restoring the original MV": ("원본 MV로 되돌리는 중", "元のMVに戻している途中"),
+    # Plan and job messages (core/mv_studio_apply.py, mv_studio_timeline.merge_changes)
+    "This Elichika version cannot change stock MVs. Update the Elichika server app.": (
+        "이 Elichika 버전은 게임 기본 MV를 바꿀 수 없습니다. Elichika 서버 앱을 업데이트하세요.",
+        "このバージョンのElichikaではゲーム標準のMVを変更できません。Elichikaサーバーアプリを更新してください。"),
+    "The timeline this project was loaded from is unavailable. Load the MV from the game again.": (
+        "이 프로젝트를 불러온 타임라인을 찾을 수 없습니다. 게임에서 MV를 다시 불러오세요.",
+        "このプロジェクトの読み込み元のタイムラインが見つかりません。ゲームからMVを読み込み直してください。"),
+    "The MV-only song this project was loaded from was removed. Register the project as a new song.": (
+        "이 프로젝트를 불러온 MV 전용 곡이 삭제되었습니다. 프로젝트를 새 곡으로 등록하세요.",
+        "このプロジェクトの読み込み元のMV専用曲は削除されました。プロジェクトを新しい曲として登録してください。"),
+    "The MV in the game has a different track layout. Use Apply all.": (
+        "게임의 MV는 트랙 구성이 다릅니다. '전체 적용'을 쓰세요.", "ゲームのMVはトラック構成が異なります。「全体を適用」を使ってください。"),
+    "Some edits were also changed differently in the game since this project was loaded. Use Apply all, or load the MV from the game again.": (
+        "일부 수정 항목이 이 프로젝트를 불러온 뒤 게임에서 다르게 바뀌었습니다. '전체 적용'을 쓰거나, 게임에서 MV를 다시 불러오세요.",
+        "一部の修正項目は、このプロジェクトを読み込んだ後にゲームで別の内容に変わりました。「全体を適用」を使うか、ゲームからMVを読み込み直してください。"),
+    "The game's timeline changed after the check. Check it again, then apply.": (
+        "확인한 뒤 게임의 타임라인이 바뀌었습니다. 다시 확인한 다음 적용하세요.",
+        "確認の後にゲームのタイムラインが変わりました。確認し直してから適用してください。"),
+    "The project changed after the last check. Check it again, then apply.": (
+        "마지막 확인 뒤 프로젝트가 바뀌었습니다. 다시 확인한 다음 적용하세요.",
+        "前回の確認の後にプロジェクトが変わりました。確認し直してから適用してください。"),
+    "Choose Apply all or Apply only the edits.": (
+        "'전체 적용' 또는 '수정 사항만 적용'을 고르세요.", "「全体を適用」か「修正だけを適用」を選んでください。"),
+    "The apply request is invalid.": ("적용 요청이 올바르지 않습니다.", "適用のリクエストが正しくありません。"),
+    "There are no edits since this project was loaded.": (
+        "이 프로젝트를 불러온 뒤 수정한 것이 없습니다.", "このプロジェクトを読み込んだ後の修正はありません。"),
+    "The MV already plays its original timeline.": ("이 MV는 이미 원본 타임라인을 재생합니다.", "このMVはすでに元のタイムラインを再生しています。"),
+    "The Android timeline the game plays now is not available. Allow the download, or apply to iOS only.": (
+        "게임이 지금 재생하는 Android 타임라인을 찾을 수 없습니다. 다운로드를 허용하거나 iOS에만 적용하세요.",
+        "ゲームが今再生しているAndroidのタイムラインが見つかりません。ダウンロードを許可するか、iOSだけに適用してください。"),
+    "The iOS timeline the game plays now is not available. Allow the download, or apply to Android only.": (
+        "게임이 지금 재생하는 iOS 타임라인을 찾을 수 없습니다. 다운로드를 허용하거나 Android에만 적용하세요.",
+        "ゲームが今再生しているiOSのタイムラインが見つかりません。ダウンロードを許可するか、Androidだけに適用してください。"),
+    "The Android and iOS timelines the game plays now differ. Each platform keeps its own changes.": (
+        "게임이 지금 재생하는 Android와 iOS 타임라인이 서로 다릅니다. 플랫폼마다 각자의 변경을 유지합니다.",
+        "ゲームが今再生しているAndroidとiOSのタイムラインが異なります。プラットフォームごとにそれぞれの変更を残します。"),
+    # Elichika's stock MV store (mv_studio_stock.MESSAGES)
+    "Choose a 3D MV of this region.": ("이 지역의 3D MV를 고르세요.", "この地域の3D MVを選んでください。"),
+    "The selected MV has no 3D timeline in this region.": (
+        "고른 MV는 이 지역에 3D 타임라인이 없습니다.", "選んだMVにはこの地域の3Dタイムラインがありません。"),
+    "This MV belongs to an MV-only song. Update the song instead.": (
+        "이 MV는 MV 전용 곡의 것입니다. 곡을 업데이트하세요.", "このMVはMV専用曲のものです。曲を更新してください。"),
+    "Fingerprints must be short text values for android or ios.": (
+        "지문 값은 android 또는 ios용 짧은 문자열이어야 합니다.", "フィンガープリントはandroidかios用の短い文字列にしてください。"),
+}
+for _source, (_korean, _japanese) in _MV_APPLY_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# Another MV slot, MV timeline packs and the MV timeline platform conversion
+# (mv-studio-apply.js, core/mv_studio_apply.py, core/mv_studio_pack.py, core/mv_timeline_platform.py,
+# tools/mv_timeline.py). Format names: "MV 타임라인 팩" / "MVタイムラインパック" (.sifasmv).
+_MV_CROSS_SLOT_TRANSLATIONS = {
+    # Panel: the slot
+    "The MV this project was loaded from ({label})": ("지금 불러온 MV ({label})", "読み込んだMV（{label}）"),
+    "Another 3D asset ID…": ("다른 3D 에셋 ID…", "別の3DアセットID…"),
+    "Apply to MV slot": ("적용할 MV 슬롯", "適用するMVスロット"),
+    "3D asset ID": ("3D 에셋 ID", "3DアセットID"),
+    "Change the stage too": ("무대도 함께 바꾸기", "ステージも一緒に変える"),
+    "The stage, stage effects, props, quality set and shader variant of 3D {asset} go with the timeline.": (
+        "3D {asset}의 무대, 무대 효과, 소품, 품질 세트, 셰이더 변형이 타임라인과 함께 들어갑니다.",
+        "3D {asset}のステージ、ステージ効果、小道具、品質セット、シェーダーバリアントがタイムラインと一緒に入ります。"),
+    "This region only ({region})": ("이 지역만 ({region})", "この地域のみ（{region}）"),
+    "Both GL and JP": ("GL과 JP 모두", "GLとJPの両方"),
+    "Regions": ("지역", "地域"),
+    "Target: {label}": ("적용 대상: {label}", "適用先：{label}"),
+    "From: {title} · 3D {asset}": ("가져오는 MV: {title} · 3D {asset}", "元のMV：{title} · 3D {asset}"),
+    "Another slot takes this project's whole timeline. Apply only the edits works only on the slot the project was loaded from.": (
+        "다른 슬롯에는 이 프로젝트의 타임라인 전체가 들어갑니다. '수정 사항만 적용'은 프로젝트를 불러온 슬롯에서만 쓸 수 있습니다.",
+        "別のスロットにはこのプロジェクトのタイムライン全体が入ります。「修正だけを適用」はプロジェクトを読み込んだスロットでのみ使えます。"),
+    "Lives that play 3D {asset} ({count}): {titles}. Their rhythm-game 3D lives change too.": (
+        "3D {asset}을(를) 쓰는 라이브 ({count}): {titles}. 리듬 게임의 3D 라이브도 함께 바뀝니다.",
+        "3D {asset}を使うライブ（{count}）：{titles}。リズムゲームの3Dライブも一緒に変わります。"),
+    "The GL and JP games both change.": ("GL과 JP 게임이 모두 바뀝니다.", "GLとJPの両方のゲームが変わります。"),
+    "The source MV's stage goes with the timeline, so its stage tracks find their objects.": (
+        "원래 MV의 무대가 타임라인과 함께 들어가므로 무대 트랙이 대상 오브젝트를 찾을 수 있습니다.",
+        "元のMVのステージがタイムラインと一緒に入るので、ステージのトラックは対象のオブジェクトを見つけられます。"),
+    "Without its stage, {count} stage tracks of this timeline address objects of the source stage that the target stage may not have. Effects can be missing, or the MV may fail to load in the game.": (
+        "무대를 함께 바꾸지 않으면 이 타임라인의 무대 트랙 {count}개가 원래 무대의 오브젝트를 가리키는데, 대상 무대에는 그 오브젝트가 없을 수 있습니다. 효과가 빠지거나 게임에서 MV를 불러오지 못할 수 있습니다.",
+        "ステージを一緒に変えないと、このタイムラインのステージトラック{count}個が元のステージのオブジェクトを指しますが、適用先のステージにはそのオブジェクトがないことがあります。効果が欠けたり、ゲームでMVを読み込めなかったりすることがあります。"),
+    "No {platform} timeline yet: it is converted from {from} when you apply.": (
+        "{platform} 타임라인이 아직 없습니다: 적용할 때 {from}에서 변환합니다.",
+        "{platform}のタイムラインはまだありません。適用するときに{from}から変換します。"),
+    "Apply to 3D {asset}": ("3D {asset}에 적용", "3D {asset}に適用"),
+    "Restore the original MV of 3D {asset}": ("3D {asset} 원래대로 되돌리기", "3D {asset}を元のMVに戻す"),
+    "Restore the original MV of 3D {asset}? Its timeline and stage go back to the game's own.": (
+        "3D {asset}을(를) 원래 MV로 되돌릴까요? 타임라인과 무대가 게임 원래의 것으로 돌아갑니다.",
+        "3D {asset}を元のMVに戻しますか？タイムラインとステージがゲーム本来のものに戻ります。"),
+    "Put this project's whole timeline and its stage into 3D {asset}? A backup is made first.": (
+        "이 프로젝트의 타임라인 전체와 무대를 3D {asset}에 넣을까요? 먼저 백업을 만듭니다.",
+        "このプロジェクトのタイムライン全体とステージを3D {asset}に入れますか？先にバックアップを作ります。"),
+    "Put this project's whole timeline into 3D {asset}? Its stage stays. A backup is made first.": (
+        "이 프로젝트의 타임라인 전체를 3D {asset}에 넣을까요? 무대는 그대로 둡니다. 먼저 백업을 만듭니다.",
+        "このプロジェクトのタイムライン全体を3D {asset}に入れますか？ステージはそのままです。先にバックアップを作ります。"),
+    "The game has no {platform} original of 3D {asset}, so no {platform} timeline can be made.": (
+        "게임에 3D {asset}의 {platform} 원본이 없어서 {platform} 타임라인을 만들 수 없습니다.",
+        "ゲームに3D {asset}の{platform}の元データがないため、{platform}のタイムラインを作れません。"),
+    "No {platform} timeline is ready for this slot. It can be converted from {from} with the {platform} original of 3D {asset} (about {size} MB to download).": (
+        "이 슬롯에 넣을 {platform} 타임라인이 없습니다. 3D {asset}의 {platform} 원본(약 {size} MB 다운로드)으로 {from}에서 변환할 수 있습니다.",
+        "このスロットに入れる{platform}のタイムラインがありません。3D {asset}の{platform}の元データ（約{size} MBのダウンロード）を使って{from}から変換できます。"),
+    "The stage changes for both platforms.": ("무대는 두 플랫폼 모두 바뀝니다.", "ステージは両方のプラットフォームで変わります。"),
+    "Convert from {from}": ("{from}에서 변환", "{from}から変換"),
+    "Apply to {from} only": ("{from}에만 적용", "{from}だけに適用"),
+    # Panel: MV timeline packs
+    "MV timeline pack": ("MV 타임라인 팩", "MVタイムラインパック"),
+    "Opened from the MV timeline pack “{name}”": ("MV 타임라인 팩 “{name}”에서 열었습니다",
+                                                            "MVタイムラインパック「{name}」から開きました"),
+    "Export MV timeline pack…": ("MV 타임라인 팩 내보내기…", "MVタイムラインパックを書き出す…"),
+    "Open MV timeline pack…": ("MV 타임라인 팩 열기…", "MVタイムラインパックを開く…"),
+    "Open MV timeline pack": ("MV 타임라인 팩 열기", "MVタイムラインパックを開く"),
+    "Pack name": ("팩 이름", "パック名"),
+    "Note": ("메모", "メモ"),
+    "Target slot: 3D {asset}, with the stage.": ("적용 슬롯: 3D {asset}, 무대 포함.", "適用スロット：3D {asset}、ステージ込み。"),
+    "Target slot: 3D {asset}, without the stage.": ("적용 슬롯: 3D {asset}, 무대 제외.", "適用スロット：3D {asset}、ステージなし。"),
+    "Target slot: 3D {asset} (the loaded MV).": ("적용 슬롯: 3D {asset} (지금 불러온 MV).", "適用スロット：3D {asset}（読み込んだMV）。"),
+    "Export": ("내보내기", "書き出す"),
+    "Writing the MV timeline pack…": ("MV 타임라인 팩을 쓰는 중…", "MVタイムラインパックを書き出し中…"),
+    "Not in the pack: {platforms} (its original is not available).": (
+        "팩에 넣지 못함: {platforms} (원본을 구할 수 없음).", "パックに入っていません：{platforms}（元データがありません）。"),
+    # core/mv_studio_apply.py
+    "This Elichika version cannot put an MV into another slot. Update the Elichika server app to apply it to another 3D MV.": (
+        "이 Elichika 버전은 MV를 다른 슬롯에 넣을 수 없습니다. 다른 3D MV에 적용하려면 Elichika 서버 앱을 업데이트하세요.",
+        "このElichikaのバージョンはMVを別のスロットに入れられません。別の3D MVに適用するにはElichikaサーバーアプリを更新してください。"),
+    "Choose the MV slot to apply to.": ("적용할 MV 슬롯을 선택하세요.", "適用するMVスロットを選んでください。"),
+    "3D MV {asset} is not in the {region} game.": ("3D MV {asset}이(가) {region} 게임에 없습니다.", "3D MV {asset}は{region}のゲームにありません。"),
+    "3D MV {asset} belongs to an MV-only song. Choose a stock 3D MV.": (
+        "3D MV {asset}은(는) MV 전용 곡의 것입니다. 게임 원래의 3D MV를 선택하세요.",
+        "3D MV {asset}はMV専用曲のものです。ゲーム本来の3D MVを選んでください。"),
+    "3D MV {asset} this project was loaded from is not in the {region} game.": (
+        "이 프로젝트를 불러온 3D MV {asset}이(가) {region} 게임에 없습니다.",
+        "このプロジェクトを読み込んだ3D MV {asset}は{region}のゲームにありません。"),
+    "A project opened from an MV-only song can only update that song. Load a stock MV to apply it to another slot.": (
+        "MV 전용 곡에서 연 프로젝트는 그 곡만 업데이트할 수 있습니다. 다른 슬롯에 적용하려면 게임 원래의 MV를 불러오세요.",
+        "MV専用曲から開いたプロジェクトはその曲だけを更新できます。別のスロットに適用するにはゲーム本来のMVを読み込んでください。"),
+    "Only Apply all can put a timeline into another MV slot.": (
+        "다른 MV 슬롯에는 '전체 적용'으로만 타임라인을 넣을 수 있습니다.",
+        "別のMVスロットには「全体を適用」でのみタイムラインを入れられます。"),
+    "No Android timeline can be made for the chosen slot. Apply to iOS only, or cancel.": (
+        "선택한 슬롯에 넣을 Android 타임라인을 만들 수 없습니다. iOS에만 적용하거나 취소하세요.",
+        "選んだスロットに入れるAndroidのタイムラインを作れません。iOSだけに適用するか、キャンセルしてください。"),
+    "No iOS timeline can be made for the chosen slot. Apply to Android only, or cancel.": (
+        "선택한 슬롯에 넣을 iOS 타임라인을 만들 수 없습니다. Android에만 적용하거나 취소하세요.",
+        "選んだスロットに入れるiOSのタイムラインを作れません。Androidだけに適用するか、キャンセルしてください。"),
+    "Only the GL game was changed. The JP game could not be changed; see the job log.": (
+        "GL 게임만 바뀌었습니다. JP 게임은 바꾸지 못했습니다. 작업 로그를 확인하세요.",
+        "GLのゲームだけが変わりました。JPのゲームは変えられませんでした。ジョブのログを確認してください。"),
+    "Only the JP game was changed. The GL game could not be changed; see the job log.": (
+        "JP 게임만 바뀌었습니다. GL 게임은 바꾸지 못했습니다. 작업 로그를 확인하세요.",
+        "JPのゲームだけが変わりました。GLのゲームは変えられませんでした。ジョブのログを確認してください。"),
+    # core/mv_studio_pack.py
+    "This Elichika version cannot read or write MV timeline packs. Update the Elichika server app.": (
+        "이 Elichika 버전은 MV 타임라인 팩을 읽거나 쓸 수 없습니다. Elichika 서버 앱을 업데이트하세요.",
+        "このElichikaのバージョンはMVタイムラインパックを読み書きできません。Elichikaサーバーアプリを更新してください。"),
+    "This file is not an MV timeline pack.": ("이 파일은 MV 타임라인 팩이 아닙니다.", "このファイルはMVタイムラインパックではありません。"),
+    "Enter a pack name between 1 and 80 characters.": ("팩 이름을 1~80자로 입력하세요.", "パック名を1〜80文字で入力してください。"),
+    "Enter a note of at most 500 characters.": ("메모는 500자 이하로 입력하세요.", "メモは500文字以内で入力してください。"),
+    "The pack has no timeline this MV Studio can open.": ("이 팩에는 MV 스튜디오가 열 수 있는 타임라인이 없습니다.",
+                                                         "このパックにはMVスタジオで開けるタイムラインがありません。"),
+    "The opened pack is no longer available. Open it again.": ("열었던 팩을 더 이상 쓸 수 없습니다. 다시 여세요.",
+                                                              "開いたパックはもう使えません。もう一度開いてください。"),
+    "The game has no song that plays this pack's 3D MV.": ("이 팩의 3D MV를 재생하는 곡이 게임에 없습니다.",
+                                                          "このパックの3D MVを再生する曲がゲームにありません。"),
+    "The MV timeline pack request is invalid.": ("MV 타임라인 팩 요청이 올바르지 않습니다.", "MVタイムラインパックのリクエストが正しくありません。"),
+    # core/mv_timeline_platform.py and the tool
+    "MV timeline platform conversion": ("MV 타임라인 플랫폼 변환", "MVタイムラインのプラットフォーム変換"),
+    "Convert an MV timeline (.unity) or an MV timeline pack (.sifasmv) for Android (APK) or iOS using the same 3D MV's original timeline from the output platform.": (
+        "변환할 플랫폼에 있는 같은 3D MV의 원본 타임라인을 사용해 MV 타임라인(.unity)이나 MV 타임라인 팩(.sifasmv)을 Android (APK) 또는 iOS용으로 변환합니다.",
+        "変換先のプラットフォームにある同じ3D MVの元のタイムラインを使って、MVタイムライン（.unity）またはMVタイムラインパック（.sifasmv）をAndroid (APK) またはiOS用に変換します。"),
+    "MV timeline (.unity) or MV timeline pack (.sifasmv)": ("MV 타임라인(.unity) 또는 MV 타임라인 팩(.sifasmv)",
+                                                            "MVタイムライン（.unity）またはMVタイムラインパック（.sifasmv）"),
+    "A pack names its own region and 3D MV; the platform it lacks is added.": (
+        "팩에는 지역과 3D MV가 적혀 있어서, 팩에 없는 플랫폼이 추가됩니다.",
+        "パックには地域と3D MVが書かれているので、パックにないプラットフォームが追加されます。"),
+    "3D asset ID of the timeline's MV": ("타임라인의 3D 에셋 ID", "タイムラインの3DアセットID"),
+    "For a .unity timeline: the 3D MV it was made from (MV Studio shows it, e.g. 3D 1012003).": (
+        ".unity 타임라인일 때: 그 타임라인을 만든 3D MV (MV 스튜디오에 표시됨, 예: 3D 1012003).",
+        ".unityのタイムラインの場合：作成元の3D MV（MVスタジオに表示されます。例：3D 1012003）。"),
+    "Download the original timeline for the output platform if missing": (
+        "변환할 플랫폼의 원본 타임라인이 없으면 다운로드", "変換先のプラットフォームの元のタイムラインがなければダウンロード"),
+    "Choose Android or iOS.": ("Android 또는 iOS를 선택하세요.", "AndroidかiOSを選んでください。"),
+    "Enter the 3D asset ID of the MV this timeline belongs to.": ("이 타임라인이 속한 MV의 3D 에셋 ID를 입력하세요.",
+                                                                 "このタイムラインのMVの3DアセットIDを入力してください。"),
+    "The timeline is already for the output platform.": ("이미 변환할 플랫폼용 타임라인입니다.", "すでに変換先のプラットフォーム用のタイムラインです。"),
+    "The timeline is not for the chosen source platform.": ("선택한 원래 플랫폼용 타임라인이 아닙니다.", "選んだ変換元のプラットフォーム用のタイムラインではありません。"),
+    "This file is not a native live timeline.": ("이 파일은 게임의 라이브 타임라인이 아닙니다.", "このファイルはゲームのライブタイムラインではありません。"),
+    "This 3D MV is not in the game catalog of this region.": ("이 3D MV는 이 지역의 게임 카탈로그에 없습니다.", "この3D MVはこの地域のゲームカタログにありません。"),
+    "The game catalog has no original timeline of this 3D MV for the output platform.": (
+        "게임 카탈로그에 이 3D MV의 변환할 플랫폼용 원본 타임라인이 없습니다.",
+        "ゲームカタログにこの3D MVの変換先プラットフォーム用の元のタイムラインがありません。"),
+    "The original timeline of this 3D MV for the output platform is not available locally. Allow the download.": (
+        "이 3D MV의 변환할 플랫폼용 원본 타임라인이 로컬에 없습니다. 다운로드를 허용하세요.",
+        "この3D MVの変換先プラットフォーム用の元のタイムラインがローカルにありません。ダウンロードを許可してください。"),
+    "The timeline does not belong to this 3D MV:": ("이 3D MV의 타임라인이 아닙니다:", "この3D MVのタイムラインではありません："),
+    "The converted timeline would differ from the source, so nothing was converted:": (
+        "변환 결과가 원래 타임라인과 달라지므로 변환하지 않았습니다:", "変換結果が元のタイムラインと異なるため、変換しませんでした："),
+    "The timeline holds data this server's MV Studio tools do not write: the pack was made by a newer MV Studio or changed elsewhere. Updating Elichika and its asset editing tools (modtools) lets this server check it.": (
+        "타임라인에 이 서버의 MV Studio 도구가 쓰지 않는 데이터가 있습니다. 더 새로운 MV Studio로 만들었거나 다른 곳에서 바뀐 팩입니다. Elichika와 에셋 편집툴(modtools)을 업데이트하면 이 서버에서 확인할 수 있습니다.",
+        "タイムラインに、このサーバーのMV Studioツールが書き込まないデータがあります。より新しいMV Studioで作られたか、ほかの場所で変更されたパックです。Elichikaとアセット編集ツール（modtools）を更新すると、このサーバーで確認できます。"),
+    "The pack was made by a newer MV Studio: its timeline holds data this server's MV Studio tools do not write. Updating Elichika and its asset editing tools (modtools) lets this server check it.": (
+        "더 새로운 MV Studio로 만든 팩입니다. 타임라인에 이 서버의 MV Studio 도구가 쓰지 않는 데이터가 있습니다. Elichika와 에셋 편집툴(modtools)을 업데이트하면 이 서버에서 확인할 수 있습니다.",
+        "より新しいMV Studioで作られたパックです。タイムラインに、このサーバーのMV Studioツールが書き込まないデータがあります。Elichikaとアセット編集ツール（modtools）を更新すると、このサーバーで確認できます。"),
+    "The timeline's values could not be checked: the check ran out of time or memory, or the original timeline was not available.": (
+        "타임라인 값을 확인하지 못했습니다. 확인 시간이나 메모리가 부족했거나 원래 타임라인을 쓸 수 없었습니다.",
+        "タイムラインの値を確認できませんでした。確認の時間かメモリが足りなかったか、元のタイムラインを使えませんでした。"),
+    "Choose the conversion direction.": ("변환 방향을 선택하세요.", "変換の方向を選んでください。"),
+    "Choose a native MV timeline (.unity) or an MV timeline pack (.sifasmv).": (
+        "MV 타임라인(.unity)이나 MV 타임라인 팩(.sifasmv)을 선택하세요.", "MVタイムライン（.unity）かMVタイムラインパック（.sifasmv）を選んでください。"),
+    "Choose the output folder.": ("출력 폴더를 선택하세요.", "出力フォルダを選んでください。"),
+    "The pack already has Android and iOS timelines.": ("이 팩에는 이미 Android와 iOS 타임라인이 모두 있습니다.",
+                                                       "このパックにはすでにAndroidとiOSの両方のタイムラインがあります。"),
+    "Choose whether to download the missing original timeline.": ("없는 원본 타임라인을 다운로드할지 선택하세요.",
+                                                                 "ない元のタイムラインをダウンロードするか選んでください。"),
+    "Left out, {platform} plays the original timeline of 3D {asset}.": (
+        "제외하면 {platform}은(는) 3D {asset}의 원본 타임라인을 재생합니다.",
+        "外すと、{platform}は3D {asset}の元のタイムラインを再生します。"),
+    "An old live timeline zip does not name the MV it was made from. Open it in MV Studio and export an MV timeline pack.": (
+        "예전 라이브 타임라인 zip에는 어느 MV로 만들었는지 적혀 있지 않습니다. MV 스튜디오에서 열어 MV 타임라인 팩으로 내보내세요.",
+        "古いライブタイムラインzipには作成元のMVが書かれていません。MVスタジオで開いてMVタイムラインパックとして書き出してください。"),
+    # Elichika's mv_studio_stock (another slot, stage) and mv_timeline_pack messages, shown in this panel.
+    "Choose the 3D MV of this region that the timeline was made from.": (
+        "이 타임라인을 만든 이 지역의 3D MV를 선택하세요.", "このタイムラインの作成元となったこの地域の3D MVを選んでください。"),
+    "The timeline's source MV belongs to an MV-only song. Choose a stock game MV.": (
+        "타임라인을 만든 MV가 MV 전용 곡의 것입니다. 게임 원래의 MV를 선택하세요.",
+        "タイムラインの作成元のMVはMV専用曲のものです。ゲーム本来のMVを選んでください。"),
+    "The MV's source changes, so every platform needs its timeline again (or none, to play the source's original).": (
+        "MV의 원본이 바뀌므로 모든 플랫폼에 타임라인을 다시 넣어야 합니다 (넣지 않으면 원본 MV의 타임라인을 재생합니다).",
+        "MVの作成元が変わるので、すべてのプラットフォームにタイムラインを入れ直す必要があります（入れないと作成元の元のタイムラインを再生します）。"),
+    "Choose the stage explicitly: a stage id, a stage effect and a quality set, with an optional prop skeleton and shader variant.": (
+        "무대를 정확히 선택하세요: 무대 ID, 무대 효과, 품질 세트와 필요하면 소품 스켈레톤, 셰이더 변형.",
+        "ステージを明示してください：ステージID、ステージ効果、品質セットと、必要なら小道具スケルトン、シェーダーバリアント。"),
+    "The chosen stage, stage effect, prop skeleton or shader variant is not in this region's game catalogs.": (
+        "선택한 무대, 무대 효과, 소품 스켈레톤 또는 셰이더 변형이 이 지역의 게임 카탈로그에 없습니다.",
+        "選んだステージ、ステージ効果、小道具スケルトン、シェーダーバリアントのいずれかがこの地域のゲームカタログにありません。"),
+    "The file is not a valid MV timeline pack.": ("올바른 MV 타임라인 팩 파일이 아닙니다.", "正しいMVタイムラインパックのファイルではありません。"),
+    "The MV timeline pack is too large or has too many files.": ("MV 타임라인 팩이 너무 크거나 파일이 너무 많습니다.",
+                                                                "MVタイムラインパックが大きすぎるか、ファイルが多すぎます。"),
+    "The MV timeline pack contains a file name it may not use.": ("MV 타임라인 팩에 쓸 수 없는 파일 이름이 있습니다.",
+                                                                 "MVタイムラインパックに使えないファイル名があります。"),
+    "A timeline in the MV timeline pack is damaged or is not a UnityFS bundle.": (
+        "MV 타임라인 팩의 타임라인이 손상되었거나 UnityFS 번들이 아닙니다.",
+        "MVタイムラインパックのタイムラインが壊れているか、UnityFSバンドルではありません。"),
+    "The MV timeline pack has no timeline.": ("MV 타임라인 팩에 타임라인이 없습니다.", "MVタイムラインパックにタイムラインがありません。"),
+    "This MV timeline pack needs a newer Elichika.": ("이 MV 타임라인 팩은 더 새로운 Elichika가 필요합니다.",
+                                                     "このMVタイムラインパックにはより新しいElichikaが必要です。"),
+    "The live timeline zip has no readable livetimeline.txt or timeline file.": (
+        "라이브 타임라인 zip에 읽을 수 있는 livetimeline.txt나 타임라인 파일이 없습니다.",
+        "ライブタイムラインzipに読めるlivetimeline.txtかタイムラインファイルがありません。"),
+    "The source MV's original timeline is not on this server. Install the asset editing tools (modtools) so Elichika can download it, then install again.": (
+        "원본 MV의 원래 타임라인이 이 서버에 없습니다. Elichika가 내려받을 수 있도록 에셋 편집툴(modtools)을 설치한 뒤 다시 설치하세요.",
+        "元MVの元のタイムラインがこのサーバーにありません。Elichikaがダウンロードできるようアセット編集ツール（modtools）をインストールしてから、もう一度インストールしてください。"),
+    "The source MV's original timeline could not be downloaded. Check the connection, then install again.": (
+        "원본 MV의 원래 타임라인을 내려받지 못했습니다. 연결을 확인한 뒤 다시 설치하세요.",
+        "元MVの元のタイムラインをダウンロードできませんでした。接続を確認してから、もう一度インストールしてください。"),
+    # Another region checks the timeline against its own original of the source MV
+    "Checking the timeline for the other region needs the source MV's original timeline from that region's game. Allow the download, or apply to this region only.": (
+        "다른 지역에서 타임라인을 확인하려면 그 지역 게임에 있는 원본 MV의 원래 타임라인이 필요합니다. 다운로드를 허용하거나 이 지역에만 적용하세요.",
+        "もう一方の地域でタイムラインを確認するには、その地域のゲームにある元MVの元のタイムラインが必要です。ダウンロードを許可するか、この地域だけに適用してください。"),
+    "Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game.": (
+        "{regions}에서 타임라인을 확인하려면 그 게임에 있는 3D {asset}의 {platform} 원본이 필요합니다.",
+        "{regions}でタイムラインを確認するには、そのゲームにある3D {asset}の{platform}の元データが必要です。"),
+    "Checking the timeline in {regions} needs the {platform} original of 3D {asset} from that game (about {size} MB to download). Download it and apply?": (
+        "{regions}에서 타임라인을 확인하려면 그 게임에 있는 3D {asset}의 {platform} 원본이 필요합니다 (약 {size} MB 다운로드). 내려받아 적용할까요?",
+        "{regions}でタイムラインを確認するには、そのゲームにある3D {asset}の{platform}の元データが必要です（約{size} MBのダウンロード）。ダウンロードして適用しますか？"),
+    # A slot that plays another slot's timeline
+    "This slot plays the timeline of 3D {source}, put here from another slot. Load 3D {source} and apply it to this slot, or restore this slot first.": (
+        "이 슬롯은 다른 슬롯에서 넣은 3D {source}의 타임라인을 재생합니다. 3D {source}를 불러와 이 슬롯에 적용하거나, 먼저 이 슬롯을 원래대로 되돌리세요.",
+        "このスロットは別のスロットから入れた3D {source}のタイムラインを再生しています。3D {source}を読み込んでこのスロットに適用するか、先にこのスロットを元に戻してください。"),
+    "This slot plays a timeline put here from another 3D MV. Load that MV and apply it to this slot, or restore this slot first.": (
+        "이 슬롯은 다른 3D MV에서 넣은 타임라인을 재생합니다. 그 MV를 불러와 이 슬롯에 적용하거나, 먼저 이 슬롯을 원래대로 되돌리세요.",
+        "このスロットは別の3D MVから入れたタイムラインを再生しています。そのMVを読み込んでこのスロットに適用するか、先にこのスロットを元に戻してください。"),
+}
+for _source, (_korean, _japanese) in _MV_CROSS_SLOT_TRANSLATIONS.items():
+    _TABLES["ko"].setdefault(_source, _korean)
+    _TABLES["ja"].setdefault(_source, _japanese)
 
 # Texture authoring labels shared with the viewer save form.
 _TABLES["ko"].update({
@@ -2696,6 +4262,35 @@ _TABLES["ko"].update({
     "Costume colour": "의상 컬러",
     "Skin tone": "스킨톤",
     "Texture painting": "텍스쳐 페인팅",
+    "Baked blush": "홍조 굽기",
+    # Baked blush save summary (viewer_texture_tools / texture_block_splice).
+    "The baked blush was saved as exact pixels (lossless RGBA32): every texel it does not change keeps its value.": "홍조를 정확한 픽셀(무손실 RGBA32)로 저장했습니다. 홍조가 바꾸지 않는 픽셀은 모두 원래 값을 유지합니다.",
+    "The baked blush kept the game's ASTC compression: only the blocks it touches were compressed again, and every other block keeps its original bytes.": "홍조를 게임 압축 형식(ASTC) 그대로 저장했습니다. 홍조가 닿는 블록만 다시 압축했고, 나머지 블록은 원래 데이터 그대로입니다.",
+    "This texture is also painted, and painted pixels are always saved exactly, so its ASTC compression was not kept.": "이 텍스쳐에는 그림판 편집도 있고, 그린 픽셀은 항상 정확하게 저장되므로 ASTC 압축을 유지하지 않았습니다.",
+    "This texture is not ASTC-compressed, so there was no ASTC compression to keep.": "이 텍스쳐는 ASTC 압축이 아니어서 유지할 ASTC 압축이 없습니다.",
+    "The ASTC encoder is unavailable.": "ASTC 인코더를 사용할 수 없습니다.",
+    "The ASTC encoder could not be started.": "ASTC 인코더를 실행하지 못했습니다.",
+    "The ASTC encoder could not re-encode the baked blocks.": "ASTC 인코더가 홍조 블록을 다시 압축하지 못했습니다.",
+    "The ASTC encoder returned unexpected data.": "ASTC 인코더가 예상과 다른 데이터를 돌려주었습니다.",
+    "Re-encoding the baked blocks took too long.": "홍조 블록을 다시 압축하는 데 시간이 너무 오래 걸렸습니다.",
+    "Re-encoded blocks changed texels outside the baked area.": "다시 압축한 블록이 홍조 영역 밖의 픽셀까지 바꿨습니다.",
+    "Re-encoding the baked blocks would change alpha.": "홍조 블록을 다시 압축하면 알파가 바뀝니다.",
+    "The re-encoded blocks are not close enough to the bake.": "다시 압축한 블록이 구운 홍조와 너무 다릅니다.",
+    "The original ASTC data is shorter than its mip chain.": "원본 ASTC 데이터가 밉맵 체인보다 짧습니다.",
+    "Choose how to save the baked blush: exact pixels or the game's ASTC compression.": "홍조 저장 방식을 정확한 픽셀 또는 게임 압축 형식(ASTC) 유지 중에서 고르세요.",
+    "The re-encoded ASTC blocks could not be decoded and checked.": "다시 압축한 ASTC 블록을 디코딩해 확인하지 못했습니다.",
+    # Baked blush errors the server can return to the Save status (the texture
+    # tools show the same wording from their own table).
+    "No verified stock blush pattern (cheek_array) is available. Open another costume that contains it once (most costume bundles do) so it is kept automatically, then reopen this model.": "확인된 기본 홍조 무늬(cheek_array)가 없습니다. 홍조 무늬가 들어 있는 다른 의상을 한 번 열면 자동으로 보관되니(대부분의 의상 번들에 있음), 그다음 이 모델을 다시 여세요.",
+    "Baked blush is available only for a head material's main texture or its recolour texture.": "홍조 굽기는 머리 재질의 메인 텍스쳐나 그 리컬러 텍스쳐에만 쓸 수 있습니다.",
+    "The blush bake takes only a blush type, a strength and a save mode.": "홍조 굽기에는 홍조 종류, 세기, 저장 방식만 들어갈 수 있습니다.",
+    "Choose a blush strength between 0 and 4.": "홍조 세기는 0보다 크고 4 이하로 정하세요.",
+    "Choose the Ppo or Akarame blush type.": "홍조 종류를 Ppo 또는 Akarame 중에서 고르세요.",
+    "This model has no head texture that can take a baked blush.": "이 모델에는 홍조를 구울 수 있는 머리 텍스쳐가 없습니다.",
+    "The cheek array payload has an unexpected size.": "홍조 무늬(cheek_array) 데이터의 크기가 올바르지 않습니다.",
+    "The blush image or cheek layer has unexpected dimensions.": "홍조를 구울 이미지나 홍조 무늬의 크기가 올바르지 않습니다.",
+    "The saved texture mip levels failed exact reload validation.": "저장한 텍스쳐의 밉맵이 다시 읽기 검증을 통과하지 못했습니다.",
+    "The texture edit operations are invalid.": "텍스쳐 편집 작업 목록이 올바르지 않습니다.",
     "Apply or cancel the texture preview before saving.": "텍스쳐 미리보기를 적용하거나 취소한 뒤 저장하세요.",
     "The texture editor is unavailable.": "텍스쳐 편집기를 사용할 수 없습니다.",
     "Apply or cancel the texture preview before changing motions.": "텍스쳐 미리보기를 적용하거나 취소한 뒤 모션을 변경하세요.",
@@ -2708,7 +4303,290 @@ _TABLES["ja"].update({
     "Costume colour": "衣装カラー",
     "Skin tone": "肌の色",
     "Texture painting": "テクスチャペイント",
+    "Baked blush": "頬紅の焼き込み",
+    # Baked blush save summary (viewer_texture_tools / texture_block_splice).
+    "The baked blush was saved as exact pixels (lossless RGBA32): every texel it does not change keeps its value.": "頬紅を正確なピクセル（可逆RGBA32）で保存しました。頬紅が変えないピクセルはすべて元の値のままです。",
+    "The baked blush kept the game's ASTC compression: only the blocks it touches were compressed again, and every other block keeps its original bytes.": "頬紅をゲームの圧縮形式（ASTC）のまま保存しました。頬紅がかかるブロックだけを再圧縮し、ほかのブロックは元のデータのままです。",
+    "This texture is also painted, and painted pixels are always saved exactly, so its ASTC compression was not kept.": "このテクスチャはペイントでも編集されており、ペイントしたピクセルは常に正確に保存されるため、ASTC圧縮は保ちませんでした。",
+    "This texture is not ASTC-compressed, so there was no ASTC compression to keep.": "このテクスチャはASTC圧縮ではないため、保つASTC圧縮がありません。",
+    "The ASTC encoder is unavailable.": "ASTCエンコーダーを使用できません。",
+    "The ASTC encoder could not be started.": "ASTCエンコーダーを起動できませんでした。",
+    "The ASTC encoder could not re-encode the baked blocks.": "ASTCエンコーダーが頬紅のブロックを再圧縮できませんでした。",
+    "The ASTC encoder returned unexpected data.": "ASTCエンコーダーが想定外のデータを返しました。",
+    "Re-encoding the baked blocks took too long.": "頬紅のブロックの再圧縮に時間がかかりすぎました。",
+    "Re-encoded blocks changed texels outside the baked area.": "再圧縮したブロックが頬紅の範囲外のピクセルまで変えました。",
+    "Re-encoding the baked blocks would change alpha.": "頬紅のブロックを再圧縮するとアルファが変わります。",
+    "The re-encoded blocks are not close enough to the bake.": "再圧縮したブロックが焼き込んだ頬紅と違いすぎます。",
+    "The original ASTC data is shorter than its mip chain.": "元のASTCデータがミップマップの段数に足りません。",
+    "Choose how to save the baked blush: exact pixels or the game's ASTC compression.": "頬紅の保存方法を、正確なピクセルかゲームの圧縮形式（ASTC）を保つかから選んでください。",
+    "The re-encoded ASTC blocks could not be decoded and checked.": "再圧縮したASTCブロックをデコードして確認できませんでした。",
+    # Baked blush errors the server can return to the Save status (the texture
+    # tools show the same wording from their own table).
+    "No verified stock blush pattern (cheek_array) is available. Open another costume that contains it once (most costume bundles do) so it is kept automatically, then reopen this model.": "検証済みの標準の頬紅パターン（cheek_array）がありません。頬紅パターンを含む別の衣装を一度開くと自動で保管されます（ほとんどの衣装バンドルに含まれます）。その後、このモデルを開き直してください。",
+    "Baked blush is available only for a head material's main texture or its recolour texture.": "頬紅の焼き込みは頭マテリアルのメインテクスチャかそのカラー違いテクスチャにのみ使えます。",
+    "The blush bake takes only a blush type, a strength and a save mode.": "頬紅の焼き込みに指定できるのは種類、強さ、保存方法だけです。",
+    "Choose a blush strength between 0 and 4.": "頬紅の強さは0より大きく4以下にしてください。",
+    "Choose the Ppo or Akarame blush type.": "頬紅の種類を Ppo か Akarame から選んでください。",
+    "This model has no head texture that can take a baked blush.": "このモデルには頬紅を焼き込める頭テクスチャがありません。",
+    "The cheek array payload has an unexpected size.": "頬紅パターン（cheek_array）のデータサイズが正しくありません。",
+    "The blush image or cheek layer has unexpected dimensions.": "頬紅を焼き込む画像または頬紅パターンの大きさが正しくありません。",
+    "The saved texture mip levels failed exact reload validation.": "保存したテクスチャのミップマップが再読み込みの検証に通りませんでした。",
+    "The texture edit operations are invalid.": "テクスチャ編集の操作一覧が正しくありません。",
     "Apply or cancel the texture preview before saving.": "テクスチャのプレビューを適用または取り消してから保存してください。",
     "The texture editor is unavailable.": "テクスチャエディターを使用できません。",
     "Apply or cancel the texture preview before changing motions.": "テクスチャのプレビューを適用または取り消してからモーションを変更してください。",
 })
+
+# MV Studio editor lane B: inspector value controls and their export guards.
+_MV_EDITOR_B_TRANSLATIONS = {
+    "Colour": ("색", "色"),
+    "Tint colour": ("틴트 색", "ティント色"),
+    "Blend colour": ("블렌드 색", "ブレンド色"),
+    "Ambient colour": ("환경광 색", "環境光の色"),
+    "Ambient tint colour": ("환경광 틴트 색", "環境光のティント色"),
+    "Rim light colour": ("림 라이트 색", "リムライトの色"),
+    "Rim light intensity": ("림 라이트 강도", "リムライトの強さ"),
+    "Rim light sharpness": ("림 라이트 선명도", "リムライトのシャープさ"),
+    "Rim light direction (°)": ("림 라이트 방향 (°)", "リムライトの向き (°)"),
+    "Ambient colour source": ("환경광 색 기준", "環境光の色の指定"),
+    "Rim light colour source": ("림 라이트 색 기준", "リムライトの色の指定"),
+    "Ambient colour member": ("환경광 색 기준 멤버", "環境光の色の基準メンバー"),
+    "Rim light colour member": ("림 라이트 색 기준 멤버", "リムライトの色の基準メンバー"),
+    "Colour source": ("색 기준", "色の指定"),
+    "Custom colour": ("직접 지정한 색", "指定した色"),
+    "Member colour": ("멤버 색", "メンバーカラー"),
+    "Original member colour": ("원래 멤버 색", "元のメンバーカラー"),
+    "Member position": ("멤버 위치", "メンバー位置"),
+    "Member {n}": ("멤버 {n}", "メンバー{n}"),
+    "Intensity": ("강도", "強さ"),
+    "Sharpness": ("선명도", "シャープさ"),
+    "Direction (°)": ("방향 (°)", "向き (°)"),
+    "Speed": ("속도", "速度"),
+    "Weight": ("가중치", "ウェイト"),
+    "Mouth shape": ("입 모양", "口の形"),
+    "Eye shape": ("눈 모양", "目の形"),
+    "0 · vowel of the parameter name": ("0 · 매개변수 이름의 모음", "0 · パラメーター名の母音"),
+    "{n} (not played in MVs)": ("{n} (MV에서 재생되지 않음)", "{n} (MVでは再生されません)"),
+    "Look at": ("바라볼 대상", "見る対象"),
+    "None": ("없음", "なし"),
+    "Audience": ("관객", "観客"),
+    "Fixed eye direction {n}": ("고정 시선 방향 {n}", "固定の視線方向 {n}"),
+    "Split-screen camera {n}": ("분할 화면 카메라 {n}", "分割画面カメラ {n}"),
+    "Value {n}": ("값 {n}", "値 {n}"),
+    "Blush pattern": ("홍조 무늬", "頬紅パターン"),
+    "Blush pattern 1": ("홍조 무늬 1", "頬紅パターン1"),
+    "Blush pattern 2": ("홍조 무늬 2", "頬紅パターン2"),
+    "Blush intensity": ("홍조 강도", "頬紅の強さ"),
+    "Bloom intensity": ("블룸 강도", "ブルームの強さ"),
+    "Threshold": ("임계값", "しきい値"),
+    "Soft knee": ("소프트 니", "ソフトニー"),
+    "Radius": ("반경", "半径"),
+    "Anti-flicker": ("깜빡임 방지", "ちらつき防止"),
+    "Focus distance (m)": ("초점 맞출 거리 (m)", "ピント距離 (m)"),
+    "Aperture": ("조리개", "絞り"),
+    "Focal length (mm)": ("렌즈 초점 거리 (mm)", "焦点距離 (mm)"),
+    "Use the camera field of view": ("카메라 시야각 사용", "カメラの視野角を使う"),
+    "Anti-aura": ("안티 오라", "アンチオーラ"),
+    "Blur size": ("흐림 크기", "ぼかしの大きさ"),
+    "Small": ("작게", "小"),
+    "Medium": ("보통", "中"),
+    "Large": ("크게", "大"),
+    "Very large": ("매우 크게", "特大"),
+    "Focus on the member": ("멤버에 초점 맞추기", "メンバーにピントを合わせる"),
+    "Focus body part": ("초점 부위", "ピントを合わせる部位"),
+    "Head (all)": ("머리 (전체)", "頭 (全体)"),
+    "Face": ("얼굴", "顔"),
+    "Hips": ("엉덩이", "腰"),
+    "Neck": ("목", "首"),
+    "Focus transition time (s)": ("초점 전환 시간 (초)", "ピントの切り替え時間 (秒)"),
+    "Height offset (m)": ("높이 오프셋 (m)", "高さのオフセット (m)"),
+    "Follow smoothing (s)": ("따라가기 완화 시간 (초)", "追従のなめらかさ (秒)"),
+    "Shaft shape": ("빛줄기 모양", "光の筋の形"),
+    "Shaft shape {n}": ("빛줄기 모양 {n}", "光の筋の形 {n}"),
+    "Centre": ("중심", "中心"),
+    "Smoothness": ("부드러움", "なめらかさ"),
+    "Roundness": ("둥근 정도", "丸み"),
+    "Rounded": ("둥글게", "丸める"),
+    "Flash lights": ("플래시 조명", "フラッシュライト"),
+    "On": ("켜기", "オン"),
+    "Scroll speed": ("스크롤 속도", "スクロール速度"),
+    "Screen material": ("화면 머티리얼", "画面のマテリアル"),
+    "Screen material {n}": ("화면 머티리얼 {n}", "画面のマテリアル {n}"),
+    "Palette shift": ("팔레트 이동", "パレットのずらし"),
+    "Light texture": ("조명 텍스처", "ライトのテクスチャ"),
+    "Light texture {n}": ("조명 텍스처 {n}", "ライトのテクスチャ {n}"),
+    "Offset strength": ("오프셋 강도", "オフセットの強さ"),
+    "Fog intensity": ("안개 강도", "フォグの強さ"),
+    "Random brightness": ("무작위 밝기", "ランダムな明るさ"),
+    "Beat length": ("박자 길이", "拍の長さ"),
+    "Beat offset": ("박자 오프셋", "拍のオフセット"),
+    "Random delay": ("무작위 지연", "ランダムな遅延"),
+    "Random rise": ("무작위 올림", "ランダムな上げ"),
+    "Random swing strength": ("무작위 흔들기 강도", "ランダムな振りの強さ"),
+    "Offset (m)": ("오프셋 (m)", "オフセット (m)"),
+    "Scaling strength": ("키 보정 강도", "身長補正の強さ"),
+    "Not shown in the preview": ("미리보기에 표시되지 않음", "プレビューに表示されません"),
+    "This value is exported to the game, but the 3D preview does not show it.": (
+        "이 값은 게임으로 내보내지지만 3D 미리보기에는 표시되지 않습니다.",
+        "この値はゲームに書き出されますが、3Dプレビューには表示されません。"),
+    "Exact values": ("정확한 값", "正確な値"),
+    "{label}: intensity": ("{label}: 강도", "{label}: 強さ"),
+    "Intensity (×): the colour's brightest channel, shown as 1 when it is lower. An entry of 1 or more scales the colour so that channel equals it. Pick a darker colour on the swatch.": (
+        "강도 (×): 색에서 가장 밝은 채널의 값이며, 1보다 낮으면 1로 표시됩니다. 1 이상을 입력하면 그 채널이 입력값이 되도록 색 전체를 같은 비율로 조정합니다. 더 어두운 색은 견본에서 고르세요.",
+        "強さ (×): 色の最も明るいチャンネルの値で、1未満のときは1と表示されます。1以上を入力すると、そのチャンネルが入力値になるよう色全体を同じ比率で調整します。より暗い色は見本で選んでください。"),
+    "Native data (read only)": ("원본 데이터 (읽기 전용)", "元データ (読み取り専用)"),
+    "Playable asset": ("플레이어블 에셋", "Playableアセット"),
+    "Playable class": ("플레이어블 클래스", "Playableクラス"),
+    "Animation clip": ("애니메이션 클립", "アニメーションクリップ"),
+    "Animation name": ("애니메이션 이름", "アニメーション名"),
+    "Mix-in curve": ("믹스 인 곡선", "ミックスインカーブ"),
+    "Mix-out curve": ("믹스 아웃 곡선", "ミックスアウトカーブ"),
+    "Effect prefab": ("이펙트 프리팹", "エフェクトのプレハブ"),
+    "Particle random seed": ("파티클 랜덤 시드", "パーティクルの乱数シード"),
+    "Overwrite random seed": ("랜덤 시드 덮어쓰기", "乱数シードを上書き"),
+    # Export guards (mv_studio_timeline._check_values).
+    "Choose a value this MV already uses for 'textureIndex'.": (
+        "이 MV에서 이미 쓰는 'textureIndex' 값 중에서 고르세요.", "このMVですでに使われている'textureIndex'の値から選んでください。"),
+    "Choose a value this MV already uses for 'materialIndex'.": (
+        "이 MV에서 이미 쓰는 'materialIndex' 값 중에서 고르세요.", "このMVですでに使われている'materialIndex'の値から選んでください。"),
+    "Choose a value this MV already uses for 'drawObjectIndex'.": (
+        "이 MV에서 이미 쓰는 'drawObjectIndex' 값 중에서 고르세요.", "このMVですでに使われている'drawObjectIndex'の値から選んでください。"),
+    "Choose a value this MV already uses for 'bodyPart'.": (
+        "이 MV에서 이미 쓰는 'bodyPart' 값 중에서 고르세요.", "このMVですでに使われている'bodyPart'の値から選んでください。"),
+    "This colour source needs the clip's member position to be 1 to 12.": (
+        "이 색 기준을 쓰려면 클립의 멤버 위치가 1~12여야 합니다.",
+        "この色の指定を使うには、クリップのメンバー位置が1〜12である必要があります。"),
+    "Member focus needs the clip's member position to be 1 to 12.": (
+        "멤버에 초점을 맞추려면 클립의 멤버 위치가 1~12여야 합니다.",
+        "メンバーにピントを合わせるには、クリップのメンバー位置が1〜12である必要があります。"),
+}
+for _source, (_korean, _japanese) in _MV_EDITOR_B_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# MV Studio export slots (mv_studio_timeline): track mutes that reach the game, their plan lines
+# (mv-studio-apply.js, mv-studio-register.js) and export refusals.
+_MV_EXPORT_SLOT_TRANSLATIONS = {
+    "Tracks muted or unmuted: {count}": ("음소거를 바꾼 트랙: {count}개", "ミュートを切り替えたトラック: {count}"),
+    "Apply all: {count} track mutes differ from the original MV": (
+        "전체 적용: 원본 MV와 음소거가 다른 트랙 {count}개", "全体を適用: 元のMVとミュートが異なるトラック{count}個"),
+    "A group track's mute does not reach the game. Mute the tracks inside it.": (
+        "그룹 트랙의 음소거는 게임에 반영되지 않습니다. 그 안의 트랙을 음소거하세요.",
+        "グループトラックのミュートはゲームに反映されません。中のトラックをミュートしてください。"),
+    "The game's quality settings turn this track on and off, so its mute does not reach the game.": (
+        "이 트랙은 게임의 품질 설정이 켜고 끄므로 음소거가 게임에 반영되지 않습니다.",
+        "このトラックはゲームの画質設定でオン・オフが決まるため、ミュートはゲームに反映されません。"),
+    "The game turns eye and mouth tracks on and off itself, so this mute does not reach the game.": (
+        "눈과 입 트랙은 게임이 직접 켜고 끄므로 이 음소거는 게임에 반영되지 않습니다.",
+        "目と口のトラックはゲームが自分でオン・オフを決めるため、このミュートはゲームに反映されません。"),
+    "A track mute must be on or off.": ("트랙 음소거는 켜기나 끄기로만 정할 수 있습니다.", "トラックのミュートはオンかオフで指定してください。"),
+    "This native track has no mute to change.": ("이 원본 트랙에는 바꿀 수 있는 음소거가 없습니다.", "この元のトラックには変更できるミュートがありません。"),
+    # Member targets (mv-studio-event-fields.js descriptors, mv_studio_timeline.MEMBER_SLOT).
+    "Focus member": ("초점 맞출 멤버", "ピントを合わせるメンバー"),
+    "Focus target": ("초점 대상", "ピントの対象"),
+    "The chosen member": ("지정한 멤버", "指定したメンバー"),
+    "The nearest member": ("가장 가까운 멤버", "いちばん近いメンバー"),
+    "The member nearest the centre": ("화면 중앙에 가장 가까운 멤버", "画面の中央にいちばん近いメンバー"),
+    "Colour member": ("색 기준 멤버", "色の基準メンバー"),
+    "Height from member": ("높이 기준 멤버", "高さの基準メンバー"),
+    "Choose a member this MV has.": ("이 MV에 있는 멤버를 고르세요.", "このMVにいるメンバーを選んでください。"),
+    # Penlight crowd motion (LivePenlightClip descriptors and export guards).
+    "Swing motion": ("흔들기 동작", "振りの動き"),
+    "Penlight colours": ("펜라이트 색", "ペンライトの色"),
+    "Colour {n}": ("색 {n}", "色 {n}"),
+    "Still": ("멈춤", "止める"),
+    "Front-back swing": ("앞뒤 흔들기", "前後の振り"),
+    "Rising swing": ("올려 흔들기", "持ち上げる振り"),
+    "Side swing": ("좌우 흔들기", "左右の振り"),
+    "Sway": ("살랑 흔들기", "ゆらゆら揺らす"),
+    "Crowd position (m)": ("관객 위치 (m)", "観客の位置 (m)"),
+    "Front-back swing: lift (m)": ("앞뒤 흔들기: 올림 (m)", "前後の振り: 上げ幅 (m)"),
+    "Front-back swing: reach (m)": ("앞뒤 흔들기: 앞으로 뻗기 (m)", "前後の振り: 前への幅 (m)"),
+    "Front-back swing: tilt (rad)": ("앞뒤 흔들기: 기울기 (rad)", "前後の振り: 傾き (rad)"),
+    "Front-back swing: rest point": ("앞뒤 흔들기: 기준 위치", "前後の振り: 基準の位置"),
+    "Front-back swing: snap": ("앞뒤 흔들기: 끊어 치기", "前後の振り: キレ"),
+    "Rising swing: lift (m)": ("올려 흔들기: 올림 (m)", "持ち上げる振り: 上げ幅 (m)"),
+    "Rising swing: reach (m)": ("올려 흔들기: 앞으로 뻗기 (m)", "持ち上げる振り: 前への幅 (m)"),
+    "Rising swing: tilt (rad)": ("올려 흔들기: 기울기 (rad)", "持ち上げる振り: 傾き (rad)"),
+    "Rising swing: rest point": ("올려 흔들기: 기준 위치", "持ち上げる振り: 基準の位置"),
+    "Rising swing: snap": ("올려 흔들기: 끊어 치기", "持ち上げる振り: キレ"),
+    "Rising swing: turn point": ("올려 흔들기: 전환 지점", "持ち上げる振り: 切り替えの位置"),
+    "Rising swing: lift curve": ("올려 흔들기: 올림 곡선", "持ち上げる振り: 上げのカーブ"),
+    "Side swing: tilt (rad)": ("좌우 흔들기: 기울기 (rad)", "左右の振り: 傾き (rad)"),
+    "Side swing: reach (m)": ("좌우 흔들기: 옆으로 뻗기 (m)", "左右の振り: 横への幅 (m)"),
+    "Side swing: lift (m)": ("좌우 흔들기: 올림 (m)", "左右の振り: 上げ幅 (m)"),
+    "Sway: side tilt (rad)": ("살랑 흔들기: 좌우 기울기 (rad)", "ゆらゆら揺らす: 左右の傾き (rad)"),
+    "Sway: front tilt (rad)": ("살랑 흔들기: 앞뒤 기울기 (rad)", "ゆらゆら揺らす: 前後の傾き (rad)"),
+    "Keep the penlight colour list's length and fields.": (
+        "펜라이트 색 목록의 길이와 항목은 그대로 두세요.", "ペンライトの色リストの長さと項目はそのままにしてください。"),
+}
+# Range refusals of the native export for each bounded field (mv_studio_timeline._LIMITED_VALUES and
+# _FLOAT_RANGES; tests/test_mv_studio_editable_values.py pins these lists to them). The UI bounds its
+# inputs, so only a hand-edited or API project meets them.
+for _field in ("index", "target", "cheekType", "colorSpecifiedType", "kernelSize", "useMemberDistance",
+               "cameraAutoDistanceMode", "ambientColorType", "rimlightColorType", "status", "swingMode"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"'{_field}' is outside the supported native range."] = (
+        f"'{_field}' 값이 지원하는 원본 범위를 벗어났습니다.", f"'{_field}'の値が対応する元の範囲を外れています。")
+for _field in ("focusTransitionTime", "basicYZMoveY", "basicYZMoveZ", "basicYZRotateZ", "basicYZSwingBackZ",
+               "basicYZSwingPowerZ", "growthYZMoveY", "growthYZMoveZ", "growthYZRotateZ", "growthYZSwingBackZ",
+               "growthYZSwingPowerZ", "growthYZSwingBottomZ", "basicXRotateX", "basicXMoveX", "basicXMoveY",
+               "simpleXZRotateX", "simpleXZRotateZ"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"The timeline has an invalid {_field}."] = (
+        f"타임라인의 '{_field}' 값이 올바르지 않습니다.", f"タイムラインの'{_field}'の値が正しくありません。")
+# Refusals of a vector value (mv_studio_timeline._replace_value): a missing or extra axis, or an axis
+# beyond ±1e6, which a typed number box can reach. These are the fields with a "vector" control in
+# mv-studio-event-fields.js (the test pins the list to the descriptor table).
+for _field in ("center", "direction", "offset", "position", "randomDelay", "randomUp", "rimlightDirection", "scale",
+               "scrollSpeed"):
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"'{_field}' is not a supported native value for this clip."] = (
+        f"'{_field}' 값은 이 클립에서 지원하지 않는 원본 값입니다.", f"'{_field}'の値はこのクリップで対応していない元の値です。")
+    _MV_EXPORT_SLOT_TRANSLATIONS[f"The timeline has an invalid {_field}."] = (
+        f"타임라인의 '{_field}' 값이 올바르지 않습니다.", f"タイムラインの'{_field}'の値が正しくありません。")
+for _source, (_korean, _japanese) in _MV_EXPORT_SLOT_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# MV Studio layout: the stage / side panel splitter and the side panel toggle (mv-studio.js
+# setupInspectorResizer). "Hidden" is the splitter's value text while the panel is folded.
+_MV_LAYOUT_TRANSLATIONS = {
+    "Side panel": ("사이드 패널", "サイドパネル"),
+    "Panel width": ("패널 너비", "パネルの幅"),
+    "Panel height": ("패널 높이", "パネルの高さ"),
+    "Drag, or use the arrow keys, to share the room between the stage and the panel. Home restores the default, End gives the panel its largest size, Enter hides or shows the panel.": (
+        "드래그하거나 화살표 키로 무대와 패널의 크기를 조절합니다. Home 키는 기본 크기로, End 키는 패널을 최대 크기로 바꾸며, Enter 키는 패널을 숨기거나 다시 표시합니다.",
+        "ドラッグするか矢印キーで、ステージとパネルの大きさを調整します。Homeキーで標準の大きさに戻し、Endキーでパネルを最大にし、Enterキーでパネルを隠す・再表示します。",
+    ),
+}
+for _source, (_korean, _japanese) in _MV_LAYOUT_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
+
+# Readable model names (model_labels.py, model-viewer.js, viewer-persistence.js):
+# the game's member and costume names replace cache file names wherever a
+# person reads them. The automatic Mod name's edit labels are also built by
+# the server for each installed language, so every label it uses is here.
+_MODEL_LABEL_TRANSLATIONS = {
+    "Costume #{id}": ("의상 #{id}", "衣装 #{id}"),
+    "Face (automatic)": ("얼굴(자동)", "顔（自動）"),
+    "File": ("파일", "ファイル"),
+    "{region} costume ID {id}": ("{region} 의상 ID {id}", "{region} 衣装ID {id}"),
+    "Costume transplant": ("코스튬 이식", "衣装移植"),
+    "Costume part transplant": ("코스튬 부분 이식", "衣装パーツ移植"),
+    "Lower body replacement": ("하체 교체", "下半身の交換"),
+    "Mesh editing": ("메시 편집", "メッシュ編集"),
+    "Mesh deletion": ("메시 삭제", "メッシュ削除"),
+    "Physics": ("물리", "物理"),
+    # Refusals of the labels route and the Mod ZIP's name/record checks.
+    "Choose between one and sixteen model files.": ("모델 파일을 1~16개 선택해주세요.", "モデルファイルを1～16個選んでください。"),
+    "The model file is empty or too large to label.": (
+        "모델 파일이 비어 있거나 너무 커서 이름을 표시할 수 없습니다.", "モデルファイルが空か大きすぎるため、名前を表示できません。"),
+    "The model file changed while it was labelled.": (
+        "이름을 읽는 동안 모델 파일이 바뀌었습니다.", "名前を読み取っている間にモデルファイルが変わりました。"),
+    "The per-language costume names are incomplete.": (
+        "언어별 의상 이름이 일부 빠져 있습니다.", "言語ごとの衣装名が一部足りません。"),
+    "The source costume record is invalid.": ("원본 의상 기록이 올바르지 않습니다.", "元の衣装の記録が無効です。"),
+    "The source costume record changed.": ("원본 의상 기록이 바뀌었습니다.", "元の衣装の記録が変わりました。"),
+}
+for _source, (_korean, _japanese) in _MODEL_LABEL_TRANSLATIONS.items():
+    _TABLES["ko"].setdefault(_source, _korean)
+    _TABLES["ja"].setdefault(_source, _japanese)

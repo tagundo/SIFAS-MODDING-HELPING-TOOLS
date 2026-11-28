@@ -115,6 +115,22 @@ def register_game_import(path, record, *, expected_sha256=None):
     return copy.deepcopy(receipt)
 
 
+def imported_record(path, sha256):
+    """The selection a Game-assets import registered for exactly these bytes.
+
+    ``sha256`` is the digest of the bytes the caller actually loaded. A file
+    replaced or edited after its import no longer matches, and a path that was
+    never imported by this server has no record.
+    """
+    if not isinstance(path, str) or not isinstance(sha256, str) or not _SHA.fullmatch(sha256):
+        return None
+    with _LOCK:
+        receipt = _REGISTRY.get(str(Path(path).resolve()))
+        if receipt is None or receipt["sha256"] != sha256:
+            return None
+        return copy.deepcopy(receipt["record"])
+
+
 def _snapshots(context):
     if not isinstance(context, dict):
         raise ValueError("Open the original model again before creating a Mod ZIP.")

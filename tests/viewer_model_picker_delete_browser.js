@@ -48,8 +48,8 @@ async function metric(locator) {
   return locator.evaluate(e => {
     for (let p = e.parentElement; p; p = p.parentElement) p.scrollLeft = 0;
     const r = e.getBoundingClientRect(), row = e.parentElement.getBoundingClientRect(), list = e.closest('ul'), panel = e.closest('#viewer-files-panel') || list;
-    const p = panel.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2), name = e.parentElement.querySelector('span');
-    return {left: r.left, right: r.right, width: r.width, height: r.height, row: {left: row.left, right: row.right}, panel: {left: p.left, right: p.right, clientWidth: panel.clientWidth, scrollWidth: panel.scrollWidth}, hit: hit === e || e.contains(hit), filename: name.textContent, title: name.title, aria: e.getAttribute('aria-label'), nameClientWidth: name.clientWidth, nameScrollWidth: name.scrollWidth, ellipsis: getComputedStyle(name).textOverflow, whiteSpace: getComputedStyle(name).whiteSpace, listClientWidth: list.clientWidth, listScrollWidth: list.scrollWidth};
+    const p = panel.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2), name = e.parentElement.querySelector('span'), line = name.querySelector('.viewer-file-title') || name;
+    return {left: r.left, right: r.right, width: r.width, height: r.height, row: {left: row.left, right: row.right}, panel: {left: p.left, right: p.right, clientWidth: panel.clientWidth, scrollWidth: panel.scrollWidth}, hit: hit === e || e.contains(hit), filename: name.textContent, title: name.title, aria: e.getAttribute('aria-label'), nameClientWidth: line.clientWidth, nameScrollWidth: line.scrollWidth, ellipsis: getComputedStyle(line).textOverflow, whiteSpace: getComputedStyle(line).whiteSpace, listClientWidth: list.clientWidth, listScrollWidth: list.scrollWidth};
   });
 }
 function contained(m, minimum) {

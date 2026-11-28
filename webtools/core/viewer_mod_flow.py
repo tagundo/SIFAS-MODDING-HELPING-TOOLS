@@ -59,22 +59,149 @@ def _check(job):
         raise ValueError("Mod packaging was cancelled.")
 
 
-def cached_receipts(context, cache_root):
-    """Read bounded, selected-SHA receipts in fixed current/legacy caches."""
+# Finished Mod ZIPs live in one place under the viewer output folder, sorted
+# by state: saved/ holds ZIPs not yet added to the game, added/ the ZIPs the
+# game installer received. The per-save edit folders keep their work files.
+MODS_FOLDER = "mods"
+SAVED_FOLDER = "saved"
+ADDED_FOLDER = "added"
+_PLATFORM_LABELS = {"android": "android", "ios": "ios", "android+ios": "android-ios"}
+
+
+def _name_part(text):
+    import unicodedata
+    value = re.sub(r"[^\w.-]+", "_", unicodedata.normalize("NFC", str(text))).strip("._-")
+    return value.encode("utf-8")[:120].decode("utf-8", errors="ignore").strip("._-")
+
+
+def mod_zip_stem(display_name, character_id=None, platform=None, *, scene=False, when=None):
+    """Readable, date-first name, then the member's three-digit number.
+
+    ``2026-11-27_1405_004_소노다_우미_<costume>_android`` for an automatic
+    Mod name (it starts with the number and the member); a typed name gets
+    the number and the romanised given name: ``2026-11-27_1405_208_Emma_<name>``.
+    """
+    from datetime import datetime
+    when = when or datetime.now().astimezone()
+    parts = [when.strftime("%Y-%m-%d_%H%M")]
+    name = _name_part(display_name) or "costume"
+    from webtools.core.charinfo import NAMES
+    if type(character_id) is int and character_id in NAMES:
+        number = f"{character_id:03d}"
+        # The automatic name already starts with the number and the member.
+        if not re.match(number + r"(?![0-9])", name):
+            parts.append(number)
+            given = _name_part(NAMES[character_id].split(" ")[0])
+            if given and given.casefold() not in name.casefold():
+                parts.append(given)
+    parts.append(name)
+    if platform in _PLATFORM_LABELS:
+        parts.append(_PLATFORM_LABELS[platform])
+    if scene:
+        parts.append("scene")
+    return "_".join(parts)
+
+
+def _safe_folder(directory):
+    directory = Path(directory)
+    if any(path.is_symlink() for path in (directory, *directory.parents)):
+        raise ValueError("The Mod ZIP folder cannot be a symbolic link.")
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _move_mod_zip(source, directory, stem, *, also=()):
+    """Move a finished ZIP to directory/<stem>[_N].zip without replacing any file.
+
+    The name is reserved with an exclusive create before the move, and it is
+    also kept free in ``also`` (folders an installer copies the file into).
+    """
+    source, directory = Path(source), _safe_folder(directory)
+    others = [Path(path) for path in also]
+    for number in range(1, 1000):
+        name = stem + ("" if number == 1 else "_" + str(number)) + ".zip"
+        target = directory / name
+        if any((folder / name).exists() for folder in others):
+            continue
+        try:
+            with target.open("xb"):
+                pass
+        except FileExistsError:
+            continue
+        try:
+            try:
+                os.replace(source, target)
+            except OSError as error:
+                import errno
+                if error.errno != errno.EXDEV:
+                    raise
+                with source.open("rb") as incoming, target.open("wb") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+                source.unlink()
+        except BaseException:
+            if source.exists():
+                target.unlink(missing_ok=True)
+            raise
+        return target
+    raise ValueError("The Mod ZIP folder has too many files with this name. Rename the mod and try again.")
+
+
+MAX_RECEIPT_ENTRIES = 16384
+
+
+def _receipt_roots(cache_root):
     from .viewer_cache import legacy_cache_roots
     root = Path(cache_root).resolve()
+    bases = (root, *legacy_cache_roots(root, "models"))
+    return [candidate for base in bases for candidate in (base, base / "transplant-bodies")
+            if candidate.is_dir() and not candidate.is_symlink() and candidate.resolve() == candidate]
+
+
+def _provenance(receipt_root, path):
+    return receipt_root / (".provenance-" + hashlib.sha256(path.encode()).hexdigest()[:32] + ".json")
+
+
+def _receipt_row(receipt_root, manifest, selected):
+    """One bounded receipt that binds a selected path to its exact SHA."""
+    try:
+        if manifest.is_symlink() or manifest.stat().st_size > 16 * 1024:
+            return None
+        with manifest.open("rb") as handle:
+            encoded = handle.read(16 * 1024 + 1)
+        if len(encoded) > 16 * 1024:
+            return None
+        data = json.loads(encoded.decode("utf-8"))
+        if manifest.name.startswith(".provenance-"):
+            model = Path(data["path"]).resolve()
+            record = data.get("record")
+        else:
+            relative = PurePosixPath(data["model"])
+            if relative.is_absolute() or ".." in relative.parts or any(":" in p for p in relative.parts):
+                return None
+            model = (receipt_root / relative).resolve()
+            if not model.is_relative_to(receipt_root):
+                return None
+            record = data.get("selection_record")
+        if selected.get(str(model)) != data.get("sha256"):
+            return None
+        if isinstance(record, dict):
+            return {"path": str(model), "sha256": data["sha256"], "record": record}
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        pass
+    return None
+
+
+def cached_receipts(context, cache_root):
+    """Read bounded, selected-SHA receipts in fixed current/legacy caches."""
     selected = {str(Path(row["path"]).resolve()): row["sha256"] for row in context["containers"]}
     result = []
-    bases = (root, *legacy_cache_roots(root, "models"))
-    roots = [candidate for base in bases for candidate in (base, base / "transplant-bodies")
-             if candidate.is_dir() and not candidate.is_symlink() and candidate.resolve() == candidate]
+    roots = _receipt_roots(cache_root)
     if not roots:
         return result
     # A specifically selected old cache file should not be starved behind a
     # full new cache. The total bound still covers all roots together.
     roots.sort(key=lambda candidate: not any(Path(path).is_relative_to(candidate) for path in selected))
-    preserved = ((candidate, candidate / (".provenance-" + hashlib.sha256(path.encode()).hexdigest()[:32] + ".json"))
-                 for candidate in roots for path in selected)
+    preserved = ((candidate, _provenance(candidate, path)) for candidate in roots for path in selected)
     def selections():
         for candidate in roots:
             try:
@@ -86,32 +213,38 @@ def cached_receipts(context, cache_root):
     for index, (receipt_root, manifest) in enumerate(chain(preserved, selections())):
         if index >= 256:
             break
-        try:
-            if manifest.is_symlink() or manifest.stat().st_size > 16 * 1024:
-                continue
-            with manifest.open("rb") as handle:
-                encoded = handle.read(16 * 1024 + 1)
-            if len(encoded) > 16 * 1024:
-                continue
-            data = json.loads(encoded.decode("utf-8"))
-            if manifest.name.startswith(".provenance-"):
-                model = Path(data["path"]).resolve()
-                record = data.get("record")
-            else:
-                relative = PurePosixPath(data["model"])
-                if relative.is_absolute() or ".." in relative.parts or any(":" in p for p in relative.parts):
-                    continue
-                model = (receipt_root / relative).resolve()
-                if not model.is_relative_to(receipt_root):
-                    continue
-                record = data.get("selection_record")
-            if selected.get(str(model)) != data.get("sha256"):
-                continue
-            if isinstance(record, dict):
-                result.append({"path": str(model), "sha256": data["sha256"], "record": record})
-        except (OSError, ValueError, TypeError, KeyError, RecursionError):
-            continue
+        row = _receipt_row(receipt_root, manifest, selected)
+        if row is not None:
+            result.append(row)
     return result
+
+
+def stored_receipt(path, sha256, cache_root):
+    """The receipt that binds one model's exact bytes, however full the cache.
+
+    A preserved original's receipt is named after its path. A Game-assets
+    model's selection receipt is in the cache folder that holds the model, so
+    only such folders are listed, and only their receipts are read.
+    """
+    model = str(Path(path).resolve())
+    selected = {model: sha256}
+    roots = _receipt_roots(cache_root)
+    for receipt_root in roots:
+        row = _receipt_row(receipt_root, _provenance(receipt_root, model), selected)
+        if row is not None:
+            return row
+    for receipt_root in roots:
+        if not Path(model).is_relative_to(receipt_root):
+            continue
+        try:
+            for manifest in islice(receipt_root.iterdir(), MAX_RECEIPT_ENTRIES):
+                if manifest.name.startswith(".selection-") and manifest.name.endswith(".json"):
+                    row = _receipt_row(receipt_root, manifest, selected)
+                    if row is not None:
+                        return row
+        except OSError:
+            continue
+    return None
 
 
 def remember_export_sources(context, result, *, repo_root, cache_root):
@@ -179,47 +312,366 @@ def _manifest_metadata(context, language):
     owner = (values.get("chara_id_append") if values.get("chara_id_append") is not None
              else member_from_native(values.get("chara_id")))
     name = values.get("costume_name_" + language) or values.get("costume_name_en")
+    from .model_labels import LANGUAGES
+    names = {code: values.get("costume_name_" + code) or values.get("costume_name_en") for code in LANGUAGES}
     return {"name": name if isinstance(name, str) else None, "owner": owner,
+            "names": {code: value[:120] for code, value in names.items() if isinstance(value, str) and value.strip()},
             "paired": bool(values.get("costume_file") and values.get("rina_unmask_costume_file")),
             "has_face": any(isinstance(values.get(key), str) and bool(values[key])
                             for key in ("costume_facedynamic_file", "costume_facedynamic_file_ios"))}
 
 
+def _declared_label(repo_root, raw, names):
+    """A Mod ZIP or scene package named by its own manifest."""
+    from . import model_labels
+    declared = model_labels.archive_names(io.BytesIO(raw))
+    parts = model_labels.text_label(repo_root, declared["names"], declared["owner"], names=names) if declared else None
+    if not parts:
+        return None
+    parts["source"] = "scene" if declared["scene"] else "manifest"
+    # A re-saved viewer Mod ZIP keeps its inert source record for platform
+    # conversion; an older one names its costume in a code-like name the
+    # label read (model_labels.declared_hint).
+    kept = None if declared["scene"] else model_labels.kept_record(io.BytesIO(raw))
+    if kept or parts.get("hint"):
+        parts["counterpart"] = kept or parts["hint"]
+    return parts
+
+
+def _source_labels(context, bindings, *, repo_root, cache_root):
+    """Readable names of each opened source, per language; never identity.
+
+    A bound game import, its edited/transplanted copies (through their
+    derived receipts) and a Mod ZIP's declared names are named. An automatic
+    face companion is named as such. Anything else keeps its file name.
+    """
+    from . import model_labels
+    automatic = set(context.get("outline_only_sources", []))
+    bound = {row["container"]: row["record"] for row in bindings}
+    labels, rows = {}, []
+    with model_labels._Names(repo_root) as names:
+        for index, container in enumerate(context["containers"]):
+            parts = None
+            try:
+                if index in bound:
+                    parts = model_labels.record_label(repo_root, bound[index], names=names)
+                    if parts:
+                        parts["source"] = "game"
+                else:
+                    raw = container.get("raw")
+                    if isinstance(raw, bytes) and zipfile.is_zipfile(io.BytesIO(raw)):
+                        # A transplant onto a Mod ZIP wearer (or an edit of
+                        # one) is named through its receipt first: the names
+                        # its manifest copied are the wearer's, never the
+                        # costume a costume transplant put on it.
+                        proofs = [{"path": str(Path(container["path"]).resolve()), "containerSha256": container["sha256"],
+                                   "member": source["member"], "sha256": source["sha256"]}
+                                  for position, source in enumerate(context["sources"])
+                                  if source.get("container") == index and position not in automatic
+                                  and isinstance(source.get("member"), str) and isinstance(source.get("sha256"), str)]
+                        parts = (model_labels.bytes_label(Path(container["path"]).resolve(), container["sha256"],
+                                                          repo_root=repo_root, cache_root=cache_root, names=names,
+                                                          proofs=proofs, source=io.BytesIO(raw)) if proofs else None)
+                        if parts is model_labels.UNNAMED:
+                            parts = None
+                        elif parts is None:
+                            parts = _declared_label(repo_root, raw, names)
+                    else:
+                        parts = model_labels.bytes_label(Path(container["path"]).resolve(), container["sha256"],
+                                                         repo_root=repo_root, cache_root=cache_root, names=names)
+            except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                parts = None
+            labels[index] = parts
+        for index, source in enumerate(context["sources"]):
+            container = source.get("container")
+            parts = labels.get(container)
+            row = {"kind": "face" if index in automatic else "body",
+                   "file": Path(context["containers"][container]["name"]).name}
+            if index in automatic:
+                row["label"] = model_labels.face_label(repo_root, row["file"], names=names)
+            elif parts:
+                row.update(model_labels.safe_parts(parts))
+            rows.append(row)
+    return labels, rows
+
+
+def _character_choices(repo_root):
+    """Each member as ``004 Umi Sonoda`` / ``004 소노다 우미`` / ``004 園田 海未``."""
+    from webtools.core.charinfo import NAMES
+    from . import model_labels
+    try:
+        rows = model_labels.member_choices(repo_root, list(NAMES))
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        rows = [{"value": str(key), "labels": {code: model_labels.titled(key, value, "")
+                                               for code in model_labels.LANGUAGES}} for key, value in NAMES.items()]
+    return [{"value": row["value"], "label": row["labels"]["en"], "labels": row["labels"]} for row in rows]
+
+
+def ships_own_face(context):
+    """Whether the opened costume ZIP ships its own runtime face to the game.
+
+    A reopened Rina scene, and the originals copy saved with its scene, always
+    declare the face they keep for authoring (the original the face edits are
+    made from). Only the scene's own record says whether its Mod ZIP shipped a
+    face (manifest ``dependencies``); without one the costume uses the game's
+    face. Any other costume ZIP ships the face its manifest declares.
+    """
+    from . import viewer_scene_roles
+    scene = viewer_scene_roles.session_metadata(context.get("model_id")) if context.get("model_id") else None
+    if scene is not None:
+        return scene.get("face_included") is True
+    return bool(_manifest_metadata(context, "en").get("has_face"))
+
+
+MAX_CATALOG_FACE_FILES = 2048
+_CATALOG_FACE = re.compile(r"ch\d{4}_[0-9a-f]{24}\.unity\Z")
+
+
+def catalog_face_cabs(context, face_cache_root, *, repo_root=None, face_context=None, download=False):
+    """CAB names of the faces an opened scene keeps only for authoring that the
+    game provides itself (see :func:`scene_face_proof`)."""
+    return scene_face_proof(context, face_cache_root, repo_root=repo_root, face_context=face_context,
+                            download=download)["cabs"]
+
+
+# Saving without the face is refused when the game's own face could not be
+# checked: the body may depend on a face the game does not have.
+STOCK_FACE_UNCHECKED = ("The game's original face could not be checked on this device, so this costume's face "
+                        "cannot be left out yet. Open the costume once with 'Load from game assets' so its face "
+                        "can be checked, or tick 'Include face and mouth edits for this costume' to include the "
+                        "face edits; no Mod ZIP was created.")
+
+
+def _face_owner(raw, path, hint=None):
+    """A face bundle's member and native platform (13 Android, 9 iOS)."""
+    from . import viewer_mod_sources
+    from .member_identity import member_from_native
+    facts = viewer_mod_sources._model_facts(raw)
+    platform = {"android": 13, "ios": 9}.get(facts["platform"])
+    owner = member_from_native(facts["owner"]) if facts["owner"] is not None else None
+    if owner is None:
+        # model_faces' cache names a face after its member: chNNNN_<descriptor>.
+        match = re.match(r"ch(\d{4})_", Path(path).name) if path else None
+        owner = member_from_native(int(match.group(1))) if match else hint
+    return owner, platform
+
+
+def _catalog_context(repo_root, face_cache_root, face_context):
+    context = dict(face_context or {})
+    if repo_root is not None:
+        context.setdefault("repo_root", str(repo_root))
+    if face_cache_root is not None:
+        context.setdefault("cache_dir", str(face_cache_root))
+    return context
+
+
+def _catalog_proof(faces, *, repo_root, face_cache_root, face_context, download, owner_hint=None, paths=None):
+    """model_faces.catalog_originals for each member/platform group of ``faces``.
+
+    Returns ``(proven, unchecked)``: the keys whose bytes are a catalog
+    original of their member's face, and the other keys that could not be
+    checked (no catalog listing, or an original of their size unread).
+    """
+    from . import model_faces
+    context = _catalog_context(repo_root, face_cache_root, face_context)
+    groups, unchecked = {}, set()
+    for key, raw in faces.items():
+        try:
+            owner, platform = _face_owner(raw, (paths or {}).get(key), owner_hint)
+        except Exception:
+            owner, platform = owner_hint, None
+        if type(owner) is not int:
+            unchecked.add(key)
+            continue
+        groups.setdefault((owner, platform), {})[key] = raw
+    proven = set()
+    for (owner, platform), group in groups.items():
+        found = model_faces.catalog_originals(owner, group, context, platform=platform, board=owner == 209,
+                                              download=download)
+        proven |= found["proven"]
+        if not found["listed"]:
+            unchecked |= set(group) - found["proven"]
+            continue
+        unchecked |= {key for key in found["unread"]
+                      if not _other_catalog_copy((paths or {}).get(key), group[key], found["names"], face_cache_root)}
+    return proven, unchecked - proven
+
+
+def _other_catalog_copy(path, raw, names, face_cache_root):
+    """Whether ``path`` is the face cache's copy of a catalog asset other than the member's face.
+
+    model_faces names each decrypted catalog asset after its descriptor
+    (``chNNNN_<identity>.unity``) and records its SHA beside it. A copy whose
+    name is none of the original faces' names is another asset, such as the
+    private face an installed costume depends on, without reading anything.
+    """
+    from . import model_faces
+    if not path or face_cache_root is None or not _CATALOG_FACE.fullmatch(Path(path).name) or Path(path).name in names:
+        return False
+    try:
+        models = (Path(face_cache_root) / "models").resolve()
+        return (Path(path).resolve().parent == models
+                and (model_faces._meta(path) or {}).get("sha256") == hashlib.sha256(raw).hexdigest())
+    except OSError:
+        return False
+
+
+def scene_face_proof(context, face_cache_root, *, repo_root=None, face_context=None, download=False):
+    """Whether the faces an opened scene keeps only for authoring are the game's own.
+
+    Leaving such a face out of a Mod ZIP leaves its body depending on the
+    game's own face. A face counts only when the costume ships no runtime face
+    (``ships_own_face``: any other costume ZIP that declares a face ships it)
+    and its bytes are exactly a catalog original: one this server decrypted
+    into its face cache (model_faces names those files after their catalog
+    descriptor and records their SHA beside them), or, with ``repo_root``, the
+    original the catalogs list for the member's face, read as automatic faces
+    are read (local packs first, the asset server with ``download``; see
+    model_faces.catalog_originals). Any other face, a missing cache, or a
+    changed cached copy proves nothing.
+
+    Returns ``{"cabs", "unchecked"}``: the proven faces' CAB names, and
+    whether a kept face could not be checked on this device (no catalog, or
+    its original could not be read), as opposed to being another face.
+    """
+    from . import viewer_scene_roles
+    none = {"cabs": frozenset(), "unchecked": False}
+    if face_cache_root is None or ships_own_face(context):
+        return none
+    from . import bundle_identity, model_faces
+    declared, proven = {}, set()
+    try:
+        for container in context["containers"]:
+            if zipfile.is_zipfile(io.BytesIO(container["raw"])):
+                for raw in viewer_scene_roles._literal_faces(container["raw"]).values():
+                    declared[hashlib.sha256(raw).hexdigest()] = raw
+        if not declared:
+            return none
+        directory = Path(face_cache_root) / "models"
+        if not directory.is_symlink() and directory.is_dir():
+            with os.scandir(directory) as entries:
+                for entry in islice(entries, MAX_CATALOG_FACE_FILES):
+                    if not _CATALOG_FACE.fullmatch(entry.name) or not entry.is_file(follow_symlinks=False):
+                        continue
+                    if (model_faces._meta(entry.path) or {}).get("sha256") not in declared:
+                        continue
+                    data = model_faces._cached(entry.path)
+                    if data is not None:
+                        proven.add(hashlib.sha256(data).hexdigest())
+        proven &= set(declared)
+        unchecked = set(declared) - proven
+        if unchecked and repo_root is not None:
+            found, unchecked = _catalog_proof({digest: declared[digest] for digest in unchecked}, repo_root=repo_root,
+                                              face_cache_root=face_cache_root, face_context=face_context,
+                                              download=download, owner_hint=209)
+            proven |= found
+        return {"cabs": frozenset(name.lower() for digest in proven
+                                  for name in bundle_identity._cab_names(declared[digest])),
+                "unchecked": bool(unchecked)}
+    except Exception:
+        # Nothing could be checked: nothing is proven.
+        return {"cabs": frozenset(), "unchecked": True}
+
+
+def _automatic_faces(context):
+    """The automatic face companions completed for the opened body, as files.
+
+    Faces a costume ZIP declares are its own (``ships_own_face``); these are
+    the faces the viewer completed from its face cache, a library or a saved
+    copy beside the body.
+    """
+    rows = {}
+    for index in context.get("outline_only_sources", []):
+        source = context["sources"][index]
+        container = context["containers"][source["container"]]
+        if source.get("member") is None and not zipfile.is_zipfile(io.BytesIO(container["raw"])):
+            rows[index] = container
+    return rows
+
+
+def private_automatic_faces(context, *, repo_root, face_cache_root=None, face_context=None, download=False,
+                            owner_hint=None):
+    """Automatic faces that are not the game's catalog original of their member's face.
+
+    An installed costume with its own face (Add to game with the face
+    included) depends on that private face, and reopening it from Game
+    assets completes it from the costume's own catalog dependency. Its bytes
+    differ from every catalog original of the member's face: like a ZIP that
+    ships its own face, it is the costume's own. A face whose original could
+    not be checked here (no catalog, or the original unread) is not counted;
+    the official face it most likely is keeps the option off as before.
+    """
+    if ships_own_face(context):
+        return []
+    from . import viewer_scene_roles
+    if context.get("model_id") and viewer_scene_roles.session_metadata(context["model_id"]) is not None:
+        return []
+    faces = _automatic_faces(context)
+    if not faces:
+        return []
+    raws = {index: container["raw"] for index, container in faces.items()}
+    paths = {index: container.get("path") for index, container in faces.items()}
+    try:
+        proven, unchecked = _catalog_proof(raws, repo_root=repo_root, face_cache_root=face_cache_root,
+                                           face_context=face_context, download=download, owner_hint=owner_hint,
+                                           paths=paths)
+    except Exception:
+        return []
+    return sorted(set(raws) - proven - unchecked)
+
+
+def face_option(context, *, repo_root, face_cache_root=None, face_context=None, download=False, owner_hint=None):
+    """The Save mod ZIP face option as the costume opens.
+
+    ``faceIncluded``: the costume ZIP ships its own face (``ships_own_face``),
+    or the body's automatic face is its own private face
+    (:func:`private_automatic_faces`). ``faceCheck`` is ``"unchecked"`` when a
+    scene saved without its face keeps one whose game original could not be
+    checked on this device: leaving it out is refused until it can be.
+    """
+    if ships_own_face(context):
+        return {"faceIncluded": True}
+    result = {"faceIncluded": bool(private_automatic_faces(context, repo_root=repo_root, face_cache_root=face_cache_root,
+                                                            face_context=face_context, download=download,
+                                                            owner_hint=owner_hint))}
+    if face_cache_root is not None and scene_face_proof(context, face_cache_root, repo_root=repo_root,
+                                                        face_context=face_context, download=download)["unchecked"]:
+        result["faceCheck"] = "unchecked"
+    return result
+
+
 def metadata(context, *, repo_root, cache_root, language="en"):
     """Small UI hints; all packaging identities are verified again on Save."""
     from webtools.core.charinfo import NAMES
-    result = {"nameBase": Path(context["containers"][0]["name"]).stem,
+    from . import model_labels
+    stem = Path(context["containers"][0]["name"]).stem
+    bases = None
+    result = {"nameBase": stem,
               "characterId": None, "requiresCounterpart": False,
               "hasFaceCompanions": bool(context.get("outline_only_sources")),
               "faceSourceIndices": list(context.get("outline_only_sources", [])),
-              "characters": [{"value": str(key), "label": value} for key, value in NAMES.items()]}
+              "characters": _character_choices(repo_root)}
     manifest = _manifest_metadata(context, language)
     result["hasFaceCompanions"] = result["hasFaceCompanions"] or bool(manifest.get("has_face"))
+    # The opened costume ZIP ships its own face (a reopened Mod ZIP, or a
+    # scene whose Mod ZIP included it): Save mod ZIP keeps it unless the
+    # person leaves it out. A scene saved without its face keeps that choice.
+    result["faceIncluded"] = ships_own_face(context)
     if manifest.get("name"):
         result["nameBase"] = manifest["name"][:120]
+    declared = ({code: manifest["names"].get(code) or result["nameBase"] for code in model_labels.LANGUAGES}
+                if manifest.get("names") else None)
     if type(manifest.get("owner")) is int and manifest["owner"] in NAMES:
         result["characterId"] = manifest["owner"]
         result["requiresCounterpart"] = manifest["owner"] == 209 and not manifest.get("paired")
+    bindings = []
     try:
-        from webtools.core import game_models, viewer_mod_sources
+        from webtools.core import viewer_mod_sources
         bindings = viewer_mod_sources.game_context(context, repo_root, receipts=cached_receipts(context, cache_root))
         if len(bindings) == 1:
             record = bindings[0]["record"]
             result["characterId"] = record["owner"]
             result["requiresCounterpart"] = False
-            database = game_models._readonly(Path(repo_root) / "assets/db" / record["region"] / "masterdata.db")
-            try:
-                row = database.execute("SELECT name FROM m_suit WHERE id=?", (record["suit_id"],)).fetchone()
-            finally:
-                database.close()
-            dictionary = game_models._dictionary(repo_root, record["region"], language)
-            try:
-                label = game_models._extractor().real_costume_name(dictionary, row[0]) if dictionary and row else None
-                if label:
-                    result["nameBase"] = str(label)[:120]
-            finally:
-                if dictionary:
-                    dictionary.close()
         elif result["characterId"] is None:
             # Rina's board texture has a distinct, observed character identity;
             # no costume/suit pairing is inferred from that texture hint.
@@ -245,7 +697,163 @@ def metadata(context, *, repo_root, cache_root, language="en"):
             result["requiresCounterpart"] = derived["character_id"] == 209 and not manifest.get("paired")
     except (ImportError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
         pass
+    texts, owner = None, None
+    try:
+        # The automatic Mod name starts with the member and the costume in
+        # the page language, also for an edited or transplanted copy (the
+        # wearer, in the donor's costume after a costume transplant).
+        labels, result["sources"] = _source_labels(context, bindings, repo_root=repo_root, cache_root=cache_root)
+        automatic = set(context.get("outline_only_sources", []))
+        body = next((source["container"] for index, source in enumerate(context["sources"])
+                     if index not in automatic), 0)
+        if labels.get(body):
+            bases, texts, owner = labels[body]["nameBase"], labels[body]["nameText"], labels[body]["owner"]
+    except (ImportError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        pass
+    if bases is None:
+        # No verified game costume names this file: its manifest or file
+        # name, after the member's number and name when the member is known.
+        bases = texts = declared or {code: result["nameBase"] for code in model_labels.LANGUAGES}
+        try:
+            member = model_labels.member_names(repo_root, result["characterId"])
+            if member is not None:
+                owner = result["characterId"]
+                bases = model_labels._titled_names(owner, member, bases)
+                texts = model_labels._untitled_names(owner, member, bases)
+        except (OSError, ValueError, TypeError, sqlite3.Error):
+            pass
+    result["nameBases"] = {code: str(value)[:120] for code, value in bases.items()}
+    result["nameBase"] = result["nameBases"].get(language) or result["nameBases"]["en"]
+    # The same base without its member: the page and Save put another chosen
+    # Mod member's number and name in front instead (model_labels.for_member).
+    result["nameTexts"] = {code: str((texts or {}).get(code) or "")[:120] for code in model_labels.LANGUAGES}
+    result["nameOwner"] = owner if type(owner) is int else None
     return result
+
+
+def scene_name_bases(repo_root, scene):
+    """A reopened scene package's name after its target member (Rina 209
+    only when the package names no other target)."""
+    from . import model_labels
+    name = scene["display_name"]
+    target = scene.get("target_member_id", 209)
+    try:
+        bases = model_labels.titled_names(repo_root, target if type(target) is int else 209, name)
+    except (OSError, TypeError, ValueError, sqlite3.Error):
+        bases = {code: name for code in model_labels.LANGUAGES}
+    return {code: value[:120] for code, value in bases.items()}
+
+
+def name_bases(metadata, owner, *, repo_root):
+    """The automatic Mod name bases for the Mod member ``owner``.
+
+    The opened costume's own bases for its own member; for another chosen
+    member that member's number and name before the same costume text, so a
+    Mod for Chika never carries Umi's number (viewer-persistence.js builds
+    the same from the member choice labels).
+    """
+    from . import model_labels
+    bases = (metadata or {}).get("nameBases")
+    texts = (metadata or {}).get("nameTexts")
+    if type(owner) is not int or owner == (metadata or {}).get("nameOwner") or not isinstance(texts, dict):
+        return bases
+    try:
+        return model_labels.for_member(repo_root, owner, texts) or bases
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        return bases
+
+
+def _utf16_length(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _utf16_prefix(text, limit):
+    """The page's String.slice(0, limit) without a split surrogate pair."""
+    kept, used = [], 0
+    for char in text:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if used + width > limit:
+            break
+        kept.append(char)
+        used += width
+    return "".join(kept)
+
+
+def _part_text(part, language):
+    from webtools import i18n
+    return "".join(token if isinstance(token, str) else (i18n.tr(token["k"], language) or token["k"]) for token in part)
+
+
+def compose_mod_name(base, parts, language):
+    """The automatic Mod name: costume name, then each edit label that fits.
+
+    The page builds the same name (viewer-persistence.js suggestedModName). A
+    label the name base already contains (an installed Mod's own name) is not
+    repeated. Whole labels only, at most 120 UTF-16 units like the page.
+    """
+    present = set(base.split(" · ")[1:])
+    name, seen = _utf16_prefix(base, 120), set()
+    for part in parts:
+        text = _part_text(part, language)
+        if not text or text in present or text in seen:
+            continue
+        seen.add(text)
+        if _utf16_length(name + " · " + text) > 120:
+            break
+        name += " · " + text
+    return name
+
+
+# A 120-unit name holds at most 29 labels (one character and " · " each);
+# the page sends at most this many (viewer-persistence.js NAME_PART_LIMIT).
+NAME_PART_LIMIT = 64
+
+
+def validate_name_parts(parts):
+    """Bounded page-built automatic name labels: literal text or i18n keys.
+
+    Optional display text, never a reason to refuse a save: only the labels
+    before the first malformed one, and at most :data:`NAME_PART_LIMIT`, are
+    kept. A label past those never fits in the page's name either; if the
+    page's name differs from what the kept labels compose,
+    :func:`localized_mod_names` installs the page's name for every language.
+    Anything but a list is None (the page's name for every language).
+    """
+    def token(value):
+        if isinstance(value, str):
+            return len(value) <= 120 and not any(ord(char) < 32 or ord(char) == 127 for char in value)
+        return (isinstance(value, dict) and set(value) == {"k"} and isinstance(value["k"], str)
+                and 0 < len(value["k"]) <= 200 and not any(ord(char) < 32 for char in value["k"]))
+    if not isinstance(parts, list):
+        return None
+    kept = []
+    for part in parts[:NAME_PART_LIMIT]:
+        if not isinstance(part, list) or not 1 <= len(part) <= 24 or not all(token(item) for item in part):
+            break
+        kept.append(copy.deepcopy(part))
+    return kept
+
+
+def localized_mod_names(display_name, parts, bases, language):
+    """Per-language installed names for an untouched automatic Mod name.
+
+    Only when the page's name is exactly this composition in the page
+    language; any typed or changed name is used for every language.
+    """
+    from .model_labels import LANGUAGES
+    if parts is None or not isinstance(bases, dict) or language not in LANGUAGES:
+        return None
+    if not all(isinstance(bases.get(code), str) and bases[code].strip() for code in LANGUAGES):
+        return None
+    names = {code: compose_mod_name(bases[code], parts, code) for code in LANGUAGES}
+    if names[language].strip() != display_name.strip():
+        return None
+    for value in names.values():
+        try:
+            validate_options(value, None, None, None)
+        except ValueError:
+            return None
+    return {code: value.strip() for code, value in names.items()}
 
 
 def normalize_mesh_state(mesh_state):
@@ -278,8 +886,11 @@ def export_current(token, state, output_root, *, mesh_state=None, allow_empty=Fa
         if mesh is not None:
             result = viewer_mesh_tools.export(token, mesh, output_root, body_state=normalized)
             with model_edits._LOCK:
-                body_recipe = model_edits._recipe(model_edits._session(token), normalized)
+                session = model_edits._session(token)
+                body_recipe = model_edits._recipe(session, model_edits.with_held(session, normalized))
             result["recipe"]["bodyRecipe"] = body_recipe
+            # Held face outline rows were written too; both copies name them.
+            result["recipe"]["bodyState"] = copy.deepcopy(body_recipe["state"])
             path = Path(result["recipe_path"])
             temporary = path.with_name(".mesh-recipe-" + secrets.token_hex(8) + ".part")
             try:
@@ -298,6 +909,8 @@ def export_current(token, state, output_root, *, mesh_state=None, allow_empty=Fa
             if any(row.get("encodingChanged") for row in result["texture_edits"]):
                 log("Precise texture edits use lossless RGBA32 to preserve unselected pixels and alpha.")
         remember_export_sources(context, result, repo_root=repo_root, cache_root=cache_root)
+        from . import viewer_scene_roles
+        viewer_scene_roles.remember_saved_originals(token, context, result.get("original_paths", []))
         result["derived_runtime"] = viewer_physics_runtime.inherit_export(context, result["preview_paths"],
             repo_root=repo_root, cache_root=cache_root)
         result["metadata"] = metadata(context, repo_root=repo_root, cache_root=cache_root)
@@ -438,16 +1051,44 @@ def _package_inputs(context, result):
     return selected, companions
 
 
+def _source_costume(metadata):
+    """The opened body's game costume container, recorded inertly in the ZIP.
+
+    A game import and its edited or transplanted copies name the wearer's
+    game record (the same counterpart _receipt_selection follows for a loose
+    file, also after a costume transplant, whose label shows the donor's
+    costume); a reopened viewer Mod ZIP carries its own record on, and an
+    older one without a record the costume its code-like name names
+    (model_labels.declared_hint). It is a conversion candidate only,
+    verified against the game body there.
+    """
+    for row in (metadata or {}).get("sources") or []:
+        if row.get("kind") != "body":
+            continue
+        counterpart = row.get("counterpart")
+        if row.get("source") not in ("game", "derived", "manifest") or not isinstance(counterpart, dict):
+            return None
+        region, suit, variant, owner = (counterpart.get(key) for key in ("region", "suitId", "variant", "owner"))
+        if (region not in ("gl", "jp") or type(suit) is not int or not 0 < suit < 10 ** 12
+                or variant not in ("primary", "unmasked") or type(owner) is not int):
+            return None
+        regions = counterpart.get("regions")
+        return {"region": region, "suit_id": suit, "variant": variant, "member": owner,
+                **({"regions": list(regions)} if isinstance(regions, list) and len(regions) > 1 else {})}
+    return None
+
+
 def create_package(token, state, *, output_root, repo_root, cache_root, display_name,
                    character_id=None, counterpart_path=None, selected_variant=None, thumbnail_token="", mesh_state=None,
-                   include_face_edits=None, job):
+                   include_face_edits=None, name_parts=None, language="en", face_cache_root=None, face_context=None, job):
     from webtools.core import model_edits, viewer_mod_package, viewer_mod_sources, viewer_mod_pair_edits, viewer_scene_roles
     name = validate_options(display_name, character_id, counterpart_path, selected_variant)
+    name_parts = validate_name_parts(name_parts)
     if include_face_edits is not None and not isinstance(include_face_edits, bool):
         raise ValueError("Choose whether to include this costume's verified face companion.")
     if not _PACKAGE_SLOT.acquire(blocking=False):
         raise ValueError("Another Mod ZIP is being prepared. Try again shortly.")
-    exported_result = None
+    exported_result = published = None
     try:
         _check(job)
         context = model_edits.mod_source_context(token)
@@ -455,6 +1096,12 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         mesh = normalize_mesh_state(mesh_state)
         if mesh is not None and (counterpart_path or viewer_scene_roles.session_metadata(token)):
             raise ValueError("Mesh edits cannot be propagated to paired or scene costumes. Save an individual edited Unity bundle instead.")
+        if include_face_edits is False and private_automatic_faces(context, repo_root=repo_root, face_cache_root=face_cache_root,
+                                                                    face_context=face_context, owner_hint=character_id):
+            # The body depends on its own private face (an installed costume
+            # with its face): leaving it out would drop the face edits and
+            # leave the body pointing at a face the new costume lacks.
+            raise viewer_mod_package.ModPackageError(viewer_mod_package.FACE_EXCLUSION_REFUSED)
         from webtools.core import viewer_thumbnails
         thumbnail = viewer_thumbnails.for_viewer_package(thumbnail_token, token, normalized,
             character_id, counterpart_path, selected_variant, mesh_state=mesh, include_face_edits=include_face_edits)
@@ -479,9 +1126,22 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
             pair_state["outlines"] = [row for row in pair_state["outlines"] if int(row["id"].split(":", 1)[0]) not in automatic_faces]
         if automatic_faces and pair_state.get("textures"):
             pair_state["textures"] = [row for row in pair_state["textures"] if row["texture"]["source"] not in automatic_faces]
-        paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, pair_state, pair=pair, job=job)
-                  if model_edits.has_changes(pair_state) else {"result": result, "pair": pair, "summary": []})
+        try:
+            paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, pair_state, pair=pair, job=job)
+                      if model_edits.has_changes(pair_state) or context.get("held_counterpart")
+                      else {"result": result, "pair": pair, "summary": []})
+        except viewer_mod_pair_edits.PairEditError as error:
+            # The page shows this sentence translated with the part's name
+            # (viewer-persistence.js awaitJob).
+            emit = getattr(job, "emit", None)
+            if callable(emit):
+                emit({"type": "message", **error.note})
+            raise
         result, pair = paired["result"], paired["pair"]
+        kept = list(dict.fromkeys(name for row in paired.get("summary", []) for name in (row.get("kept") or {}).get("names", [])))
+        if kept:
+            # Parts only this costume variant has keep their edits here (save status note).
+            result["notes"] = [{"text": viewer_mod_pair_edits.SELECTED_ONLY, "values": {"names": kept}}]
         # Counterpart mapping may rewrite the complete archive. Bind derived
         # runtime proof to those final bytes, never to the pre-pair ZIP hash.
         from . import viewer_physics_runtime
@@ -492,12 +1152,35 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         _check(job)
         package_result, faces = _package_inputs(context, result)
         owner = character_id if character_id is not None else result.get("metadata", {}).get("characterId")
-        packed = viewer_mod_package.package_saved_export(package_result, Path(result["recipe_path"]).parent / "mod",
-            display_name=name, chara_id=owner, pair=pair,
-            log=job.log, should_stop=job.should_stop,
-            **({"face_companions": faces} if include_face_edits and faces else {}),
-            **({"include_face_edits": include_face_edits} if include_face_edits is not None else {}),
-            **({"thumbnail": thumbnail} if thumbnail is not None else {}))
+        # An untouched automatic name is installed in each game language; a
+        # typed name is installed as typed for every language. The bases are
+        # for the chosen Mod member (a reopened scene: its target member).
+        scene = viewer_scene_roles.session_metadata(token)
+        bases = (scene_name_bases(repo_root, scene) if scene and scene.get("display_name")
+                 else name_bases(result.get("metadata"), owner, repo_root=repo_root))
+        names = localized_mod_names(name, name_parts, bases, language)
+        source_costume = _source_costume(result.get("metadata"))
+        # Leaving out a face the game itself provides leaves nothing dangling.
+        # Its cached or local catalog copy proves it (the costume's open tried
+        # the asset server too); one that cannot be checked here is refused
+        # with that reason.
+        proof = (scene_face_proof(context, face_cache_root, repo_root=repo_root, face_context=face_context)
+                 if include_face_edits is False else {"cabs": frozenset(), "unchecked": False})
+        stock_faces = proof["cabs"]
+        try:
+            packed = viewer_mod_package.package_saved_export(package_result, Path(result["recipe_path"]).parent / "mod",
+                display_name=name, chara_id=owner, pair=pair,
+                log=job.log, should_stop=job.should_stop,
+                **({"names": names} if names else {}),
+                **({"source_costume": source_costume} if source_costume else {}),
+                **({"face_companions": faces} if include_face_edits and faces else {}),
+                **({"include_face_edits": include_face_edits} if include_face_edits is not None else {}),
+                **({"catalog_face_cabs": stock_faces} if stock_faces else {}),
+                **({"thumbnail": thumbnail} if thumbnail is not None else {}))
+        except viewer_mod_package.ModPackageError as error:
+            if proof["unchecked"] and str(error) == viewer_mod_package.FACE_EXCLUSION_REFUSED:
+                raise viewer_mod_package.ModPackageError(STOCK_FACE_UNCHECKED) from None
+            raise
         result["face_identity"] = packed.get("face_identity", [])
         if viewer_scene_roles.should_package(context, normalized, packed, token):
             if mesh is not None:
@@ -508,6 +1191,21 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         path = str(Path(packed["package_path"]).resolve())
         digest, size = _hash_file(path)
         if packed.get("sha256") != digest or packed.get("bytes") != size:
+            raise ValueError("The Mod ZIP failed its completed-output check.")
+        # Publish the finished ZIP beside every other saved Mod ZIP under a
+        # readable, date-first name. The edit folder keeps its work files.
+        mods = Path(output_root) / MODS_FOLDER
+        stem = mod_zip_stem(name, packed.get("chara_id", packed.get("owner")), packed.get("platform"),
+                            scene=bool(packed.get("scene_roles")))
+        built = Path(path)
+        published = _move_mod_zip(built, mods / SAVED_FOLDER, stem, also=[mods / ADDED_FOLDER])
+        if built.parent.name == "mod":
+            try:
+                built.parent.rmdir()
+            except OSError:
+                pass
+        path = str(published.resolve())
+        if _hash_file(path) != (digest, size):
             raise ValueError("The Mod ZIP failed its completed-output check.")
         package_token = secrets.token_hex(16)
         public = {"token": package_token, "package_path": path, "sha256": digest, "bytes": size,
@@ -522,7 +1220,7 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         if paired.get("summary"):
             result["paired_edits"] = paired["summary"]
         receipt = {"public": copy.deepcopy(public), "source_token": token, "state": normalized, "mesh_state": mesh,
-                   "created": time.monotonic(), "status": "ready"}
+                   "created": time.monotonic(), "status": "ready", "added_dir": str(mods / ADDED_FOLDER)}
         with _LOCK:
             for old_token, old in list(_PACKAGES.items()):
                 if time.monotonic() - old["created"] > PACKAGE_SECONDS and old["status"] != "installing":
@@ -538,6 +1236,8 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         return result
     except Exception:
         discard_failed_export(exported_result, output_root)
+        if published is not None:
+            published.unlink(missing_ok=True)
         raise
     finally:
         _PACKAGE_SLOT.release()
@@ -575,22 +1275,39 @@ def install_package(token, *, repo_root, library_root, job):
         receipt = _receipt(token)
         receipt["status"] = "installing"
         public = copy.deepcopy(receipt["public"])
+    source = Path(public["package_path"])
+    target, handed_off = None, False
+
+    def publish(path):
+        public["package_path"] = str(path)
+        with _LOCK:
+            receipt["public"]["package_path"] = str(path)
+
+    def put_back():
+        # A failed hand-off leaves the ZIP with the saved (not added) ones.
+        if target is None or not target.is_file() or source.exists():
+            return
+        try:
+            os.replace(target, source)
+        except OSError:
+            return
+        publish(source)
+
     try:
         _check(job)
-        digest, size = _hash_file(public["package_path"])
+        digest, size = _hash_file(source)
         if digest != public["sha256"] or size != public["bytes"]:
             raise ValueError("The Mod ZIP changed after saving. Create it again before adding it.")
-        target_root = Path(library_root).resolve() / "suit"
-        target_root.mkdir(parents=True, exist_ok=True)
-        if target_root.is_symlink():
-            raise ValueError("The costume installation folder cannot be a symbolic link.")
-        source = Path(public["package_path"])
-        stem = source.stem.encode("utf-8")[:180].decode("utf-8", errors="ignore")
-        target = target_root / (stem + "-" + secrets.token_hex(4) + ".zip")
-        with source.open("rb") as incoming, target.open("xb") as outgoing:
-            shutil.copyfileobj(incoming, outgoing)
+        # The saved ZIP itself moves to mods/added, so each Mod ZIP sits in
+        # exactly one folder that says whether it was added to the game. Its
+        # name stays free in the installer's own drop folders, which receive
+        # copies under the same name.
+        library = Path(library_root).resolve()
+        added = Path(receipt.get("added_dir") or source.parent.parent / ADDED_FOLDER)
+        target = _move_mod_zip(source, added, source.stem,
+                               also=[library / "suit", root / "assets/package/suit"])
+        publish(target)
         if _hash_file(target) != (digest, size):
-            target.unlink(missing_ok=True)
             raise ValueError("The install copy does not match the saved Mod ZIP.")
         _check(job)
         controller = serverctl._controller
@@ -600,6 +1317,7 @@ def install_package(token, *, repo_root, library_root, job):
         # protects an ordinary standalone webtools job manager.
         with guard(root):
             summary = run_costume_file(job, str(target), digest, restart_server=controller is not None)
+        handed_off = True
         if job.should_stop():
             raise ValueError("Costume installation was cancelled. Check the server console before restarting.")
         with _LOCK:
@@ -607,6 +1325,8 @@ def install_package(token, *, repo_root, library_root, job):
         return {"installed": True, "mod_package": public, "installed_package_path": str(target),
                 "was_running": was_running, "summary": str(summary)}
     except BaseException:
+        if not handed_off:
+            put_back()
         with _LOCK:
             receipt["status"] = "failed"
         raise

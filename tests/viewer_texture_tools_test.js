@@ -175,4 +175,81 @@ test("large UV regions fill row spans while keeping the untouched corner clear",
   assert.strictEqual(covered, width * (width + 1) / 2);
   assert.strictEqual(mask[mask.length - 1], 0);
 });
+test("UV island selection grows one texel in all eight directions", () => {
+  const mask = new Uint8Array(6 * 5); mask[2 * 6 + 2] = 255;
+  const grown = tools.growMask(mask, 6, 5);
+  assert.deepStrictEqual(Array.from(grown, (value, index) => value ? index : -1).filter(index => index >= 0), [7, 8, 9, 13, 14, 15, 19, 20, 21]);
+  assert.strictEqual(mask.filter(Boolean).length, 1, "the source mask is left unchanged");
+  assert.ok(grown.every(value => value === 0 || value === 255));
+});
+test("the island ring stops at the texture border and does not wrap", () => {
+  const mask = new Uint8Array(4 * 3); mask[0] = 255; mask[4 * 3 - 1] = 255;
+  const grown = tools.growMask(mask, 4, 3);
+  assert.deepStrictEqual(Array.from(grown, (value, index) => value ? index : -1).filter(index => index >= 0), [0, 1, 4, 5, 6, 7, 10, 11]);
+  assert.strictEqual(grown[3], 0, "the row end does not wrap to the next row");
+  assert.strictEqual(grown[8], 0, "the row start does not wrap to the previous row");
+});
+test("a grid-aligned island gains exactly its one-texel ring", () => {
+  const mask = new Uint8Array(8 * 6), points = [[2 / 8, 2 / 6], [4 / 8, 2 / 6], [2 / 8, 4 / 6], [4 / 8, 4 / 6]];
+  tools.rasterTriangle(mask, 8, 6, [points[0], points[1], points[2]]);
+  tools.rasterTriangle(mask, 8, 6, [points[2], points[1], points[3]]);
+  const grown = tools.growMask(mask, 8, 6), expected = [];
+  for (let y = 1; y <= 4; y++) for (let x = 1; x <= 4; x++) expected.push(y * 8 + x);
+  assert.deepStrictEqual(Array.from(grown, (value, index) => value ? index : -1).filter(index => index >= 0), expected);
+});
+test("each undo step names what it does to a texture's operations for the Mod name, by what it changed", () => {
+  const after = tools.operationsAfterStep;
+  const pixels = { pixels: true, selection: false, layers: false, state: false, flattenedChanged: () => true };
+  const selection = { pixels: false, selection: true, layers: false, state: false, flattenedChanged: () => false };
+  const layers = changed => ({ pixels: false, selection: false, layers: true, state: false, flattenedChanged: () => changed });
+  const state = { pixels: false, selection: false, layers: false, state: true, flattenedChanged: () => false };
+  // Colour steps add their own; any other pixel step is painting; each is listed once.
+  assert.deepStrictEqual(after([], "Skin tone", pixels), ["skin"]);
+  assert.deepStrictEqual(after(["skin"], "OKLCH color", pixels), ["costume", "skin"]);
+  // The labels the engine's own tools give, the 2D canvas pointer tools included.
+  for (const label of ["Brush", "Erase", "brush", "eraser", "Fill", "line", "rectangle", "ellipse", "Cut selection", "Move selection", "Paste selection", "Image edit"]) {
+    assert.deepStrictEqual(after(["skin"], label, pixels), ["skin", "paint"], label);
+  }
+  assert.deepStrictEqual(after(["skin", "paint"], "Brush", pixels), ["skin", "paint"]);
+  // A step that changed no pixels keeps what was there, whatever its label: the
+  // selection brush stroke ("select-brush"), any selection, a move that moved nothing.
+  for (const label of ["select-brush", "Selection", "Move selection", "Brush"]) {
+    assert.deepStrictEqual(after(["costume", "skin"], label, selection), ["costume", "skin"], label);
+  }
+  // A layer step counts when the flattened texture changed, never by its label.
+  for (const label of ["Add layer", "Duplicate layer", "Remove layer", "Reorder layer", "Layer visibility", "Layer opacity", "Merge layer down", "Rename layer"]) {
+    assert.deepStrictEqual(after(["skin"], label, layers(false)), ["skin"], label + " unchanged");
+    assert.deepStrictEqual(after(["skin"], label, layers(true)), ["skin", "paint"], label + " changed");
+  }
+  // The layers are compared only while the step could still add painting: a
+  // texture already listed as painted keeps its list without the comparison.
+  let compared = 0;
+  const counted = changed => Object.assign(layers(changed), { flattenedChanged: () => { compared++; return changed; } });
+  for (const before of [["paint"], ["skin", "paint"], ["costume", "skin", "paint"]]) for (const changed of [false, true]) {
+    assert.deepStrictEqual(after(before, "Layer opacity", counted(changed)), before);
+  }
+  assert.equal(compared, 0, "no comparison once painting is listed");
+  assert.deepStrictEqual(after(["skin"], "Layer opacity", counted(true)), ["skin", "paint"]); assert.equal(compared, 1);
+  assert.deepStrictEqual(after([], "Add layer", counted(false)), []); assert.equal(compared, 2);
+  // A colour step that is listed already keeps the list as well.
+  assert.deepStrictEqual(after(["skin"], "Skin tone", pixels), ["skin"]);
+  assert.deepStrictEqual(after(["costume", "paint"], "OKLCH color", pixels), ["costume", "paint"]);
+  // Host state only: the bake and a recipe step with the same pixels.
+  for (const label of ["Bake blush", "Remove blush", "Restore texture"]) assert.deepStrictEqual(after(["costume", "skin"], label, state), ["costume", "skin"], label);
+  // Steps that replace every layer start again.
+  assert.deepStrictEqual(after(["costume", "skin", "paint"], "Restore original texture", layers(true)), []);
+  assert.deepStrictEqual(after(["costume", "skin"], "Import PNG", layers(true)), ["paint"]);
+  assert.deepStrictEqual(after(["skin"], "Open texture project", layers(false)), ["paint"]);
+  const before = ["skin"]; after(before, "Brush", pixels); assert.deepStrictEqual(before, ["skin"], "the earlier state is not changed");
+  // The name's order: costume colour, skin tone, baked blush, painting.
+  assert.deepStrictEqual(tools.nameOperations(["paint", "skin", "costume"], { layer: 0, k: 1 }), ["costume", "skin", "blush", "paint"]);
+  assert.deepStrictEqual(tools.nameOperations(["paint"], null), ["paint"]);
+  // A recipe row carries one kind; "blush" alone changes no pixels.
+  assert.deepStrictEqual(["costume", "skin", "paint", "blush"].map(tools.rowOperations), [["costume"], ["skin"], ["paint"], []]);
+  // Its saved operations win when they are the canonical list; otherwise its kind does.
+  assert.deepStrictEqual(tools.recipeOperations({ kind: "paint", operations: ["skin", "paint"] }), ["skin", "paint"]);
+  assert.deepStrictEqual(tools.recipeOperations({ kind: "paint" }), ["paint"]);
+  for (const operations of [[], ["paint", "skin"], ["skin", "skin"], ["blush"], "skin"]) assert.deepStrictEqual(tools.recipeOperations({ kind: "costume", operations }), ["costume"], JSON.stringify(operations));
+  assert.deepStrictEqual(tools.recipeOperations({ kind: "blush", operations: ["paint"] }), []);
+});
 process.stdout.write("PASS " + cases + " texture controller geometry cases\n");
