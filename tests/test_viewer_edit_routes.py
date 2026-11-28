@@ -17,6 +17,9 @@ import urllib.request
 from urllib.parse import quote
 
 import webtools.core
+# Import these with the real model_edits before setUp swaps it in sys.modules:
+# a first import inside a test would bind them to the mock for every later test.
+from webtools.core import viewer_mod_pair_edits, viewer_scene_roles  # noqa: F401
 from webtools.jobs import MANAGER
 from webtools.server import Handler
 
@@ -255,7 +258,6 @@ class ViewerEditRouteTests(unittest.TestCase):
             return self.request("/api/viewer/prepare", {"paths": [str(self.source)], "rigged": True, "auto_face": False})
 
     def test_prepare_of_a_reopened_scene_reports_its_held_face_rows(self):
-        from webtools.core import viewer_scene_roles
         summary = {"count": 1, "meshes": ["Mouth"], "rows": [{"id": "1:0:7", "factor": 0.5}]}
         session = {}
         self.backend._session = Mock(return_value=session)
@@ -271,7 +273,6 @@ class ViewerEditRouteTests(unittest.TestCase):
         self.assertEqual(result["editing"]["modPackaging"]["nameBase"], "Scene name")
 
     def test_prepare_of_a_saved_scene_original_packages_as_that_scene(self):
-        from webtools.core import viewer_scene_roles
         self.backend.register_session = Mock(side_effect=lambda *args, **kwargs: {"available": True, "token": self.token, "nodes": []})
         with patch.object(viewer_scene_roles, "register_preserved", Mock(return_value={"display_name": "Scene name"})) as preserved:
             status, result = self.prepare_with()

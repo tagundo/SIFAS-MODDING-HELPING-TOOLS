@@ -43,6 +43,11 @@ async function field(page, selector, value) {
   else { await input.fill(String(value)); await input.dispatchEvent('input'); }
 }
 async function choose(page, selector, value) { const input = await show(page.locator(selector)); await input.focus(); await input.selectOption(value); }
+// A mesh panel's vertex and position controls live in its settings; settings() opens or closes them.
+async function settings(page, panel, open) {
+  const toggle = page.locator('#viewer-mesh-' + panel + ' [data-uv-settings]');
+  if (((await toggle.getAttribute('aria-expanded')) === 'true') !== open) await toggle.click();
+}
 async function geometry(page) {
   return page.evaluate(() => {
     const values = []; window.__outlineRoot.traverse(mesh => {
@@ -218,8 +223,12 @@ print(json.dumps(out))`, JSON.stringify(absoluteCatalogue), JSON.stringify(sourc
     const deleted = await geometry(page); assert(deleted.every(value => value.same && value.indices === value.outlineIndices)); assert(deleted[0].indices < bound[0].indices);
     await page.locator('#viewer-mesh-deleter').getByRole('button', { name: 'Undo', exact: true }).click(); await page.evaluate(() => ModelViewer.renderProbe());
     const restored = await geometry(page); assert.equal(restored[0].indices, bound[0].indices); assert(restored.every(value => value.same));
+    // Select vertex and the vertex position controls live in the modify panel's settings.
     await page.locator('#viewer-mesh-modify').evaluate(node => node.open = true); await page.locator('#viewer-mesh-modify-select').selectOption(choice);
-    await page.locator('#viewer-mesh-modify-select-vertex').click(); await field(page, '#viewer-mesh-modify [data-mesh-position-axis=X]', .1234567); await page.locator('#viewer-mesh-modify-position-set').click(); await page.evaluate(() => ModelViewer.renderProbe());
+    await settings(page, 'modify', true);
+    await page.locator('#viewer-mesh-modify-select-vertex').click(); assert.deepStrictEqual((await page.evaluate(() => ModelViewer.getState().meshTools.selectedVertices)), [0], 'Select vertex picks vertex 0');
+    await field(page, '#viewer-mesh-modify [data-mesh-position-axis=X]', .1234567); await page.locator('#viewer-mesh-modify-position-set').click();
+    await settings(page, 'modify', false); await page.evaluate(() => ModelViewer.renderProbe());
     const moved = await geometry(page); assert(moved.every(value => value.same)); assert.deepStrictEqual(moved[0].positions, moved[0].outlinePositions); assert.notDeepStrictEqual(moved[0].positions, bound[0].positions);
     await page.locator('#viewer-mesh-modify').getByRole('button', { name: 'Undo', exact: true }).click(); await page.evaluate(() => ModelViewer.renderProbe());
     const undo = await geometry(page); assert(undo.every(value => value.same)); assert.deepStrictEqual(undo[0].positions, bound[0].positions);
@@ -247,6 +256,10 @@ print(json.dumps(out))`, JSON.stringify(absoluteCatalogue), JSON.stringify(sourc
     await gpu.screenshot({ path: path.join(evidence, '02-generated-zero-outlines.png') }); await gpu.close();
     assert.deepStrictEqual(errors, []); assert.deepStrictEqual(sources.map(sha), hashes, 'Original Unity files remain byte-exact'); report.status = 'PASS';
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); process.exitCode = 1; }
-  finally { if (browser) await browser.close(); if (server) { server.child.kill(); server.stream.end(); } fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ status: report.status, evidence, error: report.error })); }
+  finally {
+    if (browser) await browser.close();
+    if (server) { server.child.kill(); server.stream.end(); await new Promise(resolve => { if (server.child.exitCode !== null || server.child.signalCode !== null) return resolve(); server.child.once('exit', resolve); setTimeout(resolve, 5000).unref(); }); }
+    fs.rmSync(library, { recursive: true, force: true }); fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ status: report.status, evidence, error: report.error }));
+  }
 }
 if (require.main === module) run();

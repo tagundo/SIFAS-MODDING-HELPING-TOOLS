@@ -10,6 +10,7 @@ import zipfile
 
 from webtools.core import model_edits as edits, model_viewer, viewer_archive
 from webtools.core import viewer_mod_flow as flow, viewer_scene_format as fmt, viewer_scene_roles as roles
+from webtools.core import viewer_mod_pair_edits as pair_edits
 from webtools.jobs import Job
 from viewer_scene_fixture import bundle_fixture, _copy_typetree
 from UnityPy.helpers.Tpk import get_typetree_node
@@ -651,6 +652,8 @@ class SceneRolesTests(unittest.TestCase):
         token, _, state = self.prepare(Path(scene["mod_package"]["package_path"]), "primary")
         mesh = next(row["id"] for row in edits._session(token)["outlines"]["meshes"] if row["name"] == "BoardOnlyNeutral")
         result, first = self.package(token, dict(state, outlines=[{"id": mesh, "factor": 0.5}]))
+        # The save status names the part kept on this variant only.
+        self.assertEqual(result["notes"], [{"text": pair_edits.SELECTED_ONLY, "values": {"names": ["BoardOnlyNeutral"]}}])
         # The unmasked body has no such mesh: it stays its original, with no rows.
         self.assertEqual([row["factor"] for row in json.loads(first["files"][first["manifest"]["authoring"]["android"]["primary"]["recipe"]["member"]])["state"]["outlines"]], [0.5])
         self.assertFalse(json.loads(first["files"][first["manifest"]["authoring"]["android"]["unmasked"]["recipe"]["member"]])["state"].get("outlines"))
@@ -663,6 +666,8 @@ class SceneRolesTests(unittest.TestCase):
         reopened, _, state = self.prepare(Path(result["mod_package"]["package_path"]), "unmasked")
         self.assertEqual(edits.mod_source_context(reopened)["held_counterpart"][0]["outlines"], [{"id": "0" + mesh[mesh.index(":"):], "factor": 0.5}])
         again, second = self.package(reopened, state)
+        # Nothing of this view stays on it alone; the board's carried row is no note.
+        self.assertNotIn("notes", again)
         self.assertEqual(json.loads(second["files"][second["manifest"]["authoring"]["android"]["primary"]["recipe"]["member"]])["state"]["outlines"],
                          [{"id": "0" + mesh[mesh.index(":"):], "factor": 0.5}])
         self.assertEqual(self.outline_width(self.golden(second, "android", "primary"), "BoardOnlyNeutral"), edited)
@@ -688,6 +693,138 @@ class SceneRolesTests(unittest.TestCase):
         board, _, _ = self.prepare(Path(saved["original_paths"][0]), "primary")
         self.assertIsNotNone(roles.register_preserved(board, edits.mod_source_context(board)))
         self.assertEqual(edits._session(board).get("heldCounterpart", []), [])
+
+    def test_a_saved_scene_reopens_as_the_scene_after_a_restart(self):
+        token, nodes, _ = self.prepare(self.source())
+        result, original = self.package(token, self.state(nodes))
+        reopened, _, state = self.prepare(Path(result["mod_package"]["package_path"]), "primary")
+        metadata = roles.session_metadata(reopened)
+        saved = flow.export_current(reopened, state, self.root / "saved", repo_root=self.root, cache_root=self.root / "game-cache")
+        copied = Path(saved["original_paths"][0])
+        sidecar = copied.with_name(edits.SCENE_BINDING)
+        binding = json.loads(sidecar.read_text())
+        self.assertEqual(set(binding), {"format", "version", "original", "variant", "metadata", "held"})
+        self.assertEqual((binding["format"], binding["version"], binding["variant"], binding["metadata"]),
+                         (roles.BINDING_FORMAT, 1, "primary", metadata))
+        self.assertEqual(binding["original"], {"file": copied.name, "sha256": fmt.sha(copied.read_bytes())})
+        # A restart keeps nothing in memory: no session, no scene.
+        with roles._LOCK: roles._SCENES.clear()
+        with edits._LOCK: edits._SESSIONS.clear()
+        reedit, _, _ = self.prepare(copied, "primary")
+        self.assertEqual(roles.register_preserved(reedit, edits.mod_source_context(reedit)), metadata)
+        again, decoded = self.package(reedit, edits.restore(reedit, saved["recipe"]))
+        self.assertTrue(fmt.is_scene_package(again["mod_package"]["package_path"]))
+        self.assertEqual(decoded["manifest"]["source_suit_id"], original["manifest"]["source_suit_id"])
+        self.assertEqual(decoded["manifest"]["display_name"], metadata["display_name"])
+        # The binding counts only as written, for exactly that file and bytes.
+        good = json.loads(sidecar.read_text())
+        for label, changed in (("other bytes", dict(good, original=dict(good["original"], sha256="0" * 64))),
+                               ("other file", dict(good, original=dict(good["original"], file="other.zip"))),
+                               ("unknown field", dict(good, extra=True)), ("other format", dict(good, format="other")),
+                               ("bad name", dict(good, metadata=dict(good["metadata"], display_name=" "))),
+                               ("bad target", dict(good, metadata=dict(good["metadata"], target_member_id=0))),
+                               ("bad held", dict(good, held=[{"sha256": "0" * 64, "nodes": []}]))):
+            with self.subTest(label):
+                sidecar.write_text(json.dumps(changed))
+                probe, _, _ = self.prepare(copied, "primary")
+                self.assertIsNone(roles.register_preserved(probe, edits.mod_source_context(probe)))
+                self.assertIsNone(roles.session_metadata(probe))
+        sidecar.unlink()
+        probe, _, _ = self.prepare(copied, "primary")
+        self.assertIsNone(roles.register_preserved(probe, edits.mod_source_context(probe)))
+        # A binding beside something that is not a scene's originals family counts for nothing.
+        plain = copied.with_name("plain.zip")
+        with zipfile.ZipFile(plain, "w") as archive:
+            archive.writestr("body.unity", self.originals["android", "primary"])
+            archive.writestr("modinstall.txt", "chara_id = 209\\ncostume_file = 'body.unity'\\n")
+        sidecar.write_text(json.dumps(dict(good, original={"file": plain.name, "sha256": fmt.sha(plain.read_bytes())})))
+        self.assertIsNone(roles._read_binding({"path": str(plain), "raw": plain.read_bytes(), "sha256": fmt.sha(plain.read_bytes())}))
+        # Only a save of exactly one reopened container keeps the scene.
+        with roles._LOCK: roles._SCENES[probe] = copy.deepcopy(metadata)
+        context = {"containers": [{"sha256": "1" * 64}, {"sha256": "2" * 64}], "variants": {}}
+        for index, (containers, count) in enumerate(((context["containers"], 2), (context["containers"], 1),
+                                                     (context["containers"][:1], 2), (context["containers"][:1], 1))):
+            folder = self.root / ("saved-%d" % index); folder.mkdir()
+            paths = [str(folder / ("a%d.zip" % n)) for n in range(count)]
+            roles.remember_saved_originals(probe, dict(context, containers=containers), paths)
+            self.assertEqual((folder / edits.SCENE_BINDING).exists(), index == 3, index)
+
+    def test_other_variant_texture_edit_survives_a_mod_zip_of_the_other_view(self):
+        from PIL import Image
+        import base64
+        token, nodes, _ = self.prepare(self.source())
+        result, _ = self.package(token, self.state(nodes))
+        scene = Path(result["mod_package"]["package_path"])
+        unmasked, _, state = self.prepare(scene, "unmasked")
+        session = edits._session(unmasked)
+        row = next(row for row in session["textures"]["textures"] if row["available"] and row["texture"]["source"] == 0)
+        buffer = io.BytesIO(); Image.new("RGBA", (row["width"], row["height"]), (200, 30, 30, 255)).save(buffer, "PNG")
+        paint = {"texture": row["texture"], "sourceSha256": row["sourceSha256"], "kind": "paint",
+                 "png": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()}
+        painted, first = self.package(unmasked, dict(state, textures=[paint]))
+        recipe = lambda decoded, variant: json.loads(decoded["files"][decoded["manifest"]["authoring"]["android"][variant]["recipe"]["member"]])
+        self.assertEqual(len(recipe(first, "unmasked")["state"]["textures"]), 1)
+        painted_bare = self.golden(first, "android", "unmasked")
+        # The board view cannot show that texture edit; a Mod ZIP made there keeps it.
+        board, _, board_state = self.prepare(Path(painted["mod_package"]["package_path"]), "primary")
+        held = edits.mod_source_context(board)["held_counterpart"]
+        self.assertEqual([entry["textures"][0]["sourceSha256"] for entry in held], [row["sourceSha256"]])
+        _, second = self.package(board, board_state)
+        self.assertEqual(recipe(second, "unmasked")["state"]["textures"], recipe(first, "unmasked")["state"]["textures"])
+        self.assertEqual(self.golden(second, "android", "unmasked"), painted_bare)
+        self.assertNotEqual(painted_bare, self.golden(fmt.read_package(result["mod_package"]["package_path"]), "android", "unmasked"))
+        # Its save keeps them for a re-edit in a later session too.
+        saved = flow.export_current(board, board_state, self.root / "saved-board", repo_root=self.root, cache_root=self.root / "game-cache")
+        with roles._LOCK: roles._SCENES.clear()
+        reedit, _, _ = self.prepare(Path(saved["original_paths"][0]), "primary")
+        self.assertIsNotNone(roles.register_preserved(reedit, edits.mod_source_context(reedit)))
+        _, third = self.package(reedit, edits.restore(reedit, saved["recipe"]))
+        self.assertEqual(self.golden(third, "android", "unmasked"), painted_bare)
+
+    def test_authored_sources_name_every_kind_of_row(self):
+        token, _, _ = self.prepare(self.source(), "primary")
+        session = edits._session(token)
+        node = next(iter(session["targets"]))
+        state = {"edits": [{"node": node}, {"node": -1}], "outlines": [{"id": "1:0:5"}, {"id": "x"}],
+                 "physics": [{"id": "2:0:1"}], "textures": [{"texture": {"source": 3}}, {"texture": {"source": "4"}}]}
+        self.assertEqual(edits._authored_sources(session, state),
+                         {session["targets"][node]["sourceIndex"]: {"edits"}, 1: {"outlines"}, 2: {"physics"}, 3: {"textures"}})
+
+    def test_release_notice_names_the_kind_of_face_rows_that_released_them(self):
+        from webtools.core import viewer_texture_tools
+        token, session, recipe, empty, held, proof = self.held_view()
+        before = edits.held_snapshot(token)
+        texture = {"texture": {"source": 0, "file": 0, "id": "5"}, "sourceSha256": "0" * 64, "png": "", "kind": "paint"}
+        with patch.object(viewer_texture_tools, "validate", side_effect=lambda session, rows: rows):
+            edits.restore(token, dict(recipe, state=dict(empty, textures=[texture])))
+        self.assertEqual(session["heldFaceOutlines"], [])
+        self.assertEqual(edits.held_response(token, before)["notice"], {"text": edits.HELD_RELEASED_TEXTURES_ONE, "values": {}})
+        self.assertEqual(edits.held_response(token, before * 2)["notice"], {"text": edits.HELD_RELEASED_TEXTURES, "values": {"count": 2}})
+        # A Node row of that face's source releases them too.
+        token, session, recipe, empty, held, proof = self.held_view()
+        node, target = next((node, target) for node, target in session["targets"].items() if target["sourceIndex"] == 0)
+        method = "node" if "node" in target["methods"] else "mesh"
+        identity = {"node": node, "sourceIndex": 0, "transformId": target["transformId"], "serializedFile": target["serializedFile"]}
+        edits.restore(token, dict(recipe, nodeIdentities=[identity],
+                                  state=dict(empty, edits=[{"node": node, "method": method, "scale": [1.1, 1.1, 1.1]}])))
+        self.assertEqual(session["heldFaceOutlines"], [])
+        self.assertEqual(edits.held_response(token, before)["notice"], {"text": edits.HELD_RELEASED_EDITS_ONE, "values": {}})
+        from webtools import i18n
+        for text in (edits.HELD_RELEASED_TEXTURES, edits.HELD_RELEASED_TEXTURES_ONE, edits.HELD_RELEASED_EDITS, edits.HELD_RELEASED_EDITS_ONE):
+            for language in ("ko", "ja"):
+                self.assertNotEqual(i18n.tr(text, language), text)
+        self.assertEqual(i18n.tr(edits.HELD_RELEASED_ONE, "ja"), "この編集レシピは顔の輪郭線を指定しているため、素顔の表示で編集した顔の輪郭線1件は保持されません。")
+        self.assertEqual(i18n.tr(", ", "ja"), "、")
+
+    def test_a_named_pair_refusal_is_sent_to_the_page_with_its_part_name(self):
+        token, nodes, _ = self.prepare(self.source())
+        job = Job("refusal", "viewer_body_mod")
+        error = pair_edits.PairEditError(pair_edits.MISSING_OUTLINE, "Hair")
+        with patch.object(pair_edits, "apply_pair_edits", side_effect=error), \
+                self.assertRaisesRegex(pair_edits.PairEditError, "outline mesh: Hair"):
+            flow.create_package(token, self.state(nodes), output_root=self.root / "exports", repo_root=self.root,
+                cache_root=self.root / "game-cache", display_name="Neutral scene", character_id=209, job=job)
+        self.assertIn({"type": "message", "text": pair_edits.MISSING_OUTLINE, "values": {"name": "Hair"}}, job._events)
 
     def test_counterpart_without_the_edited_parts_keeps_its_original_and_no_recipe(self):
         context, result, pair, goldens = self.raw_pair()

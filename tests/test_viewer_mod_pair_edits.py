@@ -398,6 +398,13 @@ class PairedBodyEditTests(unittest.TestCase):
         self.assertEqual(carried, {"outlines": [{"id": "0:0:2", "factor": .5}], "physics": [{"id": "0:0:9", "values": {"dragForce": .2}}]})
         self.assertEqual(names, ["BoardOnly", "HairA1_Dyna"])
         self.assertEqual(paired._carried(context, 0, {"names": {}}, partner, held, b"other bytes"), ({}, []))
+        # Texture rows are never mirrored: the other variant's own rows bound
+        # to its original's bytes are all carried, any others are not.
+        own = {"texture": {"source": 0, "file": 0, "id": "5"}, "sourceSha256": sources._sha(raw), "png": "p", "kind": "paint"}
+        stale = dict(own, texture={"source": 0, "file": 0, "id": "6"}, sourceSha256="1" * 64)
+        textured = [dict(held[0], textures=[own, stale]), dict(held[1], textures=[dict(own)])]
+        carried, _ = paired._carried(context, 0, {"names": {(0, 5): "Breast"}}, partner, textured, raw)
+        self.assertEqual(carried["textures"], [own])
 
     def test_rina_other_variant_still_refuses_a_mesh_it_has_without_a_unique_match(self):
         primary = self.write("board.unity", self.fixture())

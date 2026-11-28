@@ -552,6 +552,10 @@ def _verified_face_companions(export_result, records):
 
 
 
+FACE_EXCLUSION_REFUSED = ("This costume's body uses the face its ZIP includes, so that face cannot be left out. "
+                          "Tick 'Include face and mouth edits for this costume' to keep it; no Mod ZIP was created.")
+
+
 def _check_face_exclusion(target):
     """Never leave a private face dependency dangling after explicit exclusion."""
     from . import bundle_identity
@@ -585,8 +589,7 @@ def _check_face_exclusion(target):
                 for obj in sf.objects.values():
                     if obj.type.name == "AssetBundle":
                         references_face |= bool(face_names.intersection(obj.read_typetree().get("m_Dependencies", [])))
-                _require(not references_face,
-                    "This saved ZIP binds its body to the included face. Reimport the original body before excluding the face; no Mod ZIP was created.")
+                _require(not references_face, FACE_EXCLUSION_REFUSED)
 
 
 def _attach_edited_faces(target, temporary, faces, owner, platform, should_stop, include_face_edits=None):

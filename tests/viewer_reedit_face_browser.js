@@ -1,15 +1,20 @@
-/* Rina board held face rows, named pair refusals and "Re-edit from original"
- * through the product viewer page (Korean UI).
+/* Rina board held face rows, the face option of a costume ZIP that includes
+ * its face, named pair refusals, save notes and "Re-edit from original"
+ * through the product viewer page (Korean UI, one Japanese case).
  *
  * Fixture cases run on the neutral serialized fixtures with a real isolated
- * server. Three responses are deliberately extended there, and say so: the
- * prepare response gains held face rows (a neutral fixture has no Rina face),
- * one restore response gains a release notice, one export job fails with a
- * pair refusal, and one save result gains an automatic face original.
+ * server. Some responses are deliberately extended there, and say so: the
+ * prepare response gains held face rows and an included face (a neutral
+ * fixture has no Rina face), one restore response gains a release notice,
+ * export jobs fail with a pair refusal, one save result gains an automatic
+ * face original, one Mod ZIP result gains a kept-parts note and one install
+ * job fails with the Elichika installer's own summary.
  *
  * With ELICHIKA_ROOT (an Elichika tree with assets/db and static), the real
- * case imports member suits from Game assets (no download) and drives Save ->
- * Re-edit from original -> Save mod ZIP with nothing replaced.
+ * cases import member suits from Game assets (no download) and drive Save ->
+ * Re-edit from original -> Save mod ZIP, and package Rina 302092002's Normal
+ * face view as a scene, reopen it in the board view and Save mod ZIP with the
+ * face option as it opens, with nothing replaced.
  * Run with VIEWER_PYTHON selecting a Python with the product dependencies. */
 'use strict';
 const assert = require('assert'), fs = require('fs'), net = require('net'), os = require('os'), path = require('path');
@@ -60,16 +65,16 @@ async function show(page, selector) {
   return locator;
 }
 
-async function openPage(browser, url, autoFace) {
+async function openPage(browser, url, autoFace, language = 'ko') {
   const context = await browser.newContext({ viewport: { width: 1280, height: 1000 }, deviceScaleFactor: 1 });
   const page = await context.newPage(), errors = [];
   page.setDefaultTimeout(240000); page.on('pageerror', error => errors.push(String(error)));
-  await page.addInitScript(() => localStorage.setItem('sifas_lang', 'ko'));
+  await page.addInitScript(value => localStorage.setItem('sifas_lang', value), language);
   await page.goto(url);
   await page.waitForFunction(() => typeof openModelViewer === 'function' && !!window.ModelViewer && !!window.ViewerPersistence);
   await page.locator('.tab[data-tab="viewer"]').click();
   await page.evaluate(value => { document.getElementById('viewer-auto-face').checked = value; }, autoFace);
-  const strings = await page.evaluate(async () => (await (await fetch('/api/i18n?lang=ko')).json()).strings);
+  const strings = await page.evaluate(async value => (await (await fetch('/api/i18n?lang=' + value)).json()).strings, language);
   return { page, context, errors, strings };
 }
 
@@ -121,11 +126,22 @@ async function fixtureCases(browser) {
     // Injected: a neutral fixture has no Rina face, so the server holds none.
     await page.route('**/api/viewer/prepare', async route => {
       const response = await route.fetch(), json = await response.json();
-      if (json.editing) json.editing.heldFaceOutlines = { count: 3, meshes: ['Eye', 'Mouth'], rows: heldRows };
+      if (json.editing) {
+        json.editing.heldFaceOutlines = { count: 3, meshes: ['Eye', 'Mouth'], rows: heldRows };
+        Object.assign(json.editing.modPackaging, { hasFaceCompanions: true, faceIncluded: true });
+      }
       await route.fulfill({ response, json });
     });
     await openModel(page, [fixtures.raw]);
     await page.unroute('**/api/viewer/prepare');
+    // A costume ZIP that includes its own face opens with the face option on.
+    const faceOption = await show(page, '#viewer-mod-include-face');
+    await page.waitForFunction(() => document.getElementById('viewer-mod-include-face').checked);
+    assert.equal(await faceOption.isDisabled(), false);
+    const included = strings["This costume ZIP includes its own face, so it is included by default. Only this costume uses it; other costumes and the character's shared face stay unchanged."];
+    assert(/[가-힣]/.test(included));
+    assert.equal((await page.locator('#viewer-mod-face-help').innerText()).trim(), included);
+    report.cases.push({ name: 'included face option default (ko)', help: included });
     const note = page.locator('#viewer-save-held-note');
     await page.waitForFunction(() => !document.getElementById('viewer-save-held-note').hidden);
     await show(page, '#viewer-save-held-note');
@@ -147,8 +163,19 @@ async function fixtureCases(browser) {
     await page.waitForFunction(() => !!ModelViewer.getState().persistence.error);
     const refusal = strings['The counterpart has no unique matching outline mesh: {name}'].replace('{name}', 'Mask');
     assert.equal(await statusText(page), refusal);
-    await page.unroute('**/api/viewer/edit/export'); await page.unroute('**/api/jobs/abcdef012345/events');
+    await page.unroute('**/api/jobs/abcdef012345/events');
     report.cases.push({ name: 'named pair refusal (ko)', status: refusal });
+    // The job's {text, values} message is shown, whatever its summary says.
+    await page.route('**/api/jobs/abcdef012345/events', route => route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' },
+      body: 'data: ' + JSON.stringify({ type: 'message', text: 'The counterpart has no unique matching physics component: {name}', values: { name: 'HairA1_Dyna' } }) + '\n\n' +
+        'data: ' + JSON.stringify({ type: 'done', status: 'error', summary: 'Refused.' }) + '\n\n' }));
+    await (await show(page, '#viewer-save')).click();
+    await page.waitForFunction(() => !!ModelViewer.getState().persistence.error && !ModelViewer.getState().persistence.busy);
+    const physicsRefusal = strings['The counterpart has no unique matching physics component: {name}'].replace('{name}', 'HairA1_Dyna');
+    assert.equal(await statusText(page), physicsRefusal);
+    assert.equal((await persistence(page)).error, 'The counterpart has no unique matching physics component: HairA1_Dyna');
+    await page.unroute('**/api/viewer/edit/export'); await page.unroute('**/api/jobs/abcdef012345/events');
+    report.cases.push({ name: 'pair refusal message event (ko)', status: physicsRefusal });
 
     // A real save; its recipe restored with an injected release notice.
     const saved = await clickSave(page);
@@ -186,15 +213,101 @@ async function fixtureCases(browser) {
       'Only the row the restore still holds is shown as kept');
     await page.screenshot({ path: path.join(evidence, 'released-notice-ko.png') });
     report.cases.push({ name: 're-edit button and release notice (ko)', prepared, status: await statusText(page) });
+    // Add to game: a Mod ZIP result naming parts kept on this variant, then
+    // the Elichika installer's own failure summary.
+    await setScale(page, [1.15, 1, 1]);
+    await page.route('**/api/viewer/edit/package', route => route.fulfill({ json: { job_id: 'abcdef0000aa' } }));
+    await page.route('**/api/viewer/edit/install', route => route.fulfill({ json: { job_id: 'abcdef0000bb' } }));
+    const stream = body => route => route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: 'data: ' + JSON.stringify(body) + '\n\n' });
+    await page.route('**/api/jobs/abcdef0000aa/events', stream({ type: 'done', status: 'done', summary: 'ok', output_paths: [] }));
+    await page.route('**/api/jobs/abcdef0000bb/events', stream({ type: 'done', status: 'error', summary: 'costume installer failed for /library/suit/Costume-1234.zip (exit 1)' }));
+    const packagePath = resaved.previewPaths[0].replace(/[^/]+$/, 'costume-mod.zip');
+    await page.route('**/api/viewer/edit/result/abcdef0000aa', route => route.fulfill({ json: {
+      output_paths: [packagePath, resaved.recipePath], preview_paths: resaved.previewPaths.slice(), original_paths: resaved.originalPaths.slice(),
+      recipe_path: resaved.recipePath, recipe: { state: {} }, notes: [{ text: 'Edits of parts that only the selected costume variant has stay on that variant: {names}', values: { names: ['Mask', 'eye_neutral'] } }],
+      mod_package: { token: 'a'.repeat(32), package_path: packagePath, installable: true, character_id: 6, variants: [] } } }));
+    await (await show(page, '#viewer-save-mod')).click();
+    await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && ModelViewer.getState().persistence.status === 'done');
+    const kept = strings['Edits of parts that only the selected costume variant has stay on that variant: {names}'].replace('{names}', 'Mask' + strings[', '] + 'eye_neutral');
+    assert((await statusText(page)).endsWith(kept), 'The Mod ZIP status names the parts kept on this variant: ' + await statusText(page));
+    await (await show(page, '#viewer-add-to-game')).click();
+    await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && !!ModelViewer.getState().persistence.error);
+    const installer = strings["The costume installer stopped with exit code {code}. Usual causes are missing Elichika settings (config.json) or a Mod ZIP the installer could not find in its costume folder; the server console shows the installer's message."].replace('{code}', '1');
+    assert(/[가-힣]/.test(installer));
+    assert.equal(await statusText(page), installer);
+    for (const pattern of ['**/api/viewer/edit/package', '**/api/viewer/edit/install', '**/api/jobs/abcdef0000aa/events', '**/api/jobs/abcdef0000bb/events', '**/api/viewer/edit/result/abcdef0000aa']) await page.unroute(pattern);
+    report.cases.push({ name: 'kept-parts note and installer summary (ko)', kept, installer });
     assert.deepStrictEqual(errors, []);
     await context.close();
+    // Japanese lists part names with its own separator.
+    const ja = await openPage(browser, server.url, false, 'ja');
+    await ja.page.route('**/api/viewer/prepare', async route => {
+      const response = await route.fetch(), json = await response.json();
+      if (json.editing) json.editing.heldFaceOutlines = { count: 2, meshes: ['Eye', 'Mouth'], rows: heldRows.slice(0, 2) };
+      await route.fulfill({ response, json });
+    });
+    await openModel(ja.page, [fixtures.raw]);
+    await ja.page.waitForFunction(() => !document.getElementById('viewer-save-held-note').hidden);
+    await show(ja.page, '#viewer-save-held-note');
+    const jaNote = ja.strings['{count} face outline edits made in the Normal face view are kept ({meshes}).'].replace('{count}', '2').replace('{meshes}', 'Eye、Mouth');
+    assert.equal((await ja.page.locator('#viewer-save-held-note').innerText()).trim(), jaNote);
+    // Without an included face the option starts off, as before.
+    assert.equal(await ja.page.locator('#viewer-mod-include-face').isChecked(), false);
+    report.cases.push({ name: 'held note list separator (ja)', note: jaNote });
+    assert.deepStrictEqual(ja.errors, []);
+    await ja.context.close();
   } finally { await stopServer(server); }
+}
+
+async function realRinaBoard(browser, server) {
+  // Normal face view of Rina 302092002: a Mouth outline edit, packaged as a scene with its face.
+  const job = await (await fetch(server.url + '/api/viewer/game/import?lang=ko', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: server.url },
+    body: JSON.stringify({ region: 'gl', suit: 'suit:302092002', variant: 'unmasked', download: false, purpose: 'viewer', platform: 'android' }) })).json();
+  const events = await (await fetch(server.url + '/api/jobs/' + job.job_id + '/events')).text();
+  const done = events.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).find(item => item.type === 'done');
+  assert(done && done.status === 'done' && done.output_paths.length === 1, 'Rina import: ' + JSON.stringify(done));
+  const { page, context, errors, strings } = await openPage(browser, server.url, true);
+  await openModel(page, done.output_paths);
+  const mouth = (await page.evaluate(() => ModelViewer.getEditingMetadata().outlines)).meshes.find(row => row.name === 'Mouth');
+  await page.locator('#viewer-outline-card').evaluate(node => { node.open = true; });
+  await (await show(page, '#viewer-outline-mesh')).selectOption(mouth.id);
+  await (await show(page, '#viewer-outline-number')).fill('140'); await page.locator('#viewer-outline-number').dispatchEvent('input');
+  assert.equal(await page.locator('#viewer-mod-include-face').isChecked(), false, 'An automatic face starts off');
+  await (await show(page, '#viewer-mod-include-face')).check();
+  await (await show(page, '#viewer-save-mod')).click();
+  await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && (ModelViewer.getState().persistence.modPackage || ModelViewer.getState().persistence.error));
+  const first = await persistence(page);
+  assert(!first.error && /-scene\.zip$/.test(first.modPackage.packagePath), 'Normal face scene Mod ZIP: ' + first.error);
+  // Its board view: the face edits are held, the face option starts on, and Save mod ZIP works as it opens.
+  await openModel(page, [first.modPackage.packagePath]);
+  await page.waitForFunction(() => !document.getElementById('viewer-save-held-note').hidden);
+  const option = await show(page, '#viewer-mod-include-face');
+  assert.equal(await option.isChecked(), true, 'The board view keeps the included face by default');
+  assert.equal(await option.isDisabled(), false);
+  const held = (await page.locator('#viewer-save-held-note').innerText()).trim();
+  await (await show(page, '#viewer-save-mod')).click();
+  await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && (ModelViewer.getState().persistence.status === 'done' || ModelViewer.getState().persistence.error));
+  const board = await persistence(page);
+  assert(!board.error, 'Board view Save mod ZIP with the default face option: ' + board.error);
+  assert(/-scene\.zip$/.test(board.modPackage.packagePath) && board.modPackage.packagePath !== first.modPackage.packagePath);
+  await page.screenshot({ path: path.join(evidence, 'rina-board-mod-zip-default-ko.png') });
+  // Turning the option off is refused with the translated sentence that says to tick it.
+  await option.uncheck();
+  await (await show(page, '#viewer-save-mod')).click();
+  await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && !!ModelViewer.getState().persistence.error);
+  const refusal = strings["This costume's body uses the face its ZIP includes, so that face cannot be left out. Tick 'Include face and mouth edits for this costume' to keep it; no Mod ZIP was created."];
+  assert(/[가-힣]/.test(refusal) && refusal.includes(strings['Include face and mouth edits for this costume']));
+  assert.equal(await statusText(page), refusal);
+  report.cases.push({ name: 'real Rina board view Save mod ZIP default (ko)', held, package: path.basename(board.modPackage.packagePath), refusal });
+  assert.deepStrictEqual(errors, []);
+  await context.close();
 }
 
 async function realCases(browser, root) {
   const library = fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-reedit-face-real-')); libraries.push(library);
   const server = await startServer({ cwd: root, library, pythonPath: [product, root].join(path.delimiter) });
   try {
+    if (process.env.REEDIT_REAL_RINA !== '0') await realRinaBoard(browser, server);
     for (const suit of (process.env.REEDIT_REAL_SUITS || '402032004,102062001').split(',').map(Number)) {
       const job = await (await fetch(server.url + '/api/viewer/game/import?lang=ko', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: server.url },
         body: JSON.stringify({ region: 'gl', suit: 'suit:' + suit, variant: 'primary', download: false, purpose: 'viewer', platform: 'android' }) })).json();

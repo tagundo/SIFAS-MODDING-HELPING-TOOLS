@@ -45,11 +45,19 @@ class _Family(list):
 
 
 class PairEditError(ValueError):
-    """A refusal about one named part; ``template`` and ``name`` stay separate."""
+    """A refusal about one named part; ``template`` and ``name`` stay separate.
+
+    ``note`` is the page's {text, values} form of the sentence: the job emits
+    it as a "message" event before failing (viewer_mod_flow.create_package).
+    """
 
     def __init__(self, template, name):
         self.template, self.name = template, str(name)
         super().__init__(template.replace("{name}", self.name))
+
+    @property
+    def note(self):
+        return {"text": self.template, "values": {"name": self.name}}
 
 
 def _zip_declarations(raw):
@@ -433,9 +441,12 @@ def _carried(context, source_index, source_info, partner_context, held, original
     ``held`` lists the reopened scene's other-variant recipes (bound to their
     original's sha256, rows in that original's "0:" index space, which is the
     temporary counterpart session's). Rows of parts the selected source also
-    has are mirrored from this view's own state instead.
+    has are mirrored from this view's own state instead. Texture rows are
+    never mirrored (apply_pair_edits), so the counterpart's own texture rows
+    bound to its original's bytes are all carried.
     """
-    rows = [entry for entry in held if entry["sha256"] == sources._sha(original_raw)]
+    digest = sources._sha(original_raw)
+    rows = [entry for entry in held if entry["sha256"] == digest]
     if not rows:
         return {}, []
     own = context.get("outlines", {})
@@ -453,6 +464,9 @@ def _carried(context, source_index, source_info, partner_context, held, original
                     carried.setdefault(field, []).append(copy.deepcopy(row))
                     if record["name"] not in names:
                         names.append(record["name"])
+        for row in entry.get("textures", []):
+            if isinstance(row, dict) and row.get("sourceSha256") == digest:
+                carried.setdefault("textures", []).append(copy.deepcopy(row))
     return carried, names
 
 
@@ -494,6 +508,10 @@ def _edit_partner(context, state, source_index, original_raw, folder, job, *, ot
             carried, carried_names = _carried(context, source_index, source_info, partner_context,
                                               context["held_counterpart"], original_raw)
             for field, rows in carried.items():
+                if field == "textures":
+                    # Never mirrored, so these are the counterpart's only texture rows.
+                    translated[field] = rows
+                    continue
                 present = {row["id"] for row in translated.get(field, [])}
                 translated[field] = sorted(translated.get(field, []) + [row for row in rows if row["id"] not in present],
                                            key=lambda row: row["id"])
