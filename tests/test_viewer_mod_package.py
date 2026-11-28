@@ -420,6 +420,63 @@ class ViewerModPackageTests(unittest.TestCase):
             self.package(self.source, log=failed_log)
         self.assertEqual(list(self.output.iterdir()), [])
 
+    def dependent_face_zip(self, name="face-dependency.zip"):
+        """An installer ZIP whose body depends on the face it includes."""
+        from viewer_scene_fixture import bundle_fixture
+        from webtools.core import bundle_identity
+
+        def edit(raw, texture, bundle=None, dependencies=None):
+            environment = UnityPy.load(raw)
+            for obj in environment.objects:
+                if obj.type.name == "Texture2D":
+                    tree = obj.read_typetree(); tree["m_Name"] = texture; obj.save_typetree(tree)
+                if obj.type.name == "AssetBundle":
+                    tree = obj.read_typetree()
+                    if bundle:
+                        tree["m_Name"] = tree["m_AssetBundleName"] = bundle
+                    if dependencies is not None:
+                        tree["m_Dependencies"] = dependencies
+                    obj.save_typetree(tree)
+            return environment.file.save()
+        face = edit(bundle_fixture(13, "unmasked"), "ch0006_face", bundle="ch0006_facedynamic.prefab.unity3d")
+        body = edit(bundle_fixture(13, "primary"), "ch0006_co0001_body", dependencies=["ch0006_facedynamic.prefab.unity3d"])
+        manifest = "chara_id = 6\ncostume_file = 'body.unity'\ncostume_facedynamic_file = 'face.unity'\n"
+        path = self.archive(name, {"body.unity": body, "face.unity": face, "modinstall.txt": manifest})
+        cabs = {cab.lower() for cab in bundle_identity._cab_names(face)}
+        self.assertFalse(cabs & {cab.lower() for cab in bundle_identity._cab_names(body)})
+        return path, body, face, frozenset(cabs)
+
+    def test_leaving_out_a_face_is_refused_unless_it_is_the_games_own(self):
+        path, body, face, cabs = self.dependent_face_zip()
+        with self.assertRaises(packages.ModPackageError) as refused:
+            packages._check_face_exclusion(path)
+        self.assertEqual(str(refused.exception), packages.FACE_EXCLUSION_REFUSED)
+        # Faces proven to be the game's own catalog originals leave nothing dangling.
+        packages._check_face_exclusion(path, cabs)
+        from webtools.core import bundle_identity
+        for label, proof in (("other face", frozenset({"cab-" + "0" * 32})),
+                             ("body only", frozenset(cab.lower() for cab in bundle_identity._cab_names(body)))):
+            with self.subTest(label), self.assertRaises(packages.ModPackageError):
+                packages._check_face_exclusion(path, proof)
+        # Through packaging: refused without the proof, and with it the face is
+        # left out and the body keeps its original bytes and dependency.
+        with self.assertRaisesRegex(packages.ModPackageError, "cannot be left out"):
+            self.package(path, include_face_edits=False)
+        self.assertEqual(list(self.output.iterdir()), [])
+        result = self.package(path, include_face_edits=False, catalog_face_cabs={cab.upper() for cab in cabs})
+        with zipfile.ZipFile(result["package_path"]) as archive:
+            fields = literals(archive.read("modinstall.txt"))
+            self.assertEqual((fields["costume_facedynamic_file"], fields["costume_facedynamic_file_ios"]), ("", ""))
+            self.assertEqual(archive.read(fields["costume_file"]), body)
+        self.assertEqual(result["face_identity"], [])
+        # Kept, the same face is still the body's private face.
+        kept = self.package(path, catalog_face_cabs=cabs)
+        with zipfile.ZipFile(kept["package_path"]) as archive:
+            self.assertEqual(archive.read(literals(archive.read("modinstall.txt"))["costume_facedynamic_file"]), face)
+        for proof in (["cab"], {1}, "cab"):
+            with self.subTest(proof=proof), self.assertRaisesRegex(packages.ModPackageError, "game face proof"):
+                self.package(path, include_face_edits=False, catalog_face_cabs=proof)
+
 
 if __name__ == "__main__":
     unittest.main()

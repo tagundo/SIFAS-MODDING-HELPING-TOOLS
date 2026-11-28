@@ -556,8 +556,15 @@ FACE_EXCLUSION_REFUSED = ("This costume's body uses the face its ZIP includes, s
                           "Tick 'Include face and mouth edits for this costume' to keep it; no Mod ZIP was created.")
 
 
-def _check_face_exclusion(target):
-    """Never leave a private face dependency dangling after explicit exclusion."""
+def _check_face_exclusion(target, catalog_face_cabs=frozenset()):
+    """Never leave a private face dependency dangling after explicit exclusion.
+
+    ``catalog_face_cabs`` names the CABs of faces the caller proved to be the
+    game's own catalog originals, kept in this ZIP only for authoring (a Rina
+    scene saved without its face). A body that depends on such a face keeps
+    the game's face when it is left out; every other included face it depends
+    on is private to this costume and cannot be left out.
+    """
     from . import bundle_identity
     with zipfile.ZipFile(target) as archive:
         manifest = next(name for name in archive.namelist() if PurePosixPath(name).name.lower() == "modinstall.txt")
@@ -570,6 +577,8 @@ def _check_face_exclusion(target):
             if not raw.startswith(b"UnityFS\0"):
                 continue
             _, _, files = bundle_identity._bundle(raw)
+            if {sf.name.lower() for sf in files} <= catalog_face_cabs:
+                continue
             face_ids.update(sf.name.lower() for sf in files)
             for sf in files:
                 for obj in sf.objects.values():
@@ -592,12 +601,13 @@ def _check_face_exclusion(target):
                 _require(not references_face, FACE_EXCLUSION_REFUSED)
 
 
-def _attach_edited_faces(target, temporary, faces, owner, platform, should_stop, include_face_edits=None):
+def _attach_edited_faces(target, temporary, faces, owner, platform, should_stop, include_face_edits=None,
+                         catalog_face_cabs=frozenset()):
     # A reopened, already-baked mouth file may have no new authoring delta.
     # Explicit inclusion must still carry that exact current face into game.
     active = list(faces)
     if include_face_edits is False:
-        _check_face_exclusion(target)
+        _check_face_exclusion(target, catalog_face_cabs)
     if not active and include_face_edits is not False:
         return
     platforms = {"android", "ios"} if platform == "android+ios" else {platform}
@@ -725,7 +735,8 @@ def _isolate_face_graph(target, temporary, should_stop):
 
 
 def package_saved_export(export_result, output_dir, *, display_name, chara_id=None,
-                         pair=None, log=lambda message: None, should_stop=lambda: False, thumbnail=None, face_companions=None, include_face_edits=None):
+                         pair=None, log=lambda message: None, should_stop=lambda: False, thumbnail=None, face_companions=None, include_face_edits=None,
+                         catalog_face_cabs=frozenset()):
     """Return an atomic installer ZIP receipt; authorization belongs to the caller.
 
     Generic ZIPs require exactly one Unity model. Their other non-model files
@@ -738,6 +749,9 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
     _require(include_face_edits is None or isinstance(include_face_edits, bool),
              "Choose whether to include this costume's verified face companion.")
     _require(include_face_edits is not False or not face_companions, "Excluded faces cannot be added to this costume.")
+    _require(isinstance(catalog_face_cabs, (set, frozenset)) and all(isinstance(name, str) for name in catalog_face_cabs),
+             "The game face proof is invalid.")
+    catalog_face_cabs = frozenset(name.lower() for name in catalog_face_cabs)
     if thumbnail is not None:
         _require(isinstance(thumbnail, dict) and isinstance(thumbnail.get("png"), bytes) and
                  thumbnail["png"].startswith(b"\x89PNG\r\n\x1a\n") and
@@ -779,7 +793,7 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
             _require(thumbnail.get("character_id") == owner, "The rendered thumbnail belongs to another target member.")
             if any(zipfile.is_zipfile(path) for path in paths):
                 _replace_thumbnail(target, thumbnail["png"], should_stop)
-        _attach_edited_faces(target, temporary, faces, owner, platform, should_stop, include_face_edits)
+        _attach_edited_faces(target, temporary, faces, owner, platform, should_stop, include_face_edits, catalog_face_cabs)
         face_identity = (_isolate_face_graph(target, temporary, should_stop)
                          if include_face_edits is True or faces else [])
         asset_references, asset_namespace, metadata_member = _namespace_assets(target, temporary, display_name, should_stop, source_manifest)

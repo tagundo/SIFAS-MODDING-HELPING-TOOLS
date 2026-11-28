@@ -854,5 +854,133 @@ class SceneRolesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "paired canonical original is missing"):
             roles._originals_and_recipes(context, result, pair, goldens, state)
 
+    def face_scene(self, shipped):
+        """A scene keeping a face for authoring; its Mod ZIP shipped a runtime face or not."""
+        token, nodes, _ = self.prepare(self.source())
+        _, decoded = self.package(token, self.state(nodes))
+        manifest, files = decoded["manifest"], decoded["files"]
+        info = edits._inspect(bundle_fixture(fmt.PLATFORMS["android"], "primary", unit_breast=True))
+        for obj in info["env"].objects:
+            if obj.type.name == "Texture2D":
+                tree = obj.read_typetree(); tree["m_Name"] = "neutral_face_texture"; obj.save_typetree(tree)
+        face = info["env"].file.save(packer="original")
+        for source in manifest.pop("source_archives"):
+            del files[source["file"]["member"]]
+        recipe = json.dumps(roles._empty_recipe(face, "android_face.unity")).encode()
+        files["originals/android_face.unity"], files["recipes/android_face.json"] = face, recipe
+        manifest["requires"] = [fmt.SHARED_CAPABILITY, fmt.FACE_AUTHORING_CAPABILITY]
+        manifest["face_authoring"] = {"android": {"original": fmt.reference("originals/android_face.unity", face, "android"),
+                                                  "recipe": fmt.reference("recipes/android_face.json", recipe)}}
+        if shipped:
+            from webtools.core import bundle_identity
+            runtime, _ = bundle_identity.isolate_verified_bundle(face, "private-runtime-face")
+            files["dependencies/android_face.unity"] = runtime
+            manifest["dependencies"]["android"]["facedynamic"] = fmt.reference("dependencies/android_face.unity", runtime, "android")
+        path = self.root / ("face-scene-%s.zip" % shipped)
+        path.write_bytes(fmt.encode_package(manifest, files))
+        return path, face
+
+    def test_a_reopened_scene_includes_its_face_only_when_its_mod_zip_shipped_it(self):
+        for shipped in (False, True):
+            path, _ = self.face_scene(shipped)
+            for variant in fmt.VARIANTS:
+                with self.subTest(shipped=shipped, variant=variant):
+                    token, _, _ = self.prepare(path, variant)
+                    context = edits.mod_source_context(token)
+                    # Its originals ZIP always declares the face kept for authoring.
+                    self.assertTrue(flow._manifest_metadata(context, "en")["has_face"])
+                    self.assertIs(roles.session_metadata(token)["face_included"], shipped)
+                    self.assertIs(flow.ships_own_face(context), shipped)
+                    packaging = flow.metadata(context, repo_root=self.root, cache_root=self.root / "game-cache")
+                    self.assertEqual((packaging["hasFaceCompanions"], packaging["faceIncluded"]), (True, shipped))
+            # A save of the reopened scene keeps that choice for Re-edit from original, after a restart too.
+            token, _, state = self.prepare(path, "primary")
+            saved = flow.export_current(token, state, self.root / ("saved-%s" % shipped), repo_root=self.root,
+                                        cache_root=self.root / "game-cache")
+            copied = Path(saved["original_paths"][0])
+            self.assertIs(json.loads(copied.with_name(edits.SCENE_BINDING).read_text())["metadata"]["face_included"], shipped)
+            with roles._LOCK: roles._SCENES.clear()
+            reedit, _, _ = self.prepare(copied, "primary")
+            context = edits.mod_source_context(reedit)
+            # Until the scene is bound it is a costume ZIP with its own face.
+            self.assertIs(flow.ships_own_face(context), True)
+            self.assertIs(roles.register_preserved(reedit, context)["face_included"], shipped)
+            self.assertIs(flow.ships_own_face(context), shipped)
+            self.assertIs(flow.metadata(context, repo_root=self.root, cache_root=self.root / "game-cache")["faceIncluded"], shipped)
+        # A binding written before the record existed counts as no shipped face;
+        # anything but a true/false record is no binding at all.
+        sidecar = copied.with_name(edits.SCENE_BINDING)
+        good = json.loads(sidecar.read_text())
+        older = dict(good, metadata={key: value for key, value in good["metadata"].items() if key != "face_included"})
+        for label, binding, expected in (("older", older, False), ("not a boolean", dict(good, metadata=dict(good["metadata"], face_included=1)), None),
+                                         ("text", dict(good, metadata=dict(good["metadata"], face_included="true")), None)):
+            with self.subTest(label):
+                sidecar.write_text(json.dumps(binding))
+                probe, _, _ = self.prepare(copied, "primary")
+                context = edits.mod_source_context(probe)
+                metadata = roles.register_preserved(probe, context)
+                if expected is None:
+                    self.assertIsNone(metadata)
+                else:
+                    self.assertNotIn("face_included", metadata)
+                    self.assertIs(flow.ships_own_face(context), expected)
+
+    def test_a_scene_face_kept_for_authoring_is_the_games_own_only_by_its_catalog_bytes(self):
+        from webtools.core import bundle_identity, model_faces, viewer_mod_package
+        path, face = self.face_scene(False)
+        token, _, state = self.prepare(path, "unmasked")
+        context = edits.mod_source_context(token)
+        cache = self.root / "face-cache"
+        cabs = frozenset(name.lower() for name in bundle_identity._cab_names(face))
+        self.assertEqual(flow.catalog_face_cabs(context, cache), frozenset(), "Nothing is cached yet")
+        cached = cache / "models" / ("ch0209_" + "0" * 24 + ".unity")
+        model_faces._save(cached, face, 209)
+        self.assertEqual(flow.catalog_face_cabs(context, cache), cabs)
+        self.assertEqual(flow.catalog_face_cabs(context, None), frozenset())
+        # Only a catalog face file of the face cache, with its recorded bytes, counts.
+        renamed = cached.with_name("face.unity"); cached.rename(renamed); Path(str(cached) + ".json").rename(str(renamed) + ".json")
+        self.assertEqual(flow.catalog_face_cabs(context, cache), frozenset())
+        renamed.rename(cached); Path(str(renamed) + ".json").rename(str(cached) + ".json")
+        cached.write_bytes(face[:-1] + bytes([face[-1] ^ 1]))
+        self.assertEqual(flow.catalog_face_cabs(context, cache), frozenset(), "Changed cached bytes prove nothing")
+        model_faces._save(cached, self.originals["android", "unmasked"], 209)
+        self.assertEqual(flow.catalog_face_cabs(context, cache), frozenset(), "Another face's bytes prove nothing")
+        model_faces._save(cached, face, 209)
+        record = json.loads(Path(str(cached) + ".json").read_text())
+        Path(str(cached) + ".json").write_text(json.dumps(dict(record, size=record["size"] + 1)))
+        self.assertEqual(flow.catalog_face_cabs(context, cache), frozenset(), "A damaged cache record proves nothing")
+        model_faces._save(cached, face, 209)
+        # Only the cached file recorded with the face's bytes is read.
+        model_faces._save(cached.with_name("ch0209_" + "1" * 24 + ".unity"), self.originals["android", "primary"], 209)
+        with patch.object(model_faces, "_cached", wraps=model_faces._cached) as read:
+            self.assertEqual(flow.catalog_face_cabs(context, cache), cabs)
+        self.assertEqual([call.args[0] for call in read.call_args_list], [str(cached)])
+        # A scene that ships its own face, or any other costume ZIP, has no such face.
+        shipped, _ = self.face_scene(True)
+        other, _, _ = self.prepare(shipped, "unmasked")
+        self.assertEqual(flow.catalog_face_cabs(edits.mod_source_context(other), cache), frozenset())
+        plain = self.root / "plain-face.zip"; plain.write_bytes(context["containers"][0]["raw"])
+        ordinary, _, _ = self.prepare(plain, "unmasked")
+        self.assertIsNone(roles.session_metadata(ordinary))
+        self.assertEqual(flow.catalog_face_cabs(edits.mod_source_context(ordinary), cache), frozenset())
+        # Save mod ZIP hands the proof to the exclusion check only when the face is left out.
+        calls = []
+        def spy(*args, **kwargs):
+            calls.append(kwargs.get("catalog_face_cabs"))
+            return package(*args, **kwargs)
+        package = viewer_mod_package.package_saved_export
+        token, _, state = self.prepare(path, "unmasked")
+        for include, root in ((False, cache), (True, cache), (False, None)):
+            with self.subTest(include=include, root=root), patch.object(viewer_mod_package, "package_saved_export", side_effect=spy):
+                result = flow.create_package(token, state, output_root=self.root / "exports", repo_root=self.root,
+                    cache_root=self.root / "game-cache", display_name="Face scene", character_id=209,
+                    include_face_edits=include, face_cache_root=root, job=Job("face", "viewer_body_mod"))
+            decoded = fmt.read_package(result["mod_package"]["package_path"])
+            self.assertEqual(decoded["manifest"]["dependencies"]["android"]["facedynamic"] is not None, include)
+            # The face stays the authoring original either way.
+            original = decoded["manifest"]["face_authoring"]["android"]["original"]
+            self.assertEqual(decoded["files"][original["member"]], face)
+        self.assertEqual(calls, [cabs, None, None])
+
 
 if __name__ == "__main__": unittest.main()

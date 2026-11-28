@@ -289,6 +289,71 @@ class ViewerEditRouteTests(unittest.TestCase):
         self.assertNotIn("sceneRoles", result["editing"]["modPackaging"])
         self.assertNotIn("allowEmptySceneReset", result["editing"])
 
+    def test_a_reopened_scene_includes_its_face_by_default_only_when_its_mod_zip_shipped_it(self):
+        import copy, io, zipfile
+        # A scene's originals ZIP always declares the face it keeps for authoring.
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("modinstall.txt", "chara_id = 209\ncostume_file = 'android_primary.unity'\n"
+                             "rina_unmask_costume_file = 'android_unmasked.unity'\ncostume_facedynamic_file = 'android_face.unity'\n")
+        self.source.write_bytes(buffer.getvalue())
+        context = self.backend.mod_source_context.return_value
+        context["containers"][0].update(raw=buffer.getvalue(), sha256=hashlib.sha256(buffer.getvalue()).hexdigest())
+        self.backend._session = Mock(return_value={})
+        self.backend.held_summary = Mock(return_value={"count": 0, "meshes": [], "rows": []})
+        self.addCleanup(lambda: viewer_scene_roles._SCENES.pop(self.token, None))
+
+        # As the real registrations do: the session's scene is bound, then reported.
+        def reopened(token, scene):
+            viewer_scene_roles._SCENES[token] = copy.deepcopy(scene["metadata"])
+            return self.state
+
+        def preserved(metadata):
+            def register(token, context):
+                viewer_scene_roles._SCENES[token] = copy.deepcopy(metadata)
+                return copy.deepcopy(metadata)
+            return register
+        for shipped in (False, True):
+            metadata = {"display_name": "Scene name", "face_included": shipped}
+            viewer_scene_roles._SCENES.pop(self.token, None)
+            with self.subTest(reopened=shipped), patch.object(viewer_scene_roles, "register_reopened", side_effect=reopened):
+                status, result = self.prepare_with({"metadata": metadata})
+                self.assertEqual(status, 200, result)
+                packaging = result["editing"]["modPackaging"]
+                self.assertEqual((packaging["sceneRoles"], packaging["hasFaceCompanions"], packaging["faceIncluded"]), (True, True, shipped))
+            # Re-edit from original: the scene kept beside the saved originals copy.
+            viewer_scene_roles._SCENES.pop(self.token, None)
+            with self.subTest(preserved=shipped), patch.object(viewer_scene_roles, "register_preserved", side_effect=preserved(metadata)):
+                status, result = self.prepare_with()
+                self.assertEqual(status, 200, result)
+                packaging = result["editing"]["modPackaging"]
+                self.assertEqual((packaging["sceneRoles"], packaging["faceIncluded"]), (True, shipped))
+        # The same ZIP opened as an ordinary costume ships the face it declares.
+        viewer_scene_roles._SCENES.pop(self.token, None)
+        with patch.object(viewer_scene_roles, "register_preserved", Mock(return_value=None)):
+            status, result = self.prepare_with()
+        self.assertEqual(status, 200, result)
+        self.assertNotIn("sceneRoles", result["editing"]["modPackaging"])
+        self.assertIs(result["editing"]["modPackaging"]["faceIncluded"], True)
+
+    def test_save_mod_zip_proves_game_faces_against_the_face_cache_prepare_uses(self):
+        from webtools.core import viewer_mod_flow
+        calls = []
+
+        def create(token, state, **options):
+            calls.append(options)
+            return {"output_paths": [], "mod_package": {}}
+        with patch.object(viewer_mod_flow, "create_package", side_effect=create):
+            for include in (False, True):
+                status, response = self.request("/api/viewer/edit/package", {
+                    "token": self.token, "state": self.state, "display_name": "Scene", "character_id": None,
+                    "counterpart_path": None, "selected_variant": None, "include_face_edits": include})
+                self.assertEqual(status, 200, response)
+                self.assertEqual(self.finish(response["job_id"]).status, "done")
+        self.assertEqual([call["include_face_edits"] for call in calls], [False, True])
+        cache = os.path.join(os.path.realpath(str(self.library)), ".viewer-cache")
+        self.assertEqual({call["face_cache_root"] for call in calls}, {cache})
+
     def test_failed_background_job_has_no_success_result(self):
         self.backend.export.side_effect = ValueError("Unsupported source geometry.")
         status, response = self.export_request()
