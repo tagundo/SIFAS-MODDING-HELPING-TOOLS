@@ -6,7 +6,9 @@
   function basename(path) { return String(path).replace(/\\/g, "/").split("/").pop(); }
   function paths(value) { return Array.isArray(value) ? value.filter(function (path) { return typeof path === "string" && path && path.length < 4096; }) : []; }
   function samePaths(left, right) { return JSON.stringify(left || []) === JSON.stringify(right || []); }
-  function editCount(state) { return (state.edits || []).length + (state.physics || []).length + (state.outlines || []).length + (state.textures || []).length + (state.accessoryUnclip ? 1 : 0); }
+  function editCount(state, held) { return (state.edits || []).length + (state.physics || []).length + (state.outlines || []).length + (state.textures || []).length + (state.accessoryUnclip ? 1 : 0) + (held ? held.length : 0); }
+  // The rows of a held summary ({count, meshes, rows}) the server reports.
+  function heldRows(value) { return value && Array.isArray(value.rows) ? value.rows : []; }
   function create(options) {
     var translate = options.translate, disposed = false, busy = false, installing = false, status = "idle", statusKey = "Open a model to save model edits.", error = "";
     var result = null, resultModelId = "", resultSourcePaths = [], sourceInspection = null, authoringInspection = null, reviewingSaved = false, jobId = "", eventSource = null, requestController = null;
@@ -17,6 +19,9 @@
     var resultBodyState = null, resultMeshState = null;
     // English sentences shown after the save status (the baked-blush save mode); translated on display.
     var statusNotes = [];
+    // Face outline rows a Rina board view holds (reported by the server on
+    // open and on each recipe restore), for the editing token they belong to.
+    var heldReport = null;
     var meshContext = null, meshRevision = null, meshOwner = null, meshSnapshot = null;
     var progress = element("viewer-save-progress"), cancel = element("viewer-save-cancel");
     function context() { return options.context() || {}; }
@@ -41,7 +46,40 @@
     }
     // Sentences are joined with a space, except after a full-width stop (ja).
     function joinSentences(parts) { return parts.reduce(function (text, part) { return !part ? text : !text ? part : text + (/[。！？]$/.test(text) ? "" : " ") + part; }, ""); }
-    function statusText(key, detail) { return joinSentences([translate(key), detail && detail !== key ? translate(detail) : ""].concat(statusNotes.map(function (note) { return translate(note); }))); }
+    // A server refusal that names one part is a fixed sentence ending in
+    // ": {name}" (viewer_mod_pair_edits.NAMED_REFUSALS): translate the
+    // sentence and keep the name. Exact sentences translate as before.
+    function translateMessage(text) {
+      text = String(text || "");
+      var exact = translate(text);
+      if (exact !== text) return exact;
+      for (var at = text.indexOf(": "); at >= 0; at = text.indexOf(": ", at + 1)) {
+        var key = text.slice(0, at) + ": {name}", sentence = translate(key);
+        if (sentence !== key) return sentence.split("{name}").join(text.slice(at + 2));
+      }
+      return text;
+    }
+    // A note is an English sentence, or {text, values} for a sentence with values.
+    function noteText(note) {
+      if (note && typeof note === "object") return translate(String(note.text || "")).replace(/\{(\w+)\}/g, function (whole, name) {
+        return note.values && Object.prototype.hasOwnProperty.call(note.values, name) ? String(note.values[name]) : whole;
+      });
+      return translateMessage(note);
+    }
+    function statusText(key, detail) { return joinSentences([translateMessage(key), detail && detail !== key ? translateMessage(detail) : ""].concat(statusNotes.map(noteText))); }
+    function held() {
+      var editing = context().editing || {};
+      if (heldReport && heldReport.token === editing.token) return heldReport.value;
+      return editing.heldFaceOutlines || null;
+    }
+    function renderHeldNote() {
+      var note = element("viewer-save-held-note"), value = held(), count = heldRows(value).length;
+      if (!note) return;
+      note.hidden = !count;
+      note.textContent = !count ? "" : translate(count === 1 ? "1 face outline edit made in the Normal face view is kept ({meshes})." :
+        "{count} face outline edits made in the Normal face view are kept ({meshes}).").replace("{count}", String(count))
+        .replace("{meshes}", ((value && value.meshes) || []).join(", "));
+    }
     // The save summary of each baked blush: the encoding it was saved with and,
     // when keeping ASTC was requested but not possible, why (server sentences).
     function textureSaveNotes(data) {
@@ -93,16 +131,18 @@
       var mesh = editingMeshState(), unresolvedMesh = c.pendingMeshSelection || c.pendingMeshEdits && !mesh;
       var unresolvedTexture = !!(c.textureTools && c.textureTools.hasPending && c.textureTools.hasPending());
       var ready = !!(c.current && metadata.available && metadata.token && c.rig), authoring = ready && !busy && !reviewingSaved && !unresolvedMesh && !unresolvedTexture;
-      var authored = editingState(), lightweight = Object.assign({}, authored);
+      var authored = editingState(), lightweight = Object.assign({}, authored), heldFace = heldRows(held());
       // Pixel payloads are immutable cached strings. A revision is enough for
       // frequent UI updates; serialize PNGs only for a concrete save operation.
       if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256, blush: row.blush || null }; });
-      var fingerprint = JSON.stringify([lightweight, mesh, c.textureTools && c.textureTools.getRevision ? c.textureTools.getRevision() : 0]);
+      // Held face rows are saved too: a restore that changes them is an edit.
+      var fingerprint = JSON.stringify([lightweight, mesh, c.textureTools && c.textureTools.getRevision ? c.textureTools.getRevision() : 0, heldFace]);
+      renderHeldNote();
       var accessories = c.accessories || {}, accessoryBlocked = !!authored.accessoryUnclip && (accessories.pending || accessories.error);
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) { lastPackage = null; clearThumbnail(); }
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint && !busy && ["done", "restored", "error"].indexOf(status) >= 0) { status = "ready"; error = ""; }
       lastAuthoringFingerprint = fingerprint;
-      element("viewer-save").disabled = !authoring || (!editCount(authored) && !mesh && !(c.transplantEdits || []).length && !metadata.allowEmptySceneReset && !(metadata.modPackaging || {}).derivedOwner) || accessoryBlocked || !!(authored.unsupported && authored.unsupported.length);
+      element("viewer-save").disabled = !authoring || (!editCount(authored, heldFace) && !mesh && !(c.transplantEdits || []).length && !metadata.allowEmptySceneReset && !(metadata.modPackaging || {}).derivedOwner) || accessoryBlocked || !!(authored.unsupported && authored.unsupported.length);
       element("viewer-save").title = authored.unsupported && authored.unsupported.length ? translate(authored.unsupported[0]) : accessoryBlocked ? accessories.errorText || translate(accessories.error || "Wait for the accessory check before saving.") : "";
       refreshModForm(c, rigState, authored, ready && !busy && !unresolvedMesh && !unresolvedTexture);
       element("viewer-recipe-open").disabled = !authoring;
@@ -144,7 +184,7 @@
       if (!busy && !error && ["idle", "ready", "reviewing"].indexOf(status) >= 0) {
         var key = reviewingSaved ? "Reviewing the saved copy. Re-edit from original to continue." : unresolvedTexture ? "Apply or cancel the texture preview before saving." : unresolvedMesh ? "Apply selected face deletions before saving." : !ready ? (c.current ? "Model saving is unavailable for this model." : "Open a model to save model edits.") : authored.unsupported && authored.unsupported.length ? authored.unsupported[0] : accessoryBlocked ? accessories.errorText || accessories.error || "Wait for the accessory check before saving." : "Model changes";
         statusKey = key; status = reviewingSaved ? "reviewing" : ready ? "ready" : "idle"; statusNotes = [];
-        element("viewer-save-status").textContent = translate(key) + (key === "Model changes" ? ": " + (editCount(authored) + (mesh ? mesh.meshes.length : 0) + (c.transplantEdits || []).length) + (authored.accessoryUnclip ? " · " + translate("Accessory Un-clip") : "") : "");
+        element("viewer-save-status").textContent = translate(key) + (key === "Model changes" ? ": " + (editCount(authored, heldFace) + (mesh ? mesh.meshes.length : 0) + (c.transplantEdits || []).length) + (authored.accessoryUnclip ? " · " + translate("Accessory Un-clip") : "") : "");
       }
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
     }
@@ -217,7 +257,7 @@
         if (authored.textures.some(function (row) { return row.kind === "paint"; })) kinds.push(translate("Texture painting"));
         if (authored.textures.some(function (row) { return !!row.blush; })) kinds.push(translate("Baked blush"));
       }
-      if (authored.outlines && authored.outlines.length) kinds.push(translate("Outlines"));
+      if (authored.outlines && authored.outlines.length || heldRows(held()).length) kinds.push(translate("Outlines"));
       if (authored.physics && authored.physics.length) kinds.push(translate("Physics"));
       if (authored.accessoryUnclip) kinds.push(translate("Accessory Un-clip"));
       details = kinds.concat(details);
@@ -277,7 +317,7 @@
       var body = Object.assign({}, authored); delete body.unsupported;
       var comparisonKey = JSON.stringify([key, lastAuthoringFingerprint, modOptions()]);
       if (comparisonKey !== installedComparisonKey || installedComparisonValue !== installedFingerprint) {
-        alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions()), JSON.stringify(editingMeshState())]);
+        alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions()), JSON.stringify(editingMeshState()), JSON.stringify(heldRows(held()))]);
         installedComparisonKey = comparisonKey; installedComparisonValue = installedFingerprint;
       }
       if (alreadyAdded) {
@@ -387,9 +427,10 @@
       if (c.textureTools && c.textureTools.hasPending && c.textureTools.hasPending()) throw new Error("Apply or cancel the texture preview before saving.");
       if (authored.unsupported && authored.unsupported.length) throw new Error(authored.unsupported[0]);
       if (authored.accessoryUnclip && c.accessories && (c.accessories.pending || c.accessories.error)) throw new Error(c.accessories.error || "Wait for the accessory check before saving.");
-      if (!forPackage && !editCount(authored) && !mesh && !(c.transplantEdits || []).length && !(c.editing.modPackaging || {}).derivedOwner && !c.editing.allowEmptySceneReset) throw new Error("Change a model value before saving.");
+      var heldFace = heldRows(held());
+      if (!forPackage && !editCount(authored, heldFace) && !mesh && !(c.transplantEdits || []).length && !(c.editing.modPackaging || {}).derivedOwner && !c.editing.allowEmptySceneReset) throw new Error("Change a model value before saving.");
       var body = JSON.parse(JSON.stringify(authored)); delete body.unsupported;
-      return { body: body, meshState: mesh ? JSON.parse(JSON.stringify(mesh)) : null, rawMesh: JSON.stringify(mesh), reviewingSaved: reviewingSaved, modelId: c.modelId, token: c.editing.token, paths: (c.loadedPaths || []).slice(),
+      return { body: body, meshState: mesh ? JSON.parse(JSON.stringify(mesh)) : null, rawMesh: JSON.stringify(mesh), rawHeld: JSON.stringify(heldFace), reviewingSaved: reviewingSaved, modelId: c.modelId, token: c.editing.token, paths: (c.loadedPaths || []).slice(),
         contextKey: modContextKey(c), canonical: canonicalBody(body, c.editing), rawBody: JSON.stringify(body),
         inspection: options.captureInspection ? options.captureInspection() : null };
     }
@@ -399,6 +440,7 @@
       return c.current && reviewingSaved === snapshot.reviewingSaved && modContextKey(c) === snapshot.contextKey &&
         !(authored.unsupported || []).length && JSON.stringify(body) === snapshot.rawBody &&
         JSON.stringify(editingMeshState()) === snapshot.rawMesh &&
+        JSON.stringify(heldRows(held())) === snapshot.rawHeld &&
         canonicalBody(authored, c.editing) === snapshot.canonical &&
         (!snapshot.modOptions || JSON.stringify(modOptions()) === snapshot.modOptions);
     }
@@ -458,7 +500,7 @@
         if (!name || name.length > 120) throw new Error("Enter a mod name of 1 to 120 characters.");
       } catch (failure) { say(failure.message, "error"); return; }
       snapshot.modOptions = JSON.stringify(parameters);
-      var binding = JSON.stringify([snapshot.contextKey, snapshot.rawBody, snapshot.modOptions, snapshot.rawMesh]);
+      var binding = JSON.stringify([snapshot.contextKey, snapshot.rawBody, snapshot.modOptions, snapshot.rawMesh, snapshot.rawHeld]);
       if (install && installedFingerprint === binding) { say("Already added to game. Change the edits or mod name to add another copy.", "done"); return; }
       var body = Object.assign({ token: snapshot.token, state: snapshot.body }, parameters);
       if (snapshot.meshState) body.mesh_state = snapshot.meshState;
@@ -520,7 +562,10 @@
     async function restoreRecipe(recipe) {
       var c = context();
       if (!c.current || !c.editing || !c.editing.token || reviewingSaved) throw new Error("Open the original model before loading its recipe.");
-      var modelId = c.modelId, response = await jsonRequest("/api/viewer/edit/restore", { token: c.editing.token, recipe: recipe });
+      var modelId = c.modelId, token = c.editing.token, response = await jsonRequest("/api/viewer/edit/restore", { token: token, recipe: recipe });
+      // The server now holds what this restore left held, even if applying the
+      // state below fails: show exactly that.
+      if (response.heldFaceOutlines) heldReport = { token: token, value: response.heldFaceOutlines };
       if (!context().current || context().modelId !== modelId) throw new Error("The model changed while its recipe was loading. Try again.");
       if (!response.state) throw new Error("The model edit recipe is invalid.");
       var previous = editingState();
@@ -538,7 +583,8 @@
         throw error;
       }
       if (!context().current || context().modelId !== modelId) throw new Error("The model changed while its recipe was loading. Try again.");
-      say("Edit recipe restored from the original model.", "restored");
+      var notice = response.notice && typeof response.notice === "object" && typeof response.notice.text === "string" ? response.notice : null;
+      say("Edit recipe restored from the original model.", "restored", "", notice ? [notice] : []);
     }
     function pickRecipe() {
       if (busy || disposed || reviewingSaved) return;
@@ -553,7 +599,8 @@
     async function openSaved() {
       if (busy || !previewPaths.length) return;
       var c = context(), current = editingState();
-      var ownOriginal = samePaths(c.loadedPaths, resultSourcePaths) || samePaths(c.loadedPaths, originalPaths);
+      var ownOriginal = samePaths(c.loadedPaths, resultSourcePaths) || samePaths(c.loadedPaths, originalPaths) ||
+        !!(result && samePaths(c.loadedPaths, paths(result.reedit_paths)));
       var mesh = editingMeshState();
       if (!reviewingSaved && (editCount(current) || mesh) && (!ownOriginal || !result || !result.recipe ||
           canonicalBody(current, c.editing) !== canonicalBody(resultBodyState || result.recipe.state || {}, c.editing) ||
@@ -571,12 +618,21 @@
       } catch (failure) { say(failure.message, "error"); }
       finally { setBusy(false); }
     }
+    // The originals the edited preview selected. A face the preview added
+    // automatically is reopened the same way, as the body's face companion
+    // found beside it, never as a second selected model (one Mod ZIP holds
+    // one costume). Older results list every original.
+    function reeditSelection() {
+      var selected = paths(result.reedit_paths).filter(function (path) { return originalPaths.indexOf(path) >= 0; });
+      if (!selected.length) return { paths: originalPaths.slice(), variants: result.original_variants, autoFace: undefined };
+      return { paths: selected, variants: result.reedit_variants || {}, autoFace: result.reedit_auto_face === true ? true : undefined };
+    }
     async function reeditOriginal() {
       if (busy || !result || !result.recipe || !originalPaths.length) return;
-      var recipe = result.recipe, originals = originalPaths.slice();
+      var recipe = result.recipe, selection = reeditSelection(), originals = selection.paths;
       setBusy(true); say("Opening the original model and edit recipe…", "saving");
       try {
-        await options.openFiles(originals, result.original_variants, authoringInspection || sourceInspection);
+        await options.openFiles(originals, selection.variants, authoringInspection || sourceInspection, { autoFace: selection.autoFace });
         reviewingSaved = false;
         if (!samePaths(context().loadedPaths, originals)) throw new Error("The original model could not be opened.");
         await restoreRecipe(recipe);

@@ -323,6 +323,157 @@ class PairedBodyEditTests(unittest.TestCase):
             with self.subTest(count=len(entries)), self.assertRaisesRegex(ValueError, "unique matching outline"):
                 paired._map_state(context, state, 0, edits._inspect(primary.read_bytes()), altered, edits._inspect(other.read_bytes()))
 
+    @staticmethod
+    def renamed_mesh(raw, name):
+        env = UnityPy.load(raw)
+        for obj in env.objects:
+            if obj.type.name == "Mesh":
+                tree = obj.read_typetree(); tree["m_Name"] = name; obj.save_typetree(tree)
+        return env.file.save()
+
+    def test_rina_other_variant_keeps_outline_rows_of_a_mesh_it_does_not_have(self):
+        primary = self.write("board.unity", self.fixture())
+        other_raw = self.renamed_mesh(self.fixture(other=True, offset=1000), "Unmasked only mesh")
+        other = self.write("bare.unity", other_raw)
+        token, _ = self.register(primary)
+        target_token, _ = self.register(other)
+        context, target = edits.mod_source_context(token), edits.mod_source_context(target_token)
+        record = context["outlines"]["meshes"][0]
+        state = edits.validate_state(token, self.state(outlines=[{"id": record["id"], "factor": .5}]))
+        source_info, target_info = edits._inspect(primary.read_bytes()), edits._inspect(other_raw)
+        kept = {"physics": [], "outlines": [], "names": []}
+        mapped, proof = paired._map_state(context, state, 0, source_info, target, target_info, kept=kept)
+        self.assertNotIn("outlines", mapped)
+        self.assertEqual((kept, proof), ({"physics": [], "outlines": [record["id"]], "names": [record["name"]]}, []))
+        # The same variant for another platform has every mesh: still refused,
+        # naming the mesh apart from the fixed sentence.
+        with self.assertRaises(paired.PairEditError) as refused:
+            paired._map_state(context, state, 0, source_info, target, target_info)
+        self.assertEqual((refused.exception.template, refused.exception.name), (paired.MISSING_OUTLINE, record["name"]))
+        self.assertEqual(str(refused.exception), "The counterpart has no unique matching outline mesh: " + record["name"])
+        # A selected mesh that is not one proven part (two meshes share its
+        # hierarchy) is refused rather than kept.
+        twin = copy.deepcopy(context)
+        twin["outlines"]["meshes"].append(dict(record, id=record["id"] + "-twin"))
+        with self.assertRaises(paired.PairEditError):
+            paired._map_state(twin, state, 0, source_info, target, target_info, kept={"physics": [], "outlines": [], "names": []})
+        # Through the raw Rina pair the counterpart keeps its original bytes,
+        # and no paired output is published.
+        result = edits.export(token, state, self.root / "board-only")
+        output = self.apply_raw(context, result, state, other)
+        self.assertEqual(output["pair"]["unmasked"], {"path": str(other), "sha256": sources._sha(other_raw)})
+        self.assertEqual(output["summary"], [{"variant": "unmasked", "unchanged": True,
+                                              "original_sha256": sources._sha(other_raw), "kept": kept}])
+        self.assertEqual(output["result"], result)
+        self.assertEqual(list(Path(result["recipe_path"]).parent.glob("*paired-body-*")), [])
+        self.assertEqual(other.read_bytes(), other_raw)
+
+    def test_texture_only_save_still_writes_the_other_variants_own_rows(self):
+        context = {"containers": [{"raw": b"not a zip"}],
+                   "held_counterpart": [{"sha256": "0" * 64, "outlines": [{"id": "0:0:1", "factor": .5}]}]}
+        state = {"version": 1, "savedSettingsEnabled": True, "edits": [], "textures": [{"texture": {"source": 0}}]}
+        with patch.object(paired, "_apply", return_value={"summary": []}) as applied:
+            outcome = paired.apply_pair_edits(context, {}, state, pair={"unmasked": {}}, job=Job("texture", "viewer_body_mod"))
+        self.assertNotIn("textures", applied.call_args[0][2])
+        self.assertEqual([row["status"] for row in outcome["summary"]], ["selected_source_only"])
+        # Without such rows a texture-only edit has nothing to pair.
+        del context["held_counterpart"]
+        with patch.object(paired, "_apply") as applied:
+            paired.apply_pair_edits(context, {}, state, pair={"unmasked": {}}, job=Job("texture", "viewer_body_mod"))
+        applied.assert_not_called()
+
+    def test_carried_rows_are_only_parts_the_selected_variant_lacks(self):
+        raw = b"the other variant's original"
+        context = {"outlines": {"meshes": [{"sourceIndex": 0, "name": "Shared"}, {"sourceIndex": 1, "name": "BoardOnly"}],
+                                "excludedMeshes": [{"sourceIndex": 0, "name": "Hidden"}]}}
+        partner = {"outlines": {"meshes": [{"id": "0:0:1", "name": "Shared"}, {"id": "0:0:2", "name": "BoardOnly"},
+                                           {"id": "0:0:3", "name": "Hidden"}]},
+                   "physics": {"components": [{"id": "0:0:8", "name": "Breast"}, {"id": "0:0:9", "name": "HairA1_Dyna"}]}}
+        rows = {"outlines": [{"id": "0:0:%d" % n, "factor": .5} for n in (1, 2, 3, 7)],
+                "physics": [{"id": "0:0:8", "values": {"dragForce": .1}}, {"id": "0:0:9", "values": {"dragForce": .2}}]}
+        held = [{"sha256": sources._sha(raw), **rows}, {"sha256": "0" * 64, "outlines": [{"id": "0:0:2", "factor": .1}]}]
+        carried, names = paired._carried(context, 0, {"names": {(0, 5): "Breast"}}, partner, held, raw)
+        # Shared and Hidden are the selected body's own (mirrored or refused),
+        # an unknown id is dropped, and rows bound to other bytes never apply.
+        self.assertEqual(carried, {"outlines": [{"id": "0:0:2", "factor": .5}], "physics": [{"id": "0:0:9", "values": {"dragForce": .2}}]})
+        self.assertEqual(names, ["BoardOnly", "HairA1_Dyna"])
+        self.assertEqual(paired._carried(context, 0, {"names": {}}, partner, held, b"other bytes"), ({}, []))
+
+    def test_rina_other_variant_still_refuses_a_mesh_it_has_without_a_unique_match(self):
+        primary = self.write("board.unity", self.fixture())
+        other_raw = self.fixture(other=True, offset=1000)
+        source_token, _ = self.register(primary)
+        target_token, _ = self.register(self.write("bare.unity", other_raw))
+        context, target = edits.mod_source_context(source_token), edits.mod_source_context(target_token)
+        identity = context["outlines"]["meshes"][0]["id"]
+        state = edits.validate_state(source_token, self.state(outlines=[{"id": identity, "factor": .5}]))
+        excluded = copy.deepcopy(target)
+        excluded["outlines"]["excludedMeshes"] = excluded["outlines"]["meshes"]; excluded["outlines"]["meshes"] = []
+        other_semantic = copy.deepcopy(target)
+        other_semantic["outlines"]["meshes"][0]["semantic"] = ["Different binding", []]
+        duplicated = copy.deepcopy(target)
+        duplicated["outlines"]["meshes"] *= 2
+        two_origins = copy.deepcopy(context)
+        two_origins["outlines"]["meshes"].append(dict(context["outlines"]["meshes"][0], id="0:0:1"))
+        for label, source, counterpart in (("excluded twin", context, excluded), ("same name, other binding", context, other_semantic),
+                                           ("duplicate match", context, duplicated), ("ambiguous source", two_origins, target)):
+            with self.subTest(label), self.assertRaisesRegex(paired.PairEditError, "unique matching outline mesh"):
+                paired._map_state(source, state, 0, edits._inspect(primary.read_bytes()), counterpart,
+                                  edits._inspect(other_raw), kept={"physics": [], "outlines": [], "names": []})
+
+    def test_declared_rina_family_keeps_rows_only_for_the_other_variant(self):
+        path, original = self.paired_zip(four=True)
+        with zipfile.ZipFile(path) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        for name in ("bare", "iphonebare"):
+            members[name] = self.renamed_mesh(members[name], "Unmasked only mesh")
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, raw in members.items():
+                archive.writestr(name, raw)
+        token, _ = self.register(path, archive=True)
+        context = edits.mod_source_context(token)
+        identity = context["outlines"]["meshes"][0]["id"]
+        state = edits.validate_state(token, self.state(outlines=[{"id": identity, "factor": 0}]))
+        result = edits.export(token, state, self.root / "family")
+        output = paired.apply_pair_edits(context, result, state, pair=None, job=self.job)
+        by_member = {row["member"]: row for row in output["summary"]}
+        self.assertEqual({name for name, row in by_member.items() if row.get("unchanged")}, {"bare", "iphonebare"})
+        with zipfile.ZipFile(output["result"]["preview_paths"][0]) as archive:
+            self.assertTrue(all(red == 0 for red in self.outline_red(archive.read("iphoneboard"))))
+            self.assertEqual(archive.read("bare"), members["bare"])
+            self.assertEqual(archive.read("iphonebare"), members["iphonebare"])
+        # The iOS board is the same variant: lacking the mesh is a mismatch.
+        members["iphoneboard"] = self.renamed_mesh(members["iphoneboard"], "Missing on iOS")
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, raw in members.items():
+                archive.writestr(name, raw)
+        token, _ = self.register(path, archive=True)
+        context = edits.mod_source_context(token)
+        state = edits.validate_state(token, self.state(outlines=[{"id": context["outlines"]["meshes"][0]["id"], "factor": 0}]))
+        result = edits.export(token, state, self.root / "family-ios")
+        with self.assertRaisesRegex(paired.PairEditError, "unique matching outline mesh"):
+            paired.apply_pair_edits(context, result, state, pair=None, job=self.job)
+
+    def test_named_refusals_are_fixed_sentences_translated_with_the_name_kept(self):
+        import ast
+        from webtools import i18n
+        self.assertEqual(len(paired.NAMED_REFUSALS), 6)
+        for template in paired.NAMED_REFUSALS:
+            self.assertTrue(template.endswith(": {name}"), template)
+            for language in ("ko", "ja"):
+                text = i18n.tr(template, language)
+                with self.subTest(template=template, language=language):
+                    self.assertNotEqual(text, template)
+                    self.assertEqual(text.count("{name}"), 1)
+            error = paired.PairEditError(template, "Mask")
+            self.assertEqual((str(error), error.template, error.name), (template.replace("{name}", "Mask"), template, "Mask"))
+        self.assertNotEqual(i18n.tr(paired.SELECTED_ONLY, "ko"), paired.SELECTED_ONLY)
+        # No refusal in the module still appends a name to its own sentence.
+        tree = ast.parse(Path(paired.__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call) and node.exc.args:
+                self.assertFalse(isinstance(node.exc.args[0], ast.BinOp), ast.unparse(node))
+
     def test_complete_zip_updates_all_declared_variants_preserves_selected_once_and_unrelated_bytes(self):
         for four in (False, True):
             with self.subTest(four=four):

@@ -262,6 +262,37 @@ class CombinedExportTests(unittest.TestCase):
                 self.assertEqual(self.source.read_bytes(), body_raw); self.assertEqual(face.read_bytes(), face_raw)
                 self.assertTrue(result['metadata']['hasFaceCompanions'])
 
+    def test_reedit_from_original_reopens_the_body_and_its_automatic_face_as_companion(self):
+        _, body_raw, face_raw = self.face_session(203)
+        record = next(row for row in self.metadata['outlines']['meshes'] if row['sourceIndex'] == 1)
+        state = dict(self.empty, outlines=[{'id': record['id'], 'factor': 1, 'absolute': 40}])
+        saved = model_edits.export(self.token, model_edits.validate_state(self.token, state), self.output)
+        # Every original is preserved; re-edit reopens only the selected body
+        # and completes its face again as the automatic companion.
+        self.assertEqual([Path(path).read_bytes() for path in saved['original_paths']], [body_raw, face_raw])
+        self.assertEqual(saved['reedit_paths'], saved['original_paths'][:1])
+        self.assertEqual((saved['reedit_variants'], saved['reedit_auto_face']), ({}, True))
+        body, face = saved['original_paths']
+        rig = model_viewer.prepare([body, face], rigged=True, face_context={'enabled': False, 'allow_download': False})['rig']
+        companion = {'path': face, 'sha256': hashlib.sha256(face_raw).hexdigest(), 'sourceIndex': 1}
+        package = lambda token, restored: flow.create_package(token, restored, output_root=self.output,
+            repo_root=self.runtime, cache_root=self.cache, display_name='Re-edit', character_id=None,
+            include_face_edits=True, job=Job(secrets.token_hex(6), 'viewer_mod_package'))
+        reedit = secrets.token_hex(16)
+        model_edits.register_session(reedit, saved['reedit_paths'], rig, companions=[companion])
+        restored = model_edits.restore(reedit, saved['recipe'])
+        result = package(reedit, restored)
+        with zipfile.ZipFile(result['mod_package']['package_path']) as archive:
+            fields = {node.targets[0].id: ast.literal_eval(node.value)
+                      for node in ast.parse(archive.read('modinstall.txt').decode()).body}
+            self.assertTrue(fields['costume_facedynamic_file'])
+        # Reopening the saved face as a second selected model (the old
+        # re-edit) is the refused case.
+        both = secrets.token_hex(16)
+        model_edits.register_session(both, saved['original_paths'], rig)
+        with self.assertRaisesRegex(ValueError, 'Choose one costume to package'):
+            package(both, model_edits.restore(both, saved['recipe']))
+
     def test_including_already_baked_face_and_explicit_exclusion(self):
         face, body_raw, face_raw = self.face_session(6)
         for include in (False, True):

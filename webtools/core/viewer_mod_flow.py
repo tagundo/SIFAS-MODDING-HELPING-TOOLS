@@ -347,6 +347,8 @@ def export_current(token, state, output_root, *, mesh_state=None, allow_empty=Fa
             if any(row.get("encodingChanged") for row in result["texture_edits"]):
                 log("Precise texture edits use lossless RGBA32 to preserve unselected pixels and alpha.")
         remember_export_sources(context, result, repo_root=repo_root, cache_root=cache_root)
+        from . import viewer_scene_roles
+        viewer_scene_roles.remember_saved_originals(token, context, result.get("original_paths", []))
         result["derived_runtime"] = viewer_physics_runtime.inherit_export(context, result["preview_paths"],
             repo_root=repo_root, cache_root=cache_root)
         result["metadata"] = metadata(context, repo_root=repo_root, cache_root=cache_root)
@@ -529,7 +531,8 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         if automatic_faces and pair_state.get("textures"):
             pair_state["textures"] = [row for row in pair_state["textures"] if row["texture"]["source"] not in automatic_faces]
         paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, pair_state, pair=pair, job=job)
-                  if model_edits.has_changes(pair_state) else {"result": result, "pair": pair, "summary": []})
+                  if model_edits.has_changes(pair_state) or context.get("held_counterpart")
+                  else {"result": result, "pair": pair, "summary": []})
         result, pair = paired["result"], paired["pair"]
         # Counterpart mapping may rewrite the complete archive. Bind derived
         # runtime proof to those final bytes, never to the pre-pair ZIP hash.
