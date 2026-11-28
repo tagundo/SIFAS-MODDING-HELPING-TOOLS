@@ -44,6 +44,8 @@ const KO = { "Costume colour": "의상 컬러", "Skin tone": "스킨톤", "Textu
         if (url === "/api/viewer/edit/result/name-job") return { ok: true, json: async () => ({ output_paths: ["/saved/ch0001_co0001.unity", "/saved/recipe.json"],
           preview_paths: ["/saved/ch0001_co0001.unity"], original_paths: ["/originals/ch0001_co0001.unity"], recipe_path: "/saved/recipe.json", recipe: { state: {} } }) };
         if (url === "/api/viewer/edit/restore") return { ok: true, json: async () => ({ state: { version: 1, edits: [], savedSettingsEnabled: true } }) };
+        // Mod ZIP requests are recorded and then refused: only their body matters here.
+        if (url.startsWith("/api/viewer/edit/package")) { (window.packageRequests = window.packageRequests || []).push({ url, body: JSON.parse(options.body) }); return { ok: false, json: async () => ({ error: "recorded" }) }; }
         throw new Error("Unexpected request " + url);
       };
       window.EventSource = class { constructor() { setTimeout(() => this.onmessage && this.onmessage({ data: JSON.stringify({ type: "done", status: "done" }) }), 0); } close() {} };
@@ -133,6 +135,31 @@ const KO = { "Costume colour": "의상 컬러", "Skin tone": "스킨톤", "Textu
     await page.evaluate(() => { const field = document.getElementById("viewer-mod-name"); field.value = "내\n의상\r\n모드"; field.setSelectionRange(3, 3); field.dispatchEvent(new Event("input", { bubbles: true })); });
     assert.deepEqual(await page.evaluate(() => { const field = document.getElementById("viewer-mod-name"); return [field.value, field.selectionStart]; }), ["내 의상 모드", 3]); // a textarea stores \r\n as \n
     cases.push("the name stays on one line: Enter is ignored and pasted line breaks become spaces");
+    // Readable names: the page language picks the member-numbered base; an
+    // operation the base (an installed Mod's own name) already ends with is not
+    // repeated; an untouched automatic name sends its parts so the server can
+    // install it in every game language, a typed name does not.
+    await page.evaluate(() => { document.documentElement.lang = "ko"; context.loadedPaths = ["/cache/ch0004_suit100041001_primary.unity"]; context.modelId = "labels";
+      context.editing = Object.assign({}, context.editing, { token: "labels", modPackaging: { nameBase: "004 Umi Sonoda · Winter",
+        nameBases: { en: "004 Umi Sonoda · Winter", ko: "004 소노다 우미 · 동복", ja: "004 園田 海未 · 冬服" } } }); persistence.refresh(); });
+    assert.equal(await name([], []), "004 소노다 우미 · 동복");
+    assert.equal(await name([body], [["costume", "skin"]]), "004 소노다 우미 · 동복 · 의상 컬러 · 스킨톤");
+    await page.evaluate(() => { document.documentElement.lang = "ja"; persistence.refresh(); });
+    assert.equal(await name([body], [["costume", "skin"]]), "004 園田 海未 · 冬服 · 의상 컬러 · 스킨톤");
+    await page.evaluate(() => { document.documentElement.lang = "ko"; context.editing.modPackaging = Object.assign({}, context.editing.modPackaging, { nameBases: { en: "004 Umi Sonoda · Winter · Skin tone", ko: "004 소노다 우미 · 동복 · 스킨톤", ja: "004 園田 海未 · 冬服 · 肌の色" } }); persistence.refresh(); });
+    assert.equal(await name([body], [["costume", "skin"]]), "004 소노다 우미 · 동복 · 스킨톤 · 의상 컬러");
+    cases.push("the page language picks the numbered base; an operation the base already names is not repeated");
+    const request = async () => { await page.evaluate(() => { window.packageRequests = []; document.getElementById("viewer-save-mod").click(); });
+      await page.waitForFunction(() => window.packageRequests.length === 1 && !persistence.getState().busy); return page.evaluate(() => window.packageRequests[0]); };
+    assert.equal(await page.evaluate(() => document.getElementById("viewer-save-mod").disabled), false);
+    let sent = await request();
+    assert(sent.url.endsWith("?lang=ko"), sent.url);
+    assert.equal(sent.body.display_name, "004 소노다 우미 · 동복 · 스킨톤 · 의상 컬러");
+    assert.deepEqual(sent.body.name_parts, [[{ k: "Costume colour" }], [{ k: "Skin tone" }]]);
+    await page.evaluate(() => { const field = document.getElementById("viewer-mod-name"); field.value = "내 의상"; field.dispatchEvent(new Event("input", { bubbles: true })); });
+    sent = await request();
+    assert.equal(sent.body.display_name, "내 의상"); assert.equal("name_parts" in sent.body, false);
+    cases.push("an untouched automatic name sends its parts and the page language; a typed name sends neither parts nor a translation");
     assert.deepEqual(pageErrors, []); await page.close();
   } finally { await browser.close(); }
   process.stdout.write(JSON.stringify({ status: "PASS", cases }) + "\n");

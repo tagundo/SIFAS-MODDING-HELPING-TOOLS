@@ -266,6 +266,11 @@ main { padding: 14px; }
 .viewer-file-list:empty { display: none; }
 .viewer-file-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-width: 0; gap: 5px; min-height: 44px; font-size: 12px; }
 .viewer-file-list li > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A chosen model reads as its member and costume; the code file name and
+   costume number stay on a smaller second line (and in the title). */
+.viewer-file-list li > .viewer-file-label { display: flex; flex-direction: column; justify-content: center; line-height: 1.25; }
+.viewer-file-title, .viewer-file-code { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-file-code { color: var(--muted); font-size: .625rem; }
 .viewer-files .viewer-remove { flex: 0 0 44px; padding: 4px; min-width: 44px; font-size: 20px; }
 .viewer-model-files { position: relative; flex: 1 1 180px; min-width: 0; }
 .viewer-model-files > summary { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 44px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); cursor: pointer; list-style: none; font-size: 12px; }

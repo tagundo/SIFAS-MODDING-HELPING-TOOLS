@@ -204,6 +204,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/viewer/prepare":
                 return self._api_viewer_prepare()
+            if path == "/api/viewer/model-labels":
+                return self._api_viewer_model_labels()
             if path == "/api/viewer/game/import":
                 return self._api_viewer_game_import()
             if path == "/api/costume-platform/match":
@@ -320,6 +322,25 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, SQLiteError) as error:
             return self._send_json({"error": str(error)}, status=400)
 
+    def _label_mv_costume(self, result, path):
+        """An imported costume asset is listed by its member and costume name."""
+        asset = result.get("asset") if isinstance(result, dict) else None
+        if not isinstance(asset, dict) or asset.get("kind") not in {"performer", "outfit"}:
+            return
+        try:
+            from webtools.core import model_labels
+            real = os.path.realpath(os.path.expanduser(path))
+            if not filebrowser.is_within_allowed(real):
+                return
+            parts = model_labels.describe(real, repo_root=Path.cwd(), cache_root=game_models_dir())
+        except (OSError, ValueError, TypeError):
+            return
+        label = (parts.get("label") or {}).get(self._lang())
+        if isinstance(label, str) and label:
+            asset["label"] = label
+            if isinstance(result.get("performer"), dict):
+                result["performer"]["label"] = label
+
     def _api_mv_studio(self, action):
         from sqlite3 import Error as SQLiteError
         from webtools.core import mv_studio
@@ -356,7 +377,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(mv_studio.open_project(data["path"]))
             if action == "asset":
                 data = self._viewer_feature_request({"path", "kind"}, token=False)
-                return self._send_json(mv_studio.import_asset(data["path"], data["kind"]))
+                result = mv_studio.import_asset(data["path"], data["kind"])
+                self._label_mv_costume(result, data["path"])
+                return self._send_json(result)
             if action in {"save", "export-timeline"}:
                 data = self._viewer_feature_request({"project"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 4096,
                                                     optional_fields={"name"} if action == "save" else ())
@@ -855,9 +878,17 @@ class Handler(BaseHTTPRequestHandler):
                                 result["editing"]["initialState"] = viewer_scene_roles.register_reopened(
                                     result["id"], expanded.scene_context)
                                 result["editing"]["allowEmptySceneReset"] = True
+                                from sqlite3 import Error as SQLiteError
+                                from webtools.core import model_labels
+                                scene_name = expanded.scene_context["metadata"]["display_name"]
+                                try:
+                                    scene_names = model_labels.titled_names(Path.cwd(), 209, scene_name)
+                                except (OSError, TypeError, SQLiteError):
+                                    scene_names = {code: scene_name for code in model_labels.LANGUAGES}
                                 result["editing"]["modPackaging"].update(
-                                    nameBase=expanded.scene_context["metadata"]["display_name"], characterId=209,
-                                    requiresCounterpart=False, sceneRoles=True)
+                                    nameBase=scene_names.get(self._lang(), scene_names["en"])[:120],
+                                    nameBases={code: value[:120] for code, value in scene_names.items()},
+                                    characterId=209, requiresCounterpart=False, sceneRoles=True)
                     except (ValueError, OSError) as exc:
                         if getattr(expanded, "scene_context", None):
                             raise
@@ -871,6 +902,35 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": "Model file was not found."}, status=404)
         except TimeoutError:
             return self._send_json({"error": "Model preparation timed out. Try fewer files."}, status=503)
+
+    def _api_viewer_model_labels(self):
+        """Readable member/costume names for chosen model files (display only).
+
+        Labels come from the same verified receipts as the viewer's game
+        bindings, or from a Mod ZIP's own names; identities stay paths/hashes.
+        """
+        try:
+            params = self._viewer_feature_request({"paths"}, max_bytes=128 * 1024, token=False)
+            paths = params["paths"]
+            from webtools.core import model_labels
+            if (not isinstance(paths, list) or not 1 <= len(paths) <= model_labels.MAX_PATHS
+                    or any(not isinstance(path, str) or not path or len(path) > 4096 or "\0" in path for path in paths)):
+                raise ValueError("Choose between one and sixteen model files.")
+            allowed, rows = [], []
+            for path in paths:
+                real = os.path.realpath(os.path.expanduser(path))
+                allowed.append(real if filebrowser.is_within_allowed(real) and os.path.isfile(real) else None)
+            described = model_labels.describe_paths([path for path in allowed if path], repo_root=Path.cwd(),
+                                                    cache_root=game_models_dir())
+            found = iter(described)
+            for path, real in zip(paths, allowed):
+                parts = next(found) if real else {"file": os.path.basename(path)}
+                rows.append({"path": path, **(model_labels.safe_parts(parts) or {})})
+            return self._send_json({"labels": rows})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
 
     def _api_viewer_model(self, name):
         import re
@@ -1320,7 +1380,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from webtools.core import model_edits, viewer_mod_flow
             from webtools.core.sukusta import default_sukusta_dir
-            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"}, optional_fields={"thumbnail_token", "mesh_state", "include_face_edits"}, max_bytes=32 * 1024 * 1024)
+            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"}, optional_fields={"thumbnail_token", "mesh_state", "include_face_edits", "name_parts"}, max_bytes=32 * 1024 * 1024)
+            name_parts = viewer_mod_flow.validate_name_parts(params.get("name_parts"))
+            language = self._lang()
             include_face_edits = params.get("include_face_edits")
             if "include_face_edits" in params and type(include_face_edits) is not bool:
                 raise ValueError("Choose whether to include face and mouth edits for this costume.")
@@ -1352,7 +1414,7 @@ class Handler(BaseHTTPRequestHandler):
                     display_name=params["display_name"], character_id=params["character_id"],
                     counterpart_path=counterpart, selected_variant=params["selected_variant"],
                     thumbnail_token=thumbnail_token, mesh_state=mesh_state,
-                    include_face_edits=include_face_edits, job=current)
+                    include_face_edits=include_face_edits, name_parts=name_parts, language=language, job=current)
                 current._viewer_edit_result = result
                 for path in result["output_paths"]:
                     current.add_output(path)

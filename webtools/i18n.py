@@ -4504,3 +4504,23 @@ _MV_LAYOUT_TRANSLATIONS = {
 for _source, (_korean, _japanese) in _MV_LAYOUT_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _korean
     _TABLES["ja"][_source] = _japanese
+
+# Readable model names (model_labels.py, model-viewer.js, viewer-persistence.js):
+# the game's member and costume names replace cache file names wherever a
+# person reads them. The automatic Mod name's edit labels are also built by
+# the server for each installed language, so every label it uses is here.
+_MODEL_LABEL_TRANSLATIONS = {
+    "Costume #{id}": ("의상 #{id}", "衣装 #{id}"),
+    "Face (automatic)": ("얼굴(자동)", "顔（自動）"),
+    "File": ("파일", "ファイル"),
+    "{region} costume ID {id}": ("{region} 의상 ID {id}", "{region} 衣装ID {id}"),
+    "Costume transplant": ("코스튬 이식", "衣装移植"),
+    "Costume part transplant": ("코스튬 부분 이식", "衣装パーツ移植"),
+    "Lower body replacement": ("하체 교체", "下半身の交換"),
+    "Mesh editing": ("메시 편집", "メッシュ編集"),
+    "Mesh deletion": ("메시 삭제", "メッシュ削除"),
+    "Physics": ("물리", "物理"),
+}
+for _source, (_korean, _japanese) in _MODEL_LABEL_TRANSLATIONS.items():
+    _TABLES["ko"].setdefault(_source, _korean)
+    _TABLES["ja"].setdefault(_source, _japanese)

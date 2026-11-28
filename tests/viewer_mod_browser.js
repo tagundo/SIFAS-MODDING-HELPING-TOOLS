@@ -206,9 +206,10 @@ async function downloads(page, modPath, locale) {
       assert.equal(saved.status, 'done', saved.error); assert.equal(packages.length, 1); assert.equal(installs.length, 0); assert.equal(raw.length, 0);
       const inspected = inspectPackage(saved.modPackage.packagePath);
       const savedDownloads = await downloads(page, saved.modPackage.packagePath, profile.locale);
-      // Every Mod ZIP sits in <library>/modded/viewer/mods/saved under a date-first name.
+      // Every Mod ZIP sits in <library>/modded/viewer/mods/saved under a date-first
+      // name, then Rina's number and given name before the typed name.
       assert.equal(path.dirname(saved.modPackage.packagePath), path.join(fs.realpathSync(library), 'modded/viewer/mods/saved'));
-      assert(/^\d{4}-\d{2}-\d{2}_\d{4}_Rina_Named_/.test(path.basename(saved.modPackage.packagePath)), saved.modPackage.packagePath);
+      assert(/^\d{4}-\d{2}-\d{2}_\d{4}_209_Rina_Named_/.test(path.basename(saved.modPackage.packagePath)), saved.modPackage.packagePath);
       assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getState().camera), initial.camera, 'Packaging leaves the current camera unchanged');
       assert.equal(inspected.config.costume_name_en, 'Named ' + profile.variant); assert.equal(inspected.config.chara_id, 209);
       assert.equal(inspected.notes, 'Keep this companion exactly.');
@@ -273,7 +274,8 @@ async function downloads(page, modPath, locale) {
       assert.equal(installs.length, 1, 'A package that finishes after a model switch is never installed');
       const previousResult = await (await fetch(server.url + '/api/viewer/edit/result/' + encodeURIComponent(stale.jobId))).json();
       const staleDownloads = await downloads(page, previousResult.mod_package.package_path, profile.locale);
-      assert.equal(await page.locator('#viewer-mod-name').inputValue(), 'board', 'A new source resets manual name to its own suggestion');
+      // Its own suggestion: Rina's number and name, then the file name (nothing else names it).
+      assert.match(await page.locator('#viewer-mod-name').inputValue(), /^209 \S.* · board$/, 'A new source resets manual name to its own suggestion');
       // Reopen the actual saved scene envelope; restoring its canonical
       // recipe during variant reload must preserve a user's manual folds.
       await open(page, oldPackagePath);

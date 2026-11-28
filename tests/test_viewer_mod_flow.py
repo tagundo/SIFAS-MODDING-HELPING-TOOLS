@@ -439,7 +439,7 @@ class ViewerModFlowTests(unittest.TestCase):
         result = self.package()
         package = Path(result["mod_package"]["package_path"])
         self.assertEqual(package.parent, (self.output / "mods/saved").resolve())
-        self.assertRegex(package.name, r"^\d{4}-\d{2}-\d{2}_\d{4}_Maki_Neutral_edited_costume_(android|ios)\.zip$")
+        self.assertRegex(package.name, r"^\d{4}-\d{2}-\d{2}_\d{4}_006_Maki_Neutral_edited_costume_(android|ios)\.zip$")
         self.assertIn(str(package), result["output_paths"])
         # The edit folder keeps its work files but no second copy of the ZIP.
         edit = Path(result["recipe_path"]).parent
@@ -469,12 +469,16 @@ class ViewerModFlowTests(unittest.TestCase):
     def test_mod_zip_names(self):
         from datetime import datetime
         when = datetime(2026, 11, 27, 14, 5)
+        # A typed name: the member's three-digit number, then the given name.
         self.assertEqual(flow.mod_zip_stem("Knit reform", 208, "android", when=when),
-                         "2026-11-27_1405_Emma_Knit_reform_android")
+                         "2026-11-27_1405_208_Emma_Knit_reform_android")
         self.assertEqual(flow.mod_zip_stem("Emma knit", 208, "android+ios", when=when),
-                         "2026-11-27_1405_Emma_knit_android-ios")
+                         "2026-11-27_1405_208_Emma_knit_android-ios")
         self.assertEqual(flow.mod_zip_stem("리나 보드 / 교복", 209, "ios", scene=True, when=when),
-                         "2026-11-27_1405_Rina_리나_보드_교복_ios_scene")
+                         "2026-11-27_1405_209_Rina_리나_보드_교복_ios_scene")
+        # The automatic name already starts with the number and the member.
+        self.assertEqual(flow.mod_zip_stem("209 텐노지 리나 · 리나 보드", 209, "ios", scene=True, when=when),
+                         "2026-11-27_1405_209_텐노지_리나_리나_보드_ios_scene")
         self.assertEqual(flow.mod_zip_stem("..", None, None, when=when), "2026-11-27_1405_costume")
         self.assertEqual(flow.mod_zip_stem("../../x", 999, "android", when=when), "2026-11-27_1405_x_android")
 

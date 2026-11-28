@@ -204,6 +204,71 @@
     return source === "texture" ? textureToolsController : source === "modify" || source === "delete" ? meshToolsController : null;
   }
   function basename(path) { return String(path).replace(/\/+$/, "").split("/").pop(); }
+  // Readable member/costume names of chosen files (POST /api/viewer/model-labels).
+  // They are display text only: paths, hashes and receipts stay the identity,
+  // and the file name stays in each title. A file nothing describes keeps
+  // its file name.
+  var modelLabels = Object.create(null), labelRequests = Object.create(null);
+  function pageLanguage() { var code = (document.documentElement.lang || "en").split("-")[0]; return ["en", "ko", "ja"].indexOf(code) >= 0 ? code : "en"; }
+  function labelText(parts) { return parts && parts.label && typeof parts.label[pageLanguage()] === "string" && parts.label[pageLanguage()] || ""; }
+  function modelLabel(path) { return labelText(modelLabels[path]) || basename(path); }
+  function labelDetail(path) {
+    var parts = modelLabels[path], file = basename(path);
+    if (!labelText(parts)) return file;
+    var detail = t("File") + ": " + file;
+    if (parts.region && typeof parts.suitId === "number") detail += " · " + replaceValues(t("{region} costume ID {id}"), { region: String(parts.region).toUpperCase(), id: parts.suitId });
+    return detail;
+  }
+  // Two chosen files with the same readable name (the label already names a
+  // non-default view) are told apart by their costume number, then by order.
+  function displayLabels(list) {
+    var names = list.map(modelLabel), counts = Object.create(null), again = Object.create(null), seen = Object.create(null);
+    names.forEach(function (name) { counts[name] = (counts[name] || 0) + 1; });
+    var extended = names.map(function (name, index) {
+      var parts = modelLabels[list[index]];
+      if (counts[name] < 2 || !labelText(parts)) return name;
+      return parts.region && typeof parts.suitId === "number" ? name + " · " + String(parts.region).toUpperCase() + " #" + parts.suitId : name;
+    });
+    extended.forEach(function (name, index) { if (labelText(modelLabels[list[index]])) again[name] = (again[name] || 0) + 1; });
+    return extended.map(function (name) {
+      if (!(again[name] > 1)) return name;
+      seen[name] = (seen[name] || 0) + 1;
+      return name + " (" + seen[name] + ")";
+    });
+  }
+  function requestModelLabels(list) {
+    var pending = list.filter(function (path) { return labelRequests[path]; }).map(function (path) { return labelRequests[path]; });
+    var wanted = list.filter(function (path, index) { return typeof path === "string" && path && list.indexOf(path) === index && !(path in modelLabels) && !labelRequests[path]; }).slice(0, 16);
+    if (!wanted.length || typeof window.fetch !== "function") return Promise.all(pending);
+    var request = window.fetch("/api/viewer/model-labels", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: wanted }) })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (destroyed) return;
+        var rows = data && Array.isArray(data.labels) ? data.labels : [];
+        wanted.forEach(function (path) {
+          var row = rows.filter(function (item) { return item && item.path === path; })[0];
+          modelLabels[path] = row && row.label && typeof row.label === "object" ? row : null;
+        });
+        renderFiles();
+        if (persistenceController && persistenceController.labelsChanged) persistenceController.labelsChanged();
+        if (meshToolsController && meshToolsController.refresh) meshToolsController.refresh();
+      })
+      .catch(function () {})
+      .then(function () { wanted.forEach(function (path) { if (labelRequests[path] === request) delete labelRequests[path]; }); });
+    wanted.forEach(function (path) { labelRequests[path] = request; });
+    return Promise.all(pending.concat([request]));
+  }
+  // The readable name of one opened source (texture and mesh pickers):
+  // "004 소노다 우미 · <costume>" for a body, "004 소노다 우미 · 얼굴(자동)"
+  // for its automatic face; "" when nothing names it (the file name shows).
+  function sourceLabel(index) {
+    var rows = metadata && metadata.editing && metadata.editing.modPackaging && metadata.editing.modPackaging.sources;
+    var row = Array.isArray(rows) ? rows[index] : null, code = pageLanguage();
+    if (!row) return "";
+    if (row.kind === "face") return row.label && row.label[code] || t("Face (automatic)");
+    return row.label && typeof row.label[code] === "string" ? row.label[code] : "";
+  }
+  function labelFor(path) { requestModelLabels([path]); return modelLabel(path); }
   function variantsFor(selected) { return selected.map(function (path) { return variantChoices[path] || "primary"; }); }
   function sameSelection(selected, autoFace, variants) {
     return !destroyed && JSON.stringify(paths) === JSON.stringify(selected) &&
@@ -244,11 +309,12 @@
     box.hidden = !offered.length;
     offered.forEach(function (path) {
       var label = document.createElement("label"), title = document.createElement("span");
-      title.textContent = t("Rina face") + (offered.length > 1 ? " · " + basename(path) : "");
+      title.textContent = t("Rina face") + (offered.length > 1 ? " · " + modelLabel(path) : "");
+      title.title = path;
       var select = document.createElement("select"), index = paths.indexOf(path);
       select.id = "viewer-variant-" + index;
       select.dataset.viewerVariantIndex = String(index);
-      select.setAttribute("aria-label", t("Rina face") + " · " + basename(path));
+      select.setAttribute("aria-label", t("Rina face") + " · " + modelLabel(path));
       select.setAttribute("aria-describedby", "viewer-variant-help");
       ["primary", "unmasked"].forEach(function (choice) {
         var option = document.createElement("option"); option.value = choice;
@@ -519,16 +585,30 @@
   function renderFiles() {
     var list = node("viewer-file-list");
     list.textContent = "";
+    requestModelLabels(paths);
+    var labels = displayLabels(paths);
     paths.forEach(function (path, index) {
       var item = document.createElement("li");
       var name = document.createElement("span");
-      name.textContent = basename(path);
-      name.title = path;
+      name.className = "viewer-file-label";
+      var title = document.createElement("span");
+      title.className = "viewer-file-title";
+      title.textContent = labels[index];
+      name.appendChild(title);
+      // The game's names first; the file and costume number stay visible
+      // below them for anyone who needs the code.
+      if (labels[index] !== basename(path)) {
+        var code = document.createElement("small");
+        code.className = "viewer-file-code";
+        code.textContent = labelDetail(path);
+        name.appendChild(code);
+      }
+      name.title = labels[index] === basename(path) ? path : labels[index] + "\n" + labelDetail(path) + "\n" + path;
       var remove = document.createElement("button");
       remove.type = "button";
       remove.className = "viewer-remove";
       remove.textContent = "×";
-      remove.setAttribute("aria-label", t("Remove") + " " + basename(path));
+      remove.setAttribute("aria-label", t("Remove") + " " + labels[index]);
       remove.disabled = loading;
       remove.addEventListener("click", function () {
         var restoreFocus = document.activeElement === remove;
@@ -548,8 +628,8 @@
     });
     var chooser = node("viewer-model-files"), count = node("viewer-model-file-count"), badge = node("viewer-model-options-count");
     chooser.hidden = !paths.length;
-    node("viewer-model-file-name").textContent = paths.length ? basename(paths[0]) : t("Model files");
-    chooser.querySelector("summary").title = t("Model files") + " (" + paths.length + ")";
+    node("viewer-model-file-name").textContent = paths.length ? labels[0] : t("Model files");
+    chooser.querySelector("summary").title = t("Model files") + " (" + paths.length + ")" + (paths.length ? "\n" + labels[0] + (labels[0] !== basename(paths[0]) ? "\n" + labelDetail(paths[0]) : "") : "");
     count.textContent = String(paths.length); count.hidden = paths.length < 2;
     badge.textContent = String(paths.length); badge.hidden = paths.length < 2;
     var workspaceBadge = node("viewer-workspace-model-count");
@@ -1717,7 +1797,12 @@
     var selected = paths.slice();
     var selectedMotions = motionLibraryPaths.slice();
     var loadContext = { operation: t("3D model"), stage: t("Preparing model…"),
-      filename: selected.map(function (path) { return String(path).replace(/\\/g, "/").split("/").pop(); }).join(", ") };
+      filename: selected.map(function (path) {
+        var file = String(path).replace(/\\/g, "/").split("/").pop(), label = modelLabel(path);
+        return label !== basename(path) ? label + " (" + file + ")" : file;
+      }).join(", ") };
+    // The response names the costume in every page language (modPackaging
+    // nameBases), so a language switch needs no reload.
     var loadEndpoint = "/api/viewer/prepare", loadMethod = "POST", loadStatus = 0;
     var requests = window.ElichikaPlatform;
     var selectedAutoFace = node("viewer-auto-face").checked;
@@ -2245,7 +2330,7 @@
       onChange: function () { requestRender(); if (persistenceController) persistenceController.refresh(); }
     });
     if (window.ViewerPersistence && node("viewer-save")) persistenceController = window.ViewerPersistence.create({
-      translate: t,
+      translate: t, labelFor: labelFor, language: pageLanguage,
       context: function () { return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
         accessories: accessoryController && accessoryController.getState(),
         meshTools: meshToolsController,
@@ -2311,7 +2396,7 @@
       }
     });
     if (window.ViewerMeshTools) meshToolsController = window.ViewerMeshTools.create({
-      translate: t,
+      translate: t, sourceLabel: sourceLabel,
       isSceneInteractive: function () { return !(outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing()) && !(textureToolsController && (textureToolsController.getSceneMode ? textureToolsController.getSceneMode() : textureToolsController.getState().sceneMode) !== "orbit"); },
       onSceneModeChange: function (mode) { if (mode !== "orbit") { if (outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); if (textureToolsController) textureToolsController.setSceneMode("orbit"); } if (interactionController) interactionController.refresh(); },
       getToken: function () { var editing = bodyEditingMetadata(); return editing && editing.available ? editing.token : null; },
@@ -2333,7 +2418,7 @@
       }
     });
     if (window.ViewerTextureTools) textureToolsController = window.ViewerTextureTools.create({
-      translate: t,
+      translate: t, sourceLabel: sourceLabel,
       pickProject: function (callback) {
         containViewerPicker();
         var choose = config.pickTextureProject || config.pickFile;
@@ -2365,7 +2450,7 @@
       if (textureToolsController && textureToolsController.openPaint) textureToolsController.openPaint();
     });
     if (window.ViewerTransplants) transplantController = window.ViewerTransplants.create({
-      translate: t,
+      translate: t, labelFor: labelFor, loadLabel: function (path) { return requestModelLabels([path]).then(function () { return modelLabel(path); }); },
       context: function () {
         var targetMeshes = [], rendererIds = {};
         if (model) model.traverse(function (mesh) {
@@ -2724,7 +2809,7 @@
   }
 
   window.ModelViewer = {
-    mount: mount, open: open, addMotion: addMotion, setVisible: setVisible, updateLanguage: updateLanguage, dispose: dispose,
+    mount: mount, open: open, addMotion: addMotion, labelFor: labelFor, setVisible: setVisible, updateLanguage: updateLanguage, dispose: dispose,
     captureCheckpoint: captureViewerCheckpoint,
     restoreCheckpoint: function (target, expectedCurrent) { return loadViewerCheckpoint(target, expectedCurrent || captureViewerCheckpoint()); },
     getAuthoringState: authoringState,

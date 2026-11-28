@@ -271,6 +271,30 @@ class ViewerModPackageTests(unittest.TestCase):
             config = literals(archive.read("modinstall.txt"))
             self.assertEqual({config[key] for key in packages._NAMES}, {display})
 
+    def test_automatic_name_is_installed_per_language_with_an_inert_source_record(self):
+        names = {"en": "006 Maki Nishikino · Winter · Outlines", "ko": "006 니시키노 마키 · 동복 · 외곽선",
+                 "ja": "006 西木野 真姫 · 冬服 · 輪郭線"}
+        source = {"region": "gl", "suit_id": 100061001, "variant": "primary", "member": 6}
+        result = self.package(self.source, display_name=names["ko"], names=names, source_costume=source)
+        self.assertEqual(result["installed_names"], {"costume_name_en": names["en"], "costume_name_ko": names["ko"],
+            "costume_name_zh": names["en"], "costume_name_ja": names["ja"], "costume_description": names["ko"]})
+        with zipfile.ZipFile(result["package_path"]) as archive:
+            config = literals(archive.read("modinstall.txt"))
+            self.assertEqual({key: config[key] for key in packages._NAMES}, result["installed_names"])
+            records = [name for name in archive.namelist() if name.endswith("/" + packages.SOURCE_COSTUME_MEMBER)]
+            self.assertEqual(len(records), 1)
+            self.assertFalse(records[0].endswith((".txt", ".zip")))
+            self.assertEqual(__import__("json").loads(archive.read(records[0])),
+                             {"format": packages.SOURCE_COSTUME_FORMAT, "version": 1, **source})
+        # Another member's costume is not this Mod's source; a typed name is one name for all.
+        other = self.package(self.source, display_name="내 의상", source_costume=dict(source, member=4))
+        with zipfile.ZipFile(other["package_path"]) as archive:
+            self.assertFalse([name for name in archive.namelist() if name.endswith(packages.SOURCE_COSTUME_MEMBER)])
+            self.assertEqual({literals(archive.read("modinstall.txt"))[key] for key in packages._NAMES}, {"내 의상"})
+        for bad in ({"en": "a", "ko": "b"}, {"en": "a", "ko": "b", "ja": ""}):
+            with self.subTest(bad=bad), self.assertRaises(packages.ModPackageError):
+                self.package(self.source, display_name="a", names=bad)
+
     def test_raw_bundle_name_cannot_collide_with_thumbnail_or_manifest(self):
         for name in ("thumbnail.png", "modinstall.txt"):
             source = self.bundle(name, "ch0006_co0001_body")
