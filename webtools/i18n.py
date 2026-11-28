@@ -249,7 +249,7 @@ _TABLES = {
         "Preserve part physics": "부분 물리 유지",
         "Reuse empty UV areas": "빈 UV 영역 재사용",
         "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.":
-            "Donor의 원래 UV 위치를 먼저 사용합니다. 겹치면 아틀라스로 합치거나 다른 빈 UV 영역으로 옮기기를 켜세요. 패딩은 추가하지 않습니다.",
+            "도너의 원래 UV 위치를 먼저 사용합니다. 겹치면 아틀라스로 합치거나 다른 빈 UV 영역으로 옮기기를 켜세요. 패딩은 추가하지 않습니다.",
         "Move to another empty UV area": "다른 빈 UV 영역으로 옮기기",
         "Match smaller textures to larger ones": "작은 이미지를 큰 이미지에 맞추기",
         "Texture and UV placement": "텍스처·UV 배치 방식",
