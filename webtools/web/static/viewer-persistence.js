@@ -49,24 +49,46 @@
     // A server refusal that names one part is a fixed sentence ending in
     // ": {name}" (viewer_mod_pair_edits.NAMED_REFUSALS): translate the
     // sentence and keep the name. Exact sentences translate as before.
+    // The Elichika installer's own summary (adminui installers): name its usual causes.
+    var INSTALLER_EXIT = /^costume installer failed for .+ \(exit ([^()]*)\)$/;
     function translateMessage(text) {
       text = String(text || "");
       var exact = translate(text);
       if (exact !== text) return exact;
+      var exit = INSTALLER_EXIT.exec(text);
+      if (exit) return noteText({ text: "The costume installer stopped with exit code {code}. Usual causes are missing Elichika settings (config.json) or a Mod ZIP the installer could not find in its costume folder; the server console shows the installer's message.", values: { code: exit[1] } });
       for (var at = text.indexOf(": "); at >= 0; at = text.indexOf(": ", at + 1)) {
         var key = text.slice(0, at) + ": {name}", sentence = translate(key);
         if (sentence !== key) return sentence.split("{name}").join(text.slice(at + 2));
       }
       return text;
     }
-    // A note is an English sentence, or {text, values} for a sentence with values.
+    // Part names inside a sentence, with this language's list separator.
+    function nameList(values) { return values.map(String).join(translate(", ")); }
+    // A note is an English sentence, or {text, values} for a sentence with values
+    // (a list value is a list of part names).
     function noteText(note) {
       if (note && typeof note === "object") return translate(String(note.text || "")).replace(/\{(\w+)\}/g, function (whole, name) {
-        return note.values && Object.prototype.hasOwnProperty.call(note.values, name) ? String(note.values[name]) : whole;
+        if (!note.values || !Object.prototype.hasOwnProperty.call(note.values, name)) return whole;
+        return Array.isArray(note.values[name]) ? nameList(note.values[name]) : String(note.values[name]);
       });
       return translateMessage(note);
     }
-    function statusText(key, detail) { return joinSentences([translateMessage(key), detail && detail !== key ? translateMessage(detail) : ""].concat(statusNotes.map(noteText))); }
+    // The English text of a note, for the error state.
+    function noteSource(note) {
+      if (!note || typeof note !== "object") return String(note || "");
+      return String(note.text || "").replace(/\{(\w+)\}/g, function (whole, name) {
+        var value = note.values && Object.prototype.hasOwnProperty.call(note.values, name) ? note.values[name] : undefined;
+        return value === undefined ? whole : Array.isArray(value) ? value.join(", ") : String(value);
+      });
+    }
+    // Server notes ({text, values}) of a save result, e.g. parts kept on this variant.
+    function resultNotes(data) {
+      return (data && Array.isArray(data.notes) ? data.notes : []).filter(function (note) { return note && typeof note === "object" && typeof note.text === "string"; });
+    }
+    // A refusal the job sent as {text, values} is shown from that, else from its English sentence.
+    function failureNote(failure, fallback) { return failure && failure.note || failure && failure.message || fallback; }
+    function statusText(key, detail) { return joinSentences([noteText(key), detail && detail !== key ? noteText(detail) : ""].concat(statusNotes.map(noteText))); }
     function held() {
       var editing = context().editing || {};
       if (heldReport && heldReport.token === editing.token) return heldReport.value;
@@ -78,7 +100,7 @@
       note.hidden = !count;
       note.textContent = !count ? "" : translate(count === 1 ? "1 face outline edit made in the Normal face view is kept ({meshes})." :
         "{count} face outline edits made in the Normal face view are kept ({meshes}).").replace("{count}", String(count))
-        .replace("{meshes}", ((value && value.meshes) || []).join(", "));
+        .replace("{meshes}", nameList((value && value.meshes) || []));
     }
     // The save summary of each baked blush: the encoding it was saved with and,
     // when keeping ASTC was requested but not possible, why (server sentences).
@@ -90,8 +112,9 @@
       });
       return notes;
     }
+    // ``key`` is an English sentence or a {text, values} note.
     function say(key, next, detail, notes) {
-      statusKey = key; status = next || status; error = next === "error" ? detail || key : ""; statusNotes = notes || [];
+      statusKey = key; status = next || status; error = next === "error" ? noteSource(detail || key) : ""; statusNotes = notes || [];
       var target = element("viewer-save-status");
       target.textContent = statusText(key, detail);
       target.classList.toggle("viewer-save-error", !!error); refresh();
@@ -268,7 +291,8 @@
       if (key !== modContext) {
         modContext = key; manualModName = false; counterpartPath = ""; lastPackage = null; installedFingerprint = ""; clearThumbnail();
         element("viewer-mod-character").value = ""; element("viewer-mod-variant").value = "";
-        if (element("viewer-mod-include-face")) element("viewer-mod-include-face").checked = false;
+        // A costume ZIP that includes its own face keeps it by default.
+        if (element("viewer-mod-include-face")) element("viewer-mod-include-face").checked = !!metadata.faceIncluded;
         element("viewer-mod-target").open = !!metadata.requiresCounterpart;
       }
       var name = element("viewer-mod-name");
@@ -301,7 +325,7 @@
       if (fullThumbnail) { fullThumbnail.disabled = !authoring || thumbnailMode() !== "3d"; if (fullThumbnail.parentElement) fullThumbnail.parentElement.hidden = thumbnailMode() !== "3d"; }
       var faceOption = element("viewer-mod-include-face"), faceHelp = element("viewer-mod-face-help");
       if (faceOption) { faceOption.disabled = !authoring || !metadata.hasFaceCompanions; if (!metadata.hasFaceCompanions) faceOption.checked = false; }
-      if (faceHelp) faceHelp.textContent = translate(!metadata.hasFaceCompanions ? "Open the original face with this costume to include face and mouth edits." : faceOption && !faceOption.checked ? "Face and mouth edits will not be applied in game. This costume uses the game's original face." : "Only this costume uses the included face. Other costumes and the character's shared face stay unchanged.");
+      if (faceHelp) faceHelp.textContent = translate(!metadata.hasFaceCompanions ? "Open the original face with this costume to include face and mouth edits." : faceOption && !faceOption.checked ? "Face and mouth edits will not be applied in game. This costume uses the game's original face." : metadata.faceIncluded ? "This costume ZIP includes its own face, so it is included by default. Only this costume uses it; other costumes and the character's shared face stay unchanged." : "Only this costume uses the included face. Other costumes and the character's shared face stay unchanged.");
       characters.disabled = !authoring; element("viewer-mod-character-field").hidden = !choices.length;
       element("viewer-mod-variant").disabled = !authoring;
       element("viewer-mod-counterpart").value = counterpartPath ? basename(counterpartPath) : "";
@@ -333,7 +357,7 @@
     }
     function awaitJob(id, signal) {
       return new Promise(function (resolve, reject) {
-        var settled = false, timer = null;
+        var settled = false, timer = null, message = null;
         function close() { if (timer) global.clearTimeout(timer); if (eventSource) eventSource.close(); eventSource = null; signal.removeEventListener("abort", aborted); }
         function fail(message) { if (settled) return; settled = true; close(); reject(new Error(message)); }
         function aborted() { fail("Saving cancelled."); }
@@ -348,10 +372,16 @@
           if (!disposed && item.type === "progress" && progress && Number.isFinite(item.total) && item.total > 0) {
             progress.max = item.total; progress.value = Math.max(0, Math.min(item.total, Number(item.done) || 0));
           }
+          // A refusal sentence with its values, sent just before the job fails.
+          if (item.type === "message" && typeof item.text === "string") message = { text: item.text, values: item.values && typeof item.values === "object" ? item.values : {} };
           if (item.type === "done") {
             settled = true; close();
             if (item.status === "done") resolve(item);
-            else reject(new Error(item.summary || (item.status === "cancelled" ? "Saving cancelled." : "The body edits could not be saved.")));
+            else {
+              var failure = new Error(item.summary || (item.status === "cancelled" ? "Saving cancelled." : "The body edits could not be saved."));
+              if (message && item.status === "error") failure.note = message;
+              reject(failure);
+            }
           }
         };
         eventSource.onerror = function () {
@@ -487,9 +517,9 @@
         if (snapshot.meshState) request.mesh_state = snapshot.meshState;
         var data = await runJob("/api/viewer/edit/export", request, signal);
         rememberResult(data, snapshot); lastPackage = null;
-        say(context().modelId === snapshot.modelId ? "Saved. Open the saved result to verify it." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data));
+        say(context().modelId === snapshot.modelId ? "Saved. Open the saved result to verify it." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data).concat(resultNotes(data)));
       } catch (failure) {
-        if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failure.message || "The body edits could not be saved.", "error");
+        if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failureNote(failure, "The body edits could not be saved."), "error");
       } finally { requestController = null; if (!disposed) setBusy(false); }
     }
     async function saveMod(install) {
@@ -530,7 +560,7 @@
         rememberResult(data, snapshot);
         if (stillCurrent(snapshot)) lastPackage = packaged;
         if (!install) {
-          say(stillCurrent(snapshot) ? "Mod ZIP saved. You can install it with the mod installer." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data));
+          say(stillCurrent(snapshot) ? "Mod ZIP saved. You can install it with the mod installer." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data).concat(resultNotes(data)));
           return;
         }
         // Model switching remains possible while a background job finishes.
@@ -543,9 +573,9 @@
         if (disposed) return;
         if (installed.installed !== true) throw new Error("The mod could not be added to game.");
         installedFingerprint = binding;
-        say(stillCurrent(snapshot) ? "Added to game. Select the new costume in game." : "Added the saved mod to game. The current preview was not changed.", "done");
+        say(stillCurrent(snapshot) ? "Added to game. Select the new costume in game." : "Added the saved mod to game. The current preview was not changed.", "done", "", resultNotes(data));
       } catch (failure) {
-        if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failure.message || "The mod could not be saved.", "error");
+        if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failureNote(failure, "The mod could not be saved."), "error");
       } finally { requestController = null; installing = false; if (!disposed) setBusy(false); }
     }
     async function readRecipe(path) {

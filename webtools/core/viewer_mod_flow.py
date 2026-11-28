@@ -241,6 +241,9 @@ def metadata(context, *, repo_root, cache_root, language="en"):
               "characters": [{"value": str(key), "label": value} for key, value in NAMES.items()]}
     manifest = _manifest_metadata(context, language)
     result["hasFaceCompanions"] = result["hasFaceCompanions"] or bool(manifest.get("has_face"))
+    # The opened costume ZIP declares its own face (a reopened Mod ZIP or
+    # scene): Save mod ZIP keeps it unless the person leaves it out.
+    result["faceIncluded"] = bool(manifest.get("has_face"))
     if manifest.get("name"):
         result["nameBase"] = manifest["name"][:120]
     if type(manifest.get("owner")) is int and manifest["owner"] in NAMES:
@@ -530,10 +533,22 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
             pair_state["outlines"] = [row for row in pair_state["outlines"] if int(row["id"].split(":", 1)[0]) not in automatic_faces]
         if automatic_faces and pair_state.get("textures"):
             pair_state["textures"] = [row for row in pair_state["textures"] if row["texture"]["source"] not in automatic_faces]
-        paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, pair_state, pair=pair, job=job)
-                  if model_edits.has_changes(pair_state) or context.get("held_counterpart")
-                  else {"result": result, "pair": pair, "summary": []})
+        try:
+            paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, pair_state, pair=pair, job=job)
+                      if model_edits.has_changes(pair_state) or context.get("held_counterpart")
+                      else {"result": result, "pair": pair, "summary": []})
+        except viewer_mod_pair_edits.PairEditError as error:
+            # The page shows this sentence translated with the part's name
+            # (viewer-persistence.js awaitJob).
+            emit = getattr(job, "emit", None)
+            if callable(emit):
+                emit({"type": "message", **error.note})
+            raise
         result, pair = paired["result"], paired["pair"]
+        kept = list(dict.fromkeys(name for row in paired.get("summary", []) for name in (row.get("kept") or {}).get("names", [])))
+        if kept:
+            # Parts only this costume variant has keep their edits here (save status note).
+            result["notes"] = [{"text": viewer_mod_pair_edits.SELECTED_ONLY, "values": {"names": kept}}]
         # Counterpart mapping may rewrite the complete archive. Bind derived
         # runtime proof to those final bytes, never to the pre-pair ZIP hash.
         from . import viewer_physics_runtime
