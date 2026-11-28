@@ -180,6 +180,66 @@ class PhysicsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unique matching"):
             _map_state(context, state, 0, edits._inspect(self.raw), ambiguous, edits._inspect(self.raw))
 
+    def test_rina_other_variant_keeps_physics_of_a_bone_it_does_not_have(self):
+        import UnityPy
+        from webtools.core import viewer_mod_pair_edits as paired
+        env = UnityPy.load(self.raw)
+        for obj in env.objects:
+            if obj.type.name == "GameObject":
+                tree = obj.read_typetree()
+                if tree.get("m_Name") == self.bone["name"]:
+                    tree["m_Name"] = "OtherVariantOnly"; obj.save_typetree(tree)
+        other_raw = env.file.save()
+        other = self.base / "other.unity"; other.write_bytes(other_raw)
+        prepared = model_viewer.prepare([str(other)], rigged=True, face_context={"enabled": False, "allow_download": False})
+        edits.register_session(prepared["id"], [str(other)], prepared["rig"])
+        context, target = edits.mod_source_context(self.token), edits.mod_source_context(prepared["id"])
+        state = edits.validate_state(self.token, self.state({"id": self.bone["id"], "values": {"dragForce": .6}}))
+        kept = {"physics": [], "outlines": [], "names": []}
+        mapped, proof = paired._map_state(context, state, 0, edits._inspect(self.raw), target, edits._inspect(other_raw), kept=kept)
+        self.assertNotIn("physics", mapped)
+        self.assertEqual((kept, proof), ({"physics": [self.bone["id"]], "outlines": [], "names": [self.bone["name"]]}, []))
+        # Without the Rina variant allowance the missing bone is refused, by name.
+        with self.assertRaises(paired.PairEditError) as refused:
+            paired._map_state(context, state, 0, edits._inspect(self.raw), target, edits._inspect(other_raw))
+        self.assertEqual((refused.exception.template, refused.exception.name), (paired.MISSING_PHYSICS, self.bone["name"]))
+        # A counterpart that has the bone but not one matching component stays refused.
+        ambiguous = copy.deepcopy(context)
+        ambiguous["physics"]["components"].append(copy.deepcopy(self.bone))
+        with self.assertRaisesRegex(ValueError, "unique matching"):
+            paired._map_state(context, state, 0, edits._inspect(self.raw), ambiguous, edits._inspect(self.raw),
+                              kept={"physics": [], "outlines": [], "names": []})
+
+    def test_rina_other_variant_keeps_physics_only_of_a_bone_it_lacks_entirely(self):
+        from webtools.core import viewer_mod_pair_edits as paired
+        context = edits.mod_source_context(self.token)
+        state = edits.validate_state(self.token, self.state({"id": self.bone["id"], "values": {"dragForce": .6}}))
+        key = paired._key(self.bone)
+        source = edits._inspect(self.raw)
+        def refused(source_info, target_info, target_context):
+            with self.assertRaises(paired.PairEditError) as caught:
+                paired._map_state(context, state, 0, source_info, target_context, target_info,
+                                  kept={"physics": [], "outlines": [], "names": []})
+            self.assertEqual((caught.exception.template, caught.exception.name), (paired.MISSING_PHYSICS, self.bone["name"]))
+        without = copy.deepcopy(context)
+        without["physics"]["components"] = [row for row in without["physics"]["components"] if row["id"] != self.bone["id"]]
+        # The bone is there under another parent, without a matching component.
+        variant = lambda **fields: {**source, **{name: {**source[name], **values} for name, values in fields.items()}}
+        moved = variant(names={source["parents"][key]: "OtherParent"})
+        refused(source, moved, without)
+        # The bone is gone, but a component of that name is still there.
+        renamed = variant(names={key: "OtherVariantOnly"})
+        refused(source, renamed, context)
+        # The selected rig itself has two bones on that path.
+        extra = (key[0], 999999)
+        twin = variant(transforms={extra: source["transforms"][key]}, names={extra: source["names"][key]},
+                       parents={extra: source["parents"][key]})
+        refused(twin, renamed, without)
+        # Only a bone the other variant lacks entirely keeps its row here.
+        kept = {"physics": [], "outlines": [], "names": []}
+        paired._map_state(context, state, 0, source, without, renamed, kept=kept)
+        self.assertEqual(kept["physics"], [self.bone["id"]])
+
     def test_mesh_delete_retains_simultaneous_physics_edits(self):
         from webtools.core import viewer_mesh_tools as mesh
         ident = mesh.inspect(self.token)["meshes"][0]["mesh"]

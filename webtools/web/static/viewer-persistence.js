@@ -7,7 +7,9 @@
   function dirname(path) { var parts = String(path).replace(/\\/g, "/").split("/"); parts.pop(); return parts.join("/") || "/"; }
   function paths(value) { return Array.isArray(value) ? value.filter(function (path) { return typeof path === "string" && path && path.length < 4096; }) : []; }
   function samePaths(left, right) { return JSON.stringify(left || []) === JSON.stringify(right || []); }
-  function editCount(state) { return (state.edits || []).length + (state.physics || []).length + (state.outlines || []).length + (state.textures || []).length + (state.accessoryUnclip ? 1 : 0); }
+  function editCount(state, held) { return (state.edits || []).length + (state.physics || []).length + (state.outlines || []).length + (state.textures || []).length + (state.accessoryUnclip ? 1 : 0) + (held ? held.length : 0); }
+  // The rows of a held summary ({count, meshes, rows}) the server reports.
+  function heldRows(value) { return value && Array.isArray(value.rows) ? value.rows : []; }
   function create(options) {
     var translate = options.translate, disposed = false, busy = false, installing = false, status = "idle", statusKey = "Open a model to save model edits.", error = "";
     var result = null, resultModelId = "", resultSourcePaths = [], sourceInspection = null, authoringInspection = null, reviewingSaved = false, jobId = "", eventSource = null, requestController = null;
@@ -18,6 +20,9 @@
     var resultBodyState = null, resultMeshState = null;
     // English sentences shown after the save status (the baked-blush save mode); translated on display.
     var statusNotes = [];
+    // Face outline rows a Rina board view holds (reported by the server on
+    // open and on each recipe restore), for the editing token they belong to.
+    var heldReport = null;
     var meshContext = null, meshRevision = null, meshOwner = null, meshSnapshot = null;
     var progress = element("viewer-save-progress"), cancel = element("viewer-save-cancel");
     function context() { return options.context() || {}; }
@@ -56,7 +61,62 @@
     }
     // Sentences are joined with a space, except after a full-width stop (ja).
     function joinSentences(parts) { return parts.reduce(function (text, part) { return !part ? text : !text ? part : text + (/[。！？]$/.test(text) ? "" : " ") + part; }, ""); }
-    function statusText(key, detail) { return joinSentences([translate(key), detail && detail !== key ? translate(detail) : ""].concat(statusNotes.map(function (note) { return translate(note); }))); }
+    // A server refusal that names one part is a fixed sentence ending in
+    // ": {name}" (viewer_mod_pair_edits.NAMED_REFUSALS): translate the
+    // sentence and keep the name. Exact sentences translate as before.
+    // The Elichika installer's own summary (adminui installers): name its usual causes.
+    var INSTALLER_EXIT = /^costume installer failed for .+ \(exit ([^()]*)\)$/;
+    function translateMessage(text) {
+      text = String(text || "");
+      var exact = translate(text);
+      if (exact !== text) return exact;
+      var exit = INSTALLER_EXIT.exec(text);
+      if (exit) return noteText({ text: "The costume installer stopped with exit code {code}. Usual causes are missing Elichika settings (config.json) or a Mod ZIP the installer could not find in its costume folder; the server console shows the installer's message.", values: { code: exit[1] } });
+      for (var at = text.indexOf(": "); at >= 0; at = text.indexOf(": ", at + 1)) {
+        var key = text.slice(0, at) + ": {name}", sentence = translate(key);
+        if (sentence !== key) return sentence.split("{name}").join(text.slice(at + 2));
+      }
+      return text;
+    }
+    // Part names inside a sentence, with this language's list separator.
+    function nameList(values) { return values.map(String).join(translate(", ")); }
+    // A note is an English sentence, or {text, values} for a sentence with values
+    // (a list value is a list of part names).
+    function noteText(note) {
+      if (note && typeof note === "object") return translate(String(note.text || "")).replace(/\{(\w+)\}/g, function (whole, name) {
+        if (!note.values || !Object.prototype.hasOwnProperty.call(note.values, name)) return whole;
+        return Array.isArray(note.values[name]) ? nameList(note.values[name]) : String(note.values[name]);
+      });
+      return translateMessage(note);
+    }
+    // The English text of a note, for the error state.
+    function noteSource(note) {
+      if (!note || typeof note !== "object") return String(note || "");
+      return String(note.text || "").replace(/\{(\w+)\}/g, function (whole, name) {
+        var value = note.values && Object.prototype.hasOwnProperty.call(note.values, name) ? note.values[name] : undefined;
+        return value === undefined ? whole : Array.isArray(value) ? value.join(", ") : String(value);
+      });
+    }
+    // Server notes ({text, values}) of a save result, e.g. parts kept on this variant.
+    function resultNotes(data) {
+      return (data && Array.isArray(data.notes) ? data.notes : []).filter(function (note) { return note && typeof note === "object" && typeof note.text === "string"; });
+    }
+    // A refusal the job sent as {text, values} is shown from that, else from its English sentence.
+    function failureNote(failure, fallback) { return failure && failure.note || failure && failure.message || fallback; }
+    function statusText(key, detail) { return joinSentences([noteText(key), detail && detail !== key ? noteText(detail) : ""].concat(statusNotes.map(noteText))); }
+    function held() {
+      var editing = context().editing || {};
+      if (heldReport && heldReport.token === editing.token) return heldReport.value;
+      return editing.heldFaceOutlines || null;
+    }
+    function renderHeldNote() {
+      var note = element("viewer-save-held-note"), value = held(), count = heldRows(value).length;
+      if (!note) return;
+      note.hidden = !count;
+      note.textContent = !count ? "" : translate(count === 1 ? "1 face outline edit made in the Normal face view is kept ({meshes})." :
+        "{count} face outline edits made in the Normal face view are kept ({meshes}).").replace("{count}", String(count))
+        .replace("{meshes}", nameList((value && value.meshes) || []));
+    }
     // The save summary of each baked blush: the encoding it was saved with and,
     // when keeping ASTC was requested but not possible, why (server sentences).
     function textureSaveNotes(data) {
@@ -67,8 +127,9 @@
       });
       return notes;
     }
+    // ``key`` is an English sentence or a {text, values} note.
     function say(key, next, detail, notes) {
-      statusKey = key; status = next || status; error = next === "error" ? detail || key : ""; statusNotes = notes || [];
+      statusKey = key; status = next || status; error = next === "error" ? noteSource(detail || key) : ""; statusNotes = notes || [];
       var target = element("viewer-save-status");
       target.textContent = statusText(key, detail);
       target.classList.toggle("viewer-save-error", !!error); refresh();
@@ -108,16 +169,18 @@
       var mesh = editingMeshState(), unresolvedMesh = c.pendingMeshSelection || c.pendingMeshEdits && !mesh;
       var unresolvedTexture = !!(c.textureTools && c.textureTools.hasPending && c.textureTools.hasPending());
       var ready = !!(c.current && metadata.available && metadata.token && c.rig), authoring = ready && !busy && !reviewingSaved && !unresolvedMesh && !unresolvedTexture;
-      var authored = editingState(), lightweight = Object.assign({}, authored);
+      var authored = editingState(), lightweight = Object.assign({}, authored), heldFace = heldRows(held());
       // Pixel payloads are immutable cached strings. A revision is enough for
       // frequent UI updates; serialize PNGs only for a concrete save operation.
       if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256, blush: row.blush || null, operations: row.operations || null }; });
-      var fingerprint = JSON.stringify([lightweight, mesh, c.textureTools && c.textureTools.getRevision ? c.textureTools.getRevision() : 0]);
+      // Held face rows are saved too: a restore that changes them is an edit.
+      var fingerprint = JSON.stringify([lightweight, mesh, c.textureTools && c.textureTools.getRevision ? c.textureTools.getRevision() : 0, heldFace]);
+      renderHeldNote();
       var accessories = c.accessories || {}, accessoryBlocked = !!authored.accessoryUnclip && (accessories.pending || accessories.error);
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) { lastPackage = null; clearThumbnail(); }
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint && !busy && ["done", "restored", "error"].indexOf(status) >= 0) { status = "ready"; error = ""; }
       lastAuthoringFingerprint = fingerprint;
-      element("viewer-save").disabled = !authoring || (!editCount(authored) && !mesh && !(c.transplantEdits || []).length && !metadata.allowEmptySceneReset && !(metadata.modPackaging || {}).derivedOwner) || accessoryBlocked || !!(authored.unsupported && authored.unsupported.length);
+      element("viewer-save").disabled = !authoring || (!editCount(authored, heldFace) && !mesh && !(c.transplantEdits || []).length && !metadata.allowEmptySceneReset && !(metadata.modPackaging || {}).derivedOwner) || accessoryBlocked || !!(authored.unsupported && authored.unsupported.length);
       element("viewer-save").title = authored.unsupported && authored.unsupported.length ? translate(authored.unsupported[0]) : accessoryBlocked ? accessories.errorText || translate(accessories.error || "Wait for the accessory check before saving.") : "";
       refreshModForm(c, rigState, authored, ready && !busy && !unresolvedMesh && !unresolvedTexture);
       element("viewer-recipe-open").disabled = !authoring;
@@ -159,7 +222,7 @@
       if (!busy && !error && ["idle", "ready", "reviewing"].indexOf(status) >= 0) {
         var key = reviewingSaved ? "Reviewing the saved copy. Re-edit from original to continue." : unresolvedTexture ? "Apply or cancel the texture preview before saving." : unresolvedMesh ? "Apply selected face deletions before saving." : !ready ? (c.current ? "Model saving is unavailable for this model." : "Open a model to save model edits.") : authored.unsupported && authored.unsupported.length ? authored.unsupported[0] : accessoryBlocked ? accessories.errorText || accessories.error || "Wait for the accessory check before saving." : "Model changes";
         statusKey = key; status = reviewingSaved ? "reviewing" : ready ? "ready" : "idle"; statusNotes = [];
-        element("viewer-save-status").textContent = translate(key) + (key === "Model changes" ? ": " + (editCount(authored) + (mesh ? mesh.meshes.length : 0) + (c.transplantEdits || []).length) + (authored.accessoryUnclip ? " · " + translate("Accessory Un-clip") : "") : "");
+        element("viewer-save-status").textContent = translate(key) + (key === "Model changes" ? ": " + (editCount(authored, heldFace) + (mesh ? mesh.meshes.length : 0) + (c.transplantEdits || []).length) + (authored.accessoryUnclip ? " · " + translate("Accessory Un-clip") : "") : "");
       }
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
     }
@@ -185,7 +248,7 @@
       // The texture rows themselves (their PNGs) are not kept: textures names them.
       return { c: { editing: c.editing, loadedPaths: (c.loadedPaths || []).slice(), transplantEdits: (c.transplantEdits || []).slice() }, rigState: rigState,
         authored: { edits: authored.edits || [], outlines: authored.outlines, physics: authored.physics, accessoryUnclip: authored.accessoryUnclip },
-        textures: textureOperations(c, authored), mesh: editingMeshState() };
+        textures: textureOperations(c, authored), mesh: editingMeshState(), heldOutlines: heldRows(held()).length > 0 };
     }
     // The page language ("en", "ko" or "ja") picks the costume name base.
     function pageLanguage() { var code = options.language ? options.language() : (document.documentElement.lang || "en"); code = String(code || "en").split("-")[0]; return ["en", "ko", "ja"].indexOf(code) >= 0 ? code : "en"; }
@@ -295,7 +358,8 @@
         if (mesh.meshes.some(function (row) { return row.weights && row.weights.length; })) kinds.push([K("Skin weights")]);
       }
       TEXTURE_OPERATIONS.forEach(function (pair) { if (textures.indexOf(pair[0]) >= 0) kinds.push([K(pair[1])]); });
-      if (authored.outlines && authored.outlines.length) kinds.push([K("Outlines")]);
+      // Held face outline rows (a Rina board view) are saved as outline edits.
+      if (authored.outlines && authored.outlines.length || naming.heldOutlines) kinds.push([K("Outlines")]);
       if (authored.physics && authored.physics.length) kinds.push([K("Physics")]);
       if (authored.accessoryUnclip) kinds.push([K("Accessory Un-clip")]);
       return kinds.concat(details);
@@ -309,7 +373,8 @@
       if (key !== modContext) {
         modContext = key; manualModName = false; counterpartPath = ""; lastPackage = null; installedFingerprint = ""; clearThumbnail();
         element("viewer-mod-character").value = ""; element("viewer-mod-variant").value = "";
-        if (element("viewer-mod-include-face")) element("viewer-mod-include-face").checked = false;
+        // A costume ZIP that includes its own face keeps it by default.
+        if (element("viewer-mod-include-face")) element("viewer-mod-include-face").checked = !!metadata.faceIncluded;
         element("viewer-mod-target").open = !!metadata.requiresCounterpart;
         // A typed name stays with the same edits when their saved copy or
         // their original is opened from this panel.
@@ -351,7 +416,7 @@
       if (fullThumbnail) { fullThumbnail.disabled = !authoring || thumbnailMode() !== "3d"; if (fullThumbnail.parentElement) fullThumbnail.parentElement.hidden = thumbnailMode() !== "3d"; }
       var faceOption = element("viewer-mod-include-face"), faceHelp = element("viewer-mod-face-help");
       if (faceOption) { faceOption.disabled = !authoring || !metadata.hasFaceCompanions; if (!metadata.hasFaceCompanions) faceOption.checked = false; }
-      if (faceHelp) faceHelp.textContent = translate(!metadata.hasFaceCompanions ? "Open the original face with this costume to include face and mouth edits." : faceOption && !faceOption.checked ? "Face and mouth edits will not be applied in game. This costume uses the game's original face." : "Only this costume uses the included face. Other costumes and the character's shared face stay unchanged.");
+      if (faceHelp) faceHelp.textContent = translate(!metadata.hasFaceCompanions ? "Open the original face with this costume to include face and mouth edits." : faceOption && !faceOption.checked ? "Face and mouth edits will not be applied in game. This costume uses the game's original face." : metadata.faceIncluded ? "This costume ZIP includes its own face, so it is included by default. Only this costume uses it; other costumes and the character's shared face stay unchanged." : "Only this costume uses the included face. Other costumes and the character's shared face stay unchanged.");
       characters.disabled = !authoring; element("viewer-mod-character-field").hidden = !choices.length;
       element("viewer-mod-variant").disabled = !authoring;
       element("viewer-mod-counterpart").value = counterpartPath ? fileLabel(counterpartPath) : "";
@@ -367,7 +432,7 @@
       var body = Object.assign({}, authored); delete body.unsupported;
       var comparisonKey = JSON.stringify([key, lastAuthoringFingerprint, modOptions()]);
       if (comparisonKey !== installedComparisonKey || installedComparisonValue !== installedFingerprint) {
-        alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions()), JSON.stringify(editingMeshState())]);
+        alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions()), JSON.stringify(editingMeshState()), JSON.stringify(heldRows(held()))]);
         installedComparisonKey = comparisonKey; installedComparisonValue = installedFingerprint;
       }
       if (alreadyAdded) {
@@ -383,7 +448,7 @@
     }
     function awaitJob(id, signal) {
       return new Promise(function (resolve, reject) {
-        var settled = false, timer = null;
+        var settled = false, timer = null, message = null;
         function close() { if (timer) global.clearTimeout(timer); if (eventSource) eventSource.close(); eventSource = null; signal.removeEventListener("abort", aborted); }
         function fail(message) { if (settled) return; settled = true; close(); reject(new Error(message)); }
         function aborted() { fail("Saving cancelled."); }
@@ -398,10 +463,16 @@
           if (!disposed && item.type === "progress" && progress && Number.isFinite(item.total) && item.total > 0) {
             progress.max = item.total; progress.value = Math.max(0, Math.min(item.total, Number(item.done) || 0));
           }
+          // A refusal sentence with its values, sent just before the job fails.
+          if (item.type === "message" && typeof item.text === "string") message = { text: item.text, values: item.values && typeof item.values === "object" ? item.values : {} };
           if (item.type === "done") {
             settled = true; close();
             if (item.status === "done") resolve(item);
-            else reject(new Error(item.summary || (item.status === "cancelled" ? "Saving cancelled." : "The body edits could not be saved.")));
+            else {
+              var failure = new Error(item.summary || (item.status === "cancelled" ? "Saving cancelled." : "The body edits could not be saved."));
+              if (message && item.status === "error") failure.note = message;
+              reject(failure);
+            }
           }
         };
         eventSource.onerror = function () {
@@ -489,9 +560,10 @@
       if (c.textureTools && c.textureTools.hasPending && c.textureTools.hasPending()) throw new Error("Apply or cancel the texture preview before saving.");
       if (authored.unsupported && authored.unsupported.length) throw new Error(authored.unsupported[0]);
       if (authored.accessoryUnclip && c.accessories && (c.accessories.pending || c.accessories.error)) throw new Error(c.accessories.error || "Wait for the accessory check before saving.");
-      if (!forPackage && !editCount(authored) && !mesh && !(c.transplantEdits || []).length && !(c.editing.modPackaging || {}).derivedOwner && !c.editing.allowEmptySceneReset) throw new Error("Change a model value before saving.");
+      var heldFace = heldRows(held());
+      if (!forPackage && !editCount(authored, heldFace) && !mesh && !(c.transplantEdits || []).length && !(c.editing.modPackaging || {}).derivedOwner && !c.editing.allowEmptySceneReset) throw new Error("Change a model value before saving.");
       var body = JSON.parse(JSON.stringify(authored)); delete body.unsupported;
-      return { body: body, meshState: mesh ? JSON.parse(JSON.stringify(mesh)) : null, rawMesh: JSON.stringify(mesh), reviewingSaved: reviewingSaved, modelId: c.modelId, token: c.editing.token, paths: (c.loadedPaths || []).slice(),
+      return { body: body, meshState: mesh ? JSON.parse(JSON.stringify(mesh)) : null, rawMesh: JSON.stringify(mesh), rawHeld: JSON.stringify(heldFace), reviewingSaved: reviewingSaved, modelId: c.modelId, token: c.editing.token, paths: (c.loadedPaths || []).slice(),
         contextKey: modContextKey(c), canonical: canonicalBody(body, c.editing), rawBody: JSON.stringify(body),
         naming: namingInputs(c, c.rig && c.rig.getState ? c.rig.getState() : {}, authored),
         inspection: options.captureInspection ? options.captureInspection() : null };
@@ -502,6 +574,7 @@
       return c.current && reviewingSaved === snapshot.reviewingSaved && modContextKey(c) === snapshot.contextKey &&
         !(authored.unsupported || []).length && JSON.stringify(body) === snapshot.rawBody &&
         JSON.stringify(editingMeshState()) === snapshot.rawMesh &&
+        JSON.stringify(heldRows(held())) === snapshot.rawHeld &&
         canonicalBody(authored, c.editing) === snapshot.canonical &&
         (!snapshot.modOptions || JSON.stringify(modOptions()) === snapshot.modOptions);
     }
@@ -549,9 +622,9 @@
         if (snapshot.meshState) request.mesh_state = snapshot.meshState;
         var data = await runJob("/api/viewer/edit/export", request, signal);
         rememberResult(data, snapshot); lastPackage = null;
-        say(context().modelId === snapshot.modelId ? "Saved. Open the saved result to verify it." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data));
+        say(context().modelId === snapshot.modelId ? "Saved. Open the saved result to verify it." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data).concat(resultNotes(data)));
       } catch (failure) {
-        if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failure.message || "The body edits could not be saved.", "error");
+        if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failureNote(failure, "The body edits could not be saved."), "error");
       } finally { requestController = null; if (!disposed) setBusy(false); }
     }
     async function saveMod(install) {
@@ -562,7 +635,7 @@
         if (!name || name.length > 120) throw new Error("Enter a mod name of 1 to 120 characters.");
       } catch (failure) { say(failure.message, "error"); return; }
       snapshot.modOptions = JSON.stringify(parameters);
-      var binding = JSON.stringify([snapshot.contextKey, snapshot.rawBody, snapshot.modOptions, snapshot.rawMesh]);
+      var binding = JSON.stringify([snapshot.contextKey, snapshot.rawBody, snapshot.modOptions, snapshot.rawMesh, snapshot.rawHeld]);
       if (install && installedFingerprint === binding) { say("Already added to game. Change the edits or mod name to add another copy.", "done"); return; }
       var body = Object.assign({ token: snapshot.token, state: snapshot.body }, parameters);
       if (snapshot.meshState) body.mesh_state = snapshot.meshState;
@@ -598,7 +671,7 @@
         rememberResult(data, snapshot);
         if (stillCurrent(snapshot)) lastPackage = packaged;
         if (!install) {
-          say(stillCurrent(snapshot) ? "Mod ZIP saved. You can install it with the mod installer." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data));
+          say(stillCurrent(snapshot) ? "Mod ZIP saved. You can install it with the mod installer." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data).concat(resultNotes(data)));
           return;
         }
         // Model switching remains possible while a background job finishes.
@@ -620,9 +693,9 @@
             if (!disposed) renderOutputs();
           }
         }
-        say(stillCurrent(snapshot) ? "Added to game. Select the new costume in game." : "Added the saved mod to game. The current preview was not changed.", "done");
+        say(stillCurrent(snapshot) ? "Added to game. Select the new costume in game." : "Added the saved mod to game. The current preview was not changed.", "done", "", resultNotes(data));
       } catch (failure) {
-        if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failure.message || "The mod could not be saved.", "error");
+        if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failureNote(failure, "The mod could not be saved."), "error");
       } finally { requestController = null; installing = false; if (!disposed) setBusy(false); }
     }
     async function readRecipe(path) {
@@ -639,7 +712,10 @@
     async function restoreRecipe(recipe) {
       var c = context();
       if (!c.current || !c.editing || !c.editing.token || reviewingSaved) throw new Error("Open the original model before loading its recipe.");
-      var modelId = c.modelId, response = await jsonRequest("/api/viewer/edit/restore", { token: c.editing.token, recipe: recipe });
+      var modelId = c.modelId, token = c.editing.token, response = await jsonRequest("/api/viewer/edit/restore", { token: token, recipe: recipe });
+      // The server now holds what this restore left held, even if applying the
+      // state below fails: show exactly that.
+      if (response.heldFaceOutlines) heldReport = { token: token, value: response.heldFaceOutlines };
       if (!context().current || context().modelId !== modelId) throw new Error("The model changed while its recipe was loading. Try again.");
       if (!response.state) throw new Error("The model edit recipe is invalid.");
       var previous = editingState();
@@ -657,7 +733,8 @@
         throw error;
       }
       if (!context().current || context().modelId !== modelId) throw new Error("The model changed while its recipe was loading. Try again.");
-      say("Edit recipe restored from the original model.", "restored");
+      var notice = response.notice && typeof response.notice === "object" && typeof response.notice.text === "string" ? response.notice : null;
+      say("Edit recipe restored from the original model.", "restored", "", notice ? [notice] : []);
     }
     function pickRecipe() {
       if (busy || disposed || reviewingSaved) return;
@@ -672,7 +749,8 @@
     async function openSaved() {
       if (busy || !previewPaths.length) return;
       var c = context(), current = editingState();
-      var ownOriginal = samePaths(c.loadedPaths, resultSourcePaths) || samePaths(c.loadedPaths, originalPaths);
+      var ownOriginal = samePaths(c.loadedPaths, resultSourcePaths) || samePaths(c.loadedPaths, originalPaths) ||
+        !!(result && samePaths(c.loadedPaths, paths(result.reedit_paths)));
       var mesh = editingMeshState();
       if (!reviewingSaved && (editCount(current) || mesh) && (!ownOriginal || !result || !result.recipe ||
           canonicalBody(current, c.editing) !== canonicalBody(resultBodyState || result.recipe.state || {}, c.editing) ||
@@ -692,12 +770,21 @@
     }
     // Remembers a typed Mod name for the model about to open (refreshModForm takes it).
     function carryModName(paths) { carriedModName = manualModName ? { name: element("viewer-mod-name").value, paths: paths.slice() } : null; }
+    // The originals the edited preview selected. A face the preview added
+    // automatically is reopened the same way, as the body's face companion
+    // found beside it, never as a second selected model (one Mod ZIP holds
+    // one costume). Older results list every original.
+    function reeditSelection() {
+      var selected = paths(result.reedit_paths).filter(function (path) { return originalPaths.indexOf(path) >= 0; });
+      if (!selected.length) return { paths: originalPaths.slice(), variants: result.original_variants, autoFace: undefined };
+      return { paths: selected, variants: result.reedit_variants || {}, autoFace: result.reedit_auto_face === true ? true : undefined };
+    }
     async function reeditOriginal() {
       if (busy || !result || !result.recipe || !originalPaths.length) return;
-      var recipe = result.recipe, originals = originalPaths.slice();
+      var recipe = result.recipe, selection = reeditSelection(), originals = selection.paths;
       carryModName(originals); setBusy(true); say("Opening the original model and edit recipe…", "saving");
       try {
-        await options.openFiles(originals, result.original_variants, authoringInspection || sourceInspection);
+        await options.openFiles(originals, selection.variants, authoringInspection || sourceInspection, { autoFace: selection.autoFace });
         reviewingSaved = false;
         if (!samePaths(context().loadedPaths, originals)) throw new Error("The original model could not be opened.");
         await restoreRecipe(recipe);

@@ -352,6 +352,42 @@ This lookup uses the costume's character, across the installed GL/JP and
 Android/iOS catalogs; it is not limited to one member. Users do not need to
 select or upload facial files. Existing game downloads are reused before CDN
 downloads, and subsequent previews reuse the private cache.
+The face that the body's own BodyPartManager names is preferred: the selected
+game costume's own face (an installed costume's private face), a cached
+original, a face saved next to the body file, and the bundled extractor's
+output in a library folder are used at once. Extractor output is a file with
+the extractor's own name (`chNNNN_facedynamic.unity` or `chNNNN_face.unity`) at
+the top of a library folder or in its `3d_model` or `extracted/3d_model`
+folder, or any member model in one of those `3d_model` folders that the
+folder's `_extract_manifest.csv` lists with its size, or whose size is that of
+one of the character's catalog faces. A library made by the extractor therefore
+needs no download when it holds that face. The trade-off: an edited copy saved
+there under such a name, or with the stock size, is trusted as the original,
+as in earlier versions. The face found anywhere else in the library can be an
+edited copy of a stock face with the same Unity names, so the catalog's own
+copy (a local pack first) is tried first; after the first answer from the
+asset server (or none), the library face is used.
+Otherwise the earlier order is kept: local faces, then catalog downloads in
+the earlier order, each with the whole face time while no other face of the
+character is at hand (the selected game costume's own faces, when not local,
+are downloaded first and always measured as below, so they cannot hold up the
+earlier order). Once one is, a further download is made only if it may
+still be the named face, skipping the default costume's body and another
+region's copy of an original already checked. It is measured for a second and
+continues only while its rate brings it in 3 seconds before the face time
+ends; one that has sent nothing in that second, is too slow or meets an asset
+server that does not answer ends these downloads, and the face at hand (the
+earlier order's choice) is used. A download that keeps that pace but turns out
+not to be the named face still costs its time. Each pack is requested at most
+once per preview. An original the viewer downloaded keeps
+the place of a download in later previews of a body that names its face, and
+one downloaded without being used keeps that place for every body until it is
+used, so the face cache does not change which face is chosen.
+Face, Mouth and Eye outlines
+are editable only with the face the body names. Another face of the same character is shown as a fallback, and its
+face meshes are listed as not editable. To reopen a copied body alone, copy
+the face saved beside it as well; Game assets also finds an installed
+costume's private face.
 Original LZMA-compressed facial bundles are decoded with bounded memory; manual
 repacking is unnecessary and the source files remain unchanged.
 
@@ -528,7 +564,16 @@ repacking is unnecessary and the source files remain unchanged.
   Rina mod packages apply the same source-relative body changes to both board
   and unmasked models, including when you edit only one variant. Each variant
   uses its own original transforms and validated editing session. Missing or mismatched counterpart data prevents
-  packaging instead of producing an incomplete installable costume.
+  packaging instead of producing an incomplete installable costume. Outline
+  and physics edits of a part the other variant does not have at all (the
+  board's Mask, HeadSet, eye_* and mouth_* meshes, or the Normal face's hair
+  swing bones) stay on the edited variant, and the other variant keeps its
+  original model; the save status names those parts. A reopened costume keeps
+  them in the other view too: a Mod ZIP made there writes them back unchanged,
+  together with the other variant's own texture edits. A part the other variant
+  has but cannot be matched exactly, a Node edit of a bone it lacks, and any
+  part missing from the same variant's Android/iOS alternative are still
+  refused. These refusals name the part after a fixed, translated sentence.
   Rina **BreastSize/HipsSize Node Scaling** packages also include a separate
   board model for Home/outfit preview, alongside the two MV models. The MV
   body edits are not applied again. Supplied Android/iOS versions each keep
@@ -536,6 +581,23 @@ repacking is unnecessary and the source files remain unchanged.
   source-bound recipes and exact source ZIP metadata stay inside the package
   for later editing, so reopening, changing Node to Mesh, or resetting starts
   from the original shape. Other Node controls retain their existing behavior.
+  A Rina costume reopened with **Rina face: Rina board** draws the board over
+  the face, so its face outlines are not editable there. Its saved face
+  outline edits are kept: the costume's own **Normal face** body proves that
+  face, and **Save** and the Mod ZIP write those edits unchanged and list them
+  in the saved recipe. The save panel says how many face outline edits are
+  kept, and they count in **Model changes**, the suggested mod name and the
+  "already added" check. Loading a recipe keeps them unless that recipe sets
+  the face itself (it has outline, texture or other rows for that face); then
+  its own face rows replace them and the status says how many were released
+  and which kind of rows did it. An outline edit of only the face keeps both
+  board and unmasked bodies original.
+  A costume ZIP that already includes its face (a reopened Mod ZIP or Rina
+  scene costume, or its **Re-edit from original**) has **Include face and
+  mouth edits for this costume** on by default, so **Save mod ZIP** keeps that
+  face. When its body uses that face, turning the option off is refused with a
+  note to tick it again. A face the preview completed automatically stays off
+  by default, as before.
   Previously installed Rina mods are not rewritten automatically. Reopen the
   original ZIP or saved edited source, choose **Save mod ZIP** or **Add to game**,
   then select the newly installed costume. Old app versions cannot install
@@ -543,7 +605,17 @@ repacking is unnecessary and the source files remain unchanged.
 - **Open saved result** inspects the actual serialized output. Persistent body
   controls stay locked while inspecting it; pose, motion, camera and expressions
   remain available. **Re-edit from original** restores the saved editing recipe
-  on its preserved original files. Save newer body changes before inspecting an
+  on its preserved original files. It reopens the originals you selected; a
+  face the preview completed automatically is completed again from its saved
+  copy beside the body, so **Save mod ZIP** and **Add to game** still package
+  one costume with its face: the save names that face beside the body
+  (`originals/viewer-companions.json`), so exactly that copy is completed
+  first, not another face with the same Unity names. Re-editing a save of a
+  reopened Rina scene costume (either face view) keeps it a scene costume with
+  its name, source, face edits and the other variant's own edits, also after
+  the app restarts: the save keeps the scene beside its originals copy
+  (`originals/viewer-scene.json`, bound to that file's name and bytes). The same
+  original opened without that file beside it is a new costume. Save newer body changes before inspecting an
   older result so returning to its recipe cannot discard unsaved edits.
 - **Animation priority** shows the loaded clip's own track values after node
   adjustments, including constant scale tracks. It helps expose competing keys;

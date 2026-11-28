@@ -17,8 +17,15 @@ import urllib.request
 from urllib.parse import quote
 
 import webtools.core
+# Import these with the real model_edits before setUp swaps it in sys.modules:
+# a first import inside a test would bind them to the mock for every later test.
+from webtools.core import viewer_mod_pair_edits, viewer_scene_roles  # noqa: F401
 from webtools.jobs import MANAGER
 from webtools.server import Handler
+
+
+# A reopened scene's readable names (viewer_mod_flow.scene_name_bases).
+SCENE_NAMES = {"en": "209 Rina Tennoji · Scene name", "ko": "209 텐노지 리나 · Scene name", "ja": "209 天王寺 璃奈 · Scene name"}
 
 
 class ViewerEditRouteTests(unittest.TestCase):
@@ -226,6 +233,76 @@ class ViewerEditRouteTests(unittest.TestCase):
         self.assertEqual(self.request("/api/viewer/edit/restore", {
             "token": self.token, "recipe": self.recipe, "source": str(self.source)})[0], 400)
         self.backend.restore.assert_not_called()
+
+    def test_restore_reports_held_face_rows_and_a_release_notice(self):
+        before = [{"id": "0:0:7", "factor": 1.0, "absolute": 40}]
+        report = {"heldFaceOutlines": {"count": 0, "meshes": [], "rows": []},
+                  "notice": {"text": "This recipe sets the face outlines itself; 1 face outline edit made in the Normal face view was released.", "values": {}}}
+        order = []
+        self.backend.held_snapshot = Mock(side_effect=lambda token: order.append("snapshot") or before)
+        self.backend.restore.side_effect = lambda token, recipe: order.append("restore") or self.state
+        self.backend.held_response = Mock(side_effect=lambda token, value: order.append("response") or report)
+        status, response = self.request("/api/viewer/edit/restore", {"token": self.token, "recipe": self.recipe})
+        self.assertEqual(status, 200, response)
+        self.assertEqual(response, {"state": self.state, **report})
+        # Taken before the restore, reported after it.
+        self.assertEqual(order, ["snapshot", "restore", "response"])
+        self.backend.held_response.assert_called_once_with(self.token, before)
+
+    def prepare_with(self, scene_context=None):
+        from contextlib import contextmanager
+        from webtools.core import viewer_archive
+        expanded = SimpleNamespace(paths=[str(self.source)], manifest_paths=[], origins={}, source_names=[self.source.name],
+                                   variants=[], archive_members={}, editing_originals=None, editing_variants=None,
+                                   scene_context=scene_context)
+        @contextmanager
+        def expand(*args, **kwargs):
+            yield expanded
+        with patch.object(viewer_archive, "expand_inputs", expand):
+            return self.request("/api/viewer/prepare", {"paths": [str(self.source)], "rigged": True, "auto_face": False})
+
+    def test_prepare_of_a_reopened_scene_reports_its_held_face_rows(self):
+        summary = {"count": 1, "meshes": ["Mouth"], "rows": [{"id": "1:0:7", "factor": 0.5}]}
+        session = {}
+        self.backend._session = Mock(return_value=session)
+        self.backend.held_summary = Mock(return_value=summary)
+        scene = {"metadata": {"display_name": "Scene name"}}
+        from webtools.core import viewer_mod_flow
+        with patch.object(viewer_scene_roles, "register_reopened", Mock(return_value=self.state)) as reopened, \
+                patch.object(viewer_mod_flow, "scene_name_bases", Mock(return_value=SCENE_NAMES)) as named:
+            status, result = self.prepare_with(scene)
+        self.assertEqual(status, 200, result)
+        reopened.assert_called_once_with(self.token, scene)
+        self.backend.held_summary.assert_called_once_with(session)
+        self.assertEqual(result["editing"]["heldFaceOutlines"], summary)
+        self.assertEqual(result["editing"]["initialState"], self.state)
+        # Named after its target member (readable names), in the page language.
+        self.assertEqual(named.call_args[0][1], scene["metadata"])
+        packaging = result["editing"]["modPackaging"]
+        self.assertEqual((packaging["nameBase"], packaging["nameBases"], packaging["nameTexts"], packaging["nameOwner"]),
+                         (SCENE_NAMES["en"], SCENE_NAMES, None, None))
+
+    def test_prepare_of_a_saved_scene_original_packages_as_that_scene(self):
+        self.backend.register_session = Mock(side_effect=lambda *args, **kwargs: {"available": True, "token": self.token, "nodes": []})
+        from webtools.core import viewer_mod_flow
+        with patch.object(viewer_scene_roles, "register_preserved", Mock(return_value={"display_name": "Scene name"})) as preserved, \
+                patch.object(viewer_mod_flow, "scene_name_bases", Mock(return_value=SCENE_NAMES)) as named:
+            status, result = self.prepare_with()
+        self.assertEqual(status, 200, result)
+        token, context = preserved.call_args[0]
+        self.assertEqual((token, context["containers"][0]["path"]), (self.token, str(self.source)))
+        # The same readable scene name as reopening the scene ZIP.
+        self.assertEqual(named.call_args[0][1], {"display_name": "Scene name"})
+        packaging = result["editing"]["modPackaging"]
+        self.assertEqual((packaging["nameBase"], packaging["characterId"], packaging["requiresCounterpart"], packaging["sceneRoles"]),
+                         (SCENE_NAMES["en"], 209, False, True))
+        self.assertEqual((packaging["nameBases"], packaging["nameTexts"], packaging["nameOwner"]), (SCENE_NAMES, None, None))
+        self.assertTrue(result["editing"]["allowEmptySceneReset"])
+        # Any other model keeps its own packaging.
+        status, result = self.prepare_with()
+        self.assertEqual(status, 200, result)
+        self.assertNotIn("sceneRoles", result["editing"]["modPackaging"])
+        self.assertNotIn("allowEmptySceneReset", result["editing"])
 
     def test_failed_background_job_has_no_success_result(self):
         self.backend.export.side_effect = ValueError("Unsupported source geometry.")

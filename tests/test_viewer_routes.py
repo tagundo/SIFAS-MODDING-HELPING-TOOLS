@@ -145,6 +145,10 @@ class ViewerRouteTests(unittest.TestCase):
         self.assertTrue(context["allow_download"])
         self.assertEqual(context["repo_root"], str(Path.cwd()))
         self.assertIn(str(self.models.resolve()), context["library_roots"])
+        # Face completion reads Game-assets receipts only from this
+        # application's own game-model cache, which survives a restart.
+        self.assertEqual(context["game_models_dir"],
+                         str(self.library.resolve() / "cache" / "viewer" / "game-models"))
         self.assertNotIn("chara_id", context)
         self.assertEqual(self.model.read_bytes(), b"UnityFS input")
 

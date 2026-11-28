@@ -516,6 +516,68 @@ class OutlineTests(unittest.TestCase):
         pointer["m_PathID"] = 999999
         self.assertFalse(any(row["sourceIndex"] == 1 for row in outlines.catalogue_sources([(body, 0), (face, 1)])["meshes"]))
 
+    def runtime_face_sources(self, *, face_cab, reference_cab, reference_id=904, file_id=None,
+                             face_script="MemberFace", head_material=13, copies=1):
+        """A body whose BodyPartManager.face names ``reference_cab`` and placeholder faces named ``face_cab``.
+
+        Installed and packaged faces keep the MemberFace path id but get a
+        private CAB name; the body's external path is renamed with it.
+        """
+        body = edits._inspect(colored_fixture())
+        asset = next(iter(body["objects"].values())).assets_file
+        def add(info, file, identity, kind, tree):
+            obj = SimpleNamespace(path_id=identity, assets_file=file, type=SimpleNamespace(name=kind), read_typetree=lambda: tree)
+            file.objects[identity] = obj
+            info["objects"][(0, identity)] = obj
+        definition = {"m_Namespace": "LLAS.Components.Members", "m_AssemblyName": "Assembly-CSharp.dll"}
+        faces = []
+        for index in range(copies):
+            face_env = UnityPy.load(colored_fixture())
+            shader = next(obj for obj in face_env.objects if obj.type.name == "Shader")
+            tree = shader.read_typetree()
+            tree["m_Name"] = "Standard"
+            if "m_ParsedForm" in tree:
+                tree["m_ParsedForm"]["m_Name"] = "Standard"
+            shader.save_typetree(tree)
+            face = edits._inspect(face_env.file.save())
+            face_asset = next(iter(face["objects"].values())).assets_file
+            face_asset.name = face_cab
+            add(face, face_asset, 902, "MonoScript", {"m_ClassName": face_script, **definition})
+            add(face, face_asset, 904, "MonoBehaviour", {"m_Script": {"m_FileID": 0, "m_PathID": 902}, "m_GameObject": {"m_FileID": 0, "m_PathID": 2}})
+            faces.append((face, index + 1))
+        add(body, asset, 901, "MonoScript", {"m_ClassName": "BodyPartManager", **definition})
+        asset.externals.append(SimpleNamespace(path="archive:/" + reference_cab + "/" + reference_cab))
+        pointer = {"m_FileID": len(asset.externals) if file_id is None else file_id, "m_PathID": reference_id}
+        add(body, asset, 903, "MonoBehaviour", {"m_Script": {"m_FileID": 0, "m_PathID": 901}, "face": pointer,
+                                                "headMaterial": {"m_FileID": 0, "m_PathID": head_material}})
+        return [(body, 0)] + faces
+
+    def test_runtime_face_binding_accepts_only_the_exact_isolated_face(self):
+        isolated, stock = "CAB-" + "5a5e" * 8, "CAB-" + "f4ad" * 8
+        catalog = outlines.catalogue_sources(self.runtime_face_sources(face_cab=isolated, reference_cab=isolated.lower()))
+        face_rows = [row for row in catalog["meshes"] if row["sourceIndex"] == 1]
+        self.assertEqual(len(face_rows), 1)
+        self.assertEqual([(proof["faceAsset"], proof["memberFace"], proof["assignment"]) for proof in face_rows[0]["runtimeBindings"]],
+                         [(isolated.lower(), "904", "BodyPartManager.headMaterial")])
+        self.assertFalse(any(row["sourceIndex"] == 1 for row in catalog["excludedMeshes"]))
+        # A face from another graph is never the referenced prefab, even with
+        # the same component path id, member and placeholder material.
+        for label, options in (
+                ("stock face for an installed body", {"face_cab": stock, "reference_cab": isolated.lower()}),
+                ("installed face for a stock body", {"face_cab": isolated, "reference_cab": stock.lower()}),
+                ("other component", {"face_cab": isolated, "reference_cab": isolated.lower(), "reference_id": 905}),
+                ("not a MemberFace", {"face_cab": isolated, "reference_cab": isolated.lower(), "face_script": "MemberFaceData"}),
+                ("internal face reference", {"face_cab": isolated, "reference_cab": isolated.lower(), "file_id": 0}),
+                ("headMaterial is not AS/Member", {"face_cab": isolated, "reference_cab": isolated.lower(), "head_material": 987654}),
+                ("two faces share the reference", {"face_cab": isolated, "reference_cab": isolated.lower(), "copies": 2})):
+            with self.subTest(label):
+                catalog = outlines.catalogue_sources(self.runtime_face_sources(**options))
+                self.assertFalse(any(row["sourceIndex"] >= 1 for row in catalog["meshes"]))
+                excluded = [row for row in catalog["excludedMeshes"] if row["sourceIndex"] >= 1]
+                self.assertEqual(len(excluded), options.get("copies", 1))
+                self.assertTrue(all("unsupported_material" in [reason["code"] for reason in row["reasons"]] for row in excluded))
+                self.assertFalse(any(row.get("runtimeBindings") for row in catalog["meshes"]))
+
     @unittest.skipUnless(os.environ.get("SIFAS_OUTLINE_BODY") and os.environ.get("SIFAS_OUTLINE_FACE"), "Set original body and face for companion jaw export")
     def test_original_automatic_face_jaw_detail_saves_only_selected_red(self):
         body, face = self.root / "ch0201_co0002.unity", self.root / "ch0201_face.unity"

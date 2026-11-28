@@ -2381,8 +2381,11 @@
         if (!meshToolsController || !meshToolsController.restoreEdits) throw new Error(t("Mesh editing is unavailable for this model."));
         return meshToolsController.restoreEdits(state);
       },
-      openFiles: async function (nextPaths, nextVariants, inspection) {
+      openFiles: async function (nextPaths, nextVariants, inspection, openOptions) {
         var previousPose = inspection ? inspection.pose : rigController && rigController.getState();
+        // Re-edit reopens a body whose face the saved preview completed
+        // automatically: complete it again (it is found beside the body).
+        if (openOptions && typeof openOptions.autoFace === "boolean" && node("viewer-auto-face")) node("viewer-auto-face").checked = openOptions.autoFace;
         var view = inspection ? inspection.camera : camera && controls ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null;
         if (nextVariants && typeof nextVariants === "object") {
           if (Array.isArray(nextVariants) && nextVariants.length !== nextPaths.length || Object.keys(nextVariants).some(function (key) {

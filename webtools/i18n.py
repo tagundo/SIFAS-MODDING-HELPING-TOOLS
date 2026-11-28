@@ -2544,7 +2544,10 @@ _VIEWER_MODEL_SAVE_TRANSLATIONS = {
     "Preview lighting only; saved model materials stay unchanged.": ["미리보기의 조명 설정입니다. 저장하는 모델의 원본 재질 값은 유지됩니다.", "プレビューの照明設定です。保存するモデルの元のマテリアル値は維持されます。"],
     "Choose a real donor file, not a symbolic link.": ["바로가기나 심볼릭 링크 대신 원본 도너 파일을 선택하세요.", "ショートカットやシンボリックリンクではなく、実体のあるドナーファイルを選んでください。"],
     "The donor costume is outside the allowed folders.": ["도너 의상이 앱에서 접근할 수 있는 폴더 밖에 있습니다.", "ドナー衣装がアプリからアクセスできるフォルダの外にあります。"],
-    "This saved ZIP binds its body to the included face. Reimport the original body before excluding the face; no Mod ZIP was created.": ["이 ZIP의 의상은 포함된 얼굴 파일과 연결되어 있습니다. 얼굴을 제외하려면 원본 의상을 다시 가져온 뒤 저장하세요. 모드 ZIP은 생성하지 않았습니다.", "このZIPの衣装は同梱された顔ファイルと結び付いています。顔を除外するには元の衣装を再インポートしてから保存してください。Mod ZIPは作成されていません。"],
+    "This costume's body uses the face its ZIP includes, so that face cannot be left out. Tick 'Include face and mouth edits for this costume' to keep it; no Mod ZIP was created.": ["이 의상의 몸체는 ZIP에 포함된 얼굴을 사용하므로 그 얼굴을 뺄 수 없습니다. '이 코스튬의 얼굴·입 편집 포함'을 선택해 얼굴을 유지하세요. 모드 ZIP은 생성하지 않았습니다.", "この衣装の本体はZIPに同梱された顔を使用しているため、その顔を外すことはできません。「この衣装の顔・口の編集を含める」をオンにして顔を残してください。Mod ZIPは作成されていません。"],
+    "This costume ZIP includes its own face, so it is included by default. Only this costume uses it; other costumes and the character's shared face stay unchanged.": ["이 의상 ZIP에는 자체 얼굴이 포함되어 있어 기본으로 함께 포함됩니다. 이 얼굴은 이 코스튬만 사용하며, 다른 의상과 캐릭터의 공용 얼굴에는 적용되지 않습니다.", "この衣装のZIPには専用の顔が同梱されているため、初期設定で含めます。この顔はこの衣装だけが使用し、他の衣装やキャラクター共通の顔には適用されません。"],
+    "Choose one costume to package; unrelated model files cannot share one Mod ZIP.": ["모드 ZIP으로 묶을 의상을 하나만 선택하세요. 서로 관계없는 모델 파일은 한 모드 ZIP에 함께 넣을 수 없습니다.", "Mod ZIPにまとめる衣装を1つだけ選んでください。関係のないモデルファイルを1つのMod ZIPにまとめることはできません。"],
+    "The costume installer stopped with exit code {code}. Usual causes are missing Elichika settings (config.json) or a Mod ZIP the installer could not find in its costume folder; the server console shows the installer's message.": ["의상 설치 프로그램이 종료 코드 {code}로 중단되었습니다. 흔한 원인은 Elichika 설정 파일(config.json)이 없거나 설치 프로그램이 의상 폴더에서 모드 ZIP을 찾지 못한 경우입니다. 설치 프로그램의 메시지는 서버 콘솔에 표시됩니다.", "衣装インストーラーが終了コード {code} で停止しました。よくある原因は、Elichikaの設定ファイル（config.json）がないことや、インストーラーが衣装フォルダでMod ZIPを見つけられなかったことです。インストーラーのメッセージはサーバーのコンソールに表示されます。"],
     "Choose whether to include this costume's verified face companion.": ["이 코스튬에 얼굴·입 편집을 포함할지 선택하세요.", "この衣装に顔・口の編集を含めるか選んでください。"],
     "Open the original model before saving model edits.": ["원본 모델을 열고 모델 편집을 저장하세요.", "元のモデルを開いてからモデル編集を保存してください。"],
     "The model edit recipe is invalid.": ["모델 편집 기록이 올바르지 않습니다.", "モデル編集レシピが無効です。"],
@@ -2568,6 +2571,57 @@ _VIEWER_MODEL_SAVE_TRANSLATIONS = {
 for _source, _translated in _VIEWER_MODEL_SAVE_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]
+
+# Costume variant (pair) refusals that name one part: fixed sentences ending in
+# ": {name}" (viewer_mod_pair_edits.NAMED_REFUSALS). The viewer translates the
+# sentence and keeps the name. Rina board view: held face outline rows.
+_VIEWER_PAIR_TRANSLATIONS = {
+    "The counterpart is missing a unique matching bone hierarchy: {name}": (
+        "다른 버전 모델에 같은 계층의 고유한 본이 없습니다: {name}", "もう一方のモデルに同じ階層の固有のボーンがありません: {name}"),
+    "The counterpart bone is not writable: {name}": (
+        "다른 버전 모델의 본은 저장할 수 없습니다: {name}", "もう一方のモデルのボーンは保存できません: {name}"),
+    "The counterpart cannot preserve the selected save method: {name}": (
+        "다른 버전 모델에서는 선택한 저장 방식을 쓸 수 없습니다: {name}", "もう一方のモデルでは選択した保存方法を使えません: {name}"),
+    "The counterpart has no unique matching physics component: {name}": (
+        "다른 버전 모델에 일치하는 고유한 물리 컴포넌트가 없습니다: {name}", "もう一方のモデルに一致する固有の物理コンポーネントがありません: {name}"),
+    "The counterpart has no unique matching outline mesh: {name}": (
+        "다른 버전 모델에 일치하는 고유한 외곽선 메시가 없습니다: {name}", "もう一方のモデルに一致する固有の輪郭線メッシュがありません: {name}"),
+    "The counterpart has no verified matching vertex order for detailed outline edits: {name}": (
+        "다른 버전 모델의 정점 순서가 같은지 확인할 수 없어 정점별 외곽선 편집을 적용할 수 없습니다: {name}",
+        "もう一方のモデルの頂点の順序が同じか確認できないため、頂点ごとの輪郭線編集を適用できません: {name}"),
+    "Edits of parts that only the selected costume variant has stay on that variant: {names}": (
+        "선택한 의상 버전에만 있는 부분의 편집은 그 버전에만 적용됩니다: {names}",
+        "選択した衣装バージョンにだけある部分の編集は、そのバージョンにのみ適用されます: {names}"),
+    "1 face outline edit made in the Normal face view is kept ({meshes}).": (
+        "일반 얼굴 보기에서 편집한 얼굴 외곽선 1개가 유지됩니다 ({meshes}).",
+        "素顔の表示で編集した顔の輪郭線1件を保持しています（{meshes}）。"),
+    "{count} face outline edits made in the Normal face view are kept ({meshes}).": (
+        "일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개가 유지됩니다 ({meshes}).",
+        "素顔の表示で編集した顔の輪郭線{count}件を保持しています（{meshes}）。"),
+    "This recipe sets the face outlines itself; 1 face outline edit made in the Normal face view was released.": (
+        "이 편집 기록은 얼굴 외곽선을 직접 정하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 1개는 유지되지 않습니다.",
+        "この編集レシピは顔の輪郭線を指定しているため、素顔の表示で編集した顔の輪郭線1件は保持されません。"),
+    "This recipe sets the face outlines itself; {count} face outline edits made in the Normal face view were released.": (
+        "이 편집 기록은 얼굴 외곽선을 직접 정하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개는 유지되지 않습니다.",
+        "この編集レシピは顔の輪郭線を指定しているため、素顔の表示で編集した顔の輪郭線{count}件は保持されません。"),
+    "This recipe edits the face textures itself; 1 face outline edit made in the Normal face view was released.": (
+        "이 편집 기록은 얼굴 텍스처를 직접 편집하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 1개는 유지되지 않습니다.",
+        "この編集レシピは顔のテクスチャを編集しているため、素顔の表示で編集した顔の輪郭線1件は保持されません。"),
+    "This recipe edits the face textures itself; {count} face outline edits made in the Normal face view were released.": (
+        "이 편집 기록은 얼굴 텍스처를 직접 편집하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개는 유지되지 않습니다.",
+        "この編集レシピは顔のテクスチャを編集しているため、素顔の表示で編集した顔の輪郭線{count}件は保持されません。"),
+    "This recipe edits the face itself; 1 face outline edit made in the Normal face view was released.": (
+        "이 편집 기록은 얼굴을 직접 편집하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 1개는 유지되지 않습니다.",
+        "この編集レシピは顔そのものを編集しているため、素顔の表示で編集した顔の輪郭線1件は保持されません。"),
+    "This recipe edits the face itself; {count} face outline edits made in the Normal face view were released.": (
+        "이 편집 기록은 얼굴을 직접 편집하므로, 일반 얼굴 보기에서 편집한 얼굴 외곽선 {count}개는 유지되지 않습니다.",
+        "この編集レシピは顔そのものを編集しているため、素顔の表示で編集した顔の輪郭線{count}件は保持されません。"),
+    # Separator of a list of part names inside a sentence ({names}, {meshes}).
+    ", ": (", ", "、"),
+}
+for _source, (_korean, _japanese) in _VIEWER_PAIR_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _korean
+    _TABLES["ja"][_source] = _japanese
 
 
 # MV Studio editor lane C: the camera editor (keys, curves, key diamonds). "Keyframes",

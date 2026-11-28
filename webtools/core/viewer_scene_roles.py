@@ -11,6 +11,7 @@ import copy
 import io
 import json
 import math
+import os
 import struct
 from pathlib import Path
 import secrets
@@ -148,6 +149,18 @@ def _source_bytes(context, index):
     return raw
 
 
+def _face_sources(context):
+    """Session sources that are a face: automatic companions, or the face
+    companion a selected costume ZIP declares (bound by its exact bytes)."""
+    faces = set(context.get("outline_only_sources", []))
+    declared = set()
+    for container in context["containers"]:
+        if zipfile.is_zipfile(io.BytesIO(container["raw"])):
+            declared.update(fmt.sha(raw) for raw in _literal_faces(container["raw"]).values())
+    faces.update(index for index, source in enumerate(context["sources"]) if source["sha256"] in declared)
+    return faces
+
+
 def _face_originals_and_recipes(context, result, platforms, runtime_faces):
     """Keep face authoring authority separate from private execution bytes."""
     originals, declared = {}, set()
@@ -191,7 +204,17 @@ def _originals_and_recipes(context, result, pair, goldens, state):
     # A texture edit changes one explicitly selected image layout. It does not
     # authorize copying pixels into a board/bare or Android/iOS counterpart.
     partner_state = {key: value for key, value in state.items() if key != "textures"}
-    partner_body_changed = edits.has_changes(partner_state)
+    # A face's own outline edits belong to the face authoring recipe, which
+    # both variants share. They do not change either body, so an unchanged
+    # counterpart stays its original, as pairing already treats them.
+    faces = _face_sources(context)
+    if faces and partner_state.get("outlines"):
+        partner_state["outlines"] = [row for row in partner_state["outlines"]
+                                     if int(row["id"].split(":", 1)[0]) not in faces]
+    partner_body_changed = edits.has_changes(partner_state) or bool(context.get("held_counterpart"))
+    # A counterpart that has none of the edited parts (Rina's board-only Mask,
+    # eye and mouth meshes) keeps its original bytes and has no variant recipe.
+    unchanged = {summary["original_sha256"] for summary in result.get("paired_edits", []) if summary.get("unchanged")}
     originals = {}
     for container in context["containers"]:
         if zipfile.is_zipfile(io.BytesIO(container["raw"])):
@@ -212,6 +235,11 @@ def _originals_and_recipes(context, result, pair, goldens, state):
         for summary in summaries:
             if summary.get("variant") not in fmt.VARIANTS:
                 continue
+            if summary.get("unchanged"):
+                raw = Path(pair[summary["variant"]]["path"]).read_bytes()
+                _require(fmt.sha(raw) == summary["original_sha256"], "A paired canonical original is missing.")
+                originals[platform, summary["variant"]] = raw
+                continue
             candidates = [Path(path).read_bytes() for path in result.get("paired_original_paths", [])
                           if fmt.sha(Path(path).read_bytes()) == summary["original_sha256"]]
             _require(len(candidates) == 1, "A paired canonical original is missing.")
@@ -228,7 +256,8 @@ def _originals_and_recipes(context, result, pair, goldens, state):
     normalized = {}
     for key, original in originals.items():
         candidates = [recipe for recipe in recipes if any(source["sha256"] == fmt.sha(original) for source in recipe["sources"])]
-        if not edits.has_changes(state) or not candidates and not partner_body_changed:
+        if (not (edits.has_changes(state) or context.get("held_counterpart")) or
+                not candidates and (not partner_body_changed or fmt.sha(original) in unchanged)):
             normalized[key] = _empty_recipe(original, "_".join(key) + ".unity")
         else:
             _require(len(candidates) == 1, "The scene costume has no unique original-bound variant recipe.")
@@ -414,11 +443,71 @@ def expand_scene(path, directory, variant=None, *, platform=None):
     recipe = _json(files[manifest["authoring"][platform][variant]["recipe"]["member"]])
     face = manifest.get("face_authoring", {}).get(platform)
     face_recipes = [_json(files[face["recipe"]["member"]])] if face else []
+    # The other variant's recipes: rows for parts this view's body lacks are
+    # carried into its pair edit (hold_counterpart), never shown or dropped.
+    other_recipes = [_json(files[family[role]["recipe"]["member"]]) for family in manifest["authoring"].values()
+                     for role in fmt.VARIANTS if role != variant]
     return {"path": str(original_zip), "variant": variant, "platform": platform,
-            "recipe": recipe, "face_recipes": face_recipes,
+            "recipe": recipe, "face_recipes": face_recipes, "other_recipes": other_recipes,
             "metadata": {**{key: copy.deepcopy(manifest[key]) for key in ("display_name", "source_suit_id", "source_provenance")},
                          "target_member_id": manifest.get("target_member_id", 209),
                          "default_variant": manifest.get("default_variant", "primary")}}
+
+
+def counterpart_face_proof(session, index):
+    """Outline records of one declared Rina face, proven by its unmasked body.
+
+    The board body of a masked view does not bind this face's AS/Member
+    headMaterial, so its face meshes are listed but not editable there. The
+    costume's unmasked body, declared in the same family archive, names this
+    exact face: the unchanged outline proof runs on that pair. Returns the
+    face's records, or None without such a counterpart.
+    """
+    from . import model_outlines
+    try:
+        source = session["sources"][index]
+        raw = session["containers"][source["container"]]["raw"]
+        if source["member"] is None or not zipfile.is_zipfile(io.BytesIO(raw)):
+            return None
+        faces, models = _literal_faces(raw), _literal_models(raw)
+    except (ValueError, KeyError, IndexError, TypeError, OSError, SyntaxError, zipfile.BadZipFile):
+        return None
+    platform = next((key for key, value in faces.items() if fmt.sha(value) == source["sha256"]), None)
+    body = models.get((platform, "unmasked"))
+    if platform is None or body is None or fmt.sha(source["raw"]) != source["sha256"]:
+        return None
+    # The counterpart is not a session source; it only supplies the proof.
+    catalog = model_outlines.catalogue_sources([(edits._inspect(source["raw"]), index),
+                                                (edits._inspect(body), len(session["sources"]))])
+    return [row for row in catalog["meshes"] if row["sourceIndex"] == index and row.get("runtimeBindings")]
+
+
+def split_held_face_outlines(session, rows):
+    """Separate face outline rows this view lists but cannot edit.
+
+    A masked Rina view lists its face meshes as not editable. A saved row for
+    one of them is held when the costume's own unmasked body proves that face
+    (counterpart_face_proof): it is carried unchanged into every save. Any
+    other row stays in ``rows`` and keeps its strict validation.
+    """
+    catalog = session.get("outlines", {})
+    editable = {row["id"] for row in catalog.get("meshes", [])}
+    excluded = {row["id"] for row in catalog.get("excludedMeshes", [])}
+    candidates = [row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)
+                  and row["id"] not in editable and row["id"] in excluded]
+    proofs = {}
+    for row in candidates:
+        index = row["id"].split(":", 1)[0]
+        if index.isdigit() and int(index) < len(session["sources"]) and index not in proofs:
+            proofs[index] = counterpart_face_proof(session, int(index)) or []
+    proof = [record for records in proofs.values() for record in records]
+    proven = {record["id"] for record in proof}
+    held = [row for row in candidates if row["id"] in proven]
+    if not held:
+        return rows, [], None
+    from . import model_outlines
+    return ([row for row in rows if row not in held], model_outlines.validate({"meshes": proof}, held),
+            {"meshes": proof})
 
 
 def register_reopened(token, scene):
@@ -445,6 +534,9 @@ def register_reopened(token, scene):
         bind(face)
         _require(not face["nodeIdentities"] and not face["state"].get("edits") and not face["state"].get("physics"),
                  "The face authoring recipe contains unsupported model changes.")
+        # The masked view draws Rina's board over this face, so its face
+        # meshes are not editable here; restore holds those rows and every
+        # save carries them unchanged (split_held_face_outlines).
         for field in ("textures", "outlines"):
             if face["state"].get(field):
                 recipe["state"].setdefault(field, []).extend(face["state"][field])
@@ -452,11 +544,165 @@ def register_reopened(token, scene):
     recipe["originals"] = [{"name": item["name"], "sha256": item["sha256"]} for item in session["containers"]]
     session["allowEmptySceneReset"] = True
     state = edits.restore(token, recipe)
+    hold_counterpart(session, scene.get("other_recipes", []))
     with _LOCK:
         _SCENES[token] = copy.deepcopy(scene["metadata"])
         while len(_SCENES) > edits.MAX_SESSIONS:
             _SCENES.popitem(last=False)
     return state
+
+
+def hold_counterpart(session, recipes):
+    """Keep the other variant's own outline, physics and texture rows for pair editing.
+
+    A reopened scene shows one variant. Rows that only the other variant's
+    parts have (the board's Mask meshes in the Normal face view, the Normal
+    face's hair dyna bones in the board view) and that variant's own texture
+    edits (textures are never mirrored) cannot appear here, but every Mod ZIP
+    of this view rewrites that variant: pair editing writes them back
+    (viewer_mod_pair_edits). Each entry names the original it binds.
+    """
+    held = []
+    for recipe in recipes:
+        state = recipe.get("state", {})
+        rows = {field: copy.deepcopy(state[field]) for field in ("outlines", "physics", "textures") if state.get(field)}
+        if rows and len(recipe.get("sources", [])) == 1:
+            held.append({"sha256": recipe["sources"][0]["sha256"], **rows})
+    session["heldCounterpart"] = held
+
+
+BINDING_FORMAT = "elichika-viewer-scene-binding"
+# Held rows may carry the other variant's texture PNGs (both platforms).
+MAX_BINDING_BYTES = 64 * 1024 * 1024
+
+
+def remember_saved_originals(token, context, paths):
+    """Keep a reopened scene beside the originals copy its save wrote.
+
+    Saving a reopened scene copies its canonical originals ZIP unchanged to the
+    export's originals/ folder, which Re-edit from original opens. The scene
+    (its metadata, the view's variant and the other variant's held rows) is
+    written next to it as ``edits.SCENE_BINDING``, bound to that file's name
+    and bytes, so a re-edit in any later session reopens the scene. The
+    person's own copy of the same original, without that file beside it, or a
+    save of an ordinary costume, stays what it is (register_preserved).
+    """
+    if len(context["containers"]) != 1 or len(paths) != 1:
+        return
+    metadata = session_metadata(token)
+    if metadata is None:
+        return
+    original = Path(paths[0])
+    binding = {"format": BINDING_FORMAT, "version": 1,
+               "original": {"file": original.name, "sha256": context["containers"][0]["sha256"]},
+               "variant": context["variants"].get("0", "primary"), "metadata": metadata,
+               "held": copy.deepcopy(edits._session(token).get("heldCounterpart", []))}
+    encoded = json.dumps(binding, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    _require(len(encoded) <= MAX_BINDING_BYTES, "The reopened scene is too large to keep beside its saved originals.")
+    target = original.with_name(edits.SCENE_BINDING)
+    temporary = original.with_name(".viewer-scene-" + secrets.token_hex(8) + ".part")
+    try:
+        with temporary.open("xb") as output:
+            output.write(encoded)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _binding_metadata(metadata, platforms):
+    """The scene metadata a binding may carry, checked as a scene manifest's."""
+    keys = {"display_name", "source_suit_id", "source_provenance", "target_member_id", "default_variant"}
+    if type(metadata) is not dict or set(metadata) != keys:
+        return None
+    name, source, provenance = metadata["display_name"], metadata["source_suit_id"], metadata["source_provenance"]
+    target, default = metadata["target_member_id"], metadata["default_variant"]
+    if (not isinstance(name, str) or name != name.strip() or not 0 < len(name) <= 120 or any(ord(char) < 32 for char in name)
+            or not (source is None or type(source) is int and 0 < source < 10 ** 12) or (source is None) != (provenance is None)
+            or type(target) is not int or not 0 < target < 2 ** 31 or default not in fmt.VARIANTS
+            or target == 209 and default != "primary"):
+        return None
+    if provenance is not None:
+        if type(provenance) is not dict or not provenance or not set(provenance) <= {"gl", "jp"}:
+            return None
+        for region in provenance.values():
+            if type(region) is not dict or set(region) != platforms:
+                return None
+            for family in region.values():
+                if type(family) is not dict or set(family) != set(fmt.VARIANTS):
+                    return None
+                for descriptor in family.values():
+                    if (type(descriptor) is not dict or set(descriptor) != {"asset_path", "pack_name", "head", "size", "key1", "key2"}
+                            or not all(isinstance(descriptor[key], str) and 0 < len(descriptor[key]) <= 512 for key in ("asset_path", "pack_name"))
+                            or not all(type(descriptor[key]) is int for key in ("head", "size", "key1", "key2"))):
+                        return None
+    return metadata
+
+
+def _held_rows(held):
+    """Held counterpart rows as hold_counterpart writes them; pair editing
+    validates every row again against the counterpart itself."""
+    fields = {"outlines", "physics", "textures"}
+    if type(held) is not list or len(held) > 8:
+        return None
+    for entry in held:
+        if (type(entry) is not dict or not isinstance(entry.get("sha256"), str) or len(entry["sha256"]) != 64
+                or not set(entry) - {"sha256"} <= fields
+                or any(type(entry[field]) is not list or any(type(row) is not dict for row in entry[field])
+                       for field in set(entry) - {"sha256"})):
+            return None
+    return held
+
+
+def _read_binding(container):
+    """The scene kept beside an opened originals copy, or None."""
+    import unicodedata
+    path = Path(container["path"])
+    sidecar = path.with_name(edits.SCENE_BINDING)
+    try:
+        if sidecar.is_symlink() or not sidecar.is_file() or sidecar.stat().st_size > MAX_BINDING_BYTES:
+            return None
+        binding = json.loads(sidecar.read_bytes().decode("utf-8"))
+        models = _literal_models(container["raw"])
+    except (OSError, ValueError, SyntaxError, KeyError, zipfile.BadZipFile, RecursionError):
+        return None
+    platforms = {platform for platform, _ in models}
+    if (type(binding) is not dict or set(binding) != {"format", "version", "original", "variant", "metadata", "held"}
+            or binding["format"] != BINDING_FORMAT or type(binding["version"]) is not int or binding["version"] != 1
+            or type(binding["original"]) is not dict or set(binding["original"]) != {"file", "sha256"}
+            or not isinstance(binding["original"]["file"], str)
+            or unicodedata.normalize("NFC", binding["original"]["file"]) != unicodedata.normalize("NFC", path.name)
+            or binding["original"]["sha256"] != container["sha256"] or binding["variant"] not in fmt.VARIANTS
+            # Only a complete Rina board/bare family is a scene's originals.
+            or not platforms or set(models) != {(platform, variant) for platform in platforms for variant in fmt.VARIANTS}
+            or _binding_metadata(binding["metadata"], platforms) is None or _held_rows(binding["held"]) is None):
+        return None
+    return binding
+
+
+def register_preserved(token, context):
+    """Bind a re-edit of a saved scene's originals copy to that scene.
+
+    Opening an originals copy with the scene kept beside it
+    (remember_saved_originals), with unchanged bytes, packages a scene Mod ZIP
+    with the scene's name, source and face authoring, as reopening the scene
+    ZIP does, and keeps the other variant's own rows when it opens in the
+    saved view's variant. ``context`` is the session's mod_source_context.
+    Returns the scene metadata, or None for any other input.
+    """
+    if len(context["containers"]) != 1:
+        return None
+    entry = _read_binding(context["containers"][0])
+    if entry is None:
+        return None
+    with _LOCK:
+        _SCENES[token] = copy.deepcopy(entry["metadata"])
+        while len(_SCENES) > edits.MAX_SESSIONS:
+            _SCENES.popitem(last=False)
+    session = edits._session(token)
+    session["allowEmptySceneReset"] = True
+    if context["variants"].get("0", "primary") == entry["variant"]:
+        session["heldCounterpart"] = entry["held"]
+    return copy.deepcopy(entry["metadata"])
 
 
 def should_package(context, state, packed, token):
