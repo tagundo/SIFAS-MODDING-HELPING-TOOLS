@@ -243,7 +243,10 @@
         var seen = new Set();
         list.forEach(function (binding) {
           if (context.submesh !== undefined && binding.map.submesh !== context.submesh) return;
-          binding.baseIndex.forEach(function (vertex) { if (!seen.has(vertex)) { pointVertices.push({ binding: binding, vertex: vertex }); seen.add(vertex); } });
+          // Same rule as pickVertex: a vertex on no live face is not on the
+          // model and cannot be picked, so it gets no target dot either.
+          var live = liveVertices(binding);
+          binding.baseIndex.forEach(function (vertex) { if (!seen.has(vertex) && !(live && !live[vertex])) { pointVertices.push({ binding: binding, vertex: vertex }); seen.add(vertex); } });
         });
       }
       if (overlayGeometry) overlayGeometry.setAttribute('position', new T.Float32BufferAttribute(new Float32Array(overlayRefs.length * 3), 3));
