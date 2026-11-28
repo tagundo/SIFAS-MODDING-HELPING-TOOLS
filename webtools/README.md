@@ -354,17 +354,25 @@ select or upload facial files. Existing game downloads are reused before CDN
 downloads, and subsequent previews reuse the private cache.
 The face that the body's own BodyPartManager names is preferred: the selected
 game costume's own face (an installed costume's private face), a cached
-original, a face saved next to the body file, then catalog originals. A
+original, a face saved next to the body file, a face with the extractor's own
+file name (`chNNNN_facedynamic.unity` or `chNNNN_face.unity`) at the top of a
+library folder or in its `3d_model` or `extracted/3d_model` folder, then
+catalog originals. A library of extracted models therefore needs no download.
+The trade-off: an edited copy saved in those folders under that file name is
+trusted as the original, as in earlier versions. A
 catalog original is fetched only to compare it while no local face matches.
 That search skips another region's copy of an original already checked and
 stops at the first asset server that does not answer. A slow download keeps
 running: when 10 seconds of the face time remain, another face of the
-character is used if one is found, and otherwise the download is awaited. A face
-elsewhere in the library, including one with the extractor's own file name,
-can be an edited copy of a stock face with the same Unity names, so the
-catalog's own copy (a local pack first) is tried before it. An original the
-viewer downloaded keeps the place of a download in later previews of a body
-that names its face, so the face cache does not change which face is chosen.
+character is used if one is found, and otherwise the download is awaited; a
+fallback that comes before it in the earlier order waits for it at most half of
+the time left. A face elsewhere in the library can be an edited copy of a stock
+face with the same Unity names, so the catalog's own copy (a local pack first)
+is tried before it; when that copy fails or the asset server does not answer,
+the library face is used. An original the viewer downloaded keeps the place of
+a download in later previews of a body that names its face, and one downloaded
+only to compare it keeps that place for every body until it is used, so the
+face cache does not change which face is chosen.
 Face, Mouth and Eye outlines
 are editable only with the face the body names. Another face of the same character is shown as a fallback, and its
 face meshes are listed as not editable. To reopen a copied body alone, copy

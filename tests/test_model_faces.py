@@ -986,6 +986,33 @@ class FaceTests(unittest.TestCase):
                 self.assertEqual([Path(path).read_bytes() for path in plan.resolve()], [expected])
             self.assertEqual(answered, fetched)
             self.assertEqual((plan._running, plan._kept), ([], {}))
+            # The stock face was fetched only to compare it: unless it was
+            # used, later opens give it a download's place.
+            stocked, = [path for path in (Path(self.context["cache_dir"]) / "models").glob("*.unity")
+                        if path.read_bytes() == stock]
+            self.assertEqual(faces._compared(stocked), expected != stock)
+
+    @EXTRACTOR_REQUIRED
+    def test_the_running_named_download_itself_has_the_whole_face_time(self):
+        # Cut off at the reserve, it needs more than half of the time left:
+        # it is the next item of the late pass, so nothing stops it.
+        stock = self.referenced_donor("CAB-" + "2" * 32)
+        descriptor = self.databases(stock)
+        payload, calls = self.encrypted(stock, descriptor), []
+
+        def slow(url, expected, deadline, byte_limit=faces.MAX_PACK_BYTES):
+            calls.append(deadline)
+            time.sleep(2.6)
+            return payload
+
+        self.context["allow_download"] = True
+        with patch.object(faces, "FACE_SECONDS", 4), patch.object(faces, "FALLBACK_SECONDS", 3), \
+                patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                patch.object(faces, "_download", slow):
+            plan = self.plan()
+            chosen = plan.resolve()
+        self.assertEqual([Path(path).read_bytes() for path in chosen], [stock])
+        self.assertEqual(len(calls), 1)
 
     @EXTRACTOR_REQUIRED
     def test_selected_suit_download_cut_off_at_the_reserve_is_finished_by_the_late_pass(self):
@@ -1015,6 +1042,68 @@ class FaceTests(unittest.TestCase):
         self.assertEqual([Path(path).read_bytes() for path in chosen], [private])
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0].endswith("/privatepack"))
+
+    @EXTRACTOR_REQUIRED
+    def test_fallback_before_a_hung_named_download_in_the_old_order_still_gets_the_network(self):
+        # The default suit's own model comes first in the old order and is
+        # never fetched to compare it. The named face's download never ends:
+        # the old order's fallback gets the network once half of the time
+        # left after the reserve has passed, instead of losing the face.
+        suit, named = self.referenced_donor("CAB-" + "1" * 32), self.referenced_donor("CAB-" + "2" * 32)
+        descriptors = [dict(self.descriptor(suit, name="suitpack"), asset_path="suitbody"),
+                       dict(self.descriptor(named, name="namedpack"), asset_path="namedface")]
+        payloads = {"suitpack": self.encrypted(suit, descriptors[0]), "namedpack": self.encrypted(named, descriptors[1])}
+        opened = []
+
+        class Response(io.BytesIO):
+            def __init__(self, pack):
+                super().__init__(payloads[pack])
+                self.pack, self.headers = pack, {"Content-Length": str(len(payloads[pack]))}
+
+            def read(self, size=-1):
+                if self.pack == "namedpack":
+                    # About five seconds for the pack: past the face time.
+                    time.sleep(.05)
+                    size = max(1, len(payloads["namedpack"]) // 100)
+                return super().read(size)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        class Opener:
+            def open(self, request, timeout=None):
+                pack = request.full_url.rsplit("/", 1)[1]
+                opened.append(pack)
+                return Response(pack)
+
+        def iterate(plan):
+            plan._suit_models.add(tuple(descriptors[0][key] for key in ("pack_name", "head", "size", "key1", "key2", "pack_size")))
+            return iter([dict(row) for row in descriptors])
+
+        slot = threading.BoundedSemaphore(1)
+        self.context["allow_download"] = True
+        with patch.object(faces, "FACE_SECONDS", 4), patch.object(faces, "FALLBACK_SECONDS", 3), \
+                patch.object(faces, "_DOWNLOAD_SLOT", slot), patch.object(faces, "build_opener", return_value=Opener()), \
+                patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                patch.object(faces.FacePlan, "_descriptor_iter", iterate):
+            plan = self.plan()
+            started = time.monotonic()
+            chosen = plan.resolve()
+            elapsed = time.monotonic() - started
+            # The stopped download frees the one worker.
+            self.assertTrue(slot.acquire(timeout=.5), "The stopped download kept running")
+            slot.release()
+        self.assertEqual([Path(path).read_bytes() for path in chosen], [suit])
+        self.assertEqual(plan.status, "added")
+        self.assertEqual(opened, ["namedpack", "suitpack"])
+        # The reserve (1 s) plus half of the three seconds left, then the fallback.
+        self.assertGreater(elapsed, 2.3)
+        self.assertLess(elapsed, 3.5)
+        self.assertEqual((plan._running, plan._kept), ([], {}))
+        self.assertFalse((Path(self.context["cache_dir"]) / "packs" / "namedpack").exists())
 
     def test_a_step_bound_never_extends_the_face_deadline(self):
         plan = self.plan()
@@ -1100,26 +1189,35 @@ class FaceTests(unittest.TestCase):
             # Used at once: nothing is downloaded to compare it.
             self.assertEqual(calls, [("stockface", False)])
 
-    def test_natively_named_referenced_face_outside_the_body_folder_waits_for_the_catalog_copy(self):
-        # An edited copy keeps the stock face's serialized names, whatever its
-        # file name; only a face beside the body is used at once.
+    def test_natively_named_referenced_face_waits_for_the_catalog_copy_only_outside_extractor_folders(self):
+        # The extractor's own file names in the library and its 3d_model and
+        # extracted/3d_model folders are used at once, as before, so a library
+        # of extracted models needs no download; so is one beside the body.
+        # The same name in any other folder may be an edited copy with the
+        # stock face's serialized names: it waits for the catalog's own copy.
         files = self.face_files(stockface=self.referenced_donor("CAB-" + "2" * 32))
-        for relative in ("ch0207_facedynamic.unity", "3d_model/ch0207_facedynamic.unity",
-                         "extracted/3d_model/ch0207_face.unity", "beside"):
-            edited = (self.selected / "ch0207_facedynamic.unity" if relative == "beside" else self.library / relative)
+        cases = [(self.library, "ch0207_facedynamic.unity", False),
+                 (self.library, "3d_model/ch0207_facedynamic.unity", False),
+                 (self.library, "extracted/3d_model/ch0207_face.unity", False),
+                 (self.selected, "ch0207_facedynamic.unity", False),
+                 # The body's own folder is not an extractor folder.
+                 (self.selected, "3d_model/ch0207_facedynamic.unity", True),
+                 (self.selected, "extracted/3d_model/ch0207_face.unity", True)]
+        for root, relative, waits in cases:
+            edited = root / relative
             edited.parent.mkdir(parents=True, exist_ok=True)
             edited.write_bytes(self.referenced_donor("CAB-" + "2" * 32))
             for allow in (True, False):
                 calls = []
                 self.context["allow_download"] = allow
-                with self.subTest(relative=relative, allow=allow), \
+                with self.subTest(root=root.name, relative=relative, allow=allow), \
                         patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
                         patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([self.catalog_descriptor("stockface")])), \
                         patch.object(faces.FacePlan, "_resource", self.recording_resource(files, calls)):
                     plan = self.plan()
                     self.assertIn(str(edited), [os.path.realpath(path) for path in plan._known_local()])
                     chosen = [os.path.realpath(path) for path in plan.resolve()]
-                if relative == "beside":
+                if not waits:
                     self.assertEqual((chosen, calls), ([str(edited)], []))
                 elif allow:
                     self.assertEqual((chosen, calls), ([str(files["stockface"])], [("stockface", False), ("stockface", True)]))
@@ -1127,6 +1225,64 @@ class FaceTests(unittest.TestCase):
                     # Offline it is still the referenced face, before other prefabs.
                     self.assertEqual((chosen, calls), ([str(edited)], [("stockface", False)]))
             edited.unlink()
+
+    def test_extracted_library_face_is_used_without_any_download(self):
+        # A library of extracted models: each member's referenced stock face
+        # is there under the extractor's name, and the catalog's copy is only
+        # on the CDN. Nothing is downloaded, on the first open or later.
+        directory = self.library / "extracted" / "3d_model"
+        directory.mkdir(parents=True)
+        for owner in (1, 207, 301):
+            with self.subTest(owner=owner):
+                self.body.write_bytes(self.scene("Body", owner=owner))
+                face = directory / f"ch{owner:04}_facedynamic.unity"
+                face.write_bytes(bundle([("CAB-" + "2" * 32, self.scene("Face", owner=owner)),
+                                         ("CAB-" + "2" * 32 + "-eyes", self.scene("Eyes", owner=owner))]))
+                self.context["allow_download"] = True
+                for attempt in range(2):
+                    with patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                            patch.object(faces.FacePlan, "_descriptor_iter",
+                                         lambda plan: iter([self.catalog_descriptor("stockface")])), \
+                            patch.object(faces, "_download", side_effect=AssertionError("No download needed")) as fetch:
+                        plan = self.plan()
+                        self.assertEqual(plan.resolve(), [str(face)])
+                    self.assertEqual(plan.status, "added")
+                    fetch.assert_not_called()
+                    self.assertFalse((Path(self.context["cache_dir"]) / "packs").exists())
+
+    def test_referenced_library_face_kept_for_later_has_the_face_time_after_a_slow_walk(self):
+        # The referenced face waits for the catalog's own copy, which answers
+        # 404; the broad library walk used its whole share of the time.
+        edited = self.selected / "3d_model" / "ch0207_facedynamic.unity"
+        edited.parent.mkdir()
+        edited.write_bytes(self.referenced_donor("CAB-" + "2" * 32))
+        calls = []
+
+        def slow_walk(plan):
+            # A large or slow library: the walk is cut off by its share.
+            while True:
+                faces._check(plan.deadline)
+                time.sleep(.01)
+
+        def resource(plan, descriptor, download=True):
+            from urllib.error import HTTPError
+            calls.append(download)
+            if not download:
+                raise faces.FaceUnavailable("Not local")
+            raise HTTPError("https://cdn.invalid/stockfacepack", 404, "Not Found", {}, None)
+
+        self.context["allow_download"] = True
+        with patch.object(faces, "LOCAL_SECONDS", .3), \
+                patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([self.catalog_descriptor("stockface")])), \
+                patch.object(faces.FacePlan, "_resource", resource), \
+                patch.object(faces.FacePlan, "_local", slow_walk):
+            plan = self.plan()
+            started = time.monotonic()
+            self.assertEqual([os.path.realpath(path) for path in plan.resolve()], [str(edited)])
+        self.assertEqual(plan.status, "added")
+        self.assertEqual(calls, [False, True])
+        self.assertLess(time.monotonic() - started, 5)
 
     @EXTRACTOR_REQUIRED
     def test_referenced_face_search_never_reads_the_default_suit_body(self):
@@ -1413,6 +1569,121 @@ class FaceTests(unittest.TestCase):
                 patch.object(faces, "_download") as fetch:
             self.assertEqual(self.plan().resolve(), [str(cached[0])])
         fetch.assert_not_called()
+
+    @EXTRACTOR_REQUIRED
+    def test_a_face_downloaded_only_to_compare_never_changes_a_later_open_of_any_body(self):
+        # Opens of a body that names no face, and of one that names a face
+        # found nowhere (which fetches the stock face only to compare it),
+        # alternate on one face cache. Every open chooses what the first did.
+        stock = self.referenced_donor("CAB-" + "2" * 32)
+        descriptor = self.databases(stock)
+        library_face = self.library / "costume_face_copy.unity"
+        library_face.write_bytes(self.referenced_donor("CAB-" + "4" * 32))
+        self.context["allow_download"] = True
+        models, packs = Path(self.context["cache_dir"]) / "models", Path(self.context["cache_dir"]) / "packs"
+
+        def open_body(references):
+            with patch.object(faces.FacePlan, "_face_references", return_value=references), \
+                    patch.object(faces, "_download", return_value=self.encrypted(stock, descriptor)) as fetch:
+                chosen = self.plan().resolve()
+            return [Path(path).name for path in chosen], fetch.call_count
+
+        for label, references, downloads in (("no reference", set(), 0), ("reference", {"cab-" + "3" * 32}, 1),
+                                             ("no reference", set(), 0), ("reference", {"cab-" + "3" * 32}, 0),
+                                             ("no reference", set(), 0)):
+            with self.subTest(label, downloads=downloads):
+                self.assertEqual(open_body(references), ([library_face.name], downloads))
+        cached, = models.glob("ch0207_*.unity")
+        self.assertEqual(cached.read_bytes(), stock)
+        self.assertTrue(faces._compared(cached) and faces._downloaded(cached))
+        self.assertTrue(faces._compared(packs / descriptor["pack_name"]))
+        # The face cache may keep only the pack: the face decrypted from it
+        # again is still only a compared download.
+        cached.unlink()
+        Path(str(cached) + ".json").unlink()
+        self.assertEqual(open_body(set()), ([library_face.name], 0))
+        self.assertTrue(faces._compared(cached))
+        # Once it is chosen it is a face the viewer downloaded and used:
+        # a body that names no face reuses it from the cache, as before.
+        library_face.unlink()
+        self.assertEqual(open_body(set()), ([cached.name], 0))
+        self.assertFalse(faces._compared(cached))
+        self.assertTrue(faces._downloaded(cached))
+        library_face.write_bytes(self.referenced_donor("CAB-" + "4" * 32))
+        self.assertEqual(open_body(set()), ([cached.name], 0))
+        # A body that names another face still gives it a download's place.
+        self.assertEqual(open_body({"cab-" + "3" * 32}), ([library_face.name], 0))
+
+    @EXTRACTOR_REQUIRED
+    def test_a_compared_download_that_is_used_is_an_ordinary_download(self):
+        # The compared stock face is the one the body names: it is used at
+        # once, and neither it nor its pack keeps the compare-only mark.
+        stock = self.referenced_donor("CAB-" + "2" * 32)
+        descriptor = self.databases(stock)
+        library_face = self.library / "costume_face_copy.unity"
+        library_face.write_bytes(self.referenced_donor("CAB-" + "4" * 32))
+        self.context["allow_download"] = True
+        with patch.object(faces.FacePlan, "_face_references", return_value={"cab-" + "2" * 32}), \
+                patch.object(faces, "_download", return_value=self.encrypted(stock, descriptor)) as fetch:
+            chosen = self.plan().resolve()
+        fetch.assert_called_once()
+        cached = Path(chosen[0])
+        pack = Path(self.context["cache_dir"]) / "packs" / descriptor["pack_name"]
+        self.assertEqual(cached.read_bytes(), stock)
+        self.assertEqual([faces._compared(path) for path in (cached, pack)], [False, False])
+        self.assertEqual([faces._downloaded(path) for path in (cached, pack)], [True, True])
+        # With only the pack left, a body that names no face decrypts it at
+        # its catalog place again, before the library face, as before.
+        cached.unlink()
+        Path(str(cached) + ".json").unlink()
+        with patch.object(faces.FacePlan, "_face_references", return_value=set()), \
+                patch.object(faces, "_download") as fetch:
+            self.assertEqual(self.plan().resolve(), [str(cached)])
+        fetch.assert_not_called()
+
+    def test_a_cached_download_with_no_catalog_is_still_the_last_fallback(self):
+        # No catalog, no library face: only a face the viewer downloaded
+        # earlier, which is not the one the body names, or which was only
+        # compared. It keeps a download's place, the end of the late pass.
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        cached = directory / ("ch0207_" + "a" * 24 + ".unity")
+        self.context["allow_download"] = True
+        for references, compared in (({"cab-" + "3" * 32}, False), ({"cab-" + "3" * 32}, True), (set(), True)):
+            faces._save(cached, self.referenced_donor("CAB-" + "2" * 32), 207, downloaded=True, compared=compared)
+            with self.subTest(references=references, compared=compared), \
+                    patch.object(faces.FacePlan, "_face_references", return_value=references), \
+                    patch.object(faces.FacePlan, "_descriptor_iter", lambda plan: iter([])), \
+                    patch.object(faces, "_download", side_effect=AssertionError("No catalog to download from")):
+                plan = self.plan()
+                self.assertEqual(plan.resolve(), [str(cached)])
+                self.assertEqual(plan._late, [str(cached)])
+            self.assertEqual(plan.status, "added")
+            self.assertFalse(faces._compared(cached))
+
+    def test_the_selected_costume_own_face_is_used_even_if_it_was_only_compared(self):
+        from collections import OrderedDict
+        from webtools.core import viewer_mod_sources
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        compared = directory / ("ch0207_" + "a" * 24 + ".unity")
+        faces._save(compared, self.referenced_donor("CAB-" + "2" * 32), 207, downloaded=True, compared=True)
+        library_face = self.library / "costume_face_copy.unity"
+        library_face.write_bytes(self.referenced_donor("CAB-" + "4" * 32))
+        self.game_catalog("installedbody", ["privateface"], [("privateface", "privatepack", 0, 900, 0, 0)])
+        record = {"region": "gl", "suit_id": 900000001, "variant": "primary", "download": False,
+                  "model": "installedbody", "purpose": "viewer", "platform": "android", "selection_language": "en"}
+        calls = []
+        with patch.object(viewer_mod_sources, "_REGISTRY", OrderedDict()), \
+                patch.object(faces.FacePlan, "_face_references", return_value=set()), \
+                patch.object(faces.FacePlan, "_resource",
+                             self.recording_resource({"privateface": compared}, calls, local={"privateface"})):
+            # Without the game selection it keeps a download's place.
+            self.assertEqual(self.plan().resolve(), [str(library_face)])
+            viewer_mod_sources.register_game_import(str(self.body), record)
+            self.assertEqual(self.plan().resolve(), [str(compared)])
+        self.assertEqual(calls, [("privateface", False)])
+        self.assertFalse(faces._compared(compared))
 
     @EXTRACTOR_REQUIRED
     def test_a_cached_download_keeps_its_catalog_place_among_later_downloads(self):
