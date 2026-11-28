@@ -732,13 +732,17 @@
         dispose: function () { observer.disconnect(); entry.panel.removeEventListener("toggle", draw); if (entry.operation === "part") entry.textureCanvas.removeEventListener("texturepanechange", drawTexture); controls.dispose(); disposeObject(model); planes.forEach(disposeObject); disposeObject(band); disposeObject(selection); if (cursor) cursor.remove(); renderer.dispose(); renderer.forceContextLoss(); }
       }; return entry.preview;
     }
+    // The Game assets cache keeps the game's body file name; people see the
+    // member and costume it is.
+    function donorLabel(path) { return options.labelFor ? options.labelFor(path) : String(path).replace(/\\/g, "/").split("/").pop(); }
     async function chooseDonor(entry, paths, variants) {
       if (busy || disposed || !paths || paths.length !== 1) return;
       var token = ++entry.generation;
       if (entry.request) entry.request.abort();
       var controller = new AbortController(); entry.request = controller;
       entry.donor = paths[0]; entry.variant = variants && variants[0] || variants && variants["0"] || "primary";
-      entry.file.value = String(paths[0]).replace(/\\/g, "/").split("/").pop();
+      entry.file.value = donorLabel(paths[0]); entry.file.title = paths[0];
+      if (options.loadLabel) options.loadLabel(paths[0]).then(function () { if (!disposed && entry.donor === paths[0]) entry.file.value = donorLabel(paths[0]); });
       entry.inspecting = true; entry.stage.hidden = true; if (entry.operation === "part") entry.texturePanel.hidden = true; status(entry, "Preparing donor…"); refresh();
       var stage = "Donor inspection";
       try {
@@ -1104,7 +1108,7 @@
       refresh: refresh,
       getEditHistory: function () { return undoHistory.map(function (entry) { return entry.title; }); },
       updateLanguage: function () {
-        entries.forEach(function (entry) { entry.panel.querySelectorAll("[data-transplant-label]").forEach(function (node) { node.textContent = t(node.dataset.transplantLabel); }); if (entry.uvColor) entry.uvColor.updateLanguage(); if (entry.operation === "part") updatePartUI(entry); status(entry, entry.statusKey || ""); }); refresh();
+        entries.forEach(function (entry) { entry.panel.querySelectorAll("[data-transplant-label]").forEach(function (node) { node.textContent = t(node.dataset.transplantLabel); }); if (entry.donor && entry.file) entry.file.value = donorLabel(entry.donor); if (entry.uvColor) entry.uvColor.updateLanguage(); if (entry.operation === "part") updatePartUI(entry); status(entry, entry.statusKey || ""); }); refresh();
       },
       getState: function () { return { busy: busy, jobId: jobId, undoCount: undoHistory.length, redoCount: redoHistory.length, historyLimit: MAX_HISTORY, donors: entries.map(function (entry) { var manifest = selectedBoneManifest(entry.partOptions, entry.selectedBones), result = { operation: entry.operation, donor: entry.donor, part: entry.parts.value, cutLow: Number(entry.low.value), cutHigh: Number(entry.high.value), matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, selectionScope: entry.scope.value, excludeAccessories: entry.exclude.checked, selectedTriangles: entry.selectedTriangles || 0 };
         if (entry.uvPlacement) result.uvPlacement = entry.uvPlacement.value;

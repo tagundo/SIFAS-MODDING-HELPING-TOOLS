@@ -439,7 +439,7 @@ class ViewerModFlowTests(unittest.TestCase):
         result = self.package()
         package = Path(result["mod_package"]["package_path"])
         self.assertEqual(package.parent, (self.output / "mods/saved").resolve())
-        self.assertRegex(package.name, r"^\d{4}-\d{2}-\d{2}_\d{4}_Maki_Neutral_edited_costume_(android|ios)\.zip$")
+        self.assertRegex(package.name, r"^\d{4}-\d{2}-\d{2}_\d{4}_006_Maki_Neutral_edited_costume_(android|ios)\.zip$")
         self.assertIn(str(package), result["output_paths"])
         # The edit folder keeps its work files but no second copy of the ZIP.
         edit = Path(result["recipe_path"]).parent
@@ -452,6 +452,33 @@ class ViewerModFlowTests(unittest.TestCase):
             second = Path(self.package()["mod_package"]["package_path"])
         self.assertEqual((first.name, second.name), ("same-name.zip", "same-name_3.zip"))
         self.assertEqual((self.output / "mods/added/same-name_2.zip").read_bytes(), b"added earlier")
+
+    def test_another_mod_member_installs_names_with_that_members_number(self):
+        # Opened as Umi's costume; the Mod is for Chika. Without dictionaries
+        # the member names fall back to the roster, like the page's choices.
+        opened = {"nameBases": {"en": "004 Umi Sonoda · Winter", "ko": "004 소노다 우미 · 동복", "ja": "004 園田 海未 · 冬服"},
+                  "nameTexts": {"en": "Winter", "ko": "동복", "ja": "冬服"}, "nameOwner": 4, "characterId": 4, "sources": []}
+        def installed(character, name):
+            with patch.object(flow, "metadata", return_value=dict(opened)):
+                result = flow.create_package(self.token, self.state, output_root=self.output, repo_root=self.runtime,
+                    cache_root=self.cache, display_name=name, character_id=character, name_parts=[[{"k": "Outlines"}]],
+                    language="ko", job=self.job)
+            package = Path(result["mod_package"]["package_path"])
+            with zipfile.ZipFile(package) as archive:
+                manifest = next(name for name in archive.namelist() if name.endswith("modinstall.txt"))
+                values = {node.targets[0].id: ast.literal_eval(node.value) for node in ast.parse(archive.read(manifest).decode("utf-8")).body
+                          if isinstance(node, ast.Assign) and node.targets[0].id.startswith("costume_name_")}
+            return package.name, values
+        name, values = installed(101, "101 Chika Takami · 동복 · 외곽선")
+        self.assertEqual(values, {"costume_name_en": "101 Chika Takami · Winter · Outlines", "costume_name_ko": "101 Chika Takami · 동복 · 외곽선",
+                                  "costume_name_zh": "101 Chika Takami · Winter · Outlines", "costume_name_ja": "101 Chika Takami · 冬服 · 輪郭線"})
+        self.assertRegex(name, r"^\d{4}-\d{2}-\d{2}_\d{4}_101_Chika_Takami_동복_외곽선_(android|ios)\.zip$")
+        # The opened member's own automatic name is installed per language too.
+        _, values = installed(4, "004 소노다 우미 · 동복 · 외곽선")
+        self.assertEqual(values["costume_name_ja"], "004 園田 海未 · 冬服 · 輪郭線")
+        # Umi's automatic name for Chika is not the automatic name: one typed name for all.
+        name, values = installed(101, "004 소노다 우미 · 동복 · 외곽선")
+        self.assertEqual(set(values.values()), {"004 소노다 우미 · 동복 · 외곽선"})
 
     def test_publication_check_failure_leaves_no_zip_in_mods_saved(self):
         move = flow._move_mod_zip
@@ -469,12 +496,16 @@ class ViewerModFlowTests(unittest.TestCase):
     def test_mod_zip_names(self):
         from datetime import datetime
         when = datetime(2026, 11, 27, 14, 5)
+        # A typed name: the member's three-digit number, then the given name.
         self.assertEqual(flow.mod_zip_stem("Knit reform", 208, "android", when=when),
-                         "2026-11-27_1405_Emma_Knit_reform_android")
+                         "2026-11-27_1405_208_Emma_Knit_reform_android")
         self.assertEqual(flow.mod_zip_stem("Emma knit", 208, "android+ios", when=when),
-                         "2026-11-27_1405_Emma_knit_android-ios")
+                         "2026-11-27_1405_208_Emma_knit_android-ios")
         self.assertEqual(flow.mod_zip_stem("리나 보드 / 교복", 209, "ios", scene=True, when=when),
-                         "2026-11-27_1405_Rina_리나_보드_교복_ios_scene")
+                         "2026-11-27_1405_209_Rina_리나_보드_교복_ios_scene")
+        # The automatic name already starts with the number and the member.
+        self.assertEqual(flow.mod_zip_stem("209 텐노지 리나 · 리나 보드", 209, "ios", scene=True, when=when),
+                         "2026-11-27_1405_209_텐노지_리나_리나_보드_ios_scene")
         self.assertEqual(flow.mod_zip_stem("..", None, None, when=when), "2026-11-27_1405_costume")
         self.assertEqual(flow.mod_zip_stem("../../x", 999, "android", when=when), "2026-11-27_1405_x_android")
 

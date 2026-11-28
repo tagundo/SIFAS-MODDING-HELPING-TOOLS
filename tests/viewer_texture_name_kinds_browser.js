@@ -73,8 +73,15 @@ async function idle(page) {
   await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(), p = ModelViewer.getState().persistence; return !s.pending && !s.loading && !p.busy; });
   await frames(page);
 }
-// The Mod name's operations: everything after the costume name.
-async function name(page) { await idle(page); return (await page.locator('#viewer-mod-name').inputValue()).split(' · ').slice(1); }
+// The Mod name's operations: everything after its name base (the member's
+// number and name, then the costume or file name).
+async function name(page) {
+  await idle(page);
+  const value = await page.locator('#viewer-mod-name').inputValue();
+  const base = await page.evaluate(() => { const p = ModelViewer.getEditingMetadata().modPackaging || {}; return (p.nameBases || {})[document.documentElement.lang] || p.nameBase || ''; });
+  assert(base && value.startsWith(base), 'The automatic name starts with its base: ' + JSON.stringify({ value, base }));
+  return value.slice(base.length).split(' · ').slice(1);
+}
 async function open(page) {
   await page.evaluate(file => { document.getElementById('viewer-auto-face').checked = false; return openModelViewer([file]); }, source);
   await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getEditingMetadata().available);

@@ -75,15 +75,25 @@ def _name_part(text):
 
 
 def mod_zip_stem(display_name, character_id=None, platform=None, *, scene=False, when=None):
-    """Readable, date-first name: 2026-11-27_1405_Emma_name_android."""
+    """Readable, date-first name, then the member's three-digit number.
+
+    ``2026-11-27_1405_004_소노다_우미_<costume>_android`` for an automatic
+    Mod name (it starts with the number and the member); a typed name gets
+    the number and the romanised given name: ``2026-11-27_1405_208_Emma_<name>``.
+    """
     from datetime import datetime
     when = when or datetime.now().astimezone()
     parts = [when.strftime("%Y-%m-%d_%H%M")]
     name = _name_part(display_name) or "costume"
     from webtools.core.charinfo import NAMES
-    given = _name_part(NAMES.get(character_id, "").split(" ")[0]) if type(character_id) is int else ""
-    if given and given.casefold() not in name.casefold():
-        parts.append(given)
+    if type(character_id) is int and character_id in NAMES:
+        number = f"{character_id:03d}"
+        # The automatic name already starts with the number and the member.
+        if not re.match(number + r"(?![0-9])", name):
+            parts.append(number)
+            given = _name_part(NAMES[character_id].split(" ")[0])
+            if given and given.casefold() not in name.casefold():
+                parts.append(given)
     parts.append(name)
     if platform in _PLATFORM_LABELS:
         parts.append(_PLATFORM_LABELS[platform])
@@ -256,47 +266,129 @@ def _manifest_metadata(context, language):
     owner = (values.get("chara_id_append") if values.get("chara_id_append") is not None
              else member_from_native(values.get("chara_id")))
     name = values.get("costume_name_" + language) or values.get("costume_name_en")
+    from .model_labels import LANGUAGES
+    names = {code: values.get("costume_name_" + code) or values.get("costume_name_en") for code in LANGUAGES}
     return {"name": name if isinstance(name, str) else None, "owner": owner,
+            "names": {code: value[:120] for code, value in names.items() if isinstance(value, str) and value.strip()},
             "paired": bool(values.get("costume_file") and values.get("rina_unmask_costume_file")),
             "has_face": any(isinstance(values.get(key), str) and bool(values[key])
                             for key in ("costume_facedynamic_file", "costume_facedynamic_file_ios"))}
 
 
+def _declared_label(repo_root, raw, names):
+    """A Mod ZIP or scene package named by its own manifest."""
+    from . import model_labels
+    declared = model_labels.archive_names(io.BytesIO(raw))
+    parts = model_labels.text_label(repo_root, declared["names"], declared["owner"], names=names) if declared else None
+    if not parts:
+        return None
+    parts["source"] = "scene" if declared["scene"] else "manifest"
+    # A re-saved viewer Mod ZIP keeps its inert source record for platform
+    # conversion; an older one names its costume in a code-like name the
+    # label read (model_labels.declared_hint).
+    kept = None if declared["scene"] else model_labels.kept_record(io.BytesIO(raw))
+    if kept or parts.get("hint"):
+        parts["counterpart"] = kept or parts["hint"]
+    return parts
+
+
+def _source_labels(context, bindings, *, repo_root, cache_root):
+    """Readable names of each opened source, per language; never identity.
+
+    A bound game import, its edited/transplanted copies (through their
+    derived receipts) and a Mod ZIP's declared names are named. An automatic
+    face companion is named as such. Anything else keeps its file name.
+    """
+    from . import model_labels
+    automatic = set(context.get("outline_only_sources", []))
+    bound = {row["container"]: row["record"] for row in bindings}
+    labels, rows = {}, []
+    with model_labels._Names(repo_root) as names:
+        for index, container in enumerate(context["containers"]):
+            parts = None
+            try:
+                if index in bound:
+                    parts = model_labels.record_label(repo_root, bound[index], names=names)
+                    if parts:
+                        parts["source"] = "game"
+                else:
+                    raw = container.get("raw")
+                    if isinstance(raw, bytes) and zipfile.is_zipfile(io.BytesIO(raw)):
+                        # A transplant onto a Mod ZIP wearer (or an edit of
+                        # one) is named through its receipt first: the names
+                        # its manifest copied are the wearer's, never the
+                        # costume a costume transplant put on it.
+                        proofs = [{"path": str(Path(container["path"]).resolve()), "containerSha256": container["sha256"],
+                                   "member": source["member"], "sha256": source["sha256"]}
+                                  for position, source in enumerate(context["sources"])
+                                  if source.get("container") == index and position not in automatic
+                                  and isinstance(source.get("member"), str) and isinstance(source.get("sha256"), str)]
+                        parts = (model_labels.bytes_label(Path(container["path"]).resolve(), container["sha256"],
+                                                          repo_root=repo_root, cache_root=cache_root, names=names,
+                                                          proofs=proofs, source=io.BytesIO(raw)) if proofs else None)
+                        if parts is model_labels.UNNAMED:
+                            parts = None
+                        elif parts is None:
+                            parts = _declared_label(repo_root, raw, names)
+                    else:
+                        parts = model_labels.bytes_label(Path(container["path"]).resolve(), container["sha256"],
+                                                         repo_root=repo_root, cache_root=cache_root, names=names)
+            except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                parts = None
+            labels[index] = parts
+        for index, source in enumerate(context["sources"]):
+            container = source.get("container")
+            parts = labels.get(container)
+            row = {"kind": "face" if index in automatic else "body",
+                   "file": Path(context["containers"][container]["name"]).name}
+            if index in automatic:
+                row["label"] = model_labels.face_label(repo_root, row["file"], names=names)
+            elif parts:
+                row.update(model_labels.safe_parts(parts))
+            rows.append(row)
+    return labels, rows
+
+
+def _character_choices(repo_root):
+    """Each member as ``004 Umi Sonoda`` / ``004 소노다 우미`` / ``004 園田 海未``."""
+    from webtools.core.charinfo import NAMES
+    from . import model_labels
+    try:
+        rows = model_labels.member_choices(repo_root, list(NAMES))
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        rows = [{"value": str(key), "labels": {code: model_labels.titled(key, value, "")
+                                               for code in model_labels.LANGUAGES}} for key, value in NAMES.items()]
+    return [{"value": row["value"], "label": row["labels"]["en"], "labels": row["labels"]} for row in rows]
+
+
 def metadata(context, *, repo_root, cache_root, language="en"):
     """Small UI hints; all packaging identities are verified again on Save."""
     from webtools.core.charinfo import NAMES
-    result = {"nameBase": Path(context["containers"][0]["name"]).stem,
+    from . import model_labels
+    stem = Path(context["containers"][0]["name"]).stem
+    bases = None
+    result = {"nameBase": stem,
               "characterId": None, "requiresCounterpart": False,
               "hasFaceCompanions": bool(context.get("outline_only_sources")),
               "faceSourceIndices": list(context.get("outline_only_sources", [])),
-              "characters": [{"value": str(key), "label": value} for key, value in NAMES.items()]}
+              "characters": _character_choices(repo_root)}
     manifest = _manifest_metadata(context, language)
     result["hasFaceCompanions"] = result["hasFaceCompanions"] or bool(manifest.get("has_face"))
     if manifest.get("name"):
         result["nameBase"] = manifest["name"][:120]
+    declared = ({code: manifest["names"].get(code) or result["nameBase"] for code in model_labels.LANGUAGES}
+                if manifest.get("names") else None)
     if type(manifest.get("owner")) is int and manifest["owner"] in NAMES:
         result["characterId"] = manifest["owner"]
         result["requiresCounterpart"] = manifest["owner"] == 209 and not manifest.get("paired")
+    bindings = []
     try:
-        from webtools.core import game_models, viewer_mod_sources
+        from webtools.core import viewer_mod_sources
         bindings = viewer_mod_sources.game_context(context, repo_root, receipts=cached_receipts(context, cache_root))
         if len(bindings) == 1:
             record = bindings[0]["record"]
             result["characterId"] = record["owner"]
             result["requiresCounterpart"] = False
-            database = game_models._readonly(Path(repo_root) / "assets/db" / record["region"] / "masterdata.db")
-            try:
-                row = database.execute("SELECT name FROM m_suit WHERE id=?", (record["suit_id"],)).fetchone()
-            finally:
-                database.close()
-            dictionary = game_models._dictionary(repo_root, record["region"], language)
-            try:
-                label = game_models._extractor().real_costume_name(dictionary, row[0]) if dictionary and row else None
-                if label:
-                    result["nameBase"] = str(label)[:120]
-            finally:
-                if dictionary:
-                    dictionary.close()
         elif result["characterId"] is None:
             # Rina's board texture has a distinct, observed character identity;
             # no costume/suit pairing is inferred from that texture hint.
@@ -322,7 +414,163 @@ def metadata(context, *, repo_root, cache_root, language="en"):
             result["requiresCounterpart"] = derived["character_id"] == 209 and not manifest.get("paired")
     except (ImportError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
         pass
+    texts, owner = None, None
+    try:
+        # The automatic Mod name starts with the member and the costume in
+        # the page language, also for an edited or transplanted copy (the
+        # wearer, in the donor's costume after a costume transplant).
+        labels, result["sources"] = _source_labels(context, bindings, repo_root=repo_root, cache_root=cache_root)
+        automatic = set(context.get("outline_only_sources", []))
+        body = next((source["container"] for index, source in enumerate(context["sources"])
+                     if index not in automatic), 0)
+        if labels.get(body):
+            bases, texts, owner = labels[body]["nameBase"], labels[body]["nameText"], labels[body]["owner"]
+    except (ImportError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        pass
+    if bases is None:
+        # No verified game costume names this file: its manifest or file
+        # name, after the member's number and name when the member is known.
+        bases = texts = declared or {code: result["nameBase"] for code in model_labels.LANGUAGES}
+        try:
+            member = model_labels.member_names(repo_root, result["characterId"])
+            if member is not None:
+                owner = result["characterId"]
+                bases = model_labels._titled_names(owner, member, bases)
+                texts = model_labels._untitled_names(owner, member, bases)
+        except (OSError, ValueError, TypeError, sqlite3.Error):
+            pass
+    result["nameBases"] = {code: str(value)[:120] for code, value in bases.items()}
+    result["nameBase"] = result["nameBases"].get(language) or result["nameBases"]["en"]
+    # The same base without its member: the page and Save put another chosen
+    # Mod member's number and name in front instead (model_labels.for_member).
+    result["nameTexts"] = {code: str((texts or {}).get(code) or "")[:120] for code in model_labels.LANGUAGES}
+    result["nameOwner"] = owner if type(owner) is int else None
     return result
+
+
+def scene_name_bases(repo_root, scene):
+    """A reopened scene package's name after its target member (Rina 209
+    only when the package names no other target)."""
+    from . import model_labels
+    name = scene["display_name"]
+    target = scene.get("target_member_id", 209)
+    try:
+        bases = model_labels.titled_names(repo_root, target if type(target) is int else 209, name)
+    except (OSError, TypeError, ValueError, sqlite3.Error):
+        bases = {code: name for code in model_labels.LANGUAGES}
+    return {code: value[:120] for code, value in bases.items()}
+
+
+def name_bases(metadata, owner, *, repo_root):
+    """The automatic Mod name bases for the Mod member ``owner``.
+
+    The opened costume's own bases for its own member; for another chosen
+    member that member's number and name before the same costume text, so a
+    Mod for Chika never carries Umi's number (viewer-persistence.js builds
+    the same from the member choice labels).
+    """
+    from . import model_labels
+    bases = (metadata or {}).get("nameBases")
+    texts = (metadata or {}).get("nameTexts")
+    if type(owner) is not int or owner == (metadata or {}).get("nameOwner") or not isinstance(texts, dict):
+        return bases
+    try:
+        return model_labels.for_member(repo_root, owner, texts) or bases
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        return bases
+
+
+def _utf16_length(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _utf16_prefix(text, limit):
+    """The page's String.slice(0, limit) without a split surrogate pair."""
+    kept, used = [], 0
+    for char in text:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if used + width > limit:
+            break
+        kept.append(char)
+        used += width
+    return "".join(kept)
+
+
+def _part_text(part, language):
+    from webtools import i18n
+    return "".join(token if isinstance(token, str) else (i18n.tr(token["k"], language) or token["k"]) for token in part)
+
+
+def compose_mod_name(base, parts, language):
+    """The automatic Mod name: costume name, then each edit label that fits.
+
+    The page builds the same name (viewer-persistence.js suggestedModName). A
+    label the name base already contains (an installed Mod's own name) is not
+    repeated. Whole labels only, at most 120 UTF-16 units like the page.
+    """
+    present = set(base.split(" · ")[1:])
+    name, seen = _utf16_prefix(base, 120), set()
+    for part in parts:
+        text = _part_text(part, language)
+        if not text or text in present or text in seen:
+            continue
+        seen.add(text)
+        if _utf16_length(name + " · " + text) > 120:
+            break
+        name += " · " + text
+    return name
+
+
+# A 120-unit name holds at most 29 labels (one character and " · " each);
+# the page sends at most this many (viewer-persistence.js NAME_PART_LIMIT).
+NAME_PART_LIMIT = 64
+
+
+def validate_name_parts(parts):
+    """Bounded page-built automatic name labels: literal text or i18n keys.
+
+    Optional display text, never a reason to refuse a save: only the labels
+    before the first malformed one, and at most :data:`NAME_PART_LIMIT`, are
+    kept. A label past those never fits in the page's name either; if the
+    page's name differs from what the kept labels compose,
+    :func:`localized_mod_names` installs the page's name for every language.
+    Anything but a list is None (the page's name for every language).
+    """
+    def token(value):
+        if isinstance(value, str):
+            return len(value) <= 120 and not any(ord(char) < 32 or ord(char) == 127 for char in value)
+        return (isinstance(value, dict) and set(value) == {"k"} and isinstance(value["k"], str)
+                and 0 < len(value["k"]) <= 200 and not any(ord(char) < 32 for char in value["k"]))
+    if not isinstance(parts, list):
+        return None
+    kept = []
+    for part in parts[:NAME_PART_LIMIT]:
+        if not isinstance(part, list) or not 1 <= len(part) <= 24 or not all(token(item) for item in part):
+            break
+        kept.append(copy.deepcopy(part))
+    return kept
+
+
+def localized_mod_names(display_name, parts, bases, language):
+    """Per-language installed names for an untouched automatic Mod name.
+
+    Only when the page's name is exactly this composition in the page
+    language; any typed or changed name is used for every language.
+    """
+    from .model_labels import LANGUAGES
+    if parts is None or not isinstance(bases, dict) or language not in LANGUAGES:
+        return None
+    if not all(isinstance(bases.get(code), str) and bases[code].strip() for code in LANGUAGES):
+        return None
+    names = {code: compose_mod_name(bases[code], parts, code) for code in LANGUAGES}
+    if names[language].strip() != display_name.strip():
+        return None
+    for value in names.values():
+        try:
+            validate_options(value, None, None, None)
+        except ValueError:
+            return None
+    return {code: value.strip() for code, value in names.items()}
 
 
 def normalize_mesh_state(mesh_state):
@@ -515,11 +763,39 @@ def _package_inputs(context, result):
     return selected, companions
 
 
+def _source_costume(metadata):
+    """The opened body's game costume container, recorded inertly in the ZIP.
+
+    A game import and its edited or transplanted copies name the wearer's
+    game record (the same counterpart _receipt_selection follows for a loose
+    file, also after a costume transplant, whose label shows the donor's
+    costume); a reopened viewer Mod ZIP carries its own record on, and an
+    older one without a record the costume its code-like name names
+    (model_labels.declared_hint). It is a conversion candidate only,
+    verified against the game body there.
+    """
+    for row in (metadata or {}).get("sources") or []:
+        if row.get("kind") != "body":
+            continue
+        counterpart = row.get("counterpart")
+        if row.get("source") not in ("game", "derived", "manifest") or not isinstance(counterpart, dict):
+            return None
+        region, suit, variant, owner = (counterpart.get(key) for key in ("region", "suitId", "variant", "owner"))
+        if (region not in ("gl", "jp") or type(suit) is not int or not 0 < suit < 10 ** 12
+                or variant not in ("primary", "unmasked") or type(owner) is not int):
+            return None
+        regions = counterpart.get("regions")
+        return {"region": region, "suit_id": suit, "variant": variant, "member": owner,
+                **({"regions": list(regions)} if isinstance(regions, list) and len(regions) > 1 else {})}
+    return None
+
+
 def create_package(token, state, *, output_root, repo_root, cache_root, display_name,
                    character_id=None, counterpart_path=None, selected_variant=None, thumbnail_token="", mesh_state=None,
-                   include_face_edits=None, job):
+                   include_face_edits=None, name_parts=None, language="en", job):
     from webtools.core import model_edits, viewer_mod_package, viewer_mod_sources, viewer_mod_pair_edits, viewer_scene_roles
     name = validate_options(display_name, character_id, counterpart_path, selected_variant)
+    name_parts = validate_name_parts(name_parts)
     if include_face_edits is not None and not isinstance(include_face_edits, bool):
         raise ValueError("Choose whether to include this costume's verified face companion.")
     if not _PACKAGE_SLOT.acquire(blocking=False):
@@ -569,9 +845,19 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         _check(job)
         package_result, faces = _package_inputs(context, result)
         owner = character_id if character_id is not None else result.get("metadata", {}).get("characterId")
+        # An untouched automatic name is installed in each game language; a
+        # typed name is installed as typed for every language. The bases are
+        # for the chosen Mod member (a reopened scene: its target member).
+        scene = viewer_scene_roles.session_metadata(token)
+        bases = (scene_name_bases(repo_root, scene) if scene and scene.get("display_name")
+                 else name_bases(result.get("metadata"), owner, repo_root=repo_root))
+        names = localized_mod_names(name, name_parts, bases, language)
+        source_costume = _source_costume(result.get("metadata"))
         packed = viewer_mod_package.package_saved_export(package_result, Path(result["recipe_path"]).parent / "mod",
             display_name=name, chara_id=owner, pair=pair,
             log=job.log, should_stop=job.should_stop,
+            **({"names": names} if names else {}),
+            **({"source_costume": source_costume} if source_costume else {}),
             **({"face_companions": faces} if include_face_edits and faces else {}),
             **({"include_face_edits": include_face_edits} if include_face_edits is not None else {}),
             **({"thumbnail": thumbnail} if thumbnail is not None else {}))

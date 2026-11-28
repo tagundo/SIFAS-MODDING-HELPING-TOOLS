@@ -1895,10 +1895,22 @@
       blushInfo = null; cheek = null; cheekPromise = null; cheekError = ""; blushPending = false; blushBefore = false; blushSwatches = null;
       rebuildTextureSelect(); information.textContent = ""; toneEstimate.textContent = ""; say(standalone ? "Image changes ready. Use Export PNG to save." : "Open a model to edit textures."); revision++; if (!silent && options.onChange) options.onChange(); refreshButtons();
     }
+    // The game's costume name (or the automatic face) instead of a cache file name.
+    function sourceLabel(record) {
+      var source = record && record.texture ? record.texture.source : null;
+      var label = options.sourceLabel && typeof source === "number" ? options.sourceLabel(source) : "";
+      return label || record && record.sourceName || "";
+    }
     function rebuildTextureSelect() {
+      var previous = textureSelect.value;
       textureSelect.innerHTML = ""; var blank = node("option", textureSelect, "Choose a texture"); blank.value = "";
-      catalogue.forEach(function (record) { var option = node("option", textureSelect); option.value = key(record.texture); option.textContent = record.name + " · " + record.width + "×" + record.height + (record.sourceName ? " · " + record.sourceName : ""); option.disabled = record.available === false; option.title = record.reason || ""; });
+      catalogue.forEach(function (record) {
+        var option = node("option", textureSelect), source = sourceLabel(record);
+        option.value = key(record.texture); option.textContent = record.name + " · " + record.width + "×" + record.height + (source ? " · " + source : "");
+        option.disabled = record.available === false; option.title = [record.reason || "", record.sourceName || ""].filter(Boolean).join("\n");
+      });
       if (active) textureSelect.value = key(active.record.texture);
+      else if (Array.from(textureSelect.options).some(function (option) { return option.value === previous; })) textureSelect.value = previous;
     }
     function refresh() {
       if (disposed) return Promise.resolve();
@@ -2159,7 +2171,7 @@
       changeLayer: changeLayer, clipboardAction: clipboardAction,
       openBlush: function () { section.open = true; setTab("blush"); return true; }, chooseBlushLevel: chooseBlushLevel, chooseBlushType: chooseBlushType, setBlushStrength: setBlushStrength,
       setBlushBefore: setBlushBefore, setBlushEncoding: setBlushEncoding, applyBlush: applyBlush, removeBlush: removeBlush,
-      updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); units.forEach(function (pair) { pair[0].textContent += pair[1]; }); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor"); toolButtons.forEach(function (item) { item.node.title = t(item.name); item.node.setAttribute("aria-label", t(item.name)); }); section.querySelectorAll(".viewer-texture-icon-button:not(.viewer-texture-svg-button)").forEach(function (item) { item.title = item.textContent; }); workspace.settingsButton.setAttribute("aria-label", t("Color and layers")); showSelection.parentNode.title = t("Color adjustments hide selection tint without clearing the selection."); workspace.resizer.setAttribute("aria-label", t("Resize texture canvas")); workspace.dockResizer.setAttribute("aria-label", t("Resize tool settings")); if (uvControl) uvControl.updateLanguage(); updateInformation(); updateTone(); refreshButtons(); if (statusText || error) say(statusText, error); },
+      updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); rebuildTextureSelect(); units.forEach(function (pair) { pair[0].textContent += pair[1]; }); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor"); toolButtons.forEach(function (item) { item.node.title = t(item.name); item.node.setAttribute("aria-label", t(item.name)); }); section.querySelectorAll(".viewer-texture-icon-button:not(.viewer-texture-svg-button)").forEach(function (item) { item.title = item.textContent; }); workspace.settingsButton.setAttribute("aria-label", t("Color and layers")); showSelection.parentNode.title = t("Color adjustments hide selection tint without clearing the selection."); workspace.resizer.setAttribute("aria-label", t("Resize texture canvas")); workspace.dockResizer.setAttribute("aria-label", t("Resize tool settings")); if (uvControl) uvControl.updateLanguage(); updateInformation(); updateTone(); refreshButtons(); if (statusText || error) say(statusText, error); },
       dispose: function () { if (disposed) return; reset(false, true); disposed = true; listeners.forEach(function (remove) { remove(); }); finishPickerStack(); if (expanded) setExpanded(false); if (uvControl) uvControl.dispose(); if (processor) processor.dispose(); modelCursor.remove(); section.remove(); }
     };
   }

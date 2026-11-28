@@ -494,10 +494,36 @@ repacking is unnecessary and the source files remain unchanged.
   still create editable model copies and a recipe.
   The **Mod ZIP** download appears first; the edited preview copy and recipe
   keep separate labels. Use the Mod ZIP for the installer.
-  **Mod name** starts with the costume name and the actual edited parts,
-  relative factors or selected thigh conversion. You can change it; **Automatic
-  name** restores the suggestion. The ZIP, installer manifest and game costume
-  share that name. The optional target settings let you identify an otherwise
+  **Mod name** starts with the member's three-digit number, the member and the
+  costume in the page language (for example `004 소노다 우미 · 오토노키자카 고교
+  교복(동복)`), then the actual edited parts, relative factors or selected thigh
+  conversion. An edited copy keeps the name of the costume it was made from;
+  a costume transplant result is named after its wearer in the donor's costume
+  (`004 소노다 우미 · <donor costume> · 코스튬 이식`), also when the wearer is
+  a Mod ZIP; when the donor can no longer be named, only the member and the
+  operation (never the costume it replaced). A part or lower-body transplant is
+  named after the wearer's costume and that operation; an added costume uses
+  the name it was installed with. Choosing another **Costume character** puts
+  that member's number and name first instead (`101 타카미 치카 · …`). You can
+  change it; **Automatic name** restores the suggestion. An untouched
+  automatic name is installed in English, Korean and Japanese (Chinese uses
+  English); a typed name is installed as typed. A Rina board scene package is
+  the exception: the installer stores one name for every language, so it is
+  installed with the name as shown on the page. The saved ZIP is named
+  date-first, then that name (`2026-11-28_0119_004_소노다_우미_…_android.zip`);
+  a typed name gets the member's number and romanised given name first. Loaded
+  models, the texture and mesh pickers and the transplant donor read the same
+  way; their cache file names (`ch0004_suit<id>_primary.unity`) stay on disk
+  and in each tooltip. The title chip shows the member on a small first line
+  and the costume below it, wrapped rather than cut. Game assets lists one
+  member's costumes by costume name only; search results start with the
+  member's number and are listed by member. A viewer Mod ZIP keeps an inert
+  record of its game costume that platform conversion verifies against the
+  body; a re-save that records its costume replaces it (never a second copy).
+  An older ZIP whose name still contains `ch0004_suit<id>_primary` for its own
+  member reads as that game costume (its edit labels in each language), and a
+  re-save records that costume, so the readable name converts as the code
+  did. The optional target settings let you identify an otherwise
   unknown character or supply the other Rina model and the edited variant.
   Rina mod packages apply the same source-relative body changes to both board
   and unmasked models, including when you edit only one variant. Each variant

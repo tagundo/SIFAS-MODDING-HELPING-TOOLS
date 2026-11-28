@@ -13,7 +13,7 @@
     var result = null, resultModelId = "", resultSourcePaths = [], sourceInspection = null, authoringInspection = null, reviewingSaved = false, jobId = "", eventSource = null, requestController = null;
     var outputPaths = [], previewPaths = [], originalPaths = [], recipePath = "", events = [], lastContextId = "", lastAuthoringFingerprint = "";
     var modContext = "", manualModName = false, counterpartPath = "", modCharacters = "", lastPackage = null;
-    var suggestedNameKey = "", suggestedName = "", savedNaming = null, savedNamingSerial = 0, carriedModName = null;
+    var suggestedNameKey = "", suggestedName = "", suggestedParts = null, savedNaming = null, savedNamingSerial = 0, carriedModName = null;
     var installedFingerprint = "", alreadyAdded = false, installedComparisonKey = "", installedComparisonValue = "";
     var resultBodyState = null, resultMeshState = null;
     // English sentences shown after the save status (the baked-blush save mode); translated on display.
@@ -21,6 +21,8 @@
     var meshContext = null, meshRevision = null, meshOwner = null, meshSnapshot = null;
     var progress = element("viewer-save-progress"), cancel = element("viewer-save-cancel");
     function context() { return options.context() || {}; }
+    // The member and costume a file is (from the viewer's labels), else its name.
+    function fileLabel(path) { return options.labelFor ? options.labelFor(path) : basename(path); }
     function thumbnailMode() { var select = element("viewer-mod-thumbnail-mode"); return select && select.value === "3d" ? "3d" : "texture"; }
     function thumbnailFitFull() { var choice = element("viewer-mod-thumbnail-fit-full"); return !!(choice && choice.checked); }
     function clearThumbnail() {
@@ -162,6 +164,8 @@
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
     }
     function modContextKey(c) { return JSON.stringify([c.modelId || "", (c.editing || {}).token || "", c.loadedPaths || []]); }
+    // The most automatic name labels sent with a save (viewer_mod_flow.NAME_PART_LIMIT).
+    var NAME_PART_LIMIT = 64;
     // The texture operations applied now, each once across all textures, in
     // the name's order. The texture tools know several per texture and follow
     // Undo/Redo; a texture row alone names its saved operations (an older row
@@ -183,13 +187,55 @@
         authored: { edits: authored.edits || [], outlines: authored.outlines, physics: authored.physics, accessoryUnclip: authored.accessoryUnclip },
         textures: textureOperations(c, authored), mesh: editingMeshState() };
     }
-    function suggestedModName(naming) {
+    // The page language ("en", "ko" or "ja") picks the costume name base.
+    function pageLanguage() { var code = options.language ? options.language() : (document.documentElement.lang || "en"); code = String(code || "en").split("-")[0]; return ["en", "ko", "ja"].indexOf(code) >= 0 ? code : "en"; }
+    // An edit label is a list of tokens: literal text (numbers, ×, →) or
+    // {k: English source} that each language translates. The server builds
+    // the same name per game language from these parts (viewer_mod_flow
+    // compose_mod_name) when the name is still this automatic suggestion.
+    function K(key) { return { k: String(key) }; }
+    function renderPart(part, tr) { return part.map(function (token) { return typeof token === "string" ? token : tr(token.k); }).join(""); }
+    function composeModName(base, parts, tr) {
+      // A Mod name has at most 120 characters: whole labels only, never one cut
+      // short or a dangling separator. A label the base (an installed Mod's own
+      // name) already carries is not repeated.
+      var present = base.split(" · ").slice(1), seen = [], name = base.slice(0, 120).replace(/[\uD800-\uDBFF]$/, "");
+      for (var index = 0; index < parts.length; index++) {
+        var text = renderPart(parts[index], tr);
+        if (!text || present.indexOf(text) >= 0 || seen.indexOf(text) >= 0) continue;
+        seen.push(text);
+        if ((name + " · " + text).length > 120) break;
+        name += " · " + text;
+      }
+      return name;
+    }
+    // The Mod member the costume is for: the chosen one, else the automatic one.
+    function chosenMember(packaging) {
+      var value = element("viewer-mod-character").value;
+      return value || (packaging.characterId !== null && packaging.characterId !== undefined ? String(packaging.characterId) : "");
+    }
+    function suggestedModBase(naming, member) {
+      var c = naming.c, packaging = (c.editing || {}).modPackaging || {}, bases = packaging.nameBases || {}, code = pageLanguage();
+      var texts = packaging.nameTexts;
+      // Another chosen member: that member's number and name before the same
+      // costume, never the number of the member it was opened as. The server
+      // builds the same (viewer_mod_flow.name_bases) for the installed names.
+      if (member && member !== String(packaging.nameOwner) && texts && typeof texts === "object") {
+        var choice = (packaging.characters || []).filter(function (row) { return String(row.value) === member; })[0];
+        var label = choice && choice.labels && typeof choice.labels[code] === "string" ? choice.labels[code] : "";
+        var text = typeof texts[code] === "string" ? texts[code] : "";
+        if (label) return text ? label + " · " + text : label;
+      }
+      return typeof bases[code] === "string" && bases[code] ? bases[code] :
+        packaging.nameBase || basename((c.loadedPaths || [])[0] || "Costume").replace(/\.[^.]+$/, "");
+    }
+    function suggestedModParts(naming) {
       var c = naming.c, rigState = naming.rigState, authored = naming.authored, textures = naming.textures;
       var metadata = c.editing || {}, packaging = metadata.modPackaging || {};
-      var base = packaging.nameBase || basename((c.loadedPaths || [])[0] || "Costume").replace(/\.[^.]+$/, "");
       var groups = {}, entries = metadata.nodes || [], profile = rigState.thighProfile || {};
       function format(value) { return String(Number(value.toPrecision(4))); }
       function sameVector(left, right) { return left && right && left.length === right.length && left.every(function (value, i) { return Math.abs(value - right[i]) <= 1e-7; }); }
+      function joined(parts, separator) { var out = []; parts.forEach(function (part, index) { if (index) out.push(separator); out = out.concat(part); }); return out; }
       (authored.edits || []).forEach(function (edit) {
         var target = entries.filter(function (entry) { return entry.node === edit.node; })[0];
         if (!target) return;
@@ -202,60 +248,61 @@
         var preset = kind === "thighs" && (profile.presets || []).filter(function (entry) { return entry.id === profile.selected; })[0];
         function extraTransforms() {
           var extra = [];
-          if (values.some(function (value) { return !!value.edit.position; })) extra.push(translate("Position"));
-          if (values.some(function (value) { return !!value.edit.rotation; })) extra.push(translate("Rotation"));
-          return extra.length ? " " + extra.join(" ") : "";
+          if (values.some(function (value) { return !!value.edit.position; })) extra.push([K("Position")]);
+          if (values.some(function (value) { return !!value.edit.rotation; })) extra.push([K("Rotation")]);
+          return extra.length ? [" "].concat(joined(extra, " ")) : [];
         }
-        if (preset && values.length === (profile.targets || []).length) return translate(label) + " " + translate(preset.sourceLabel) + "→" + translate(preset.targetLabel) + extraTransforms();
+        if (preset && values.length === (profile.targets || []).length) return [K(label), " ", K(preset.sourceLabel), "→", K(preset.targetLabel)].concat(extraTransforms());
         var breast = kind === "breast" && ((rigState.scaling || {}).controls || []).filter(function (entry) { return entry.id === "breast"; })[0];
         preset = breast && (breast.presets || []).filter(function (entry) {
           return entry.id === (rigState.body || {}).breastPreset && values.every(function (value) { return sameVector(value.edit.scale, entry.scale); });
         })[0];
-        if (preset) return translate(label) + " " + translate(preset.label) + extraTransforms();
+        if (preset) return [K(label), " ", K(preset.label)].concat(extraTransforms());
         var transforms = values.map(function (value) {
           var edit = value.edit, baseline = value.target.baseline || {}, tags = [];
           if (edit.scale && baseline.scale) {
             if (kind === "hips") {
               // The dedicated hip fields author actual XYZ endpoints. Keep
               // their name hint in those same values for non-unit originals.
-              tags.push(edit.scale.map(function (part, axis) { return "XYZ"[axis] + format(part); }).join("/"));
+              tags.push([edit.scale.map(function (part, axis) { return "XYZ"[axis] + format(part); }).join("/")]);
             } else {
             var ratios = edit.scale.map(function (part, axis) { return baseline.scale[axis] ? part / baseline.scale[axis] : null; });
             var axes = ratios.map(function (part, axis) { return part !== null && Math.abs(part - 1) > 1e-7 ? axis : -1; }).filter(function (axis) { return axis >= 0; });
             if (axes.length) {
               var uniform = axes.length === 3 && axes.every(function (axis) { return Math.abs(ratios[axis] - ratios[0]) < 1e-7; }) ||
                 (kind === "thighs" || kind === "waist") && axes.join(",") === "1,2" && Math.abs(ratios[1] - ratios[2]) < 1e-7;
-              tags.push(uniform ? format(ratios[axes[0]]) + "×" : axes.map(function (axis) { return "XYZ"[axis] + format(ratios[axis]); }).join("/"));
-            } else tags.push(translate("Bake into mesh"));
+              tags.push([uniform ? format(ratios[axes[0]]) + "×" : axes.map(function (axis) { return "XYZ"[axis] + format(ratios[axis]); }).join("/")]);
+            } else tags.push([K("Bake into mesh")]);
             }
           }
-          if (edit.position) tags.push(translate("Position"));
-          if (edit.rotation) tags.push(translate("Rotation"));
-          return tags.join(" ");
+          if (edit.position) tags.push([K("Position")]);
+          if (edit.rotation) tags.push([K("Rotation")]);
+          return joined(tags, " ");
         });
-        return translate(label) + " " + (transforms.every(function (part) { return part === transforms[0]; }) ? transforms[0] : translate("Custom adjustment"));
+        var first = JSON.stringify(transforms[0]);
+        return [K(label), " "].concat(transforms.every(function (part) { return JSON.stringify(part) === first; }) ? transforms[0] : [K("Custom adjustment")]);
       });
       var kinds = [], mesh = naming.mesh, derived = packaging.derivedOwner || {};
+      function addKind(key) { if (!kinds.some(function (part) { return part[0].k === key; })) kinds.push([K(key)]); }
       (derived.operations || []).forEach(function (operation) {
         var title = { costume: "Costume transplant", part: "Costume part transplant", lower: "Lower body replacement", mesh: "Mesh editing" }[operation];
-        if (title && kinds.indexOf(translate(title)) < 0) kinds.push(translate(title));
+        if (title) addKind(title);
       });
-      (c.transplantEdits || []).forEach(function (title) { if (kinds.indexOf(translate(title)) < 0) kinds.push(translate(title)); });
+      (c.transplantEdits || []).forEach(function (title) { addKind(title); });
       if (mesh) {
-        if (mesh.meshes.some(function (row) { return row.deleteFaces && row.deleteFaces.length; })) kinds.push(translate("Mesh deletion"));
-        if (mesh.meshes.some(function (row) { return row.positions && row.positions.length; })) kinds.push(translate("Vertex positions"));
-        if (mesh.meshes.some(function (row) { return row.weights && row.weights.length; })) kinds.push(translate("Skin weights"));
+        if (mesh.meshes.some(function (row) { return row.deleteFaces && row.deleteFaces.length; })) kinds.push([K("Mesh deletion")]);
+        if (mesh.meshes.some(function (row) { return row.positions && row.positions.length; })) kinds.push([K("Vertex positions")]);
+        if (mesh.meshes.some(function (row) { return row.weights && row.weights.length; })) kinds.push([K("Skin weights")]);
       }
-      TEXTURE_OPERATIONS.forEach(function (pair) { if (textures.indexOf(pair[0]) >= 0) kinds.push(translate(pair[1])); });
-      if (authored.outlines && authored.outlines.length) kinds.push(translate("Outlines"));
-      if (authored.physics && authored.physics.length) kinds.push(translate("Physics"));
-      if (authored.accessoryUnclip) kinds.push(translate("Accessory Un-clip"));
-      details = kinds.concat(details);
-      // A Mod name has at most 120 characters: whole labels only, never one cut
-      // short or a dangling separator.
-      var name = base.slice(0, 120).replace(/[\uD800-\uDBFF]$/, "");
-      for (var index = 0; index < details.length && (name + " · " + details[index]).length <= 120; index++) name += " · " + details[index];
-      return name;
+      TEXTURE_OPERATIONS.forEach(function (pair) { if (textures.indexOf(pair[0]) >= 0) kinds.push([K(pair[1])]); });
+      if (authored.outlines && authored.outlines.length) kinds.push([K("Outlines")]);
+      if (authored.physics && authored.physics.length) kinds.push([K("Physics")]);
+      if (authored.accessoryUnclip) kinds.push([K("Accessory Un-clip")]);
+      return kinds.concat(details);
+    }
+    function suggestedModName(naming, member) {
+      suggestedParts = suggestedModParts(naming);
+      return composeModName(suggestedModBase(naming, member), suggestedParts, translate);
     }
     function refreshModForm(c, rigState, authored, authoring) {
       var key = modContextKey(c), metadata = (c.editing || {}).modPackaging || {};
@@ -272,25 +319,28 @@
       if (!manualModName) {
         // Motion time and camera updates do not change the exported edits.
         // Reuse their suggestion instead of regrouping every rig node again.
-        var naming = namingInputs(c, rigState, authored), nameKey = JSON.stringify([key, naming === savedNaming ? ["saved", savedNamingSerial] : [metadata.nameBase, lastAuthoringFingerprint, naming.textures,
+        var naming = namingInputs(c, rigState, authored), member = chosenMember(metadata);
+        var nameKey = JSON.stringify([key, pageLanguage(), member, naming === savedNaming ? ["saved", savedNamingSerial] : [metadata.nameBase, metadata.nameBases, metadata.nameTexts, metadata.nameOwner, lastAuthoringFingerprint, naming.textures,
           (rigState.thighProfile || {}).selected, (rigState.body || {}).breastPreset], translate("Mod name")]);
-        if (nameKey !== suggestedNameKey) { suggestedNameKey = nameKey; suggestedName = suggestedModName(naming); }
+        if (nameKey !== suggestedNameKey) { suggestedNameKey = nameKey; suggestedName = suggestedModName(naming, member); }
         name.value = suggestedName;
       }
       // The whole name, also where the field is narrower than it.
       if (name.title !== name.value) name.title = name.value;
       fitModName(name);
-      var choices = metadata.characters || [], choicesKey = JSON.stringify([choices, metadata.characterId, translate("Automatic")]);
+      // Members read "004 소노다 우미" in the page language (labels from the server).
+      var choices = metadata.characters || [], choicesKey = JSON.stringify([choices, metadata.characterId, translate("Automatic"), pageLanguage()]);
+      function choiceLabel(choice) { return choice.labels && typeof choice.labels[pageLanguage()] === "string" && choice.labels[pageLanguage()] || choice.label; }
       var characters = element("viewer-mod-character");
       if (choicesKey !== modCharacters) {
         var selected = characters.value; modCharacters = choicesKey; characters.textContent = "";
         var automatic = document.createElement("option"); automatic.value = ""; automatic.textContent = translate("Automatic");
         var current = choices.filter(function (choice) { return String(choice.value) === String(metadata.characterId); })[0];
-        if (current) automatic.textContent += " · " + current.label;
+        if (current) automatic.textContent += " · " + choiceLabel(current);
         characters.appendChild(automatic);
         choices.forEach(function (choice) {
           if (!/^[1-9][0-9]{0,3}$/.test(String(choice.value))) return;
-          var option = document.createElement("option"); option.value = String(choice.value); option.textContent = choice.label; characters.appendChild(option);
+          var option = document.createElement("option"); option.value = String(choice.value); option.textContent = choiceLabel(choice); characters.appendChild(option);
         });
         characters.value = selected;
       }
@@ -304,7 +354,7 @@
       if (faceHelp) faceHelp.textContent = translate(!metadata.hasFaceCompanions ? "Open the original face with this costume to include face and mouth edits." : faceOption && !faceOption.checked ? "Face and mouth edits will not be applied in game. This costume uses the game's original face." : "Only this costume uses the included face. Other costumes and the character's shared face stay unchanged.");
       characters.disabled = !authoring; element("viewer-mod-character-field").hidden = !choices.length;
       element("viewer-mod-variant").disabled = !authoring;
-      element("viewer-mod-counterpart").value = counterpartPath ? basename(counterpartPath) : "";
+      element("viewer-mod-counterpart").value = counterpartPath ? fileLabel(counterpartPath) : "";
       element("viewer-mod-counterpart").title = counterpartPath;
       element("viewer-mod-counterpart").disabled = !authoring;
       element("viewer-mod-counterpart-pick").disabled = !authoring;
@@ -368,7 +418,11 @@
       displayed.forEach(function (path) {
         var item = document.createElement("li"), link = document.createElement("a");
         var label = modPath ? path === modPath ? "Mod ZIP" : path === recipePath ? "Edit recipe" : previewPaths.indexOf(path) >= 0 ? "Edited preview copy" : "" : "";
-        link.textContent = (label ? translate(label) + " · " : "") + basename(path);
+        // An edited copy keeps its code file name on disk and in the download;
+        // its link reads as the costume it is.
+        var shown = previewPaths.indexOf(path) >= 0 ? fileLabel(path) : basename(path);
+        link.textContent = (label ? translate(label) + " · " : "") + shown;
+        link.title = shown !== basename(path) ? basename(path) + "\n" + path : path;
         link.href = "/api/download?path=" + encodeURIComponent(path); link.setAttribute("download", basename(path));
         item.appendChild(link);
         if (path === modPath) {
@@ -512,6 +566,12 @@
       if (install && installedFingerprint === binding) { say("Already added to game. Change the edits or mod name to add another copy.", "done"); return; }
       var body = Object.assign({ token: snapshot.token, state: snapshot.body }, parameters);
       if (snapshot.meshState) body.mesh_state = snapshot.meshState;
+      // An untouched automatic name is installed in each game language; the
+      // server rebuilds it from these labels and checks it equals this name.
+      // A 120-character name holds fewer labels than this; the rest are never
+      // sent (viewer_mod_flow.NAME_PART_LIMIT), so many edited bones cannot
+      // turn the labels into a refused save.
+      if (!manualModName && suggestedParts && name === suggestedName.trim()) body.name_parts = JSON.parse(JSON.stringify(suggestedParts.slice(0, NAME_PART_LIMIT)));
       delete body.thumbnail_mode;
       delete body.thumbnail_fit_full;
       requestController = new global.AbortController(); var signal = requestController.signal;
@@ -532,7 +592,7 @@
         }
         // Each explicit action packages the current authoring snapshot. An older
         // downloaded result can never become the input to a later installation.
-        var data = await runJob("/api/viewer/edit/package", body, signal), packaged = data.mod_package;
+        var data = await runJob("/api/viewer/edit/package?lang=" + encodeURIComponent(pageLanguage()), body, signal), packaged = data.mod_package;
         if (!packaged || typeof packaged.token !== "string" || !/^[a-zA-Z0-9_-]{16,128}$/.test(packaged.token) ||
             packaged.installable !== true || typeof packaged.package_path !== "string" || paths(data.output_paths).indexOf(packaged.package_path) < 0) throw new Error("The mod package response is invalid.");
         rememberResult(data, snapshot);
@@ -711,6 +771,7 @@
     refresh();
     return { refresh: refresh, getState: state, restoreRecipe: restoreRecipe,
       updateLanguage: function () { renderOutputs(); element("viewer-save-status").textContent = statusText(statusKey); refresh(); },
+      labelsChanged: function () { if (disposed) return; renderOutputs(); refresh(); },
       dispose: function () {
         disposed = true;
         if (!installing) { if (requestController) requestController.abort(); if (eventSource) eventSource.close(); }

@@ -147,23 +147,69 @@ def catalog(root, *, language="en", region="", character="", search=""):
             rows = db.execute("SELECT id,member_m_id,name FROM m_suit WHERE model_asset_path IS NOT NULL AND model_asset_path<>'' " + condition + f" ORDER BY (name LIKE '%_cloned') DESC,display_order {order},id DESC LIMIT 20000", values).fetchall()
         options = []
         dictionary = _dictionary(root, region, language)
+        from . import model_labels
+        code = language if language in model_labels.LANGUAGES else "en"
+        lookups = model_labels._Names(root)
+        # The game's own member names in the page language, after the
+        # member's three-digit number: "004 소노다 우미".
+        localized = {}
+        def member_name(owner):
+            if owner not in localized:
+                found = model_labels.member_names(root, owner, region=region, names=lookups)
+                localized[owner] = ((found[code], model_labels._aliases(owner, found)) if found
+                                    else (names.get(owner, str(owner)), ()))
+            return localized[owner]
+        def titled(owner, text):
+            member, aliases = member_name(owner)
+            return model_labels.titled(owner, member, text, aliases) or member
         try:
             query = search.strip().casefold()
             for suit, owner, key in rows:
-                name = extractor.real_costume_name(dictionary, key) or str(suit)
-                member = names.get(owner, str(owner))
-                if query and query not in name.casefold() and query not in member.casefold():
+                name = model_labels._clean(extractor.real_costume_name(dictionary, key), key)
+                if name is None:
+                    # An empty or missing row (an added costume whose Mod ZIP
+                    # named only some languages) uses another language's
+                    # name, never the raw dictionary key.
+                    name = lookups.localized(region, "m_suit", suit, code) or model_labels._tr("Costume #{id}", code).replace("{id}", str(suit))
+                if model_labels.DISPLAY_HINT.search(name):
+                    # Installed from an older Mod ZIP with a code-like name:
+                    # the game costume that code names, in the page language.
+                    hint = model_labels.declared_hint(root, {language: name for language in model_labels.LANGUAGES}, owner,
+                                                      names=lookups)
+                    name = hint["text"][code] if hint and hint["text"][code] else name
+                label = titled(owner, name)
+                if query and all(query not in text.casefold() for text in (label, member_name(owner)[0], names.get(owner, ""))):
                     continue
-                options.append({"value": f"suit:{suit}", "label": f"{member} — {name}" if query else name,
-                                "variants": _views(db, suit, owner, canonical_candidates)})
+                if not query:
+                    # One member's list names only costumes, also an added
+                    # costume installed with that member's number and name.
+                    member, aliases = member_name(owner)
+                    name = model_labels.untitled(owner, member, name, aliases) or name
+                # A search spans members, so its results name the member too.
+                options.append({"value": f"suit:{suit}", "label": label if query else name,
+                                "variants": _views(db, suit, owner, canonical_candidates), "_owner": owner})
                 if len(options) >= MAX_OPTIONS:
                     break
+            characters = [{"value": str(owner), "label": titled(owner, "")} for owner in members]
         finally:
+            lookups.close()
             if dictionary:
                 dictionary.close()
+        if query:
+            # Results start with the member's number: list them by member
+            # (001…212), each member's costumes in the game's own order.
+            options.sort(key=lambda option: option["_owner"] if type(option["_owner"]) is int else 1 << 30)
+        # Two costumes with the same name for one member (two copies of an
+        # added Mod) are told apart by their costume number only.
+        counts = {}
+        for option in options:
+            counts[(option["_owner"], option["label"])] = counts.get((option["_owner"], option["label"]), 0) + 1
+        for option in options:
+            if counts[(option["_owner"], option["label"])] > 1:
+                option["label"] += " #" + option["value"].split(":", 1)[1]
+            del option["_owner"]
     return {"region": region, "regions": [{"value": r, "label": "Global (GL)" if r == "gl" else "Japan (JP)"} for r in regions],
-            "characters": [{"value": str(owner), "label": names.get(owner, str(owner))} for owner in members],
-            "costumes": options, "limit": MAX_OPTIONS}
+            "characters": characters, "costumes": options, "limit": MAX_OPTIONS}
 
 
 def _attachment(db, suit_id, owner, model):

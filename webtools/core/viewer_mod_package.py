@@ -112,7 +112,23 @@ def _arcname(path, packer):
     return "costume" + name if name.casefold() in ("thumbnail.png", "modinstall.txt") else name
 
 
+def _name_values(display_name, names=None):
+    """Installed costume names: one typed name, or the automatic name per
+    game language (Chinese uses English). The description is the page's name."""
+    if isinstance(display_name, dict):
+        return dict(display_name)
+    if not names:
+        return {key: display_name for key in _NAMES}
+    return {"costume_name_en": names["en"], "costume_name_ko": names["ko"], "costume_name_zh": names["en"],
+            "costume_name_ja": names["ja"], "costume_description": display_name}
+
+
 def _manifest(raw, display_name):
+    """Parse literal assignments; replace every costume name.
+
+    ``display_name`` is one name for all fields or a field -> name mapping.
+    """
+    values_by_key = _name_values(display_name)
     _require(len(raw) <= viewer_archive.MAX_MANIFEST_BYTES, "The costume manifest exceeds the packaging limit.")
     try:
         text = raw.decode("utf-8-sig")
@@ -130,15 +146,14 @@ def _manifest(raw, display_name):
         offsets = [0]
         for line in encoded.splitlines(keepends=True):
             offsets.append(offsets[-1] + len(line))
-        replacement = repr(display_name).encode("utf-8")
         ranges = [(offsets[nodes[key].lineno - 1] + nodes[key].col_offset,
-                   offsets[nodes[key].end_lineno - 1] + nodes[key].end_col_offset)
+                   offsets[nodes[key].end_lineno - 1] + nodes[key].end_col_offset, key)
                   for key in _NAMES if key in nodes]
-        for start, end in sorted(ranges, reverse=True):
-            encoded = encoded[:start] + replacement + encoded[end:]
+        for start, end, key in sorted(ranges, reverse=True):
+            encoded = encoded[:start] + repr(values_by_key[key]).encode("utf-8") + encoded[end:]
         for key in _NAMES:
             if key not in nodes:
-                encoded += ("\n" + key + " = " + repr(display_name) + "\n").encode("utf-8")
+                encoded += ("\n" + key + " = " + repr(values_by_key[key]) + "\n").encode("utf-8")
         return values, encoded
     except (SyntaxError, UnicodeError, ValueError, TypeError, RecursionError) as error:
         if isinstance(error, ModPackageError):
@@ -271,14 +286,69 @@ def _member_sha(archive, info):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def _namespace_assets(target, temporary, display_name, should_stop, source_manifest=None):
-    """Emit one canonical executable config; preserve other text/ZIPs inertly."""
+SOURCE_COSTUME_MEMBER = "source-costume.json.data"
+SOURCE_COSTUME_FORMAT = "elichika-viewer-source-costume"
+
+
+def read_source_costume(archive, infos=None):
+    """A viewer Mod ZIP's inert source record: a candidate, never identity.
+
+    Exactly one ``source-costume.json.data`` member (in any folder) of the
+    current format, else None. Platform conversion verifies it against the
+    game body; a re-saved copy of the ZIP carries it on.
+    """
+    infos = archive.infolist() if infos is None else list(infos)
+    rows = [info for info in infos if not info.is_dir()
+            and PurePosixPath(info.filename.replace("\\", "/")).name.casefold() == SOURCE_COSTUME_MEMBER]
+    if len(rows) != 1 or rows[0].file_size > 4096:
+        return None
+    try:
+        value = json.loads(archive.read(rows[0]).decode("utf-8"))
+    except (ValueError, UnicodeError, zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError):
+        return None
+    if (not isinstance(value, dict) or value.get("format") != SOURCE_COSTUME_FORMAT
+            or value.get("version") != 1 or value.get("region") not in ("gl", "jp")
+            or type(value.get("suit_id")) is not int or not 0 < value["suit_id"] < 10 ** 12
+            or value.get("variant") not in ("primary", "unmasked") or type(value.get("member")) is not int
+            or "regions" in value and not _regions(value["regions"], value["region"])):
+        return None
+    return {key: value[key] for key in ("region", "suit_id", "variant", "member", "regions") if key in value}
+
+
+def _regions(value, region):
+    """Optional ``regions``: every game region the costume was read for (a
+    record from an older code-like name, which named no region)."""
+    return (isinstance(value, list) and value in (["gl", "jp"], ["jp", "gl"]) and region in value)
+
+
+def _source_costume_record(value):
+    if value is None:
+        return None
+    _require(isinstance(value, dict) and {"region", "suit_id", "variant", "member"} <= set(value)
+             <= {"region", "suit_id", "variant", "member", "regions"}
+             and value["region"] in ("gl", "jp") and type(value["suit_id"]) is int and 0 < value["suit_id"] < 10 ** 12
+             and value["variant"] in ("primary", "unmasked") and type(value["member"]) is int
+             and ("regions" not in value or _regions(value["regions"], value["region"])),
+             "The source costume record is invalid.")
+    return {"format": SOURCE_COSTUME_FORMAT, "version": 1, **value}
+
+
+def _namespace_assets(target, temporary, display_name, should_stop, source_manifest=None, source_costume=None):
+    """Emit one canonical executable config; preserve other text/ZIPs inertly.
+
+    A new ``source_costume`` record replaces the one a re-saved viewer Mod
+    ZIP carried, so a conversion always reads this save's record; without a
+    new record the carried one stays, byte for byte.
+    """
     normalized = temporary / "namespaced.zip"
     with zipfile.ZipFile(target) as incoming:
         infos = incoming.infolist()
         _require(len(infos) <= viewer_archive.MAX_ENTRIES and
                  sum(info.file_size for info in infos) <= viewer_archive.MAX_UNPACKED_BYTES,
                  "The completed installer ZIP exceeds the packaging limit.")
+        if source_costume is not None:
+            infos = [info for info in infos if info.is_dir() or
+                     PurePosixPath(info.filename.replace("\\", "/")).name.casefold() != SOURCE_COSTUME_MEMBER]
         exact = {str(viewer_archive._entry_path(info)): info for info in infos if not info.is_dir()}
         manifests = [info for info in infos if not info.is_dir() and
                      PurePosixPath(info.filename.replace("\\", "/")).name.lower() == "modinstall.txt"]
@@ -286,7 +356,8 @@ def _namespace_assets(target, temporary, display_name, should_stop, source_manif
         manifest = manifests[0]
         raw = incoming.read(manifest)
         values, _ = _manifest(raw, display_name)
-        _require(all(values.get(key) == display_name for key in _NAMES), "The Mod ZIP lost its costume name.")
+        expected = _name_values(display_name)
+        _require(all(values.get(key) == expected[key] for key in _NAMES), "The Mod ZIP lost its costume name.")
         prefix = "v" + secrets.token_hex(8)
         references, renamed = {}, {}
         for key in _ASSET_REFS:
@@ -336,6 +407,16 @@ def _namespace_assets(target, temporary, display_name, should_stop, source_manif
                 folder = "metadata" + str(ordinal)
                 ordinal += 1
             metadata_member = available(folder + "/source-modinstall.txt.data")
+        costume_member, costume_raw = None, None
+        if source_costume is not None:
+            # Display names are not identity. A platform conversion reads this
+            # inert record as a candidate and verifies it against the game body.
+            folder, ordinal = "metadata", 2
+            while folder.casefold() in file_names:
+                folder = "metadata" + str(ordinal)
+                ordinal += 1
+            costume_member = available(folder + "/" + SOURCE_COSTUME_MEMBER)
+            costume_raw = json.dumps(source_costume, sort_keys=True, separators=(",", ":")).encode("utf-8")
         moves = {}
         for info in infos:
             original = str(viewer_archive._entry_path(info))
@@ -362,6 +443,8 @@ def _namespace_assets(target, temporary, display_name, should_stop, source_manif
                             shutil.copyfileobj(data, output, 65536)
             if metadata_member is not None:
                 outgoing.writestr(metadata_member, source_manifest)
+            if costume_member is not None:
+                outgoing.writestr(costume_member, costume_raw)
         with zipfile.ZipFile(normalized) as reloaded:
             _require(len(reloaded.infolist()) <= viewer_archive.MAX_ENTRIES and
                      sum(info.file_size for info in reloaded.infolist()) <= viewer_archive.MAX_UNPACKED_BYTES,
@@ -374,6 +457,8 @@ def _namespace_assets(target, temporary, display_name, should_stop, source_manif
                      set(final_config) == set(_SUPPORTED_CONFIG), "The installer ZIP contains active companion code or unsupported settings.")
             if metadata_member is not None:
                 _require(reloaded.read(metadata_member) == source_manifest, "The preserved source manifest changed.")
+            if costume_member is not None:
+                _require(reloaded.read(costume_member) == costume_raw, "The source costume record changed.")
             for info in infos:
                 _stop(should_stop)
                 original = str(viewer_archive._entry_path(info))
@@ -386,6 +471,8 @@ def _namespace_assets(target, temporary, display_name, should_stop, source_manif
 
 
 def _raw(paths, target, temporary, display_name, requested, pair, packer, should_stop, log, thumbnail_png=None):
+    installed = _name_values(display_name)
+    display_name = installed["costume_description"]
     if pair is not None:
         _require(isinstance(pair, dict) and pair.get("owner") == 209 and not isinstance(pair.get("owner"), bool),
                  "The Rina counterpart resolver did not provide a valid pair.")
@@ -436,6 +523,8 @@ def _raw(paths, target, temporary, display_name, requested, pair, packer, should
     manifest = packer.generate_modinstall_txt(escaped, arcs["costume_file"], "thumbnail.png", native_from_member(owner),
                                              arcs.get("rina_unmask_costume_file"))
     _manifest(manifest.encode("utf-8"), display_name)  # Verify generated literals too.
+    # The generator writes one name; set each language's installed name.
+    manifest = _manifest(manifest.encode("utf-8"), installed)[1].decode("utf-8")
     _stop(should_stop)
     packer.create_zip_package(str(target), str(main), thumbnail, "thumbnail.png", manifest,
         str(alternate) if alternate else None, masked_arcname=arcs["costume_file"],
@@ -722,7 +811,8 @@ def _isolate_face_graph(target, temporary, should_stop):
 
 
 def package_saved_export(export_result, output_dir, *, display_name, chara_id=None,
-                         pair=None, log=lambda message: None, should_stop=lambda: False, thumbnail=None, face_companions=None, include_face_edits=None):
+                         pair=None, log=lambda message: None, should_stop=lambda: False, thumbnail=None, face_companions=None, include_face_edits=None,
+                         names=None, source_costume=None):
     """Return an atomic installer ZIP receipt; authorization belongs to the caller.
 
     Generic ZIPs require exactly one Unity model. Their other non-model files
@@ -730,8 +820,19 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
     All referenced installer assets receive fresh per-package names. Companion
     .txt/.zip files gain .data; original settings are inert metadata. All other
     unreferenced entries retain their original names and bytes.
+
+    ``names`` optionally installs an untouched automatic Mod name in each game
+    language ({"en", "ko", "ja"}); otherwise ``display_name`` is used for all.
+    ``source_costume`` is the opened body's verified game costume, kept as an
+    inert record a later platform conversion can verify again.
     """
     display_name = _display(display_name)
+    if names is not None:
+        _require(isinstance(names, dict) and set(names) == {"en", "ko", "ja"},
+                 "The per-language costume names are incomplete.")
+        names = {key: _display(value) for key, value in names.items()}
+    installed = _name_values(display_name, names)
+    source_record = _source_costume_record(source_costume)
     _require(include_face_edits is None or isinstance(include_face_edits, bool),
              "Choose whether to include this costume's verified face companion.")
     _require(include_face_edits is not False or not face_companions, "Excluded faces cannot be added to this costume.")
@@ -766,9 +867,9 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
         source_manifest = None
         if any(zipfile.is_zipfile(path) for path in paths):
             _require(len(paths) == 1 and pair is None, "Choose one installer costume ZIP instead of combining independent archives or models.")
-            owner, platform, mode, references, source_manifest = _existing(paths[0], target, temporary, display_name, chara_id, packer, should_stop, log)
+            owner, platform, mode, references, source_manifest = _existing(paths[0], target, temporary, installed, chara_id, packer, should_stop, log)
         else:
-            owner, platform, mode, references, roles = _raw(paths, target, temporary, display_name, chara_id, pair, packer, should_stop, log,
+            owner, platform, mode, references, roles = _raw(paths, target, temporary, installed, chara_id, pair, packer, should_stop, log,
                 thumbnail_png=thumbnail["png"] if thumbnail is not None else None)
             for role, path in roles.items():
                 snapshots[path] = pair[role]["sha256"] if pair is not None else snapshots[path]
@@ -779,7 +880,10 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
         _attach_edited_faces(target, temporary, faces, owner, platform, should_stop, include_face_edits)
         face_identity = (_isolate_face_graph(target, temporary, should_stop)
                          if include_face_edits is True or faces else [])
-        asset_references, asset_namespace, metadata_member = _namespace_assets(target, temporary, display_name, should_stop, source_manifest)
+        if source_record is not None and source_record["member"] != owner:
+            source_record = None  # A changed target member is not that game costume.
+        asset_references, asset_namespace, metadata_member = _namespace_assets(target, temporary, installed, should_stop, source_manifest,
+                                                                               source_costume=source_record)
         if thumbnail is not None:
             with zipfile.ZipFile(target) as archive:
                 _require(hashlib.sha256(archive.read(asset_references["thumbnail_file"])).hexdigest() == thumbnail["sha256"],
@@ -802,7 +906,7 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
         _require(not final.exists(), "The output package already exists. Create a new copy.")
         target.rename(final)
         return {"package_path": str(final), "sha256": digest, "bytes": size,
-                "display_name": display_name, "chara_id": owner, "platform": platform,
+                "display_name": display_name, "installed_names": installed, "chara_id": owner, "platform": platform,
                 "mode": mode, "model_members": references, "members": members,
                 "asset_members": asset_references, "asset_namespace": asset_namespace,
                 "source_manifest_member": metadata_member, "face_identity": face_identity,
