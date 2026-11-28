@@ -107,6 +107,21 @@ class TitledTests(unittest.TestCase):
         self.assertEqual(labels.titled(None, None, "Winter"), "Winter")
         self.assertEqual(labels.titled(4, None, "Winter"), "Winter")
 
+    def test_untitled_takes_back_only_what_titled_put_first(self):
+        aliases = ("Umi Sonoda", "소노다 우미")
+        for text in ("의상 · 외곽선", "", "Umi Sonoda — Winter", "0042 Winter", "004_custom", "Umino Winter"):
+            with self.subTest(text=text):
+                titled = labels.titled(4, "소노다 우미", text, aliases)
+                self.assertEqual(labels.titled(4, "소노다 우미", labels.untitled(4, "소노다 우미", titled, aliases), aliases), titled)
+        self.assertEqual(labels.untitled(4, "소노다 우미", "004 소노다 우미 · 의상 · 외곽선", aliases), "의상 · 외곽선")
+        self.assertEqual(labels.untitled(4, "소노다 우미", "004 Umi Sonoda · Knit", aliases), "Knit")
+        self.assertEqual(labels.untitled(4, "소노다 우미", "004 소노다 우미", aliases), "")
+        self.assertEqual(labels.untitled(4, "소노다 우미", "004 Umi Sonoda — Winter", aliases), "Umi Sonoda — Winter")
+        # Another member's number, a number without its member, or no member: unchanged.
+        for text in ("101 타카미 치카 · 의상", "004 의상", "004_custom", "의상"):
+            self.assertEqual(labels.untitled(4, "소노다 우미", text, aliases), text)
+        self.assertEqual(labels.untitled(None, None, "004 소노다 우미 · 의상"), "004 소노다 우미 · 의상")
+
 
 class RecordLabelTests(unittest.TestCase):
     def setUp(self):
@@ -205,11 +220,13 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(result["region"], "gl")
         self.assertEqual({row["value"]: row["label"] for row in result["characters"]},
                          {"4": "004 소노다 우미", "209": "209 텐노지 리나"})
-        # One member's list names only the costumes; equal names get their number.
+        # One member's list names only the costumes, also an added costume
+        # installed with this member's number and name; equal names get their number.
         self.assertEqual(costumes[f"suit:{OFFICIAL}"], "오토노키자카 고교 교복(동복)")
-        self.assertEqual(costumes[f"suit:{INSTALLED}"], "004 소노다 우미 · 오토노키자카 고교 교복(동복) · 외곽선 #" + str(INSTALLED))
-        self.assertEqual(costumes[f"suit:{COPY}"], "004 소노다 우미 · 오토노키자카 고교 교복(동복) · 외곽선 #" + str(COPY))
+        self.assertEqual(costumes[f"suit:{INSTALLED}"], "오토노키자카 고교 교복(동복) · 외곽선 #" + str(INSTALLED))
+        self.assertEqual(costumes[f"suit:{COPY}"], "오토노키자카 고교 교복(동복) · 외곽선 #" + str(COPY))
         self.assertEqual(costumes[f"suit:{OLDER}"], "Otonokizaka High Uniform (Winter) · 외곽선")
+        self.assertFalse([label for label in costumes.values() if label.startswith("004 ")])
         self.assertEqual((costumes[f"suit:{UNNAMED}"], costumes[f"suit:{KEY_ONLY}"]), ("의상 #555", "의상 #556"))
         result, costumes = self.labels(language="ja", character="4")
         self.assertEqual(result["region"], "jp")
@@ -227,6 +244,22 @@ class CatalogTests(unittest.TestCase):
             self.assertTrue(found, query)
         _, found = self.labels(language="ko", search="리나 의상")
         self.assertEqual(found, {f"suit:{RINA}": "209 텐노지 리나 · 리나 의상"})
+
+    def test_search_results_are_listed_by_member_number_in_the_game_order(self):
+        result, _ = self.labels(language="en", search="o")
+        values = [option["value"] for option in result["costumes"]]
+        owners = [SUITS[int(value.split(":")[1])][0] for value in values]
+        self.assertIn(209, owners)
+        self.assertEqual(owners, sorted(owners), "every 004 row before the 209 row")
+        # Within one member the game's own order is kept: as in that member's list.
+        _, member = self.labels(language="en", character="4")
+        self.assertEqual([value for value in values if SUITS[int(value.split(":")[1])][0] == 4],
+                         [value for value in member if value in values])
+        # The game's own order (newest first) has Rina's costume among Umi's.
+        with sqlite3.connect(self.root / "assets/db/gl/masterdata.db") as db:
+            ordered = [row[0] for row in db.execute("SELECT id FROM m_suit ORDER BY display_order DESC")]
+        self.assertLess(ordered.index(RINA), len(ordered) - 1)
+        self.assertEqual(values[-1], f"suit:{RINA}")
 
 
 class DescribeTests(unittest.TestCase):
@@ -247,40 +280,162 @@ class DescribeTests(unittest.TestCase):
         path.write_bytes(data)
         return path.resolve()
 
-    def imported(self, suit, data):
-        path = self.write(f"cache/gl-{suit}/ch0004_suit{suit}_primary.unity", data)
-        receipt = {"model": f"gl-{suit}/{path.name}", "sha256": hashlib.sha256(data).hexdigest(), "selection_record": record(suit)}
-        (self.cache / f".selection-{suit:032d}.json").write_text(json.dumps(receipt))
+    def imported(self, suit, data, variant="primary"):
+        owner = SUITS[suit][0]
+        path = self.write(f"cache/gl-{suit}-{variant}/ch{owner:04}_suit{suit}_{variant}.unity", data)
+        receipt = {"model": f"gl-{suit}-{variant}/{path.name}", "sha256": hashlib.sha256(data).hexdigest(),
+                   "selection_record": record(suit, variant)}
+        (self.cache / f".selection-{suit:031d}{int(variant == 'unmasked')}.json").write_text(json.dumps(receipt))
         return path
 
-    def derived(self, path, parents):
+    def proof(self, parent, member=None):
+        raw = parent.read_bytes()
+        model = zipfile.ZipFile(parent).read(member) if member else raw
+        return {"path": str(parent), "containerSha256": hashlib.sha256(raw).hexdigest(), "member": member,
+                "sha256": hashlib.sha256(model).hexdigest()}
+
+    def derived(self, path, parents, operation="costume", **extra):
         from webtools.core import viewer_physics_runtime as runtime
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        proofs = [{"path": str(parent), "containerSha256": hashlib.sha256(parent.read_bytes()).hexdigest(), "member": None,
-                   "sha256": hashlib.sha256(parent.read_bytes()).hexdigest()} for parent in parents]
-        runtime._write_receipts(self.cache, path, [{"member": None, "sha256": digest, "operation": "costume",
-                                                    "parents": proofs, "components": []}])
+        proofs = [parent if isinstance(parent, dict) else self.proof(parent) for parent in parents]
+        runtime._write_receipts(self.cache, path, [{"member": None, "sha256": digest, "operation": operation,
+                                                    "parents": proofs, "components": [], **extra}])
 
     def describe(self, path):
         return labels.describe(path, repo_root=self.root, cache_root=self.cache)
 
-    def test_game_import_edited_copy_and_transplant_result_read_as_the_wearer(self):
+    def test_game_import_and_its_edited_copy_read_as_the_costume(self):
         original = self.imported(INSTALLED, b"wearer body")
-        donor = self.imported(OFFICIAL, b"donor body")
         game = self.describe(original)
         self.assertEqual(game["source"], "game")
         self.assertEqual(game["label"]["ko"], "004 소노다 우미 · 오토노키자카 고교 교복(동복) · 외곽선")
         self.assertEqual(game["file"], f"ch0004_suit{INSTALLED}_primary.unity")
+        self.assertEqual(game["counterpart"], {"region": "gl", "suitId": INSTALLED, "variant": "primary", "owner": 4})
         # An edited preview copy keeps the code file name; its receipt names the wearer.
         edited = self.write(f"exports/body-edit-1/models/ch0004_suit{INSTALLED}_primary.unity", b"edited body")
-        self.derived(edited, [original])
+        self.derived(edited, [original], "edit", operations=["edit"])
         copy = self.describe(edited)
         self.assertEqual((copy["source"], copy["label"], copy["suitId"]), ("derived", game["label"], INSTALLED))
-        # A transplant result: the wearer, never the donor.
-        result = self.write(f"exports/transplant-1/models/ch0004_suit{INSTALLED}_primary.unity", b"transplanted body")
-        self.derived(result, [edited, donor])
-        self.assertEqual(self.describe(result)["label"], game["label"])
-        self.assertEqual(self.describe(donor)["label"]["ko"], "004 소노다 우미 · 오토노키자카 고교 교복(동복)")
+        self.assertNotIn("operations", copy)
+
+    def transplant(self, operation, donor, *, wearer=None, name="result", **extra):
+        wearer = wearer or self.imported(OFFICIAL, b"umi body")
+        result = self.write(f"exports/transplant-{name}/models/ch0004_suit{OFFICIAL}_primary.unity", ("%s %s" % (operation, name)).encode())
+        self.derived(result, [wearer, donor], operation, **extra)
+        return result
+
+    def test_a_costume_transplant_reads_as_the_wearer_in_the_donor_costume(self):
+        donor = self.imported(RINA, b"rina body")
+        result = self.describe(self.transplant("costume", donor))
+        self.assertEqual(result["label"], {"en": "004 Umi Sonoda · Rina outfit · Costume transplant",
+                                           "ko": "004 소노다 우미 · 리나 의상 · 코스튬 이식",
+                                           "ja": "004 園田 海未 · 璃奈の衣装 · 衣装移植"})
+        self.assertEqual(result["nameBase"]["ko"], result["label"]["ko"])
+        self.assertEqual(result["nameText"]["ko"], "리나 의상 · 코스튬 이식")
+        # The costume number shown is the donor's; the container (conversion
+        # counterpart) and the member stay the wearer's.
+        self.assertEqual((result["suitId"], result["owner"], result["operations"]), (RINA, 4, ["costume"]))
+        self.assertEqual(result["counterpart"], {"region": "gl", "suitId": OFFICIAL, "variant": "primary", "owner": 4})
+        self.assertNotIn("오토노키자카", json.dumps(result["label"], ensure_ascii=False))
+
+    def test_part_and_lower_transplants_keep_the_wearer_costume(self):
+        donor = self.imported(RINA, b"rina body")
+        for operation, ko in (("part", "코스튬 부분 이식"), ("lower", "하체 교체")):
+            with self.subTest(operation=operation):
+                result = self.describe(self.transplant(operation, donor, name=operation))
+                self.assertEqual(result["label"]["ko"], "004 소노다 우미 · 오토노키자카 고교 교복(동복) · " + ko)
+                self.assertEqual((result["suitId"], result["counterpart"]["suitId"]), (OFFICIAL, OFFICIAL))
+
+    def test_edits_of_a_transplant_result_keep_the_costume_it_wears(self):
+        from webtools.core import viewer_physics_runtime as runtime
+        donor = self.imported(RINA, b"rina body")
+        wearer = self.imported(OFFICIAL, b"umi body")
+        transplanted = self.transplant("costume", donor, wearer=wearer)
+        expected = self.describe(transplanted)["label"]
+        # A save of the result reuses its wearer/donor parents. Older edit rows
+        # do not name the transplant: the last one they list.
+        older = self.write("exports/body-edit-2/models/a.unity", b"older edit")
+        self.derived(older, [wearer, donor], "edit", operations=["costume", "edit"])
+        self.assertEqual(self.describe(older)["label"], expected)
+        newer = self.write("exports/body-edit-3/models/a.unity", b"newer edit")
+        self.derived(newer, [wearer, donor], "edit", operations=["part", "costume", "edit"], pairOperation="costume")
+        self.assertEqual(self.describe(newer)["label"]["ko"], "004 소노다 우미 · 리나 의상 · 코스튬 부분 이식 · 코스튬 이식")
+        # A part transplant onto the costume transplant result: still the donor costume.
+        other = self.imported(INSTALLED, b"other umi")
+        part = self.write("exports/transplant-part2/models/a.unity", b"part on costume")
+        self.derived(part, [transplanted, other], "part")
+        self.assertEqual(self.describe(part)["label"]["ko"], "004 소노다 우미 · 리나 의상 · 코스튬 이식 · 코스튬 부분 이식")
+        # A second costume transplant: the newest donor's costume is worn.
+        again = self.write("exports/transplant-again/models/a.unity", b"costume on costume")
+        self.derived(again, [transplanted, other], "costume")
+        self.assertEqual(self.describe(again)["label"]["ko"], "004 소노다 우미 · 오토노키자카 고교 교복(동복) · 외곽선 · 코스튬 이식")
+        self.assertEqual(self.describe(again)["suitId"], INSTALLED)
+        # inherit_export keeps the pairing transplant in the edit rows it writes.
+        self.assertEqual(labels.pair_operation({"parents": [{}, {}], "operation": "edit", "operations": ["costume", "part", "edit"],
+                                                "pairOperation": "costume"}), "costume")
+        self.assertEqual(labels.pair_operation({"parents": [{}, {}], "operation": "edit", "operations": ["costume", "part", "edit"]}), "part")
+        self.assertIsNone(labels.pair_operation({"parents": [{}], "operation": "costume"}))
+        self.assertIsNone(labels.pair_operation({"parents": [{}, {}], "operation": "edit", "operations": ["edit"]}))
+        from unittest.mock import patch
+        from webtools.core import viewer_mod_sources
+        pair = [self.proof(wearer), self.proof(donor)]
+        for previous, expected in (({"operation": "costume", "parents": pair, "components": []}, "costume"),
+                                   ({"operation": "edit", "operations": ["costume", "lower", "edit"], "pairOperation": "costume",
+                                     "parents": pair, "components": []}, "costume"),
+                                   ({"operation": "edit", "operations": ["edit"], "parents": pair[:1], "components": []}, None)):
+            with self.subTest(previous=previous["operation"]), \
+                    patch.object(runtime, "_source_proofs", return_value=[self.proof(transplanted)]), \
+                    patch.object(runtime, "_resolve", return_value={"derived": True, "operations": ["costume"]}), \
+                    patch.object(viewer_mod_sources, "_read", return_value=b"saved"), \
+                    patch.object(runtime, "_physics_ids", return_value=frozenset()), \
+                    patch.object(runtime, "_entry_context", return_value={"sources": [{"raw": b"x"}]}), \
+                    patch.object(runtime, "_read_receipt", return_value=previous), \
+                    patch.object(runtime, "_write_receipts") as write:
+                runtime.inherit_export({"containers": [{}], "sources": [{"container": 0}]}, [str(transplanted)],
+                                       repo_root=self.root, cache_root=self.cache)
+                row = write.call_args[0][2][0]
+                self.assertEqual(row["parents"], previous["parents"])
+                self.assertEqual(row.get("pairOperation"), expected)
+
+    def test_a_mod_zip_donor_gives_its_declared_costume_and_an_unnamed_donor_none(self):
+        archive = self.base / "donor.zip"
+        with zipfile.ZipFile(archive, "w") as handle:
+            handle.writestr("modinstall.txt", "chara_id = 101\ncostume_name_en = '101 Chika Takami · Knit'\n"
+                                              "costume_name_ko = '101 타카미 치카 · 니트'\ncostume_file = 'a.unity'\n")
+            handle.writestr("a.unity", b"chika knit")
+        zipped = self.transplant("costume", self.proof(archive, "a.unity"), name="zip")
+        result = self.describe(zipped)
+        self.assertEqual(result["label"]["ko"], "004 소노다 우미 · 니트 · 코스튬 이식")
+        self.assertEqual(result["label"]["en"], "004 Umi Sonoda · Knit · Costume transplant")
+        self.assertNotIn("suitId", result)
+        # A Mod ZIP replaced after the transplant does not name it.
+        with zipfile.ZipFile(archive, "w") as handle:
+            handle.writestr("modinstall.txt", "chara_id = 101\ncostume_name_en = 'Other'\ncostume_file = 'a.unity'\n")
+            handle.writestr("a.unity", b"chika knit")
+        self.assertEqual(self.describe(zipped)["label"]["ko"], "004 소노다 우미 · 코스튬 이식")
+        # A donor that changed after the transplant names no costume, never the replaced one.
+        gone = self.imported(RINA, b"rina body")
+        changed = self.transplant("costume", gone, name="changed")
+        gone.write_bytes(b"changed donor")
+        result = self.describe(changed)
+        self.assertEqual(result["label"]["ko"], "004 소노다 우미 · 코스튬 이식")
+        self.assertEqual((result["named"], result["counterpart"]["suitId"]), (False, OFFICIAL))
+        self.assertNotIn("suitId", result)
+
+    def test_a_wearer_inside_a_zip_is_not_followed(self):
+        archive = self.base / "wearer.zip"
+        original = self.imported(OFFICIAL, b"umi body")
+        with zipfile.ZipFile(archive, "w") as handle:
+            handle.writestr("a.unity", original.read_bytes())
+        result = self.write("exports/zipped/models/a.unity", b"from zip")
+        self.derived(result, [self.proof(archive, "a.unity")], "edit")
+        self.assertEqual(self.describe(result), {"file": result.name})
+        # A member name alone already stops the walk, even with matching digests.
+        self.derived(result, [{**self.proof(original), "member": "a.unity"}], "edit")
+        self.assertEqual(self.describe(result), {"file": result.name})
+        # The same row with a plain file parent is followed.
+        self.derived(result, [original], "edit")
+        self.assertEqual(self.describe(result)["source"], "derived")
 
     def test_receipts_that_disagree_name_nothing(self):
         path = self.imported(OFFICIAL, b"claimed twice")
@@ -361,6 +516,83 @@ class DescribeTests(unittest.TestCase):
         # The verified game costume rides along in the Mod ZIP as an inert record.
         self.assertEqual(flow._source_costume(result), {"region": "gl", "suit_id": OFFICIAL, "variant": "primary", "member": 4})
 
+    def context(self, path):
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        return {"containers": [{"name": path.name, "path": str(path), "raw": raw, "sha256": digest}],
+                "sources": [{"container": 0, "member": None, "sha256": digest}]}
+
+    def metadata(self, path, language="ko"):
+        return flow.metadata(self.context(path), repo_root=self.root, cache_root=self.cache, language=language)
+
+    def test_metadata_name_base_never_names_the_rina_view(self):
+        unmasked = self.metadata(self.imported(RINA, b"rina unmasked", "unmasked"))
+        self.assertEqual(unmasked["sources"][0]["label"]["ko"], "209 텐노지 리나 · 리나 의상 · 마스크 없음")
+        self.assertEqual(unmasked["nameBase"], "209 텐노지 리나 · 리나 의상")
+        self.assertEqual(unmasked["nameBases"]["ja"], "209 天王寺 璃奈 · 璃奈の衣装")
+
+    def test_another_mod_member_gets_its_own_number_and_name(self):
+        meta = self.metadata(self.imported(OFFICIAL, b"umi body"))
+        self.assertEqual((meta["nameOwner"], meta["nameTexts"]["ko"]), (4, "오토노키자카 고교 교복(동복)"))
+        self.assertEqual(flow.name_bases(meta, 4, repo_root=self.root), meta["nameBases"])
+        self.assertEqual(flow.name_bases(meta, None, repo_root=self.root), meta["nameBases"])
+        chika = flow.name_bases(meta, 101, repo_root=self.root)
+        self.assertEqual(chika, {"en": "101 Chika Takami · Otonokizaka High Uniform (Winter)",
+                                 "ko": "101 타카미 치카 · 오토노키자카 고교 교복(동복)",
+                                 "ja": "101 高海 千歌 · 音ノ木坂学院制服（冬服）"})
+        # The same choice label the page puts first.
+        choice = next(row for row in meta["characters"] if row["value"] == "101")
+        self.assertTrue(chika["ko"].startswith(choice["labels"]["ko"] + " · "))
+        # An added costume installed for Umi carries no second member for Chika.
+        installed = self.metadata(self.imported(INSTALLED, b"installed umi"))
+        self.assertEqual(installed["nameTexts"]["ko"], "오토노키자카 고교 교복(동복) · 외곽선")
+        names = flow.localized_mod_names("101 타카미 치카 · 오토노키자카 고교 교복(동복) · 외곽선", [[{"k": "Outlines"}]],
+                                         flow.name_bases(installed, 101, repo_root=self.root), "ko")
+        self.assertEqual(names["ja"], "101 高海 千歌 · 音ノ木坂学院制服（冬服） · 輪郭線")
+        self.assertFalse(any("소노다" in value or "Umi" in value or "園田" in value for value in names.values()))
+        # The source member's own bases do not match the page's Chika name.
+        self.assertIsNone(flow.localized_mod_names("101 타카미 치카 · 오토노키자카 고교 교복(동복) · 외곽선",
+                                                   [[{"k": "Outlines"}]], installed["nameBases"], "ko"))
+        # A file nothing names: its file name after the chosen member.
+        other = self.write("elsewhere/my_costume.unity", b"other")
+        plain = self.metadata(other)
+        self.assertEqual((plain["nameOwner"], plain["nameTexts"]["ko"], plain["nameBase"]), (None, "my_costume", "my_costume"))
+        self.assertEqual(flow.name_bases(plain, 101, repo_root=self.root)["ko"], "101 타카미 치카 · my_costume")
+
+    def test_derived_and_reopened_sources_keep_their_conversion_record(self):
+        wearer = self.imported(OFFICIAL, b"umi body")
+        donor = self.imported(RINA, b"rina body")
+        record = {"region": "gl", "suit_id": OFFICIAL, "variant": "primary", "member": 4}
+        edited = self.write("exports/body-edit-9/models/a.unity", b"edited")
+        self.derived(edited, [wearer], "edit")
+        self.assertEqual(flow._source_costume(self.metadata(edited)), record)
+        # A costume transplant result is the wearer's container (what a
+        # conversion matches), although it shows the donor's costume.
+        transplanted = self.metadata(self.transplant("costume", donor, wearer=wearer))
+        self.assertEqual(transplanted["nameBase"], "004 소노다 우미 · 리나 의상 · 코스튬 이식")
+        self.assertEqual(flow._source_costume(transplanted), record)
+        # A reopened viewer Mod ZIP carries its own record on; one without none.
+        from webtools.core import viewer_mod_package as packages
+        def mod(name, extra):
+            path = self.base / name
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("modinstall.txt", "chara_id = 4\ncostume_name_en = 'Knit'\ncostume_file = 'a.unity'\n")
+                archive.writestr("a.unity", b"body")
+                for member, value in extra.items():
+                    archive.writestr(member, value)
+            return path
+        kept = mod("kept.zip", {"metadata/" + packages.SOURCE_COSTUME_MEMBER:
+                                json.dumps({"format": packages.SOURCE_COSTUME_FORMAT, "version": 1, **record})})
+        reopened = self.metadata(kept)
+        self.assertEqual(reopened["sources"][0]["source"], "manifest")
+        self.assertEqual(flow._source_costume(reopened), record)
+        self.assertIsNone(flow._source_costume(self.metadata(mod("plain.zip", {}))))
+        # Only a source this server named can give a record.
+        self.assertIsNone(flow._source_costume({"sources": [{"kind": "body", "source": "scene", "counterpart": {
+            "region": "gl", "suitId": OFFICIAL, "variant": "primary", "owner": 4}}]}))
+        self.assertIsNone(flow._source_costume({"sources": [{"kind": "body", "source": "game", "counterpart": {
+            "region": "kr", "suitId": OFFICIAL, "variant": "primary", "owner": 4}}]}))
+
 
 class SourceCostumeRecordTests(unittest.TestCase):
     def test_a_mod_zip_record_is_read_back_only_as_a_well_formed_candidate(self):
@@ -383,6 +615,134 @@ class SourceCostumeRecordTests(unittest.TestCase):
                 self.assertIsNone(read(bad))
         self.assertIsNone(read(good, extra=["metadata2/" + packages.SOURCE_COSTUME_MEMBER]), "two records name nothing")
         self.assertIsNone(read(good, name="source-costume.json"), "only the inert member name counts")
+
+
+def member_body(owner=4):
+    """A native Android costume body whose root prefab is the member's."""
+    import UnityPy
+    from test_viewer_transplants import costume_fixture
+    env = UnityPy.load(costume_fixture(13, body_owner=owner))
+    for obj in env.objects:
+        if obj.type.name == "AssetBundle":
+            tree = obj.read_typetree()
+            prefab = f"assets/llas/resources/characters/models/ch{owner:04}/ch{owner:04}_co0001_member.prefab"
+            tree["m_Container"] = [(prefab, value) for _, value in tree["m_Container"]]
+            obj.save_typetree(tree)
+    return env.file.save()
+
+
+class PlatformConversionRecordTests(unittest.TestCase):
+    """A readable-named viewer Mod ZIP converts through its source record.
+
+    No asset extractor is needed: the game catalog checks that need packs
+    (validate_selection, the original body's identity) are stood in for;
+    the ZIP, its manifest, the record and the candidate rules are real.
+    """
+
+    def setUp(self):
+        import os
+        from unittest.mock import patch
+        from webtools.core import costume_platform_source as conversion, game_models, viewer_mod_package as packages
+        self.conversion, self.game, self.packages = conversion, game_models, packages
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.root = self.base / "runtime"
+        build_root(self.root)
+        for region in ("gl", "jp"):
+            with sqlite3.connect(self.root / "assets/db" / region / "masterdata.db") as db:
+                db.execute("UPDATE m_suit SET model_asset_path=? WHERE id=?", (f"m/{OFFICIAL}", OFFICIAL))
+        self.library = self.base / "library"
+        (self.library / "mods").mkdir(parents=True)
+        environment = patch.dict(os.environ, {"SUKUSTA_DIR": str(self.library)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.body = self.base / "work" / "ch0004_suit100041001_primary.unity"
+        self.body.parent.mkdir()
+        self.body.write_bytes(member_body(4))
+        self.checked = []
+
+        def validate(root, selection, language):
+            suit = int(selection["suit"].split(":")[1])
+            self.checked.append((selection["region"], suit, selection["variant"], selection["platform"]))
+            if suit != OFFICIAL or selection["variant"] != "primary":
+                raise ValueError("not this costume")
+            return {"region": selection["region"], "suit_id": suit, "variant": "primary", "owner": 4,
+                    "model": f"m/{OFFICIAL}", "platform": selection["platform"], "selection_language": language}
+        self.identity = None
+
+        def matches(root, record, packs, identity):
+            self.identity = identity
+            return record["model"] == f"m/{OFFICIAL}"
+        from types import SimpleNamespace
+        from webtools.core.charinfo import NAMES
+
+        def real_costume_name(dictionary, key):
+            row = dictionary.execute("SELECT message FROM m_dictionary WHERE id=?", (key[2:],)).fetchone() if dictionary else None
+            return row[0] if row and row[0] else key
+        for target, attribute, replacement in (
+                (game_models, "validate_selection", validate), (conversion, "_matches_local_identity", matches),
+                (conversion, "_availability", lambda *args: []),
+                (game_models, "_extractor", lambda: SimpleNamespace(real_costume_name=real_costume_name, CHARACTERS=NAMES))):
+            patcher = patch.object(target, attribute, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def package(self, name, *, names=None, source=None, character=4):
+        result = self.packages.package_saved_export({"preview_paths": [str(self.body)], "originals_preserved": True},
+                                                    self.base / "out" / name, display_name=name, chara_id=character,
+                                                    **({"names": names} if names else {}),
+                                                    **({"source_costume": source} if source else {}))
+        target = self.library / "mods" / (name + ".zip")
+        Path(result["package_path"]).replace(target)
+        return target
+
+    def resolve(self, path, region="gl"):
+        return self.conversion.resolve(self.root, {"path": str(path), "direction": "android_to_ios", "region": region},
+                                       language="ko", cache_root=self.base / "cache")
+
+    def test_a_readable_named_zip_matches_through_its_source_record(self):
+        names = {"en": "004 Umi Sonoda · Otonokizaka High Uniform (Winter) · Outlines",
+                 "ko": "004 소노다 우미 · 오토노키자카 고교 교복(동복) · 외곽선",
+                 "ja": "004 園田 海未 · 音ノ木坂学院制服（冬服） · 輪郭線"}
+        record = {"region": "gl", "suit_id": OFFICIAL, "variant": "primary", "member": 4}
+        path = self.package(names["ko"], names=names, source=record)
+        # The record is read back from the packaged ZIP itself.
+        raw, member, declared, source = self.conversion._read_archive_body(path, "android")
+        self.assertEqual(source, record)
+        self.assertNotRegex(" ".join(declared), r"ch\d{4}_suit")
+        result = self.resolve(path)
+        self.assertEqual(result["status"], "matched", result.get("message"))
+        self.assertEqual((result["selection"]["suit"], result["selection"]["variant"], result["selection"]["platform"]),
+                         (f"suit:{OFFICIAL}", "primary", "ios"))
+        self.assertEqual(self.identity[:2], (4, "assets/llas/resources/characters/models/ch0004/ch0004_co0001_member.prefab"))
+        # The match is labelled like the viewer's other model names.
+        self.assertEqual(result["label"], "004 소노다 우미 · 오토노키자카 고교 교복(동복)")
+        # Without the record nothing names this body's costume.
+        plain = self.package(names["ko"] + " copy", names={code: value + " copy" for code, value in names.items()})
+        self.assertEqual(self.resolve(plain)["status"], "unknown")
+
+    def test_a_record_for_another_region_or_member_is_ignored(self):
+        for name, record in (("jp", {"region": "jp", "suit_id": OFFICIAL, "variant": "primary", "member": 4}),
+                             ("chika", {"region": "gl", "suit_id": OFFICIAL, "variant": "primary", "member": 101})):
+            with self.subTest(record=name):
+                self.checked.clear()
+                path = self.package("Knit " + name, source=record, character=record["member"])
+                self.assertEqual(self.resolve(path)["status"], "unknown")
+                self.assertFalse([row for row in self.checked if row[3] == "android"], "the record was never a candidate")
+        # The same JP record matches a JP conversion.
+        path = self.package("Knit jp2", source={"region": "jp", "suit_id": OFFICIAL, "variant": "primary", "member": 4})
+        self.assertEqual(self.resolve(path, "jp")["status"], "matched")
+
+    def test_an_older_code_name_still_matches_after_a_readable_prefix(self):
+        for name in ("ch0004_suit100041001_primary · Outlines", "004 Umi Sonoda · ch0004_suit100041001_primary · Outlines"):
+            with self.subTest(name=name):
+                result = self.resolve(self.package(name))
+                self.assertEqual(result["status"], "matched")
+        # A hint inside a longer word, or another member's hint, is no candidate.
+        for name in ("xch0004_suit100041001_primary", "ch0101_suit100041001_primary"):
+            with self.subTest(name=name):
+                self.assertEqual(self.resolve(self.package(name))["status"], "unknown")
 
 
 class LabelRouteTests(unittest.TestCase):
@@ -484,6 +844,31 @@ class ModNameTests(unittest.TestCase):
                          "004 소노다 우미 · 오토노키자카 고교 교복(동복) · 외곽선")
         # A typed or changed name is installed as typed for every language.
         self.assertIsNone(flow.localized_mod_names("내 의상", parts, bases, "ko"))
+
+    def test_the_120_unit_limit_counts_utf16_like_the_page(self):
+        # 8 + 2 * 55 = 118 UTF-16 units (55 code points): " · 외곽선" (6) no longer fits.
+        base = "004 X · " + "\U0001D49C" * 55
+        self.assertEqual(flow._utf16_length(base), 118)
+        self.assertEqual(flow.compose_mod_name(base, [[{"k": "Outlines"}]], "ko"), base)
+        shorter = "004 X · " + "\U0001D49C" * 53
+        self.assertEqual(flow.compose_mod_name(shorter, [[{"k": "Outlines"}]], "ko"), shorter + " · 외곽선")
+        # A cut never splits a surrogate pair.
+        self.assertEqual(flow.compose_mod_name("\U0001D49C" * 61, [], "ko"), "\U0001D49C" * 60)
+
+    def test_localized_names_are_checked_like_a_typed_name(self):
+        bases = {"en": "004 Umi Sonoda · Winter", "ko": "004 소노다 우미 · 동복", "ja": "004 園田 海未 · 冬服\x7f"}
+        self.assertIsNone(flow.localized_mod_names("004 소노다 우미 · 동복", [], bases, "ko"))
+        bases["ja"] = "004 園田 海未 · 冬服"
+        self.assertEqual(flow.localized_mod_names("004 소노다 우미 · 동복", [], bases, "ko")["ja"], "004 園田 海未 · 冬服")
+
+    def test_a_reopened_scene_is_named_after_its_target_member(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        build_root(root)
+        self.assertEqual(flow.scene_name_bases(root, {"display_name": "Board", "target_member_id": 4})["ko"], "004 소노다 우미 · Board")
+        self.assertEqual(flow.scene_name_bases(root, {"display_name": "Board"})["ja"], "209 天王寺 璃奈 · Board")
+        self.assertEqual(flow.scene_name_bases(root, {"display_name": "Board", "target_member_id": 209})["en"], "209 Rina Tennoji · Board")
 
     def test_mod_zip_names_start_with_date_then_member_number(self):
         from datetime import datetime

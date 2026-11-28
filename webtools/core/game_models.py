@@ -174,6 +174,11 @@ def catalog(root, *, language="en", region="", character="", search=""):
                 label = titled(owner, name)
                 if query and all(query not in text.casefold() for text in (label, member_name(owner)[0], names.get(owner, ""))):
                     continue
+                if not query:
+                    # One member's list names only costumes, also an added
+                    # costume installed with that member's number and name.
+                    member, aliases = member_name(owner)
+                    name = model_labels.untitled(owner, member, name, aliases) or name
                 # A search spans members, so its results name the member too.
                 options.append({"value": f"suit:{suit}", "label": label if query else name,
                                 "variants": _views(db, suit, owner, canonical_candidates), "_owner": owner})
@@ -184,6 +189,10 @@ def catalog(root, *, language="en", region="", character="", search=""):
             lookups.close()
             if dictionary:
                 dictionary.close()
+        if query:
+            # Results start with the member's number: list them by member
+            # (001…212), each member's costumes in the game's own order.
+            options.sort(key=lambda option: option["_owner"] if type(option["_owner"]) is int else 1 << 30)
         # Two costumes with the same name for one member (two copies of an
         # added Mod) are told apart by their costume number only.
         counts = {}

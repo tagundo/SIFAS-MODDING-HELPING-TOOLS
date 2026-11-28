@@ -878,16 +878,12 @@ class Handler(BaseHTTPRequestHandler):
                                 result["editing"]["initialState"] = viewer_scene_roles.register_reopened(
                                     result["id"], expanded.scene_context)
                                 result["editing"]["allowEmptySceneReset"] = True
-                                from sqlite3 import Error as SQLiteError
-                                from webtools.core import model_labels
-                                scene_name = expanded.scene_context["metadata"]["display_name"]
-                                try:
-                                    scene_names = model_labels.titled_names(Path.cwd(), 209, scene_name)
-                                except (OSError, TypeError, SQLiteError):
-                                    scene_names = {code: scene_name for code in model_labels.LANGUAGES}
+                                # A scene package names its own target member
+                                # (Rina's board shared with another member).
+                                scene_names = viewer_mod_flow.scene_name_bases(Path.cwd(), expanded.scene_context["metadata"])
                                 result["editing"]["modPackaging"].update(
-                                    nameBase=scene_names.get(self._lang(), scene_names["en"])[:120],
-                                    nameBases={code: value[:120] for code, value in scene_names.items()},
+                                    nameBase=scene_names.get(self._lang(), scene_names["en"]),
+                                    nameBases=scene_names, nameTexts=None, nameOwner=None,
                                     characterId=209, requiresCounterpart=False, sceneRoles=True)
                     except (ValueError, OSError) as exc:
                         if getattr(expanded, "scene_context", None):

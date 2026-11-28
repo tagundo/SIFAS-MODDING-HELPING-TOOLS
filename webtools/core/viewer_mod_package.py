@@ -290,6 +290,30 @@ SOURCE_COSTUME_MEMBER = "source-costume.json.data"
 SOURCE_COSTUME_FORMAT = "elichika-viewer-source-costume"
 
 
+def read_source_costume(archive, infos=None):
+    """A viewer Mod ZIP's inert source record: a candidate, never identity.
+
+    Exactly one ``source-costume.json.data`` member (in any folder) of the
+    current format, else None. Platform conversion verifies it against the
+    game body; a re-saved copy of the ZIP carries it on.
+    """
+    infos = archive.infolist() if infos is None else list(infos)
+    rows = [info for info in infos if not info.is_dir()
+            and PurePosixPath(info.filename.replace("\\", "/")).name.casefold() == SOURCE_COSTUME_MEMBER]
+    if len(rows) != 1 or rows[0].file_size > 4096:
+        return None
+    try:
+        value = json.loads(archive.read(rows[0]).decode("utf-8"))
+    except (ValueError, UnicodeError, zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError):
+        return None
+    if (not isinstance(value, dict) or value.get("format") != SOURCE_COSTUME_FORMAT
+            or value.get("version") != 1 or value.get("region") not in ("gl", "jp")
+            or type(value.get("suit_id")) is not int or not 0 < value["suit_id"] < 10 ** 12
+            or value.get("variant") not in ("primary", "unmasked") or type(value.get("member")) is not int):
+        return None
+    return {key: value[key] for key in ("region", "suit_id", "variant", "member")}
+
+
 def _source_costume_record(value):
     if value is None:
         return None

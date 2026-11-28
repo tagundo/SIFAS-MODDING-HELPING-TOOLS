@@ -207,9 +207,24 @@
       }
       return name;
     }
-    function suggestedModBase(naming) {
-      var c = naming.c, packaging = (c.editing || {}).modPackaging || {}, bases = packaging.nameBases || {};
-      return typeof bases[pageLanguage()] === "string" && bases[pageLanguage()] ? bases[pageLanguage()] :
+    // The Mod member the costume is for: the chosen one, else the automatic one.
+    function chosenMember(packaging) {
+      var value = element("viewer-mod-character").value;
+      return value || (packaging.characterId !== null && packaging.characterId !== undefined ? String(packaging.characterId) : "");
+    }
+    function suggestedModBase(naming, member) {
+      var c = naming.c, packaging = (c.editing || {}).modPackaging || {}, bases = packaging.nameBases || {}, code = pageLanguage();
+      var texts = packaging.nameTexts;
+      // Another chosen member: that member's number and name before the same
+      // costume, never the number of the member it was opened as. The server
+      // builds the same (viewer_mod_flow.name_bases) for the installed names.
+      if (member && member !== String(packaging.nameOwner) && texts && typeof texts === "object") {
+        var choice = (packaging.characters || []).filter(function (row) { return String(row.value) === member; })[0];
+        var label = choice && choice.labels && typeof choice.labels[code] === "string" ? choice.labels[code] : "";
+        var text = typeof texts[code] === "string" ? texts[code] : "";
+        if (label) return text ? label + " · " + text : label;
+      }
+      return typeof bases[code] === "string" && bases[code] ? bases[code] :
         packaging.nameBase || basename((c.loadedPaths || [])[0] || "Costume").replace(/\.[^.]+$/, "");
     }
     function suggestedModParts(naming) {
@@ -283,9 +298,9 @@
       if (authored.accessoryUnclip) kinds.push([K("Accessory Un-clip")]);
       return kinds.concat(details);
     }
-    function suggestedModName(naming) {
+    function suggestedModName(naming, member) {
       suggestedParts = suggestedModParts(naming);
-      return composeModName(suggestedModBase(naming), suggestedParts, translate);
+      return composeModName(suggestedModBase(naming, member), suggestedParts, translate);
     }
     function refreshModForm(c, rigState, authored, authoring) {
       var key = modContextKey(c), metadata = (c.editing || {}).modPackaging || {};
@@ -302,9 +317,10 @@
       if (!manualModName) {
         // Motion time and camera updates do not change the exported edits.
         // Reuse their suggestion instead of regrouping every rig node again.
-        var naming = namingInputs(c, rigState, authored), nameKey = JSON.stringify([key, pageLanguage(), naming === savedNaming ? ["saved", savedNamingSerial] : [metadata.nameBase, metadata.nameBases, lastAuthoringFingerprint, naming.textures,
+        var naming = namingInputs(c, rigState, authored), member = chosenMember(metadata);
+        var nameKey = JSON.stringify([key, pageLanguage(), member, naming === savedNaming ? ["saved", savedNamingSerial] : [metadata.nameBase, metadata.nameBases, metadata.nameTexts, metadata.nameOwner, lastAuthoringFingerprint, naming.textures,
           (rigState.thighProfile || {}).selected, (rigState.body || {}).breastPreset], translate("Mod name")]);
-        if (nameKey !== suggestedNameKey) { suggestedNameKey = nameKey; suggestedName = suggestedModName(naming); }
+        if (nameKey !== suggestedNameKey) { suggestedNameKey = nameKey; suggestedName = suggestedModName(naming, member); }
         name.value = suggestedName;
       }
       // The whole name, also where the field is narrower than it.

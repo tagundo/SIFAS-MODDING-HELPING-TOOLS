@@ -497,8 +497,12 @@ repacking is unnecessary and the source files remain unchanged.
   **Mod name** starts with the member's three-digit number, the member and the
   costume in the page language (for example `004 소노다 우미 · 오토노키자카 고교
   교복(동복)`), then the actual edited parts, relative factors or selected thigh
-  conversion. An edited copy or transplant result keeps the name of the costume
-  it was made from; an added costume uses the name it was installed with. You
+  conversion. An edited copy keeps the name of the costume it was made from;
+  a costume transplant result is named after its wearer in the donor's costume
+  (`004 소노다 우미 · <donor costume> · 코스튬 이식`), a part or lower-body
+  transplant after the wearer's costume and that operation; an added costume
+  uses the name it was installed with. Choosing another **Costume character**
+  puts that member's number and name first instead (`101 타카미 치카 · …`). You
   can change it; **Automatic name** restores the suggestion. An untouched
   automatic name is installed in English, Korean and Japanese (Chinese uses
   English); a typed name is installed as typed. The saved ZIP is named
@@ -506,7 +510,13 @@ repacking is unnecessary and the source files remain unchanged.
   a typed name gets the member's number and romanised given name first. Loaded
   models, the texture and mesh pickers and the transplant donor read the same
   way; their cache file names (`ch0004_suit<id>_primary.unity`) stay on disk
-  and in each tooltip. The optional target settings let you identify an otherwise
+  and in each tooltip. The title chip shows the member on a small first line
+  and the costume below it. Game assets lists one member's costumes by costume
+  name only; search results start with the member's number and are listed by
+  member. A viewer Mod ZIP keeps an inert record of its game costume that a
+  later re-save carries on and platform conversion verifies against the body;
+  an older ZIP whose name still contains `ch0004_suit<id>_primary` matches by
+  that name. The optional target settings let you identify an otherwise
   unknown character or supply the other Rina model and the edited variant.
   Rina mod packages apply the same source-relative body changes to both board
   and unmasked models, including when you edit only one variant. Each variant

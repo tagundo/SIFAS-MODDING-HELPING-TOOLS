@@ -236,6 +236,13 @@
       return name + " (" + seen[name] + ")";
     });
   }
+  // ["004 소노다 우미", "<costume> …"] when a shown label starts with its member.
+  function memberLine(path, label) {
+    var parts = modelLabels[path], code = pageLanguage();
+    if (!labelText(parts) || typeof parts.owner !== "number" || !(parts.owner > 0 && parts.owner < 1000) || !parts.member || typeof parts.member[code] !== "string") return null;
+    var member = ("00" + parts.owner).slice(-3) + " " + parts.member[code];
+    return label.indexOf(member + " · ") === 0 && label.length > member.length + 3 ? [member, label.slice(member.length + 3)] : null;
+  }
   function requestModelLabels(list) {
     var pending = list.filter(function (path) { return labelRequests[path]; }).map(function (path) { return labelRequests[path]; });
     var wanted = list.filter(function (path, index) { return typeof path === "string" && path && list.indexOf(path) === index && !(path in modelLabels) && !labelRequests[path]; }).slice(0, 16);
@@ -628,7 +635,16 @@
     });
     var chooser = node("viewer-model-files"), count = node("viewer-model-file-count"), badge = node("viewer-model-options-count");
     chooser.hidden = !paths.length;
-    node("viewer-model-file-name").textContent = paths.length ? labels[0] : t("Model files");
+    // The chip is narrow: the member's number and name on a small first
+    // line, so the costume (what tells two of them apart) keeps the second.
+    var chipName = node("viewer-model-file-name"), chip = paths.length ? memberLine(paths[0], labels[0]) : null;
+    chipName.textContent = ""; chipName.classList.toggle("viewer-chip-split", !!chip);
+    if (chip) {
+      var who = document.createElement("small"), what = document.createElement("span");
+      who.className = "viewer-chip-member"; who.textContent = chip[0];
+      what.className = "viewer-chip-costume"; what.textContent = chip[1];
+      chipName.appendChild(who); chipName.appendChild(what);
+    } else chipName.textContent = paths.length ? labels[0] : t("Model files");
     chooser.querySelector("summary").title = t("Model files") + " (" + paths.length + ")" + (paths.length ? "\n" + labels[0] + (labels[0] !== basename(paths[0]) ? "\n" + labelDetail(paths[0]) : "") : "");
     count.textContent = String(paths.length); count.hidden = paths.length < 2;
     badge.textContent = String(paths.length); badge.hidden = paths.length < 2;

@@ -1,9 +1,8 @@
 """Resolve the original counterpart of one edited costume body."""
 from contextlib import closing, contextmanager
 import hashlib
-import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import sqlite3
 import tempfile
@@ -23,7 +22,9 @@ AMBIGUOUS = "More than one original costume matches this bundle. Choose the cost
 WRONG_REGION = "The edited bundle's source belongs to a different game region. Select that region or choose the original manually."
 _PREFAB = re.compile(r"assets/llas/resources/characters/models/ch(\d{4})/ch\1_[a-z0-9_]{1,96}_member\.prefab")
 _FILENAME_HINT = re.compile(r"ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?:_[a-z0-9_-]{1,60})?\.unity(?:3d)?", re.I)
-_DISPLAY_HINT = re.compile(r"ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?=$|[^a-z0-9])", re.I)
+# Anywhere in a display name: a readable name puts the member first
+# ("004 Umi Sonoda · ch0004_suit…_primary · Outlines" for an older Mod ZIP).
+_DISPLAY_HINT = re.compile(r"(?<![a-z0-9])ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?=$|[^a-z0-9])", re.I)
 _NATIVE_PLATFORMS = {"android": 13, "ios": 9}
 _CAB = re.compile(r"cab-[0-9a-f]{32}")
 _PACK_WRAPPERS = ("", "files", "files/files", "static")
@@ -47,20 +48,7 @@ def _checked_path(value, *, directory=False):
 
 def _archive_source_costume(archive, members):
     """A viewer Mod ZIP's inert source record: a candidate, never identity."""
-    rows = [info for key, info in members.items()
-            if not info.is_dir() and PurePosixPath(key).name == viewer_mod_package.SOURCE_COSTUME_MEMBER]
-    if len(rows) != 1 or rows[0].file_size > 4096:
-        return None
-    try:
-        value = json.loads(archive.read(rows[0]).decode("utf-8"))
-    except (ValueError, UnicodeError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
-        return None
-    if (not isinstance(value, dict) or value.get("format") != viewer_mod_package.SOURCE_COSTUME_FORMAT
-            or value.get("version") != 1 or value.get("region") not in ("gl", "jp")
-            or type(value.get("suit_id")) is not int or not 0 < value["suit_id"] < 10 ** 12
-            or value.get("variant") not in ("primary", "unmasked") or type(value.get("member")) is not int):
-        return None
-    return {key: value[key] for key in ("region", "suit_id", "variant", "member")}
+    return viewer_mod_package.read_source_costume(archive, members.values())
 
 
 def _archive_models(archive):
@@ -406,10 +394,13 @@ def _archive_selection(member, names, env, *, repo_root, region, language, platf
     with closing(game._readonly(Path(repo_root) / "assets/db" / region / "masterdata.db")) as db:
         candidates = _named_catalog_matches(db, owner, prefab)
         hints = [_FILENAME_HINT.fullmatch(Path(member).name)]
-        # Older Mod ZIPs could carry a code-like display name.
-        hints.extend(_DISPLAY_HINT.match(name) for name in names)
+        # Older Mod ZIPs could carry a code-like display name, also after a
+        # readable member prefix a later re-save gave it.
+        hints.extend(hint for name in names for hint in _DISPLAY_HINT.finditer(name))
         candidates.update((int(hint.group(2)), hint.group(3).lower()) for hint in hints
                           if hint and int(hint.group(1)) == owner)
+        # A viewer Mod ZIP's source record names its game costume; it is only
+        # a candidate for this region and this body's member, verified below.
         if source and source["region"] == region and member_from_native(owner) == source["member"]:
             candidates.add((source["suit_id"], source["variant"]))
         matched = set()
